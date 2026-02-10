@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -11,16 +13,64 @@ import (
 
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/server"
+	"github.com/me/gowe/internal/store"
 )
 
-// startTestServer starts a skeleton server and returns the URL and a cleanup func.
+// startTestServer starts a server with an in-memory SQLite store and returns the URL.
 func startTestServer(t *testing.T) string {
 	t.Helper()
 	srvLogger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
-	srv := server.New(config.DefaultServerConfig(), srvLogger)
+	st, err := store.NewSQLiteStore(":memory:", srvLogger)
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate test store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	srv := server.New(config.DefaultServerConfig(), st, srvLogger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts.URL
+}
+
+// submitTestWorkflow creates a workflow + submission via HTTP and returns the submission ID.
+func submitTestWorkflow(t *testing.T, serverURL string) string {
+	t.Helper()
+
+	srvLogger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
+	c := NewClient(serverURL, srvLogger)
+
+	// Read packed CWL directly.
+	cwlData, err := os.ReadFile(testdataPath("packed/pipeline-packed.cwl"))
+	if err != nil {
+		t.Fatalf("read CWL: %v", err)
+	}
+
+	// Create workflow.
+	wfResp, err := c.Post("/api/v1/workflows/", map[string]any{
+		"name": "test-workflow",
+		"cwl":  string(cwlData),
+	})
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	var wfData map[string]any
+	json.Unmarshal(wfResp.Data, &wfData)
+	wfID := wfData["id"].(string)
+
+	// Create submission.
+	subResp, err := c.Post("/api/v1/submissions/", map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+	})
+	if err != nil {
+		t.Fatalf("create submission: %v", err)
+	}
+	var subData map[string]any
+	json.Unmarshal(subResp.Data, &subData)
+	return subData["id"].(string)
 }
 
 func testdataPath(rel string) string {
@@ -106,12 +156,13 @@ func TestSubmitCommand_DryRun(t *testing.T) {
 
 func TestStatusCommand(t *testing.T) {
 	url := startTestServer(t)
+	subID := submitTestWorkflow(t, url)
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	_, err := runCLI(t, "--server", url, "status", "sub_test123")
+	_, err := runCLI(t, "--server", url, "status", subID)
 
 	w.Close()
 	os.Stdout = old
@@ -123,16 +174,17 @@ func TestStatusCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status error: %v", err)
 	}
-	if !strings.Contains(output, "sub_test123") {
+	if !strings.Contains(output, subID) {
 		t.Errorf("expected submission ID in output, got: %s", output)
 	}
-	if !strings.Contains(output, "COMPLETED") {
-		t.Errorf("expected COMPLETED state in output, got: %s", output)
+	if !strings.Contains(output, "PENDING") {
+		t.Errorf("expected PENDING state in output, got: %s", output)
 	}
 }
 
 func TestListCommand(t *testing.T) {
 	url := startTestServer(t)
+	submitTestWorkflow(t, url)
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
@@ -153,19 +205,20 @@ func TestListCommand(t *testing.T) {
 	if !strings.Contains(output, "ID") {
 		t.Errorf("expected table header in output, got: %s", output)
 	}
-	if !strings.Contains(output, "COMPLETED") {
+	if !strings.Contains(output, "PENDING") {
 		t.Errorf("expected submission state in output, got: %s", output)
 	}
 }
 
 func TestCancelCommand(t *testing.T) {
 	url := startTestServer(t)
+	subID := submitTestWorkflow(t, url)
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	_, err := runCLI(t, "--server", url, "cancel", "sub_test123")
+	_, err := runCLI(t, "--server", url, "cancel", subID)
 
 	w.Close()
 	os.Stdout = old
@@ -184,12 +237,13 @@ func TestCancelCommand(t *testing.T) {
 
 func TestLogsCommand(t *testing.T) {
 	url := startTestServer(t)
+	subID := submitTestWorkflow(t, url)
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	_, err := runCLI(t, "--server", url, "logs", "sub_test123")
+	_, err := runCLI(t, "--server", url, "logs", subID)
 
 	w.Close()
 	os.Stdout = old
@@ -201,8 +255,9 @@ func TestLogsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logs error: %v", err)
 	}
-	if !strings.Contains(output, "SPAdes") {
-		t.Errorf("expected SPAdes in stdout output, got: %s", output)
+	// Newly created tasks have empty logs, but the command shows step headers.
+	if !strings.Contains(output, "===") {
+		t.Errorf("expected task log header in output, got: %s", output)
 	}
 }
 

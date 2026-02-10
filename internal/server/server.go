@@ -3,14 +3,13 @@ package server
 import (
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/parser"
-	"github.com/me/gowe/pkg/model"
+	"github.com/me/gowe/internal/store"
 )
 
 // Server is the GoWe REST API server.
@@ -21,12 +20,11 @@ type Server struct {
 	startTime time.Time
 	parser    *parser.Parser
 	validator *parser.Validator
-	workflows map[string]*model.Workflow
-	mu        sync.RWMutex
+	store     store.Store
 }
 
 // New creates a new Server with all routes registered.
-func New(cfg config.ServerConfig, logger *slog.Logger) *Server {
+func New(cfg config.ServerConfig, st store.Store, logger *slog.Logger) *Server {
 	s := &Server{
 		router:    chi.NewRouter(),
 		logger:    logger.With("component", "server"),
@@ -34,7 +32,7 @@ func New(cfg config.ServerConfig, logger *slog.Logger) *Server {
 		startTime: time.Now(),
 		parser:    parser.New(logger),
 		validator: parser.NewValidator(logger),
-		workflows: make(map[string]*model.Workflow),
+		store:     st,
 	}
 	s.routes()
 	return s

@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -65,13 +64,15 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		mw.Description = req.Description
 	}
 
-	// Assign ID and store.
+	// Assign ID and persist.
 	mw.ID = "wf_" + uuid.New().String()
 	mw.RawCWL = req.CWL
 
-	s.mu.Lock()
-	s.workflows[mw.ID] = mw
-	s.mu.Unlock()
+	if err := s.store.CreateWorkflow(r.Context(), mw); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
 
 	s.logger.Info("workflow created", "id", mw.ID, "name", mw.Name, "steps", len(mw.Steps))
 	respondCreated(w, reqID, mw)
@@ -80,17 +81,13 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
-	s.mu.RLock()
-	workflows := make([]*model.Workflow, 0, len(s.workflows))
-	for _, wf := range s.workflows {
-		workflows = append(workflows, wf)
+	opts := model.DefaultListOptions()
+	workflows, total, err := s.store.ListWorkflows(r.Context(), opts)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
 	}
-	s.mu.RUnlock()
-
-	// Sort by creation time (newest first).
-	sort.Slice(workflows, func(i, j int) bool {
-		return workflows[i].CreatedAt.After(workflows[j].CreatedAt)
-	})
 
 	// Build summary list (omit RawCWL and step details).
 	type workflowSummary struct {
@@ -114,10 +111,10 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondList(w, reqID, summaries, &model.Pagination{
-		Total:   len(summaries),
-		Limit:   20,
-		Offset:  0,
-		HasMore: false,
+		Total:   total,
+		Limit:   opts.Limit,
+		Offset:  opts.Offset,
+		HasMore: opts.Offset+opts.Limit < total,
 	})
 }
 
@@ -125,11 +122,13 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	s.mu.RLock()
-	wf, ok := s.workflows[id]
-	s.mu.RUnlock()
-
-	if !ok {
+	wf, err := s.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if wf == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
 		return
 	}
@@ -140,11 +139,13 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	s.mu.RLock()
-	existing, ok := s.workflows[id]
-	s.mu.RUnlock()
-
-	if !ok {
+	existing, err := s.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if existing == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
 		return
 	}
@@ -193,16 +194,16 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 			updated.Description = req.Description
 		}
 
-		s.mu.Lock()
-		s.workflows[id] = updated
-		s.mu.Unlock()
-
+		if err := s.store.UpdateWorkflow(r.Context(), updated); err != nil {
+			respondError(w, reqID, http.StatusInternalServerError,
+				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+			return
+		}
 		respondOK(w, reqID, updated)
 		return
 	}
 
 	// Only metadata update (name/description).
-	s.mu.Lock()
 	if req.Name != "" {
 		existing.Name = req.Name
 	}
@@ -210,8 +211,12 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		existing.Description = req.Description
 	}
 	existing.UpdatedAt = time.Now().UTC()
-	s.mu.Unlock()
 
+	if err := s.store.UpdateWorkflow(r.Context(), existing); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
 	respondOK(w, reqID, existing)
 }
 
@@ -219,14 +224,7 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	s.mu.Lock()
-	_, ok := s.workflows[id]
-	if ok {
-		delete(s.workflows, id)
-	}
-	s.mu.Unlock()
-
-	if !ok {
+	if err := s.store.DeleteWorkflow(r.Context(), id); err != nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
 		return
 	}
@@ -237,11 +235,13 @@ func (s *Server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) 
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	s.mu.RLock()
-	wf, ok := s.workflows[id]
-	s.mu.RUnlock()
-
-	if !ok {
+	wf, err := s.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if wf == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
 		return
 	}

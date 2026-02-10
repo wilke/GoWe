@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -12,12 +13,20 @@ import (
 	"testing"
 
 	"github.com/me/gowe/internal/config"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
 
 func testServer() *Server {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
-	return New(config.DefaultServerConfig(), logger)
+	st, err := store.NewSQLiteStore(":memory:", logger)
+	if err != nil {
+		panic("open test store: " + err.Error())
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		panic("migrate test store: " + err.Error())
+	}
+	return New(config.DefaultServerConfig(), st, logger)
 }
 
 // envelope is used to decode the standard response envelope.
@@ -86,6 +95,28 @@ func createTestWorkflow(t *testing.T, srv *Server) string {
 	return id
 }
 
+// createTestSubmission creates a workflow and a submission, returning (workflowID, submissionID).
+func createTestSubmission(t *testing.T, srv *Server) (string, string) {
+	t.Helper()
+	wfID := createTestWorkflow(t, srv)
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"labels":      map[string]string{"project": "test"},
+	})
+	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create submission: status=%d, body=%s", w.Code, w.Body.String())
+	}
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	subID, ok := data["id"].(string)
+	if !ok {
+		t.Fatalf("created submission missing id, data=%v", data)
+	}
+	return wfID, subID
+}
+
 // --- Discovery & Health (unchanged) ---
 
 func TestDiscovery(t *testing.T) {
@@ -131,7 +162,7 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-// --- Workflow CRUD (real parsing) ---
+// --- Workflow CRUD (real parsing + SQLite) ---
 
 func TestCreateWorkflow(t *testing.T) {
 	srv := testServer()
@@ -354,22 +385,22 @@ func TestValidateWorkflow_NotFound(t *testing.T) {
 	}
 }
 
-// --- Submissions (still skeleton) ---
+// --- Submissions (real persistence) ---
 
 func TestCreateSubmission(t *testing.T) {
 	srv := testServer()
-	body := `{"workflow_id":"wf_123","inputs":{"reads_r1":"test"}}`
-	req := httptest.NewRequest("POST", "/api/v1/submissions/", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	wfID := createTestWorkflow(t, srv)
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"labels":      map[string]string{"project": "test"},
+	})
+	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status=%d, want 201, body=%s", w.Code, w.Body.String())
 	}
-
-	var env envelope
-	json.Unmarshal(w.Body.Bytes(), &env)
 
 	var data map[string]any
 	json.Unmarshal(env.Data, &data)
@@ -378,6 +409,29 @@ func TestCreateSubmission(t *testing.T) {
 	}
 	if data["state"] != "PENDING" {
 		t.Errorf("state = %v, want PENDING", data["state"])
+	}
+	if data["workflow_id"] != wfID {
+		t.Errorf("workflow_id = %v, want %s", data["workflow_id"], wfID)
+	}
+	// Should have 2 tasks (assemble + annotate).
+	tasks, ok := data["tasks"].([]any)
+	if !ok || len(tasks) != 2 {
+		t.Errorf("tasks count = %v, want 2", data["tasks"])
+	}
+}
+
+func TestCreateSubmission_WorkflowNotFound(t *testing.T) {
+	srv := testServer()
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": "wf_nonexistent",
+		"inputs":      map[string]any{},
+	})
+	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrNotFound {
+		t.Errorf("error = %v, want NOT_FOUND", env.Error)
 	}
 }
 
@@ -408,28 +462,59 @@ func TestCreateSubmission_DryRun(t *testing.T) {
 
 func TestListSubmissions(t *testing.T) {
 	srv := testServer()
+
+	// Empty list.
 	env := doGet(t, srv, "/api/v1/submissions/")
 	if env.Pagination == nil {
 		t.Fatal("expected pagination")
+	}
+	if env.Pagination.Total != 0 {
+		t.Errorf("total = %d, want 0 (empty)", env.Pagination.Total)
+	}
+
+	// Create one, then list.
+	createTestSubmission(t, srv)
+	env = doGet(t, srv, "/api/v1/submissions/")
+	if env.Pagination.Total != 1 {
+		t.Errorf("total = %d, want 1", env.Pagination.Total)
 	}
 }
 
 func TestGetSubmission(t *testing.T) {
 	srv := testServer()
-	env := doGet(t, srv, "/api/v1/submissions/sub_test123")
-	if env.Status != "ok" {
-		t.Errorf("status = %q, want ok", env.Status)
+	_, subID := createTestSubmission(t, srv)
+
+	env := doGet(t, srv, "/api/v1/submissions/"+subID)
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	if data["id"] != subID {
+		t.Errorf("id = %v, want %s", data["id"], subID)
+	}
+	if data["state"] != "PENDING" {
+		t.Errorf("state = %v, want PENDING", data["state"])
+	}
+}
+
+func TestGetSubmission_NotFound(t *testing.T) {
+	srv := testServer()
+	req := httptest.NewRequest("GET", "/api/v1/submissions/sub_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
 	}
 }
 
 func TestCancelSubmission(t *testing.T) {
 	srv := testServer()
-	req := httptest.NewRequest("PUT", "/api/v1/submissions/sub_test123/cancel", nil)
+	_, subID := createTestSubmission(t, srv)
+
+	req := httptest.NewRequest("PUT", "/api/v1/submissions/"+subID+"/cancel", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, want 200", w.Code)
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
 	}
 
 	var env envelope
@@ -439,11 +524,30 @@ func TestCancelSubmission(t *testing.T) {
 	if data["state"] != "CANCELLED" {
 		t.Errorf("state = %v, want CANCELLED", data["state"])
 	}
+	// 2 pending tasks should be cancelled.
+	tasksCancelled, _ := data["tasks_cancelled"].(float64)
+	if tasksCancelled != 2 {
+		t.Errorf("tasks_cancelled = %v, want 2", data["tasks_cancelled"])
+	}
 }
+
+func TestCancelSubmission_NotFound(t *testing.T) {
+	srv := testServer()
+	req := httptest.NewRequest("PUT", "/api/v1/submissions/sub_nonexistent/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
+	}
+}
+
+// --- Tasks (real persistence) ---
 
 func TestListTasks(t *testing.T) {
 	srv := testServer()
-	env := doGet(t, srv, "/api/v1/submissions/sub_test/tasks/")
+	_, subID := createTestSubmission(t, srv)
+
+	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
 	if env.Pagination == nil {
 		t.Fatal("expected pagination")
 	}
@@ -452,18 +556,71 @@ func TestListTasks(t *testing.T) {
 	}
 }
 
-func TestGetTaskLogs(t *testing.T) {
+func TestListTasks_Empty(t *testing.T) {
 	srv := testServer()
-	env := doGet(t, srv, "/api/v1/submissions/sub_test/tasks/task_abc/logs")
+	env := doGet(t, srv, "/api/v1/submissions/sub_nonexistent/tasks/")
+	if env.Pagination == nil {
+		t.Fatal("expected pagination")
+	}
+	if env.Pagination.Total != 0 {
+		t.Errorf("total = %d, want 0", env.Pagination.Total)
+	}
+}
 
+func TestGetTask(t *testing.T) {
+	srv := testServer()
+	_, subID := createTestSubmission(t, srv)
+
+	// List tasks to get a task ID.
+	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
+	var tasks []map[string]any
+	json.Unmarshal(env.Data, &tasks)
+	if len(tasks) == 0 {
+		t.Fatal("no tasks returned")
+	}
+	taskID := tasks[0]["id"].(string)
+
+	// Get individual task.
+	env = doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/"+taskID)
 	var data map[string]any
 	json.Unmarshal(env.Data, &data)
-	if data["task_id"] != "task_abc" {
-		t.Errorf("task_id = %v, want task_abc", data["task_id"])
+	if data["id"] != taskID {
+		t.Errorf("id = %v, want %s", data["id"], taskID)
 	}
-	stdout, ok := data["stdout"].(string)
-	if !ok || !strings.Contains(stdout, "SPAdes") {
-		t.Errorf("stdout should contain SPAdes, got %v", data["stdout"])
+	if data["state"] != "PENDING" {
+		t.Errorf("state = %v, want PENDING", data["state"])
+	}
+}
+
+func TestGetTask_NotFound(t *testing.T) {
+	srv := testServer()
+	req := httptest.NewRequest("GET", "/api/v1/submissions/sub_x/tasks/task_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
+	}
+}
+
+func TestGetTaskLogs(t *testing.T) {
+	srv := testServer()
+	_, subID := createTestSubmission(t, srv)
+
+	// List tasks to get a task ID.
+	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
+	var tasks []map[string]any
+	json.Unmarshal(env.Data, &tasks)
+	taskID := tasks[0]["id"].(string)
+
+	env = doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/"+taskID+"/logs")
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	if data["task_id"] != taskID {
+		t.Errorf("task_id = %v, want %s", data["task_id"], taskID)
+	}
+	// Stdout/stderr should be empty for a newly created task.
+	if data["stdout"] != "" {
+		t.Errorf("stdout = %q, want empty", data["stdout"])
 	}
 }
 
