@@ -248,12 +248,13 @@ class BVBRCClient:
     def workspace_move(
         self, source: str, destination: str
     ) -> list[WorkspaceObject]:
-        """Move workspace object."""
-        params = {"objects": [[source, destination]]}
-        result = self._call_workspace("Workspace.move", [params])
-        if not result or not result[0]:
-            return []
-        return [_parse_workspace_object(t) for t in result[0]]
+        """Move workspace object (implemented as copy + delete)."""
+        # Workspace.move is not available in the BV-BRC API
+        # Implement as copy followed by delete
+        copied = self.workspace_copy(source, destination)
+        if copied:
+            self.workspace_delete([source])
+        return copied
 
     def workspace_set_permissions(
         self, path: str, permissions: list[tuple[str, str]]

@@ -191,10 +191,13 @@ export class BVBRCClient {
   }
 
   async workspaceMove(source: string, destination: string): Promise<WorkspaceObject[]> {
-    const params = { objects: [[source, destination]] };
-    const result = await this.callWorkspace("Workspace.move", [params]);
-    const raw = (result as unknown[][][])?.[0] || [];
-    return raw.map(parseWorkspaceObject);
+    // Workspace.move is not available in the BV-BRC API
+    // Implement as copy followed by delete
+    const copied = await this.workspaceCopy(source, destination);
+    if (copied.length > 0) {
+      await this.workspaceDelete([source]);
+    }
+    return copied;
   }
 
   async workspaceSetPermissions(
