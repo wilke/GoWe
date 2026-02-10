@@ -2,7 +2,7 @@
 
 ## Context
 
-GoWe is a Go-based workflow engine that uses CWL v1.2 YAML as its workflow definition format, submits bioinformatics jobs to BV-BRC via JSON-RPC, and provides scheduling, monitoring, and management. The project has comprehensive design docs (7,300 lines) but zero implementation code — only three stub `main.go` files. This plan builds from skeleton to MVP in 7 phases, each producing runnable, testable code.
+GoWe is a Go-based workflow engine that uses CWL v1.2 YAML as its workflow definition format, submits bioinformatics jobs to BV-BRC via JSON-RPC, and provides scheduling, monitoring, and management. The project has comprehensive design docs (7,300 lines) but zero implementation code — only three stub `main.go` files. This plan uses an outside-in approach across 8 phases: skeleton API + CLI first (demoable UX in Phase 3), then fill in real implementations incrementally.
 
 ## Major Components
 
@@ -15,6 +15,7 @@ pkg/model/                 → Public domain types (Workflow, Step, Tool, Task, 
 pkg/cwl/                   → CWL v1.2 parsing types (CommandLineTool, Workflow, requirements)
 pkg/bvbrc/                 → BV-BRC JSON-RPC client (auth, AppService, Workspace)
 
+internal/logging/          → Logger setup (slog level/format), debug mode
 internal/config/           → Server/scheduler config loading
 internal/parser/           → CWL YAML parser, validator, DAG builder (server-side)
 internal/bundle/           → CWL $graph bundler: resolves run: refs, packs into single document
@@ -49,7 +50,7 @@ my-project/
 The CLI reads all local files and produces a **self-contained packed CWL document**. The server never touches the user's filesystem.
 
 ```
-gowe submit pipeline.cwl --inputs job.yml
+gowe submit pipeline.cwl --inputs job.yml [--dry-run] [--debug]
 
 CLI actions:
 1. Read pipeline.cwl
@@ -299,6 +300,9 @@ Scheduler loop (runs continuously)
 | Proxy workspace listing | Server | `internal/server/handler_workspace.go` |
 | Expose tools/resources via MCP | MCP Server | `internal/mcp/server.go` |
 | Translate MCP tool calls → REST | MCP Server | `internal/mcp/tools.go` |
+| Logger setup (level, format, debug) | All binaries | `internal/logging/logging.go` |
+| Dry-run validation report | Server | `internal/server/handler_submissions.go` |
+| CLI dry-run output formatting | CLI | `internal/cli/submit.go` |
 
 ## LLM Integration via MCP
 
@@ -585,7 +589,7 @@ Returns all available endpoints, their methods, and descriptions.
       {
         "path": "/api/v1/submissions",
         "methods": ["GET", "POST"],
-        "description": "Submission (run) management"
+        "description": "Submission (run) management. POST accepts ?dry_run=true for validation without execution"
       },
       {
         "path": "/api/v1/submissions/{id}",
@@ -1286,6 +1290,214 @@ Proxies `Workspace.ls` to let LLMs and clients browse the user's BV-BRC workspac
 }
 ```
 
+## Logging
+
+All GoWe components use stdlib `log/slog` (Go 1.21+) — no third-party logging library.
+
+### Log Levels
+
+| Level | When | Example |
+|-------|------|---------|
+| `DEBUG` | Internal state transitions, SQL queries, JSON-RPC payloads, input resolution | `"resolving task input" step=annotate source=assemble/contigs` |
+| `INFO` | Normal operations visible to operators | `"task submitted" task_id=task_abc executor=bvbrc app=GenomeAssembly2` |
+| `WARN` | Recoverable issues, retries, degraded state | `"BV-BRC poll failed, will retry" task_id=task_abc err="timeout" attempt=2` |
+| `ERROR` | Unrecoverable failures | `"task failed permanently" task_id=task_abc err="BV-BRC returned 500"` |
+
+### Logger Setup
+
+```go
+// internal/logging/logging.go
+func NewLogger(level slog.Level, format string) *slog.Logger
+```
+
+- **`--log-level`** flag on all binaries: `debug`, `info` (default), `warn`, `error`
+- **`--log-format`** flag: `text` (default, human-readable) or `json` (structured, for log aggregation)
+- Logger is created in `main()` and passed via dependency injection (constructor args), never a global
+- Every component receives `*slog.Logger` and creates child loggers with component context:
+
+```go
+// Server handler
+logger = logger.With("component", "server")
+
+// Scheduler
+logger = logger.With("component", "scheduler")
+
+// Executor
+logger = logger.With("component", "executor", "type", "bvbrc")
+```
+
+### Debug Mode
+
+Enabled via `--log-level=debug` on any binary, or `--debug` shorthand flag. Effects:
+
+| Component | Debug output |
+|-----------|-------------|
+| **Server** | Full request/response bodies, parsed CWL structure, DAG edges, SQL queries |
+| **Scheduler** | Every tick: tasks evaluated, dependency check results, input resolution steps |
+| **Executor (local)** | Command line constructed, env vars set, stdout/stderr streaming |
+| **Executor (BV-BRC)** | Full JSON-RPC request/response bodies, auth token refresh, app schema cache hits/misses |
+| **CLI** | Bundled CWL document (packed $graph), HTTP request/response, resolved file paths |
+| **Parser** | YAML unmarshal results, type resolution, validator checks, DAG construction |
+| **MCP Server** | All MCP JSON-RPC messages (stdin/stdout), tool call parameters, resource responses |
+
+```
+# Example debug output (text format)
+time=2026-02-09T17:35:05Z level=DEBUG component=scheduler msg="evaluating task readiness" task_id=task_abc step=annotate depends_on=[task_xyz]
+time=2026-02-09T17:35:05Z level=DEBUG component=scheduler msg="dependency not satisfied" task_id=task_abc dep=task_xyz dep_state=RUNNING
+time=2026-02-09T17:35:10Z level=DEBUG component=executor type=bvbrc msg="JSON-RPC call" method=AppService.query_tasks params=["task_xyz_external"]
+time=2026-02-09T17:35:10Z level=DEBUG component=executor type=bvbrc msg="JSON-RPC response" method=AppService.query_tasks status=completed elapsed=245ms
+```
+
+### Request Tracing
+
+Every HTTP request generates a `request_id` (already in the response envelope). This ID propagates through all log entries for that request via `slog.With("request_id", reqID)`, enabling full request tracing through server → store → executor.
+
+---
+
+## Dry-Run Mode
+
+Dry-run validates the entire submission pipeline without executing any tasks. Available in both CLI and API.
+
+### CLI: `gowe submit --dry-run`
+
+```
+gowe submit pipeline.cwl --inputs job.yml --dry-run
+```
+
+**What happens:**
+
+```
+CLI dry-run:
+1. Read and bundle CWL files (same as normal)     ✓ runs
+2. POST /api/v1/workflows                         ✓ runs (registers workflow)
+3. POST /api/v1/submissions?dry_run=true           ✓ runs (validates, does NOT persist)
+4. Print validation result                         ✓ shows what would happen
+```
+
+**Output:**
+
+```
+Dry-run: assembly-annotation-pipeline
+  Workflow: valid ✓
+  Inputs:  4/4 provided ✓
+  Steps:
+    1. assemble → GenomeAssembly2 (bvbrc)
+       Inputs: read1, read2, recipe=auto, trim=true
+       Depends on: (none)
+    2. annotate → GenomeAnnotation (bvbrc)
+       Inputs: contigs ← assemble/contigs, scientific_name, taxonomy_id
+       Depends on: assemble
+  DAG: acyclic ✓
+  Executor availability: bvbrc ✓
+  BV-BRC app validation:
+    GenomeAssembly2: schema fetched ✓, inputs compatible ✓
+    GenomeAnnotation: schema fetched ✓, inputs compatible ✓
+
+No submission created. Use without --dry-run to execute.
+```
+
+### API: `POST /api/v1/submissions?dry_run=true`
+
+Same request body as a normal submission. Returns a validation report instead of creating a Submission.
+
+**Response (200):**
+
+```json
+{
+  "status": "ok",
+  "request_id": "req_060",
+  "timestamp": "2026-02-09T17:50:00Z",
+  "data": {
+    "dry_run": true,
+    "valid": true,
+    "workflow": {
+      "id": "wf_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "assembly-annotation-pipeline"
+    },
+    "inputs_valid": true,
+    "steps": [
+      {
+        "id": "assemble",
+        "executor_type": "bvbrc",
+        "bvbrc_app_id": "GenomeAssembly2",
+        "depends_on": [],
+        "app_schema_valid": true,
+        "inputs_compatible": true
+      },
+      {
+        "id": "annotate",
+        "executor_type": "bvbrc",
+        "bvbrc_app_id": "GenomeAnnotation",
+        "depends_on": ["assemble"],
+        "app_schema_valid": true,
+        "inputs_compatible": true
+      }
+    ],
+    "dag_acyclic": true,
+    "execution_order": ["assemble", "annotate"],
+    "executor_availability": {
+      "bvbrc": "available"
+    },
+    "errors": [],
+    "warnings": []
+  }
+}
+```
+
+**Dry-run with errors (200):**
+
+```json
+{
+  "status": "ok",
+  "request_id": "req_061",
+  "data": {
+    "dry_run": true,
+    "valid": false,
+    "errors": [
+      {"path": "inputs.reads_r1", "message": "required input 'reads_r1' is missing"},
+      {"path": "steps.annotate.bvbrc_app", "message": "GenomeAnnotation parameter 'taxonomy_id' expects int, got string"}
+    ],
+    "warnings": [
+      {"path": "steps.assemble.hints.goweHint", "message": "BV-BRC app schema cached, last verified 2h ago"}
+    ]
+  }
+}
+```
+
+### What Dry-Run Validates
+
+| Check | Normal submit | Dry-run |
+|-------|:---:|:---:|
+| CWL syntax and structure | yes | yes |
+| Input completeness and types | yes | yes |
+| DAG cycle detection | yes | yes |
+| Executor availability | yes | yes |
+| BV-BRC app schema fetch + input compatibility | no (deferred to scheduling) | **yes** (eagerly) |
+| BV-BRC workspace path existence | no | **yes** (checks paths exist) |
+| Persist Submission + Tasks | yes | **no** |
+| Dispatch to Scheduler | yes | **no** |
+
+The key difference: dry-run **eagerly validates** things that normal submit defers to scheduling time (app schema checks, workspace path verification). This gives users confidence before committing to a run.
+
+### Implementation
+
+Dry-run logic lives in `internal/server/handler_submissions.go`:
+
+```go
+func (h *Handler) CreateSubmission(w http.ResponseWriter, r *http.Request) {
+    dryRun := r.URL.Query().Get("dry_run") == "true"
+    // ... parse request, validate inputs, build tasks ...
+    if dryRun {
+        report := h.buildDryRunReport(ctx, workflow, tasks)
+        respond(w, http.StatusOK, report)
+        return
+    }
+    // ... normal persist + enqueue ...
+}
+```
+
+---
+
 ## Core Interfaces
 
 ```go
@@ -1351,67 +1563,132 @@ type Parser interface {
 | `github.com/google/go-cmp` | Test comparison | Readable struct diffs (test only) |
 | `github.com/mark3labs/mcp-go` | MCP server | Go MCP SDK — stdio transport, tool/resource registration |
 
-**Reasoning**: Minimal dependency footprint. stdlib `log/slog` for logging, stdlib `net/http` for HTTP, stdlib `testing` for tests. Custom JSON-RPC 1.1 client (~60 lines) rather than importing a library (BV-BRC uses 1.1, not 2.0). MCP uses JSON-RPC 2.0 (different from BV-BRC's 1.1) — the `mcp-go` library handles protocol details, tool registration, and stdio transport.
+**Reasoning**: Minimal dependency footprint. No third-party logging library — stdlib `log/slog` (Go 1.21+) provides structured logging with levels (DEBUG/INFO/WARN/ERROR), text and JSON handlers, child loggers via `With()`, and `context.Context` integration. stdlib `net/http` for HTTP, stdlib `testing` for tests. Custom JSON-RPC 1.1 client (~60 lines) rather than importing a library (BV-BRC uses 1.1, not 2.0). MCP uses JSON-RPC 2.0 (different from BV-BRC's 1.1) — the `mcp-go` library handles protocol details, tool registration, and stdio transport.
 
-## Build Phases (Skeleton → MVP → LLM-Ready)
+## Build Phases (Outside-In: Skeleton → CLI → Fill In)
 
-### Phase 1: Types + Interfaces + Store
+**Strategy**: Build the user-facing surface first (skeleton API + CLI), then fill in real implementations one handler at a time. This lets us demo the full workflow UX early and use the skeleton server as an API contract test.
 
-**Build**: `pkg/model/` (all domain structs, state enums, errors), `internal/store/store.go` (interface), `internal/store/sqlite.go` + `migrations.go` (implementation), `internal/executor/executor.go` (interface), `internal/scheduler/scheduler.go` (interface).
+### Phase 1: Types + Logging (Foundation)
 
-**Test**: Table-driven state transition tests. SQLite CRUD with `:memory:` database. Migration idempotency.
+**Build**: `internal/logging/logging.go` (slog setup: `NewLogger(level, format)`, `--debug` shorthand), `pkg/model/` (all domain structs, state enums, errors), core interfaces (`internal/store/store.go`, `internal/executor/executor.go`, `internal/scheduler/scheduler.go`).
 
-**Done when**: `go build ./...` and `go test ./pkg/model/... ./internal/store/...` pass. Can CRUD Workflows, Submissions, Tasks through Store.
+**What this gives us**: The vocabulary both server and CLI compile against. No database, no HTTP — just types, enums, and the logger.
 
-### Phase 2: CWL Parser + Bundler
+**Test**: Table-driven state transition tests. Logger creation with all level/format combinations.
 
-**Build**: `pkg/cwl/` (all CWL types), `internal/parser/` (parser, validator, DAG builder), `internal/bundle/` (resolve `run:` refs, produce packed `$graph`), `testdata/` (sample .cwl fixtures — both separate files and pre-packed).
+**Done when**: `go build ./...` and `go test ./pkg/model/... ./internal/logging/...` pass. All domain types defined. Logger produces correct text/JSON output at all levels.
+
+### Phase 2: Skeleton Server (API Contract)
+
+**Build**: `internal/config/`, `internal/server/` (all handlers return canned JSON matching the plan's API examples), `cmd/server/main.go` (wire config → chi router → listen). No store, no parser, no scheduler — handlers return hardcoded responses using `pkg/model/` types.
+
+Every endpoint from the API spec is implemented:
+- `GET /api/v1` — self-discovery (static)
+- `GET /api/v1/health` — health (static)
+- `POST /api/v1/workflows` — accepts body, returns canned workflow with generated ID
+- `GET /api/v1/workflows` — returns canned list
+- `GET /api/v1/workflows/{id}` — returns canned workflow
+- `POST /api/v1/workflows/{id}/validate` — returns canned validation result
+- `POST /api/v1/submissions` — returns canned submission (supports `?dry_run=true`)
+- `GET /api/v1/submissions` — returns canned list
+- `GET /api/v1/submissions/{id}` — returns canned detail with tasks
+- `PUT /api/v1/submissions/{id}/cancel` — returns canned cancel response
+- `GET /api/v1/submissions/{sid}/tasks` — returns canned task list
+- `GET /api/v1/submissions/{sid}/tasks/{tid}` — returns canned task detail
+- `GET /api/v1/submissions/{sid}/tasks/{tid}/logs` — returns canned logs
+- `GET /api/v1/apps` — returns canned app list
+- `GET /api/v1/apps/{app_id}` — returns canned app schema
+- `GET /api/v1/apps/{app_id}/cwl-tool` — returns canned CWL tool
+- `GET /api/v1/workspace` — returns canned workspace listing
+
+Includes: request logging middleware (logs method, path, status, duration at INFO; full bodies at DEBUG), request_id generation, response envelope, error responses (400/404/401).
+
+**Test**: HTTP handler tests (`httptest`). Every endpoint returns valid JSON matching the response envelope. Error codes work. Request logging captured. `--debug` produces verbose output.
+
+**Done when**: `go run ./cmd/server --debug` starts. Can curl every endpoint and get well-formed JSON responses. The API contract is locked down. Response shapes match the plan exactly.
+
+### Phase 3: CLI + Bundler
+
+**Build**: `pkg/cwl/` (CWL types needed for bundling), `internal/bundle/` (resolve `run:` refs, produce packed `$graph`), `internal/cli/` (all commands), `cmd/cli/main.go` (cobra root). `testdata/` (sample .cwl fixtures — both separate files and pre-packed).
+
+**Commands**:
+- `gowe login` — prompt for BV-BRC credentials, store token
+- `gowe submit pipeline.cwl --inputs job.yml` — bundle CWL, POST to server, POST submission
+- `gowe submit --dry-run` — bundle, POST with `?dry_run=true`, print validation report
+- `gowe status <id>` — GET submission detail, print formatted status
+- `gowe list` — GET submissions list, print table
+- `gowe cancel <id>` — PUT cancel
+- `gowe logs <id> [--task <tid>]` — GET task logs
+
+**Global flags**: `--server` (default `http://localhost:8080`), `--debug`, `--log-level`, `--log-format`.
+
+**Bundler**:
+- Read workflow.cwl, walk `run:` references, resolve relative paths
+- Pack into CWL `$graph` format with `#fragment` references
+- Handle missing files gracefully with clear error messages
 
 **Test**:
-- Bundler: given a workflow.cwl that references tools/, produce a valid packed $graph with fragment refs.
-- Parser: parse packed $graph, resolve #fragment refs to inline Tools.
+- Bundler: given `testdata/separate/workflow.cwl` + `testdata/separate/tools/*.cwl` → valid packed `$graph`.
+- CLI commands: test against skeleton server (or `httptest` mock). Verify correct HTTP method, path, body for each command.
+- `--dry-run` prints formatted validation report.
+- `--debug` shows packed $graph, HTTP request/response.
+- Missing file errors, server connection errors handled gracefully.
+
+**Done when**: Full CLI UX works against the skeleton server. `gowe submit pipeline.cwl --inputs job.yml` → bundles files → posts to server → prints submission ID. `gowe status <id>` → prints formatted output. `gowe submit --dry-run --debug` → shows packed CWL and verbose HTTP trace. The complete user workflow is demoable.
+
+### Phase 4: CWL Parser + Validation (Replace Skeleton Handlers)
+
+**Build**: `internal/parser/` (parser, validator, DAG builder). Replace skeleton workflow handlers with real CWL parsing.
+
+**What changes in the server**:
+- `POST /api/v1/workflows` — now actually parses the CWL, validates structure, builds DAG, returns real parsed result (still no persistence — stores in memory)
+- `POST /api/v1/workflows/{id}/validate` — real validation with structured errors and "did you mean?" suggestions
+- `POST /api/v1/submissions?dry_run=true` — real input validation against workflow schema
+
+**Test**:
+- Parse packed $graph, resolve `#fragment` refs to inline Tools.
 - Parse echo CommandLineTool. Parse 2-step Workflow, verify DAG edges.
 - Parse goweHint, extract `bvbrc_app_id`. Reject cycles. Reject missing required fields.
+- Validation errors include helpful messages (typo suggestions, type mismatches).
+- CLI `--dry-run` now returns real validation against parsed CWL.
 
-**Done when**: Bundler packs `testdata/separate/workflow.cwl` + `testdata/separate/tools/*.cwl` → packed document. Parser parses it → `*model.Workflow` with inline Tools and dependency edges.
+**Done when**: Submit real CWL via CLI → server parses it → returns real parsed workflow structure with steps, dependencies, inputs, outputs. Validation catches real errors. DAG cycle detection works.
 
-### Phase 3: Server + API
+### Phase 5: Store + Persistence (Replace In-Memory)
 
-**Build**: `internal/config/`, `internal/server/` (all handlers, middleware, routing), `cmd/server/main.go` (wire config → store → router → listen).
+**Build**: `internal/store/sqlite.go` + `migrations.go` (SQLite implementation of Store interface).
 
-**Test**: HTTP handler tests with mock Store (`httptest`). POST/GET workflows. POST submissions → PENDING. 400/404 error responses.
+**What changes in the server**:
+- All handlers now persist to SQLite instead of returning canned data
+- `POST /api/v1/workflows` — persists parsed workflow + raw CWL
+- `GET /api/v1/workflows` — reads from database with pagination
+- `POST /api/v1/submissions` — creates real Submission + Tasks in database
+- All GET endpoints return real persisted data
 
-**Done when**: `go run ./cmd/server` starts HTTP server. Can curl all Workflow and Submission endpoints.
+Store logs SQL operations at DEBUG level, state transitions at INFO.
 
-### Phase 4: Scheduler + LocalExecutor
+**Test**: SQLite CRUD with `:memory:` database. Migration idempotency. Pagination. Concurrent access. Handler tests with real Store replacing mocks.
 
-**Build**: `internal/executor/local.go` (os/exec), `internal/executor/registry.go`, `internal/scheduler/loop.go`, `internal/scheduler/dispatch.go`, `internal/scheduler/retry.go`, `cmd/scheduler/main.go`.
+**Done when**: CLI submit → server persists workflow + submission → CLI status reads back real data from database. Data survives server restart. `--debug` shows SQL queries.
 
-**Test**: LocalExecutor runs `echo hello`, captures stdout. Scheduler Tick() advances states correctly. Retry logic. Submission finalization.
+### Phase 6: Scheduler + LocalExecutor
 
-**Done when**: Submit a 2-step local CWL Workflow via API → Scheduler runs both steps in order → Submission reaches COMPLETED.
+**Build**: `internal/executor/local.go` (os/exec), `internal/executor/registry.go`, `internal/scheduler/loop.go`, `internal/scheduler/dispatch.go`, `internal/scheduler/retry.go`, `cmd/scheduler/main.go`. Scheduler logs every tick at DEBUG (tasks evaluated, dependencies checked, dispatch decisions) and state transitions at INFO.
 
-### Phase 5: BVBRCExecutor
+**Test**: LocalExecutor runs `echo hello`, captures stdout. Scheduler Tick() advances states correctly. Retry logic. Submission finalization. Debug log output verified for tick/dispatch cycle.
+
+**Done when**: Submit a 2-step local CWL Workflow via CLI → Server persists → Scheduler runs both steps in order → Submission reaches COMPLETED → `gowe status` shows COMPLETED. With `--debug`, full tick-by-tick trace visible.
+
+### Phase 7: BVBRCExecutor
 
 **Build**: `pkg/bvbrc/` (client, auth, types, config), `internal/executor/bvbrc.go`, `internal/executor/poller.go`.
 
-**Test**: Mock BV-BRC JSON-RPC server. App schema fetch + caching. Submit → poll → complete. BV-BRC state → GoWe state mapping.
+**Test**: Mock BV-BRC JSON-RPC server. App schema fetch + caching. Submit → poll → complete. BV-BRC state → GoWe state mapping. Debug logging of JSON-RPC payloads.
 
-**Done when**: goweHint Workflow submits to mock BV-BRC, executor fetches schema, validates, calls start_app, polls to completion.
+**Done when**: goweHint Workflow submits via CLI → server persists → scheduler dispatches to BVBRCExecutor → executor fetches schema, validates, calls start_app, polls to completion. Full end-to-end with mock BV-BRC.
 
-### Phase 6: CLI
-
-**Build**: `internal/cli/` (all commands including `submit.go` which uses `internal/bundle/` to pack CWL), `cmd/cli/main.go` (cobra root).
-
-**Test**:
-- `gowe submit workflow.cwl --inputs job.yml` → CLI bundles CWL files, posts to server, posts submission.
-- Bundling: resolves run: refs from disk, produces packed $graph, handles missing files gracefully.
-- CLI → correct HTTP requests (test with mock server).
-- Submit, status, list, cancel, logs, login commands.
-
-**Done when**: `gowe login` → `gowe submit pipeline.cwl --inputs job.yml` → `gowe status <id>` → `gowe logs <id>` works end-to-end. The submit command reads local .cwl files, bundles them, and sends to the server.
-
-### Phase 7: MCP Server + CWL Tool Generation
+### Phase 8: MCP Server + CWL Tool Generation
 
 **Build**: `internal/toolgen/` (app schema → CWL tool generator, output registry), `internal/mcp/` (MCP protocol server, tool definitions, resource providers), `cmd/mcp/main.go` (stdio entry point), workspace proxy handler in `internal/server/`.
 
@@ -1434,10 +1711,25 @@ type Parser interface {
 
 **Done when**: `gowe-mcp` starts over stdio, an MCP client can list tools, call `generate_tool("GenomeAssembly2")` → get valid CWL, call `submit_workflow` → get a submission_id, call `check_status` → get status. Workspace browsing returns real (mocked) file listings.
 
+### Phase Summary
+
+```
+Phase 1: Types + Logging          ─── foundation, everything compiles against this
+Phase 2: Skeleton Server           ─── API contract, all endpoints return canned JSON
+Phase 3: CLI + Bundler             ─── full UX works against skeleton (demoable)
+  ── outside-in complete, now fill in real implementations ──
+Phase 4: CWL Parser                ─── replace skeleton workflow handlers with real parsing
+Phase 5: Store + Persistence       ─── replace in-memory with SQLite
+Phase 6: Scheduler + LocalExecutor ─── real execution pipeline
+Phase 7: BVBRCExecutor             ─── real BV-BRC integration
+Phase 8: MCP Server + Tool Gen     ─── LLM integration
+```
+
 ## Test Strategy Summary
 
 | Layer | Approach | Mocks |
 |-------|----------|-------|
+| `internal/logging/` | Level/format combos, child logger context | None |
 | `pkg/model/` | Table-driven, pure data | None |
 | `pkg/cwl/` | Table-driven with YAML fixtures | None |
 | `pkg/bvbrc/` | `httptest.NewServer` mock | Mock HTTP responses |
@@ -1446,8 +1738,10 @@ type Parser interface {
 | `internal/scheduler/` | Mock Store + Mock Executor | Both mocked |
 | `internal/executor/local` | Real os/exec (`echo`, `cat`) | None (integration) |
 | `internal/executor/bvbrc` | `httptest.NewServer` mock | Mock BV-BRC API |
-| `internal/server/` | `httptest.NewRecorder` | Mock Store |
-| `internal/cli/` | Mock HTTP server | Mock API |
+| `internal/server/` (skeleton) | `httptest.NewRecorder` | None (canned responses) |
+| `internal/server/` (real) | `httptest.NewRecorder` | Mock Store (then real Store) |
+| `internal/cli/` | Mock HTTP server (skeleton) | Mock API |
+| `internal/bundle/` | Table-driven with `testdata/*.cwl` | None |
 | `internal/toolgen/` | Table-driven with mock `AppDescription` | None |
 | `internal/mcp/` | Stdin/stdout pipe with mock GoWe API | Mock HTTP |
 | Integration | Full stack, real SQLite, real HTTP | Only external services |
@@ -1460,7 +1754,8 @@ After each phase:
 3. `go vet ./...` — no issues
 4. Manual smoke test per phase's "done when" criteria
 
-End-to-end after Phase 4: Submit a 2-step CWL workflow via API, scheduler picks it up, local executor runs both steps, submission completes — verified via GET /submissions/{id}.
+End-to-end after Phase 3: CLI bundles CWL and submits to skeleton server — full UX flow demoable.
+End-to-end after Phase 6: Submit a 2-step CWL workflow via CLI, server persists, scheduler runs both steps, submission completes — verified via `gowe status`.
 
 ## Key Reference Files
 
