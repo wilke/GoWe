@@ -29,7 +29,7 @@ func startTestServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	srv := server.New(config.DefaultServerConfig(), st, srvLogger)
+	srv := server.New(config.DefaultServerConfig(), st, nil, srvLogger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts.URL

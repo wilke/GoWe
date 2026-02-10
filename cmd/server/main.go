@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/config"
+	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/logging"
+	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
 )
@@ -63,7 +65,14 @@ func main() {
 	}
 	logger.Info("database ready", "path", dbPath)
 
-	srv := server.New(cfg, st, logger)
+	// Create executor registry and register LocalExecutor.
+	reg := executor.NewRegistry(logger)
+	reg.Register(executor.NewLocalExecutor("", logger))
+
+	// Create scheduler.
+	sched := scheduler.NewLoop(st, reg, scheduler.DefaultConfig(), logger)
+
+	srv := server.New(cfg, st, sched, logger)
 
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
@@ -73,6 +82,9 @@ func main() {
 	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start scheduler in background.
+	srv.StartScheduler(ctx)
 
 	go func() {
 		logger.Info("server starting", "addr", cfg.Addr)
@@ -84,6 +96,11 @@ func main() {
 
 	<-ctx.Done()
 	logger.Info("shutting down")
+
+	// Stop scheduler before HTTP server.
+	if err := sched.Stop(); err != nil {
+		logger.Error("scheduler stop error", "error", err)
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

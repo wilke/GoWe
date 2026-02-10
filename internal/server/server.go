@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
 )
 
@@ -21,10 +23,12 @@ type Server struct {
 	parser    *parser.Parser
 	validator *parser.Validator
 	store     store.Store
+	scheduler scheduler.Scheduler
 }
 
 // New creates a new Server with all routes registered.
-func New(cfg config.ServerConfig, st store.Store, logger *slog.Logger) *Server {
+// sched may be nil if no scheduling is desired (e.g. in tests).
+func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, logger *slog.Logger) *Server {
 	s := &Server{
 		router:    chi.NewRouter(),
 		logger:    logger.With("component", "server"),
@@ -33,9 +37,22 @@ func New(cfg config.ServerConfig, st store.Store, logger *slog.Logger) *Server {
 		parser:    parser.New(logger),
 		validator: parser.NewValidator(logger),
 		store:     st,
+		scheduler: sched,
 	}
 	s.routes()
 	return s
+}
+
+// StartScheduler begins the scheduling loop in a background goroutine.
+func (s *Server) StartScheduler(ctx context.Context) {
+	if s.scheduler == nil {
+		return
+	}
+	go func() {
+		if err := s.scheduler.Start(ctx); err != nil && err != context.Canceled {
+			s.logger.Error("scheduler stopped", "error", err)
+		}
+	}()
 }
 
 // ServeHTTP implements http.Handler.

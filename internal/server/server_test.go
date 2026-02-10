@@ -26,7 +26,7 @@ func testServer() *Server {
 	if err := st.Migrate(context.Background()); err != nil {
 		panic("migrate test store: " + err.Error())
 	}
-	return New(config.DefaultServerConfig(), st, logger)
+	return New(config.DefaultServerConfig(), st, nil, logger)
 }
 
 // envelope is used to decode the standard response envelope.
