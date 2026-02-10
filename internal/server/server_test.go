@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,12 +22,12 @@ func testServer() *Server {
 
 // envelope is used to decode the standard response envelope.
 type envelope struct {
-	Status     string          `json:"status"`
-	RequestID  string          `json:"request_id"`
-	Timestamp  string          `json:"timestamp"`
-	Data       json.RawMessage `json:"data"`
+	Status     string           `json:"status"`
+	RequestID  string           `json:"request_id"`
+	Timestamp  string           `json:"timestamp"`
+	Data       json.RawMessage  `json:"data"`
 	Pagination *model.Pagination `json:"pagination"`
-	Error      *model.APIError `json:"error"`
+	Error      *model.APIError  `json:"error"`
 }
 
 func doGet(t *testing.T, srv *Server, path string) envelope {
@@ -42,6 +44,49 @@ func doGet(t *testing.T, srv *Server, path string) envelope {
 	}
 	return env
 }
+
+func doPost(t *testing.T, srv *Server, path, body string) (*httptest.ResponseRecorder, envelope) {
+	t.Helper()
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	var env envelope
+	json.Unmarshal(w.Body.Bytes(), &env)
+	return w, env
+}
+
+func loadPackedCWL(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "packed", "pipeline-packed.cwl"))
+	if err != nil {
+		t.Fatalf("load packed CWL: %v", err)
+	}
+	return string(data)
+}
+
+// createTestWorkflow POSTs a valid packed CWL workflow and returns its ID.
+func createTestWorkflow(t *testing.T, srv *Server) string {
+	t.Helper()
+	cwlStr := loadPackedCWL(t)
+	bodyJSON, _ := json.Marshal(map[string]string{
+		"name": "test-workflow",
+		"cwl":  cwlStr,
+	})
+	w, env := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create workflow: status=%d, body=%s", w.Code, w.Body.String())
+	}
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	id, ok := data["id"].(string)
+	if !ok {
+		t.Fatalf("created workflow missing id, data=%v", data)
+	}
+	return id
+}
+
+// --- Discovery & Health (unchanged) ---
 
 func TestDiscovery(t *testing.T) {
 	srv := testServer()
@@ -86,20 +131,20 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// --- Workflow CRUD (real parsing) ---
+
 func TestCreateWorkflow(t *testing.T) {
 	srv := testServer()
-	body := `{"name":"test-workflow","cwl":"cwlVersion: v1.2"}`
-	req := httptest.NewRequest("POST", "/api/v1/workflows/", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	cwlStr := loadPackedCWL(t)
+	bodyJSON, _ := json.Marshal(map[string]string{
+		"name": "test-workflow",
+		"cwl":  cwlStr,
+	})
+	w, env := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /workflows: status=%d, want 201, body=%s", w.Code, w.Body.String())
 	}
-
-	var env envelope
-	json.Unmarshal(w.Body.Bytes(), &env)
 	if env.Status != "ok" {
 		t.Errorf("status = %q, want ok", env.Status)
 	}
@@ -109,6 +154,18 @@ func TestCreateWorkflow(t *testing.T) {
 	id, ok := data["id"].(string)
 	if !ok || !strings.HasPrefix(id, "wf_") {
 		t.Errorf("id = %q, want wf_ prefix", id)
+	}
+	if data["name"] != "test-workflow" {
+		t.Errorf("name = %v, want test-workflow", data["name"])
+	}
+	if data["cwl_version"] != "v1.2" {
+		t.Errorf("cwl_version = %v, want v1.2", data["cwl_version"])
+	}
+
+	// Verify parsed steps.
+	steps, ok := data["steps"].([]any)
+	if !ok || len(steps) != 2 {
+		t.Errorf("steps count = %v, want 2", data["steps"])
 	}
 }
 
@@ -132,36 +189,149 @@ func TestCreateWorkflow_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestCreateWorkflow_MissingCWL(t *testing.T) {
+	srv := testServer()
+	w, env := doPost(t, srv, "/api/v1/workflows/", `{"name":"test"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+	if env.Error == nil || env.Error.Code != model.ErrValidation {
+		t.Errorf("error = %v, want VALIDATION_ERROR", env.Error)
+	}
+}
+
+func TestCreateWorkflow_InvalidCWL(t *testing.T) {
+	srv := testServer()
+	bodyJSON, _ := json.Marshal(map[string]string{
+		"name": "bad",
+		"cwl":  "cwlVersion: v1.2\nclass: Workflow\n",
+	})
+	w, _ := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateWorkflow_ValidationError(t *testing.T) {
+	srv := testServer()
+	cwl := `cwlVersion: v1.2
+$graph:
+  - id: tool1
+    class: CommandLineTool
+    inputs:
+      x: { type: File }
+    outputs:
+      out: { type: File }
+  - id: main
+    class: Workflow
+    inputs:
+      input1: File
+    outputs:
+      output1:
+        type: File
+        outputSource: step1/out
+    steps:
+      step1:
+        run: "#tool1"
+        in:
+          x: nonexistent/output
+        out: [out]
+`
+	bodyJSON, _ := json.Marshal(map[string]string{"name": "bad", "cwl": cwl})
+	w, env := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d, want 422, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrValidation {
+		t.Errorf("error = %v, want VALIDATION_ERROR", env.Error)
+	}
+}
+
 func TestListWorkflows(t *testing.T) {
 	srv := testServer()
+
+	// Empty list.
 	env := doGet(t, srv, "/api/v1/workflows/")
 	if env.Pagination == nil {
 		t.Fatal("expected pagination")
 	}
-	if env.Pagination.Total < 1 {
-		t.Errorf("pagination total = %d, want >= 1", env.Pagination.Total)
+	if env.Pagination.Total != 0 {
+		t.Errorf("pagination total = %d, want 0 (empty)", env.Pagination.Total)
+	}
+
+	// Create one, then list.
+	createTestWorkflow(t, srv)
+	env = doGet(t, srv, "/api/v1/workflows/")
+	if env.Pagination.Total != 1 {
+		t.Errorf("pagination total = %d, want 1", env.Pagination.Total)
 	}
 }
 
 func TestGetWorkflow(t *testing.T) {
 	srv := testServer()
-	env := doGet(t, srv, "/api/v1/workflows/wf_test123")
+	id := createTestWorkflow(t, srv)
 
+	env := doGet(t, srv, "/api/v1/workflows/"+id)
 	var data map[string]any
 	json.Unmarshal(env.Data, &data)
-	if data["id"] != "wf_test123" {
-		t.Errorf("id = %v, want wf_test123", data["id"])
+	if data["id"] != id {
+		t.Errorf("id = %v, want %s", data["id"], id)
+	}
+	if data["name"] != "test-workflow" {
+		t.Errorf("name = %v, want test-workflow", data["name"])
+	}
+}
+
+func TestGetWorkflow_NotFound(t *testing.T) {
+	srv := testServer()
+	req := httptest.NewRequest("GET", "/api/v1/workflows/wf_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
+	}
+}
+
+func TestDeleteWorkflow(t *testing.T) {
+	srv := testServer()
+	id := createTestWorkflow(t, srv)
+
+	req := httptest.NewRequest("DELETE", "/api/v1/workflows/"+id, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE status=%d, want 200", w.Code)
+	}
+
+	// Verify it's gone.
+	req = httptest.NewRequest("GET", "/api/v1/workflows/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GET after delete: status=%d, want 404", w.Code)
+	}
+}
+
+func TestDeleteWorkflow_NotFound(t *testing.T) {
+	srv := testServer()
+	req := httptest.NewRequest("DELETE", "/api/v1/workflows/wf_nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
 	}
 }
 
 func TestValidateWorkflow(t *testing.T) {
 	srv := testServer()
-	req := httptest.NewRequest("POST", "/api/v1/workflows/wf_test/validate", nil)
+	id := createTestWorkflow(t, srv)
+
+	req := httptest.NewRequest("POST", "/api/v1/workflows/"+id+"/validate", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, want 200", w.Code)
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
 	}
 
 	var env envelope
@@ -173,6 +343,18 @@ func TestValidateWorkflow(t *testing.T) {
 		t.Errorf("valid = %v, want true", data["valid"])
 	}
 }
+
+func TestValidateWorkflow_NotFound(t *testing.T) {
+	srv := testServer()
+	req := httptest.NewRequest("POST", "/api/v1/workflows/wf_nonexistent/validate", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", w.Code)
+	}
+}
+
+// --- Submissions (still skeleton) ---
 
 func TestCreateSubmission(t *testing.T) {
 	srv := testServer()
@@ -285,6 +467,8 @@ func TestGetTaskLogs(t *testing.T) {
 	}
 }
 
+// --- Apps (unchanged) ---
+
 func TestListApps(t *testing.T) {
 	srv := testServer()
 	env := doGet(t, srv, "/api/v1/apps/")
@@ -369,6 +553,8 @@ func TestListWorkspace(t *testing.T) {
 		t.Errorf("expected >= 2 objects, got %v", data["objects"])
 	}
 }
+
+// --- Response Envelope (unchanged) ---
 
 func TestResponseEnvelope_HasRequestID(t *testing.T) {
 	srv := testServer()
