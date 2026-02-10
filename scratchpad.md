@@ -7,39 +7,43 @@
 - **Phase 2**: Skeleton Server — DONE (committed: 77bcc6b)
 - **Phase 3**: CLI + Bundler — DONE (committed: 77bcc6b)
 - **Phase 4**: CWL Parser + Validation — DONE (committed: 655f912, v0.4.0)
-- **Phase 5**: Store + Persistence (SQLite) — DONE (ready to commit)
+- **Phase 5**: Store + Persistence (SQLite) — DONE (committed: 9108738, v0.5.0)
+- **Phase 6**: Scheduler + LocalExecutor — DONE (committed: 2bdff9f, v0.6.0)
 - Build: `go build ./...` clean
-- Tests: `go test ./...` all pass (9 test packages)
+- Tests: `go test ./...` all pass (11 test packages)
 - Vet: `go vet ./...` clean
 
-### Phase 5 — What was built
-- `internal/config/config.go` — Added `DBPath` field to `ServerConfig`
-- `internal/store/migrations.go` — Idempotent schema DDL (3 tables, 4 indexes)
-- `internal/store/sqlite.go` — `SQLiteStore` implementing all 17 Store interface methods (WAL mode, JSON columns)
-- `internal/store/sqlite_test.go` — 20 tests (CRUD, pagination, state queries, migration idempotency)
-- `internal/server/server.go` — Replaced `workflows map + sync.RWMutex` with `store.Store`; `New()` now accepts store parameter
-- `internal/server/handler_workflows.go` — All 6 handlers rewritten to use `s.store.*()` methods
-- `internal/server/handler_submissions.go` — Replaced canned data with real store-backed CRUD (create with tasks, list, get, cancel)
-- `internal/server/handler_tasks.go` — Replaced canned data with real store-backed CRUD (list by submission, get, get logs)
-- `internal/server/server_test.go` — 34 tests (workflow CRUD + new submission/task tests with real data)
-- `internal/cli/cli_test.go` — Updated all CLI tests to use in-memory SQLite store + real data
-- `cmd/server/main.go` — Opens SQLite store at `~/.gowe/gowe.db` (or `--db` flag), runs migrations, passes to server
+### Phase 6 — What was built
+- `internal/executor/registry.go` — Type→Executor lookup map
+- `internal/executor/local.go` — LocalExecutor (os/exec), synchronous Submit
+- `internal/executor/local_test.go` — 5 tests (echo, fail, missing cmd, glob, cancel)
+- `internal/scheduler/resolve.go` — Input resolution + dependency checking (pure functions)
+- `internal/scheduler/resolve_test.go` — 12 tests (workflow input, upstream output, missing, deps)
+- `internal/scheduler/loop.go` — Scheduler loop (Start/Stop/Tick) with 5-phase tick algorithm
+- `internal/scheduler/loop_test.go` — 8 tests (single task, pipeline, failed dep, retry, start/stop)
+- `internal/scheduler/integration_test.go` — 2-step pipeline E2E test
+- `pkg/model/workflow.go` — ToolInline JSON persistence fix (`json:"-"` → `json:"tool_inline,omitempty"`)
+- `internal/server/server.go` — Added scheduler field + StartScheduler() method
+- `internal/server/server_test.go` — Updated New() calls with nil scheduler
+- `internal/cli/cli_test.go` — Updated New() calls with nil scheduler
+- `cmd/server/main.go` — Wired executor registry, LocalExecutor, scheduler, graceful shutdown
 
-### Key Decisions Made
-- Flat tables with JSON columns for inputs/outputs/steps (avoids complex JOINs, workflow is unit of consistency)
-- RFC 3339 timestamps as TEXT (idiomatic for SQLite)
-- WAL mode + foreign_keys ON
-- `modernc.org/sqlite` — pure Go, no CGo
-- `:memory:` DSN for testing (each test gets isolated store)
-- GetWorkflow/GetSubmission/GetTask return nil (not error) for not-found
-- GetSubmission auto-loads tasks via ListTasksBySubmission
-- CreateSubmission handler creates tasks for each workflow step
+### Current Work: DockerExecutor
+- **Plan**: `/Users/me/.claude/plans/tranquil-sparking-popcorn.md`
+- **Approach**: Docker CLI via os/exec (not SDK), synchronous, CommandRunner interface for testability
+- **Key design**: `_docker_image` reserved key in task.Inputs, parsed from CWL DockerRequirement.dockerPull or goweHint.docker_image
+- **Files to create**: `internal/executor/docker.go`, `docker_test.go`, `docker_integration_test.go`, `Dockerfile`
+- **Files to modify**: `pkg/model/workflow.go`, `internal/parser/parser.go`, `internal/scheduler/resolve.go`, `cmd/server/main.go`
 
-### Next Steps
-- Commit Phase 5 and tag v0.5.0
-- Begin Phase 6: Scheduler + LocalExecutor
+### Key Decisions Made (Phase 6)
+- Scheduler embedded in server process (not separate binary)
+- Tick-based polling with configurable interval (default 2s)
+- LocalExecutor is synchronous (Submit blocks until process finishes)
+- Reserved input keys: `_base_command`, `_output_globs` (and upcoming `_docker_image`)
+- `ExecutorTypeContainer = "container"` already exists in model for DockerExecutor
 
 ### Reference
-- Plan: `/Users/me/.claude/plans/resilient-floating-finch.md`
+- Phase 6 plan: `/Users/me/.claude/plans/resilient-floating-finch.md`
+- DockerExecutor plan: `/Users/me/.claude/plans/tranquil-sparking-popcorn.md`
 - Memory: `/Users/me/.claude/projects/-Users-me-Development-GoWe/memory/MEMORY.md`
 - Docs: `docs/GoWe-Implementation-Plan.md`

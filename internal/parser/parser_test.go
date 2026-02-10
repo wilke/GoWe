@@ -536,6 +536,62 @@ func TestExtractStepHints_NoGoweHint(t *testing.T) {
 	}
 }
 
+func TestExtractStepHints_DockerRequirement(t *testing.T) {
+	hints := map[string]any{
+		"DockerRequirement": map[string]any{
+			"dockerPull": "ubuntu:22.04",
+		},
+	}
+	got := extractStepHints(hints)
+	if got == nil {
+		t.Fatal("extractStepHints returned nil")
+	}
+	if got.DockerImage != "ubuntu:22.04" {
+		t.Errorf("DockerImage = %q, want ubuntu:22.04", got.DockerImage)
+	}
+	if got.ExecutorType != model.ExecutorTypeContainer {
+		t.Errorf("ExecutorType = %q, want container", got.ExecutorType)
+	}
+}
+
+func TestExtractStepHints_GoweDockerOverridesDockerRequirement(t *testing.T) {
+	hints := map[string]any{
+		"goweHint": map[string]any{
+			"docker_image": "custom:latest",
+			"executor":     "container",
+		},
+		"DockerRequirement": map[string]any{
+			"dockerPull": "ubuntu:22.04",
+		},
+	}
+	got := extractStepHints(hints)
+	if got == nil {
+		t.Fatal("extractStepHints returned nil")
+	}
+	if got.DockerImage != "custom:latest" {
+		t.Errorf("DockerImage = %q, want custom:latest (goweHint should take precedence)", got.DockerImage)
+	}
+}
+
+func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
+	hints := map[string]any{
+		"goweHint": map[string]any{
+			"executor":     "container",
+			"docker_image": "biocontainers/samtools:1.17",
+		},
+	}
+	got := extractStepHints(hints)
+	if got == nil {
+		t.Fatal("extractStepHints returned nil")
+	}
+	if got.DockerImage != "biocontainers/samtools:1.17" {
+		t.Errorf("DockerImage = %q, want biocontainers/samtools:1.17", got.DockerImage)
+	}
+	if got.ExecutorType != model.ExecutorTypeContainer {
+		t.Errorf("ExecutorType = %q, want container", got.ExecutorType)
+	}
+}
+
 func TestComputeDependsOn(t *testing.T) {
 	tests := []struct {
 		name     string

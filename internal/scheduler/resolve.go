@@ -74,6 +74,11 @@ func ResolveTaskInputs(
 		}
 	}
 
+	// _docker_image: inject from step hints if present.
+	if step.Hints != nil && step.Hints.DockerImage != "" {
+		resolved["_docker_image"] = step.Hints.DockerImage
+	}
+
 	task.Inputs = resolved
 	return nil
 }

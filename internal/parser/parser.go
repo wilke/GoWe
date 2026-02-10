@@ -436,23 +436,36 @@ func mapField(m map[string]any, key string) map[string]any {
 	return nil
 }
 
-// extractStepHints extracts GoWe-specific hints from a CWL hints map.
+// extractStepHints extracts GoWe-specific hints and CWL DockerRequirement from a hints map.
 func extractStepHints(hints map[string]any) *model.StepHints {
 	if hints == nil {
 		return nil
 	}
-	gowe, ok := hints["goweHint"].(map[string]any)
-	if !ok {
+
+	var h model.StepHints
+
+	// GoWe-specific hints.
+	if gowe, ok := hints["goweHint"].(map[string]any); ok {
+		h.BVBRCAppID = stringField(gowe, "bvbrc_app_id")
+		if et := stringField(gowe, "executor"); et != "" {
+			h.ExecutorType = model.ExecutorType(et)
+		}
+		h.DockerImage = stringField(gowe, "docker_image")
+	}
+
+	// CWL standard DockerRequirement.
+	if dr, ok := hints["DockerRequirement"].(map[string]any); ok {
+		pull := stringField(dr, "dockerPull")
+		if pull != "" && h.DockerImage == "" {
+			h.DockerImage = pull
+		}
+		if h.ExecutorType == "" && pull != "" {
+			h.ExecutorType = model.ExecutorTypeContainer
+		}
+	}
+
+	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" {
 		return nil
 	}
-	h := &model.StepHints{
-		BVBRCAppID: stringField(gowe, "bvbrc_app_id"),
-	}
-	if et := stringField(gowe, "executor"); et != "" {
-		h.ExecutorType = model.ExecutorType(et)
-	}
-	if h.BVBRCAppID == "" && h.ExecutorType == "" {
-		return nil
-	}
-	return h
+	return &h
 }

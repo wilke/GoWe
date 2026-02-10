@@ -65,9 +65,10 @@ func main() {
 	}
 	logger.Info("database ready", "path", dbPath)
 
-	// Create executor registry and register LocalExecutor.
+	// Create executor registry and register executors.
 	reg := executor.NewRegistry(logger)
 	reg.Register(executor.NewLocalExecutor("", logger))
+	reg.Register(executor.NewDockerExecutor("", logger))
 
 	// Create scheduler.
 	sched := scheduler.NewLoop(st, reg, scheduler.DefaultConfig(), logger)

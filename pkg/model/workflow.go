@@ -54,6 +54,7 @@ type StepInput struct {
 type StepHints struct {
 	BVBRCAppID   string       `json:"bvbrc_app_id,omitempty"`
 	ExecutorType ExecutorType `json:"executor,omitempty"`
+	DockerImage  string       `json:"docker_image,omitempty"`
 }
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.

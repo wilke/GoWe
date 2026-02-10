@@ -104,6 +104,59 @@ func TestResolveTaskInputs_BaseCommandAndGlobs(t *testing.T) {
 	}
 }
 
+func TestResolveTaskInputs_DockerImage(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "docker_step"}
+	step := &model.Step{
+		ID: "docker_step",
+		Hints: &model.StepHints{
+			ExecutorType: model.ExecutorTypeContainer,
+			DockerImage:  "ubuntu:22.04",
+		},
+		ToolInline: &model.Tool{
+			ID:          "docker_tool",
+			Class:       "CommandLineTool",
+			BaseCommand: []string{"echo", "hello"},
+		},
+	}
+
+	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	img, ok := task.Inputs["_docker_image"]
+	if !ok {
+		t.Fatal("_docker_image not set in task.Inputs")
+	}
+	if img != "ubuntu:22.04" {
+		t.Errorf("_docker_image = %v, want ubuntu:22.04", img)
+	}
+
+	// Verify _base_command is also set.
+	if _, ok := task.Inputs["_base_command"]; !ok {
+		t.Error("_base_command not set in task.Inputs")
+	}
+}
+
+func TestResolveTaskInputs_NoDockerImageWithoutHints(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	step := &model.Step{
+		ID: "step1",
+		ToolInline: &model.Tool{
+			ID:          "tool1",
+			Class:       "CommandLineTool",
+			BaseCommand: []string{"echo"},
+		},
+	}
+
+	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := task.Inputs["_docker_image"]; ok {
+		t.Error("_docker_image should not be set when no hints are present")
+	}
+}
+
 func TestResolveTaskInputs_MissingWorkflowInput(t *testing.T) {
 	task := &model.Task{ID: "task_1", StepID: "step1"}
 	step := &model.Step{
