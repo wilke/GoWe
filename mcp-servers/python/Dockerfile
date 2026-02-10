@@ -2,12 +2,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Copy source first, then install
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
-
-# Copy source
 COPY src/ ./src/
+
+# Install the package
+RUN pip install --no-cache-dir .
 
 # Run as non-root user
 RUN useradd -m mcp
