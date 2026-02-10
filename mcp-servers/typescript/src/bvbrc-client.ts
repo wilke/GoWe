@@ -98,8 +98,9 @@ export class BVBRCClient {
   }
 
   async queryAppDescription(appId: string): Promise<AppDescription | null> {
-    const result = await this.callAppService("AppService.query_app_description", [appId]);
-    return (result as AppDescription[])?.[0] || null;
+    // enumerate_apps returns full details including parameters
+    const apps = await this.enumerateApps();
+    return apps.find(app => app.id === appId) || null;
   }
 
   async startApp(appId: string, params: Record<string, unknown>, outputPath: string): Promise<Task> {

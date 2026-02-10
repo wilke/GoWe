@@ -100,16 +100,12 @@ class BVBRCClient:
 
     def query_app_description(self, app_id: str) -> AppDescription | None:
         """Get detailed app description."""
-        result = self._call_app_service("AppService.query_app_description", [app_id])
-        if not result:
-            return None
-        a = result[0]
-        return AppDescription(
-            id=a.get("id", ""),
-            label=a.get("label", ""),
-            description=a.get("description", ""),
-            parameters=a.get("parameters"),
-        )
+        # enumerate_apps returns full details including parameters
+        apps = self.enumerate_apps()
+        for app in apps:
+            if app.id == app_id:
+                return app
+        return None
 
     def start_app(
         self, app_id: str, params: dict[str, Any], output_path: str
