@@ -299,8 +299,21 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       return success ? `Cancelled: ${args.task_id}` : `Failed to cancel: ${args.task_id}`;
     }
     case "job_logs": {
-      const logs = await client.queryAppLog(args.task_id as string);
-      return logs || "No logs available yet";
+      // queryAppLog is not available in the BV-BRC API
+      // Get task info and suggest where logs can be found
+      const taskId = args.task_id as string;
+      const tasks = await client.queryTasks([taskId]);
+      if (tasks[taskId]) {
+        const task = tasks[taskId];
+        return JSON.stringify({
+          note: "Direct log retrieval is not available via API",
+          task_id: taskId,
+          status: task.status,
+          output_path: task.output_path,
+          suggestion: `Use workspace_list on '${task.output_path}' to find log files (.log, .err, .out)`
+        }, null, 2);
+      }
+      return `Task ${taskId} not found`;
     }
 
     default:

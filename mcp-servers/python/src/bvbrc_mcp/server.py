@@ -296,8 +296,20 @@ async def handle_tool(name: str, args: dict[str, Any]) -> str:
             return f"Cancelled: {args['task_id']}" if success else f"Failed to cancel: {args['task_id']}"
 
         case "job_logs":
-            logs = client.query_app_log(args["task_id"])
-            return logs or "No logs available yet"
+            # query_app_log is not available in the BV-BRC API
+            # Get task info and suggest where logs can be found
+            task_id = args["task_id"]
+            tasks = client.query_tasks([task_id])
+            if task_id in tasks:
+                task = tasks[task_id]
+                return _to_json({
+                    "note": "Direct log retrieval is not available via API",
+                    "task_id": task_id,
+                    "status": task.status,
+                    "output_path": task.output_path,
+                    "suggestion": f"Use workspace_list on '{task.output_path}' to find log files (.log, .err, .out)"
+                })
+            return f"Task {task_id} not found"
 
         case _:
             raise ValueError(f"Unknown tool: {name}")
