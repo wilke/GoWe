@@ -1,0 +1,10 @@
+reads_r1:
+  class: File
+  location: /user@bvbrc/home/reads/sample1_R1.fastq.gz
+
+reads_r2:
+  class: File
+  location: /user@bvbrc/home/reads/sample1_R2.fastq.gz
+
+scientific_name: "Escherichia coli K-12"
+taxonomy_id: 83333
