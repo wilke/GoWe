@@ -34,11 +34,15 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 		r.Route("/submissions", func(r chi.Router) {
 			r.Get("/", ui.HandleSubmissionList)
 			r.Get("/new", ui.HandleSubmissionCreate)
+			r.Get("/export", ui.HandleSubmissionExport)
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", ui.HandleSubmissionDetail)
 				r.Post("/cancel", ui.HandleSubmissionCancel)
+				r.Post("/resume", ui.HandleSubmissionResume)
+				r.Post("/recompute-failed", ui.HandleRecomputeFailed)
 				r.Route("/tasks/{tid}", func(r chi.Router) {
 					r.Get("/logs", ui.HandleTaskLogs)
+					r.Post("/recompute", ui.HandleTaskRecompute)
 				})
 			})
 		})

@@ -23,6 +23,12 @@ var templateFuncs = template.FuncMap{
 		}
 		return t.Format("2006-01-02 15:04:05")
 	},
+	"formatDate": func(t time.Time) string {
+		if t.IsZero() {
+			return ""
+		}
+		return t.Format("2006-01-02")
+	},
 	"formatDuration": func(t time.Time) string {
 		if t.IsZero() {
 			return "-"
@@ -45,11 +51,70 @@ var templateFuncs = template.FuncMap{
 			return "gray"
 		}
 	},
+	"stateDotColor": func(state string) string {
+		// Returns Tailwind bg color classes for state dots
+		switch strings.ToUpper(state) {
+		case "PENDING":
+			return "bg-gray-300"
+		case "SCHEDULED":
+			return "bg-yellow-400"
+		case "QUEUED":
+			return "bg-yellow-500"
+		case "RUNNING":
+			return "bg-blue-500 animate-pulse"
+		case "SUCCESS", "COMPLETED":
+			return "bg-green-500"
+		case "FAILED":
+			return "bg-red-500"
+		case "RETRYING":
+			return "bg-orange-500 animate-pulse"
+		case "SKIPPED", "CANCELLED":
+			return "bg-gray-400"
+		default:
+			return "bg-gray-300"
+		}
+	},
+	"statePillGradient": func(state string) string {
+		// Returns CSS gradient for stage pills (AWE-style)
+		switch strings.ToUpper(state) {
+		case "PENDING":
+			return "background: linear-gradient(to bottom, #9CA3AF, #6B7280);"
+		case "SCHEDULED", "QUEUED":
+			return "background: linear-gradient(to bottom, #FBB450, #F89406);"
+		case "RUNNING":
+			return "background: linear-gradient(to bottom, #0088CC, #0044CC);"
+		case "SUCCESS", "COMPLETED":
+			return "background: linear-gradient(to bottom, #62C462, #51A351);"
+		case "FAILED":
+			return "background: linear-gradient(to bottom, #EE5F5B, #BD362F);"
+		case "RETRYING":
+			return "background: linear-gradient(to bottom, #F97316, #EA580C);"
+		case "SKIPPED", "CANCELLED":
+			return "background: linear-gradient(to bottom, #D1D5DB, #9CA3AF);"
+		default:
+			return "background: linear-gradient(to bottom, #9CA3AF, #6B7280);"
+		}
+	},
 	"add": func(a, b int) int {
 		return a + b
 	},
 	"sub": func(a, b int) int {
 		return a - b
+	},
+	"mul": func(a, b int) int {
+		return a * b
+	},
+	"div": func(a, b int) int {
+		if b == 0 {
+			return 0
+		}
+		return a / b
+	},
+	"percent": func(a, b int) int {
+		if b == 0 {
+			return 0
+		}
+		return (a * 100) / b
 	},
 	"truncate": func(s string, n int) string {
 		if len(s) <= n {
@@ -60,6 +125,14 @@ var templateFuncs = template.FuncMap{
 	"json": func(v any) string {
 		// Simple JSON output for debugging.
 		return fmt.Sprintf("%+v", v)
+	},
+	"seq": func(n int) []int {
+		// Generate a sequence 0..n-1 for iteration
+		result := make([]int, n)
+		for i := range result {
+			result[i] = i
+		}
+		return result
 	},
 }
 
@@ -628,28 +701,73 @@ var templates = map[string]string{
 <div class="px-4 py-6 sm:px-0">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Submissions</h1>
-        <a href="/submissions/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
-            New Submission
-        </a>
+        <div class="flex items-center space-x-2">
+            <a href="/submissions/export?format=csv{{if .StateFilter}}&state={{.StateFilter}}{{end}}{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                <svg class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Export CSV
+            </a>
+            <a href="/submissions/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                New Submission
+            </a>
+        </div>
     </div>
 
-    <!-- State Filter -->
-    <div class="mb-4 flex space-x-2">
-        <a href="/submissions" class="px-3 py-1 text-sm rounded-full {{if not .StateFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
-            All
-        </a>
-        <a href="/submissions?state=PENDING" class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "PENDING"}}bg-yellow-100 text-yellow-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
-            Pending
-        </a>
-        <a href="/submissions?state=RUNNING" class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "RUNNING"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
-            Running
-        </a>
-        <a href="/submissions?state=COMPLETED" class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "COMPLETED"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
-            Completed
-        </a>
-        <a href="/submissions?state=FAILED" class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "FAILED"}}bg-red-100 text-red-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
-            Failed
-        </a>
+    <!-- Filters -->
+    <div class="bg-white shadow rounded-lg p-4 mb-6">
+        <form method="GET" class="flex flex-wrap items-end gap-4">
+            <!-- State Filter -->
+            <div>
+                <label class="block text-xs font-medium text-gray-500 mb-1">Status</label>
+                <div class="flex space-x-1">
+                    <a href="/submissions{{if .DateStart}}?date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if not .StateFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        All
+                    </a>
+                    <a href="/submissions?state=PENDING{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "PENDING"}}bg-yellow-100 text-yellow-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        Pending
+                    </a>
+                    <a href="/submissions?state=RUNNING{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "RUNNING"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        Running
+                    </a>
+                    <a href="/submissions?state=COMPLETED{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "COMPLETED"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        Completed
+                    </a>
+                    <a href="/submissions?state=FAILED{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "FAILED"}}bg-red-100 text-red-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        Failed
+                    </a>
+                </div>
+            </div>
+
+            <!-- Date Range Filter -->
+            <div class="flex items-end space-x-2">
+                <div>
+                    <label for="date_start" class="block text-xs font-medium text-gray-500 mb-1">From</label>
+                    <input type="date" id="date_start" name="date_start" value="{{.DateStart}}"
+                           class="block w-36 px-2 py-1 text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="date_end" class="block text-xs font-medium text-gray-500 mb-1">To</label>
+                    <input type="date" id="date_end" name="date_end" value="{{.DateEnd}}"
+                           class="block w-36 px-2 py-1 text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                {{if .StateFilter}}<input type="hidden" name="state" value="{{.StateFilter}}">{{end}}
+                <button type="submit" class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">
+                    Filter
+                </button>
+                {{if or .DateStart .DateEnd}}
+                <a href="/submissions{{if .StateFilter}}?state={{.StateFilter}}{{end}}" class="px-3 py-1 text-sm text-gray-500 hover:text-gray-700">
+                    Clear dates
+                </a>
+                {{end}}
+            </div>
+        </form>
     </div>
 
     <div class="bg-white shadow overflow-hidden sm:rounded-md">
@@ -660,7 +778,14 @@ var templates = map[string]string{
                     <div class="px-4 py-4 sm:px-6">
                         <div class="flex items-center justify-between">
                             <div class="flex-1 min-w-0">
-                                <p class="text-sm font-medium text-indigo-600 truncate">{{.WorkflowName}}</p>
+                                <div class="flex items-center">
+                                    <p class="text-sm font-medium text-indigo-600 truncate">{{.WorkflowName}}</p>
+                                    {{if .QueuePosition}}
+                                    <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                                        Queue #{{.QueuePosition}}
+                                    </span>
+                                    {{end}}
+                                </div>
                                 <p class="mt-1 text-xs text-gray-500 font-mono">{{.ID}}</p>
                             </div>
                             <div class="ml-4 flex-shrink-0 flex items-center space-x-4">
@@ -675,6 +800,35 @@ var templates = map[string]string{
                                 </span>
                             </div>
                         </div>
+
+                        <!-- Stage Pills Visualization -->
+                        {{if gt .TaskSummary.Total 0}}
+                        <div class="mt-3">
+                            <div class="flex items-center space-x-1">
+                                <!-- Task state dots -->
+                                {{range .Tasks}}
+                                <div class="w-3 h-3 rounded-full {{stateDotColor .State.String}}"
+                                     title="{{.StepID}}: {{.State}}"></div>
+                                {{end}}
+                            </div>
+                            <!-- Progress bar -->
+                            <div class="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden flex">
+                                {{if gt .TaskSummary.Success 0}}
+                                <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                                {{end}}
+                                {{if gt .TaskSummary.Running 0}}
+                                <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                                {{end}}
+                                {{if gt .TaskSummary.Queued 0}}
+                                <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                                {{end}}
+                                {{if gt .TaskSummary.Failed 0}}
+                                <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                                {{end}}
+                            </div>
+                        </div>
+                        {{end}}
+
                         <div class="mt-2 flex items-center text-sm text-gray-500">
                             <span>Tasks: {{.TaskSummary.Success}}/{{.TaskSummary.Total}} completed</span>
                             {{if gt .TaskSummary.Running 0}}
@@ -702,7 +856,7 @@ var templates = map[string]string{
     {{if or .Pagination.HasPrev .Pagination.HasMore}}
     <div class="mt-4 flex justify-between">
         {{if .Pagination.HasPrev}}
-        <a href="?offset={{.Pagination.PrevOffset}}&limit={{.Pagination.Limit}}{{if .StateFilter}}&state={{.StateFilter}}{{end}}"
+        <a href="?offset={{.Pagination.PrevOffset}}&limit={{.Pagination.Limit}}{{if .StateFilter}}&state={{.StateFilter}}{{end}}{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
            class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
             Previous
         </a>
@@ -713,7 +867,7 @@ var templates = map[string]string{
             Showing {{add .Pagination.Offset 1}} - {{add .Pagination.Offset (len .Submissions)}} of {{.Pagination.Total}}
         </span>
         {{if .Pagination.HasMore}}
-        <a href="?offset={{.Pagination.NextOffset}}&limit={{.Pagination.Limit}}{{if .StateFilter}}&state={{.StateFilter}}{{end}}"
+        <a href="?offset={{.Pagination.NextOffset}}&limit={{.Pagination.Limit}}{{if .StateFilter}}&state={{.StateFilter}}{{end}}{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
            class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
             Next
         </a>
@@ -726,21 +880,21 @@ var templates = map[string]string{
 {{end}}`,
 
 	"submissions/detail": `{{define "content"}}
-<div class="px-4 py-6 sm:px-0" hx-trigger="every 5s" hx-get="/submissions/{{.Submission.ID}}" hx-select="main" hx-swap="outerHTML" hx-target="main">
+<div class="px-4 py-6 sm:px-0" {{if not .Submission.State.IsTerminal}}hx-trigger="every 5s" hx-get="/submissions/{{.Submission.ID}}" hx-select="main" hx-swap="outerHTML" hx-target="main"{{end}}>
     <div class="mb-6">
         <div class="flex items-center justify-between">
             <div>
                 <h1 class="text-2xl font-semibold text-gray-900">{{.Submission.WorkflowName}}</h1>
                 <p class="mt-1 text-sm text-gray-500 font-mono">{{.Submission.ID}}</p>
             </div>
-            <div class="flex items-center space-x-4">
-                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
-                    {{if eq (stateColor .Submission.State.String) "green"}}bg-green-100 text-green-800{{end}}
-                    {{if eq (stateColor .Submission.State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
-                    {{if eq (stateColor .Submission.State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
-                    {{if eq (stateColor .Submission.State.String) "red"}}bg-red-100 text-red-800{{end}}
-                    {{if eq (stateColor .Submission.State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
-                ">
+            <div class="flex items-center space-x-2">
+                {{if .Submission.QueuePosition}}
+                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700">
+                    Queue Position: #{{.Submission.QueuePosition}}
+                </span>
+                {{end}}
+                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium"
+                      style="{{statePillGradient .Submission.State.String}} color: white; text-shadow: 0 1px 1px rgba(0,0,0,0.2);">
                     {{.Submission.State}}
                 </span>
                 {{if not .Submission.State.IsTerminal}}
@@ -750,9 +904,124 @@ var templates = map[string]string{
                     Cancel
                 </button>
                 {{end}}
+                {{if eq .Submission.State.String "FAILED"}}
+                <button hx-post="/submissions/{{.Submission.ID}}/resume"
+                        hx-confirm="Resume this submission from failed tasks?"
+                        class="inline-flex items-center px-3 py-1 border border-green-300 text-sm font-medium rounded text-green-700 bg-white hover:bg-green-50">
+                    <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Resume
+                </button>
+                {{end}}
             </div>
         </div>
     </div>
+
+    <!-- Stage Pills Progress Bar -->
+    {{if gt (len .Submission.Tasks) 0}}
+    <div class="bg-white shadow rounded-lg p-4 mb-6">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-sm font-medium text-gray-700">Progress</span>
+            <span class="text-sm text-gray-500">
+                {{.Submission.TaskSummary.Success}}/{{.Submission.TaskSummary.Total}} tasks completed
+            </span>
+        </div>
+        <!-- Stage Pills -->
+        <div class="flex space-x-1 mb-3">
+            {{range .Submission.Tasks}}
+            <div class="flex-1 h-8 rounded flex items-center justify-center text-xs font-medium text-white cursor-pointer group relative"
+                 style="{{statePillGradient .State.String}} min-width: 24px;"
+                 title="{{.StepID}}: {{.State}}">
+                <span class="truncate px-1">{{truncate .StepID 8}}</span>
+                <!-- Tooltip -->
+                <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
+                    {{.StepID}}: {{.State}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+        <!-- Legend -->
+        <div class="flex flex-wrap gap-4 text-xs">
+            <div class="flex items-center">
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #9CA3AF, #6B7280);"></div>
+                <span>Pending</span>
+            </div>
+            <div class="flex items-center">
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                <span>Queued</span>
+            </div>
+            <div class="flex items-center">
+                <div class="w-3 h-3 rounded mr-1 animate-pulse" style="background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                <span>Running</span>
+            </div>
+            <div class="flex items-center">
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                <span>Success</span>
+            </div>
+            <div class="flex items-center">
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                <span>Failed</span>
+            </div>
+        </div>
+    </div>
+    {{end}}
+
+    <!-- DAG Visualization -->
+    {{if gt (len .Submission.Tasks) 1}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow DAG</h3>
+            <button onclick="document.getElementById('dag-view').classList.toggle('hidden')" class="text-sm text-indigo-600 hover:text-indigo-500">
+                Toggle View
+            </button>
+        </div>
+        <div id="dag-view" class="border-t border-gray-200 p-4">
+            <svg id="dag-svg" class="w-full" style="min-height: 200px; background: #f9fafb;">
+                <!-- DAG nodes will be positioned here -->
+                {{$taskCount := len .Submission.Tasks}}
+                {{$width := 800}}
+                {{$nodeWidth := 120}}
+                {{$nodeHeight := 50}}
+                {{$ySpacing := 80}}
+
+                {{range $i, $task := .Submission.Tasks}}
+                <!-- Task node -->
+                <g transform="translate({{mul (add (div (sub $width $nodeWidth) 2) (mul (sub $i (div $taskCount 2)) 30)) 1}}, {{mul $i $ySpacing}})">
+                    <!-- Node rectangle with gradient -->
+                    <rect x="0" y="20" width="{{$nodeWidth}}" height="{{$nodeHeight}}" rx="6" ry="6"
+                          style="{{statePillGradient $task.State.String}} stroke: rgba(0,0,0,0.1); stroke-width: 1;"
+                          class="cursor-pointer hover:opacity-90">
+                        <title>{{$task.StepID}}: {{$task.State}}</title>
+                    </rect>
+                    <!-- Step ID text -->
+                    <text x="{{div $nodeWidth 2}}" y="45" text-anchor="middle" fill="white" font-size="11" font-weight="500"
+                          style="text-shadow: 0 1px 1px rgba(0,0,0,0.3);">
+                        {{truncate $task.StepID 14}}
+                    </text>
+                    <!-- State text -->
+                    <text x="{{div $nodeWidth 2}}" y="58" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="9">
+                        {{$task.State}}
+                    </text>
+                    <!-- Connector line to next task -->
+                    {{if lt $i (sub $taskCount 1)}}
+                    <line x1="{{div $nodeWidth 2}}" y1="70" x2="{{div $nodeWidth 2}}" y2="100"
+                          stroke="#9CA3AF" stroke-width="2" marker-end="url(#arrowhead)"/>
+                    {{end}}
+                </g>
+                {{end}}
+
+                <!-- Arrow marker definition -->
+                <defs>
+                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#9CA3AF"/>
+                    </marker>
+                </defs>
+            </svg>
+            <p class="text-xs text-gray-500 mt-2 text-center">Click on a task to view details</p>
+        </div>
+    </div>
+    {{end}}
 
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6">
@@ -788,8 +1057,17 @@ var templates = map[string]string{
 
     <!-- Tasks -->
     <div class="bg-white shadow overflow-hidden sm:rounded-lg">
-        <div class="px-4 py-5 sm:px-6">
+        <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Tasks ({{len .Submission.Tasks}})</h3>
+            {{if eq .Submission.State.String "FAILED"}}
+            <div class="flex space-x-2">
+                <button hx-post="/submissions/{{.Submission.ID}}/recompute-failed"
+                        hx-confirm="Recompute all failed tasks?"
+                        class="inline-flex items-center px-3 py-1 text-xs border border-orange-300 rounded text-orange-700 bg-white hover:bg-orange-50">
+                    Recompute Failed
+                </button>
+            </div>
+            {{end}}
         </div>
         <div class="border-t border-gray-200">
             <table class="min-w-full divide-y divide-gray-200">
@@ -804,19 +1082,19 @@ var templates = map[string]string{
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                     {{range .Submission.Tasks}}
-                    <tr>
+                    <tr class="hover:bg-gray-50">
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="text-sm font-medium text-gray-900">{{.StepID}}</div>
-                            <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
+                            <div class="flex items-center">
+                                <div class="w-3 h-3 rounded-full mr-2 {{stateDotColor .State.String}}"></div>
+                                <div>
+                                    <div class="text-sm font-medium text-gray-900">{{.StepID}}</div>
+                                    <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
+                                </div>
+                            </div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                                {{if eq (stateColor .State.String) "green"}}bg-green-100 text-green-800{{end}}
-                                {{if eq (stateColor .State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
-                                {{if eq (stateColor .State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
-                                {{if eq (stateColor .State.String) "red"}}bg-red-100 text-red-800{{end}}
-                                {{if eq (stateColor .State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
-                            ">
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium text-white"
+                                  style="{{statePillGradient .State.String}}">
                                 {{.State}}
                             </span>
                             {{if .ExitCode}}
@@ -834,20 +1112,25 @@ var templates = map[string]string{
                                 {{if .CompletedAt}}
                                     {{formatDuration .StartedAt}}
                                 {{else}}
-                                    Running...
+                                    <span class="text-blue-600">Running...</span>
                                 {{end}}
                             {{else}}
                                 -
                             {{end}}
                         </td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm space-x-2">
                             {{if or .Stdout .Stderr}}
                             <a href="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/logs"
                                class="text-indigo-600 hover:text-indigo-500">
-                                View Logs
+                                Logs
                             </a>
-                            {{else}}
-                            -
+                            {{end}}
+                            {{if eq .State.String "FAILED"}}
+                            <button hx-post="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/recompute"
+                                    hx-confirm="Recompute this task from the beginning?"
+                                    class="text-orange-600 hover:text-orange-500">
+                                Recompute
+                            </button>
                             {{end}}
                         </td>
                     </tr>

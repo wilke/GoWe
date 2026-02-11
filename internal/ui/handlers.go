@@ -244,20 +244,40 @@ func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
 
+	// Parse date filters
+	dateStart := r.URL.Query().Get("date_start")
+	dateEnd := r.URL.Query().Get("date_end")
+	if dateStart != "" {
+		opts.DateStart = dateStart
+	}
+	if dateEnd != "" {
+		opts.DateEnd = dateEnd
+	}
+
 	submissions, total, err := ui.store.ListSubmissions(r.Context(), opts)
 	if err != nil {
 		ui.renderError(w, "Failed to load submissions", err)
 		return
 	}
 
-	// Get task summaries for each submission.
+	// Calculate queue position for pending submissions
+	queuePosition := 1
+
+	// Get task summaries and tasks for each submission.
 	for _, sub := range submissions {
 		tasks, _ := ui.store.ListTasksBySubmission(r.Context(), sub.ID)
 		taskList := make([]model.Task, len(tasks))
 		for i, t := range tasks {
 			taskList[i] = *t
 		}
+		sub.Tasks = taskList
 		sub.TaskSummary = model.ComputeTaskSummary(taskList)
+
+		// Set queue position for pending submissions
+		if sub.State == model.SubmissionStatePending {
+			sub.QueuePosition = queuePosition
+			queuePosition++
+		}
 	}
 
 	data := map[string]any{
@@ -266,6 +286,8 @@ func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 		"Submissions": submissions,
 		"Pagination":  ui.buildPagination(opts, total),
 		"StateFilter": opts.State,
+		"DateStart":   dateStart,
+		"DateEnd":     dateEnd,
 	}
 	ui.render(w, "submissions/list", data)
 }
@@ -283,6 +305,23 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 	if sub == nil {
 		ui.renderNotFound(w, "Submission not found")
 		return
+	}
+
+	// Compute task summary
+	sub.TaskSummary = model.ComputeTaskSummary(sub.Tasks)
+
+	// Calculate queue position if pending
+	if sub.State == model.SubmissionStatePending {
+		pendingSubs, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{
+			State: "PENDING",
+			Limit: 1000,
+		})
+		for i, ps := range pendingSubs {
+			if ps.ID == sub.ID {
+				sub.QueuePosition = i + 1
+				break
+			}
+		}
 	}
 
 	data := map[string]any{
@@ -365,6 +404,190 @@ func (ui *UI) HandleTaskLogs(w http.ResponseWriter, r *http.Request) {
 		"SubmissionID": subID,
 	}
 	ui.render(w, "submissions/task_logs", data)
+}
+
+// HandleSubmissionExport exports submissions as CSV.
+func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
+	opts := ui.parseListOptions(r)
+	opts.Limit = 10000 // Export up to 10k records
+
+	// Parse date filters
+	if dateStart := r.URL.Query().Get("date_start"); dateStart != "" {
+		opts.DateStart = dateStart
+	}
+	if dateEnd := r.URL.Query().Get("date_end"); dateEnd != "" {
+		opts.DateEnd = dateEnd
+	}
+
+	submissions, _, err := ui.store.ListSubmissions(r.Context(), opts)
+	if err != nil {
+		http.Error(w, "Failed to load submissions", http.StatusInternalServerError)
+		return
+	}
+
+	// Set CSV headers
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=submissions_%s.csv", time.Now().Format("20060102_150405")))
+
+	// Write CSV header
+	fmt.Fprintln(w, "ID,Workflow ID,Workflow Name,State,Submitted By,Created At,Completed At,Total Tasks,Completed Tasks,Failed Tasks")
+
+	// Write data rows
+	for _, sub := range submissions {
+		tasks, _ := ui.store.ListTasksBySubmission(r.Context(), sub.ID)
+		taskList := make([]model.Task, len(tasks))
+		for i, t := range tasks {
+			taskList[i] = *t
+		}
+		summary := model.ComputeTaskSummary(taskList)
+
+		completedAt := ""
+		if sub.CompletedAt != nil {
+			completedAt = sub.CompletedAt.Format(time.RFC3339)
+		}
+
+		fmt.Fprintf(w, "%s,%s,%q,%s,%s,%s,%s,%d,%d,%d\n",
+			sub.ID,
+			sub.WorkflowID,
+			sub.WorkflowName,
+			sub.State,
+			sub.SubmittedBy,
+			sub.CreatedAt.Format(time.RFC3339),
+			completedAt,
+			summary.Total,
+			summary.Success,
+			summary.Failed,
+		)
+	}
+}
+
+// HandleSubmissionResume resumes a failed submission.
+func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
+	id := ui.pathParam(r, "id")
+
+	sub, err := ui.store.GetSubmission(r.Context(), id)
+	if err != nil || sub == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if sub.State != model.SubmissionStateFailed {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Reset failed tasks to PENDING
+	for _, task := range sub.Tasks {
+		if task.State == model.TaskStateFailed {
+			task.State = model.TaskStatePending
+			task.RetryCount = 0
+			task.Stdout = ""
+			task.Stderr = ""
+			task.ExitCode = nil
+			task.StartedAt = nil
+			task.CompletedAt = nil
+			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
+				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
+			}
+		}
+	}
+
+	// Set submission back to RUNNING
+	sub.State = model.SubmissionStateRunning
+	sub.CompletedAt = nil
+	if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	ui.logger.Info("submission resumed", "id", id)
+	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.WriteHeader(http.StatusOK)
+}
+
+// HandleRecomputeFailed recomputes all failed tasks in a submission.
+func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
+	id := ui.pathParam(r, "id")
+
+	sub, err := ui.store.GetSubmission(r.Context(), id)
+	if err != nil || sub == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Reset all failed tasks
+	recomputeCount := 0
+	for _, task := range sub.Tasks {
+		if task.State == model.TaskStateFailed {
+			task.State = model.TaskStatePending
+			task.RetryCount = 0
+			task.Stdout = ""
+			task.Stderr = ""
+			task.ExitCode = nil
+			task.StartedAt = nil
+			task.CompletedAt = nil
+			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
+				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
+			} else {
+				recomputeCount++
+			}
+		}
+	}
+
+	// If submission was terminal, set it back to RUNNING
+	if sub.State.IsTerminal() && recomputeCount > 0 {
+		sub.State = model.SubmissionStateRunning
+		sub.CompletedAt = nil
+		if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
+			ui.logger.Error("failed to update submission", "id", id, "error", err)
+		}
+	}
+
+	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount)
+	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.WriteHeader(http.StatusOK)
+}
+
+// HandleTaskRecompute recomputes a single task.
+func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
+	subID := ui.pathParam(r, "id")
+	taskID := ui.pathParam(r, "tid")
+
+	task, err := ui.store.GetTask(r.Context(), taskID)
+	if err != nil || task == nil || task.SubmissionID != subID {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if task.State != model.TaskStateFailed {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Reset the task
+	task.State = model.TaskStatePending
+	task.RetryCount = 0
+	task.Stdout = ""
+	task.Stderr = ""
+	task.ExitCode = nil
+	task.StartedAt = nil
+	task.CompletedAt = nil
+	if err := ui.store.UpdateTask(r.Context(), task); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// Set submission back to RUNNING if it was terminal
+	sub, _ := ui.store.GetSubmission(r.Context(), subID)
+	if sub != nil && sub.State.IsTerminal() {
+		sub.State = model.SubmissionStateRunning
+		sub.CompletedAt = nil
+		ui.store.UpdateSubmission(r.Context(), sub)
+	}
+
+	ui.logger.Info("task recomputed", "task_id", taskID, "submission_id", subID)
+	w.Header().Set("HX-Redirect", "/submissions/"+subID)
+	w.WriteHeader(http.StatusOK)
 }
 
 // --- Admin Handlers ---

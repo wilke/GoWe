@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/me/gowe/pkg/model"
@@ -286,28 +287,41 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	s.logger.Debug("sql", "op", "list", "table", "submissions", "limit", opts.Limit, "offset", opts.Offset)
 	opts.Clamp()
 
-	var total int
-	countQuery := `SELECT COUNT(*) FROM submissions`
-	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
-		FROM submissions ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	args := []any{opts.Limit, opts.Offset}
+	// Build WHERE clause dynamically based on filters.
+	var whereClauses []string
+	var countArgs []any
 
 	if opts.State != "" {
-		countQuery = `SELECT COUNT(*) FROM submissions WHERE state = ?`
-		listQuery = `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
-			FROM submissions WHERE state = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
-		args = []any{opts.State, opts.Limit, opts.Offset}
-
-		if err := s.db.QueryRowContext(ctx, countQuery, opts.State).Scan(&total); err != nil {
-			return nil, 0, err
-		}
-	} else {
-		if err := s.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
-			return nil, 0, err
-		}
+		whereClauses = append(whereClauses, "state = ?")
+		countArgs = append(countArgs, opts.State)
+	}
+	if opts.DateStart != "" {
+		whereClauses = append(whereClauses, "created_at >= ?")
+		countArgs = append(countArgs, opts.DateStart+"T00:00:00Z")
+	}
+	if opts.DateEnd != "" {
+		whereClauses = append(whereClauses, "created_at <= ?")
+		countArgs = append(countArgs, opts.DateEnd+"T23:59:59Z")
 	}
 
-	rows, err := s.db.QueryContext(ctx, listQuery, args...)
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Count query.
+	var total int
+	countQuery := `SELECT COUNT(*) FROM submissions` + whereSQL
+	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// List query with pagination.
+	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
+		FROM submissions` + whereSQL + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	listArgs := append(countArgs, opts.Limit, opts.Offset)
+
+	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
