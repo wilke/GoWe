@@ -79,6 +79,11 @@ func ResolveTaskInputs(
 		resolved["_docker_image"] = step.Hints.DockerImage
 	}
 
+	// _bvbrc_app_id: inject from step hints if present.
+	if step.Hints != nil && step.Hints.BVBRCAppID != "" {
+		resolved["_bvbrc_app_id"] = step.Hints.BVBRCAppID
+	}
+
 	task.Inputs = resolved
 	return nil
 }

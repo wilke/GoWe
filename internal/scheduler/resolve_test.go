@@ -269,6 +269,49 @@ func TestAreDependenciesSatisfied_DepSkipped(t *testing.T) {
 	}
 }
 
+func TestResolveTaskInputs_BVBRCAppID(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "bvbrc_step"}
+	step := &model.Step{
+		ID: "bvbrc_step",
+		Hints: &model.StepHints{
+			BVBRCAppID:   "GenomeAssembly2",
+			ExecutorType: model.ExecutorTypeBVBRC,
+		},
+	}
+
+	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	appID, ok := task.Inputs["_bvbrc_app_id"]
+	if !ok {
+		t.Fatal("_bvbrc_app_id not set in task.Inputs")
+	}
+	if appID != "GenomeAssembly2" {
+		t.Errorf("_bvbrc_app_id = %v, want GenomeAssembly2", appID)
+	}
+}
+
+func TestResolveTaskInputs_NoBVBRCAppIDWithoutHints(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	step := &model.Step{
+		ID: "step1",
+		ToolInline: &model.Tool{
+			ID:          "tool1",
+			Class:       "CommandLineTool",
+			BaseCommand: []string{"echo"},
+		},
+	}
+
+	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := task.Inputs["_bvbrc_app_id"]; ok {
+		t.Error("_bvbrc_app_id should not be set when no hints are present")
+	}
+}
+
 func TestBuildTasksByStepID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "task_1", StepID: "step_a"},

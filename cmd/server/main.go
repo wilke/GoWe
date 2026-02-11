@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/logging"
@@ -69,6 +70,22 @@ func main() {
 	reg := executor.NewRegistry(logger)
 	reg.Register(executor.NewLocalExecutor("", logger))
 	reg.Register(executor.NewDockerExecutor("", logger))
+
+	// Register BVBRCExecutor if a token is available.
+	if tok, err := bvbrc.ResolveToken(); err == nil {
+		tokenInfo := bvbrc.ParseToken(tok)
+		if tokenInfo.IsExpired() {
+			logger.Warn("BV-BRC token expired; bvbrc executor not registered")
+		} else {
+			bvbrcCfg := bvbrc.DefaultClientConfig()
+			bvbrcCfg.Token = tok
+			caller := bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
+			reg.Register(executor.NewBVBRCExecutor(caller, tokenInfo.Username, logger))
+			logger.Info("bvbrc executor registered", "username", tokenInfo.Username)
+		}
+	} else {
+		logger.Info("bvbrc executor not registered (no token)", "hint", "set BVBRC_TOKEN or run gowe login")
+	}
 
 	// Create scheduler.
 	sched := scheduler.NewLoop(st, reg, scheduler.DefaultConfig(), logger)
