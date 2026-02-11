@@ -270,16 +270,16 @@ func (c *Client) WorkspaceCopy(ctx context.Context, input WorkspaceCopyInput) ([
 		return []WorkspaceObject{}, nil
 	}
 
-	objects_result := make([]WorkspaceObject, 0, len(rawResult[0]))
+	objectsResult := make([]WorkspaceObject, 0, len(rawResult[0]))
 	for _, tuple := range rawResult[0] {
 		obj, err := parseWorkspaceObjectTuple(tuple)
 		if err != nil {
 			continue
 		}
-		objects_result = append(objects_result, obj)
+		objectsResult = append(objectsResult, obj)
 	}
 
-	return objects_result, nil
+	return objectsResult, nil
 }
 
 // WorkspaceMoveInput contains parameters for moving workspace objects.
@@ -319,16 +319,16 @@ func (c *Client) WorkspaceMove(ctx context.Context, input WorkspaceMoveInput) ([
 		return []WorkspaceObject{}, nil
 	}
 
-	objects_result := make([]WorkspaceObject, 0, len(rawResult[0]))
+	objectsResult := make([]WorkspaceObject, 0, len(rawResult[0]))
 	for _, tuple := range rawResult[0] {
 		obj, err := parseWorkspaceObjectTuple(tuple)
 		if err != nil {
 			continue
 		}
-		objects_result = append(objects_result, obj)
+		objectsResult = append(objectsResult, obj)
 	}
 
-	return objects_result, nil
+	return objectsResult, nil
 }
 
 // WorkspaceSetPermissionsInput contains parameters for setting permissions.
