@@ -577,3 +577,73 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 	}
 	return tasks, rows.Err()
 }
+
+// --- Session operations ---
+
+func (s *SQLiteStore) CreateSession(ctx context.Context, sess *model.Session) error {
+	s.logger.Debug("sql", "op", "insert", "table", "sessions", "id", sess.ID)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, user_id, username, role, token, token_exp, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.UserID, sess.Username, sess.Role,
+		sess.Token, sess.TokenExp.Unix(),
+		sess.CreatedAt.Unix(), sess.ExpiresAt.Unix(),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetSession(ctx context.Context, id string) (*model.Session, error) {
+	s.logger.Debug("sql", "op", "select", "table", "sessions", "id", id)
+
+	var sess model.Session
+	var tokenExp, createdAt, expiresAt int64
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, username, role, token, token_exp, created_at, expires_at
+		 FROM sessions WHERE id = ?`, id,
+	).Scan(&sess.ID, &sess.UserID, &sess.Username, &sess.Role,
+		&sess.Token, &tokenExp, &createdAt, &expiresAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	sess.TokenExp = time.Unix(tokenExp, 0)
+	sess.CreatedAt = time.Unix(createdAt, 0)
+	sess.ExpiresAt = time.Unix(expiresAt, 0)
+
+	return &sess, nil
+}
+
+func (s *SQLiteStore) DeleteSession(ctx context.Context, id string) error {
+	s.logger.Debug("sql", "op", "delete", "table", "sessions", "id", id)
+
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	s.logger.Debug("sql", "op", "delete_expired", "table", "sessions")
+
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE expires_at < ?`, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (s *SQLiteStore) DeleteSessionsByUserID(ctx context.Context, userID string) (int64, error) {
+	s.logger.Debug("sql", "op", "delete_by_user", "table", "sessions", "user_id", userID)
+
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

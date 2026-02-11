@@ -13,6 +13,7 @@ import (
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/ui"
 )
 
 // Server is the GoWe REST API server.
@@ -27,6 +28,7 @@ type Server struct {
 	scheduler   scheduler.Scheduler
 	bvbrcCaller bvbrc.RPCCaller    // optional; nil when no BV-BRC token is available
 	testApps    []map[string]any   // optional; static app list for testing without BV-BRC
+	ui          *ui.UI             // UI handler for web interface
 }
 
 // Option configures optional Server dependencies.
@@ -62,6 +64,15 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// Create UI handler.
+	s.ui = ui.New(st, logger, ui.Config{
+		Secure: false, // TODO: Make configurable based on TLS
+	})
+	if s.bvbrcCaller != nil {
+		s.ui.WithBVBRCCaller(s.bvbrcCaller)
+	}
+
 	s.routes()
 	return s
 }
@@ -97,6 +108,10 @@ func (s *Server) routes() {
 	r.Use(requestIDMiddleware)
 	r.Use(loggingMiddleware(s.logger))
 
+	// UI routes (HTML)
+	s.ui.RegisterRoutes(r)
+
+	// API routes (JSON)
 	r.Route("/api/v1", func(r chi.Router) {
 		// Discovery
 		r.Get("/", s.handleDiscovery)
@@ -145,5 +160,10 @@ func (s *Server) routes() {
 
 		// Workspace (BV-BRC proxy)
 		r.Get("/workspace", s.handleListWorkspace)
+
+		// SSE endpoints for real-time updates
+		r.Route("/sse", func(r chi.Router) {
+			r.Get("/submissions/{id}", s.handleSSESubmission)
+		})
 	})
 }

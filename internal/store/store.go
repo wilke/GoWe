@@ -28,6 +28,13 @@ type Store interface {
 	UpdateTask(ctx context.Context, task *model.Task) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 
+	// Session operations
+	CreateSession(ctx context.Context, sess *model.Session) error
+	GetSession(ctx context.Context, id string) (*model.Session, error)
+	DeleteSession(ctx context.Context, id string) error
+	DeleteExpiredSessions(ctx context.Context) (int64, error)
+	DeleteSessionsByUserID(ctx context.Context, userID string) (int64, error)
+
 	// Lifecycle
 	Close() error
 	Migrate(ctx context.Context) error

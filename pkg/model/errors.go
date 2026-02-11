@@ -44,6 +44,22 @@ func NewNotFoundError(resource, id string) *APIError {
 	}
 }
 
+// NewInternalError creates an INTERNAL_ERROR APIError.
+func NewInternalError(msg string) *APIError {
+	return &APIError{
+		Code:    ErrInternal,
+		Message: msg,
+	}
+}
+
+// NewUnauthorizedError creates an UNAUTHORIZED APIError.
+func NewUnauthorizedError(msg string) *APIError {
+	return &APIError{
+		Code:    ErrUnauthorized,
+		Message: msg,
+	}
+}
+
 // InvalidTransitionError is returned when a state transition is invalid.
 type InvalidTransitionError struct {
 	Entity  string
