@@ -51,10 +51,7 @@ BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
 # Format code
 go fmt ./...
 
-# Run go vet
-go vet ./...
-
-# Check for common issues
+# Run go vet to check for common issues
 go vet ./...
 ```
 
