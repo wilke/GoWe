@@ -17,7 +17,7 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
-func testServer() *Server {
+func testServer(opts ...Option) *Server {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	st, err := store.NewSQLiteStore(":memory:", logger)
 	if err != nil {
@@ -26,7 +26,26 @@ func testServer() *Server {
 	if err := st.Migrate(context.Background()); err != nil {
 		panic("migrate test store: " + err.Error())
 	}
-	return New(config.DefaultServerConfig(), st, nil, logger)
+	return New(config.DefaultServerConfig(), st, nil, logger, opts...)
+}
+
+// testApps returns a static app list for tests that exercise the /apps endpoints.
+var testAppList = []map[string]any{
+	{
+		"id":          "GenomeAssembly2",
+		"label":       "Genome Assembly",
+		"description": "Assemble reads into contigs using SPAdes, MEGAHIT, or other assemblers",
+	},
+	{
+		"id":          "GenomeAnnotation",
+		"label":       "Genome Annotation",
+		"description": "Annotate a genome using RASTtk",
+	},
+	{
+		"id":          "ComprehensiveGenomeAnalysis",
+		"label":       "Comprehensive Genome Analysis",
+		"description": "Assembly + Annotation + Analysis pipeline",
+	},
 }
 
 // envelope is used to decode the standard response envelope.
@@ -627,7 +646,7 @@ func TestGetTaskLogs(t *testing.T) {
 // --- Apps (unchanged) ---
 
 func TestListApps(t *testing.T) {
-	srv := testServer()
+	srv := testServer(WithTestApps(testAppList))
 	env := doGet(t, srv, "/api/v1/apps/")
 	if env.Pagination == nil {
 		t.Fatal("expected pagination")
@@ -637,8 +656,19 @@ func TestListApps(t *testing.T) {
 	}
 }
 
+func TestListApps_NoBVBRC(t *testing.T) {
+	srv := testServer() // no caller, no test apps
+	env := doGet(t, srv, "/api/v1/apps/")
+	if env.Pagination == nil {
+		t.Fatal("expected pagination")
+	}
+	if env.Pagination.Total != 0 {
+		t.Errorf("total = %d, want 0 when BV-BRC not configured", env.Pagination.Total)
+	}
+}
+
 func TestGetApp(t *testing.T) {
-	srv := testServer()
+	srv := testServer(WithTestApps(testAppList))
 	env := doGet(t, srv, "/api/v1/apps/GenomeAssembly2")
 
 	var data map[string]any
@@ -646,13 +676,13 @@ func TestGetApp(t *testing.T) {
 	if data["id"] != "GenomeAssembly2" {
 		t.Errorf("id = %v, want GenomeAssembly2", data["id"])
 	}
-	if data["parameters"] == nil {
-		t.Error("expected parameters for GenomeAssembly2")
+	if data["label"] == nil {
+		t.Error("expected label for GenomeAssembly2")
 	}
 }
 
 func TestGetApp_NotFound(t *testing.T) {
-	srv := testServer()
+	srv := testServer(WithTestApps(testAppList))
 	req := httptest.NewRequest("GET", "/api/v1/apps/UnknownApp", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -671,8 +701,18 @@ func TestGetApp_NotFound(t *testing.T) {
 	}
 }
 
+func TestGetApp_NoBVBRC(t *testing.T) {
+	srv := testServer() // no caller, no test apps
+	req := httptest.NewRequest("GET", "/api/v1/apps/GenomeAssembly2", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503", w.Code)
+	}
+}
+
 func TestGetAppCWLTool(t *testing.T) {
-	srv := testServer()
+	srv := testServer(WithTestApps(testAppList))
 	env := doGet(t, srv, "/api/v1/apps/GenomeAssembly2/cwl-tool")
 
 	var data map[string]any
@@ -687,7 +727,7 @@ func TestGetAppCWLTool(t *testing.T) {
 }
 
 func TestGetAppCWLTool_NotFound(t *testing.T) {
-	srv := testServer()
+	srv := testServer(WithTestApps(testAppList))
 	req := httptest.NewRequest("GET", "/api/v1/apps/UnknownApp/cwl-tool", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)

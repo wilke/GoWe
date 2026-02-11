@@ -29,7 +29,9 @@ Or build from source:
 ```bash
 git clone https://github.com/wilke/GoWe.git
 cd GoWe
-go build ./...
+mkdir -p bin
+go build -o bin/gowe-server ./cmd/server
+go build -o bin/gowe ./cmd/cli
 ```
 
 ### Docker

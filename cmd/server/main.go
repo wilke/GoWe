@@ -71,7 +71,8 @@ func main() {
 	reg.Register(executor.NewLocalExecutor("", logger))
 	reg.Register(executor.NewDockerExecutor("", logger))
 
-	// Register BVBRCExecutor if a token is available.
+	// Register BVBRCExecutor and create RPC caller if a token is available.
+	var serverOpts []server.Option
 	if tok, err := bvbrc.ResolveToken(); err == nil {
 		tokenInfo := bvbrc.ParseToken(tok)
 		if tokenInfo.IsExpired() {
@@ -81,6 +82,7 @@ func main() {
 			bvbrcCfg.Token = tok
 			caller := bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
 			reg.Register(executor.NewBVBRCExecutor(caller, tokenInfo.Username, logger))
+			serverOpts = append(serverOpts, server.WithBVBRCCaller(caller))
 			logger.Info("bvbrc executor registered", "username", tokenInfo.Username)
 		}
 	} else {
@@ -90,7 +92,7 @@ func main() {
 	// Create scheduler.
 	sched := scheduler.NewLoop(st, reg, scheduler.DefaultConfig(), logger)
 
-	srv := server.New(cfg, st, sched, logger)
+	srv := server.New(cfg, st, sched, logger, serverOpts...)
 
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,

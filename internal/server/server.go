@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/scheduler"
@@ -16,19 +17,38 @@ import (
 
 // Server is the GoWe REST API server.
 type Server struct {
-	router    chi.Router
-	logger    *slog.Logger
-	config    config.ServerConfig
-	startTime time.Time
-	parser    *parser.Parser
-	validator *parser.Validator
-	store     store.Store
-	scheduler scheduler.Scheduler
+	router      chi.Router
+	logger      *slog.Logger
+	config      config.ServerConfig
+	startTime   time.Time
+	parser      *parser.Parser
+	validator   *parser.Validator
+	store       store.Store
+	scheduler   scheduler.Scheduler
+	bvbrcCaller bvbrc.RPCCaller    // optional; nil when no BV-BRC token is available
+	testApps    []map[string]any   // optional; static app list for testing without BV-BRC
+}
+
+// Option configures optional Server dependencies.
+type Option func(*Server)
+
+// WithBVBRCCaller sets the BV-BRC RPC caller used by /apps and /workspace endpoints.
+func WithBVBRCCaller(caller bvbrc.RPCCaller) Option {
+	return func(s *Server) {
+		s.bvbrcCaller = caller
+	}
+}
+
+// WithTestApps injects a static app list for smoke-testing without BV-BRC connectivity.
+func WithTestApps(apps []map[string]any) Option {
+	return func(s *Server) {
+		s.testApps = apps
+	}
 }
 
 // New creates a new Server with all routes registered.
 // sched may be nil if no scheduling is desired (e.g. in tests).
-func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, logger *slog.Logger) *Server {
+func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, logger *slog.Logger, opts ...Option) *Server {
 	s := &Server{
 		router:    chi.NewRouter(),
 		logger:    logger.With("component", "server"),
@@ -38,6 +58,9 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		validator: parser.NewValidator(logger),
 		store:     st,
 		scheduler: sched,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.routes()
 	return s

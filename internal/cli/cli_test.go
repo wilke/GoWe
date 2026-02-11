@@ -29,7 +29,11 @@ func startTestServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	srv := server.New(config.DefaultServerConfig(), st, nil, srvLogger)
+	srv := server.New(config.DefaultServerConfig(), st, nil, srvLogger, server.WithTestApps([]map[string]any{
+		{"id": "GenomeAssembly2", "label": "Genome Assembly", "description": "Assemble reads"},
+		{"id": "GenomeAnnotation", "label": "Genome Annotation", "description": "Annotate a genome"},
+		{"id": "ComprehensiveGenomeAnalysis", "label": "CGA", "description": "Assembly + Annotation + Analysis"},
+	}))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts.URL
