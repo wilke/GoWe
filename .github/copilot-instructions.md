@@ -281,7 +281,7 @@ go mod tidy
 ## CWL Specifications
 
 ### Supported CWL Version
-- CWL v1.2 specification
+- CWL v1.2 specification (https://www.commonwl.org/v1.2/)
 - Packed or modular workflow formats
 - Custom hints via `goweHint` for GoWe-specific behavior
 
