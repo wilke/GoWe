@@ -33,13 +33,7 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Dry-run mode (keep canned for now — Phase 6 will implement real dry-run).
-	if r.URL.Query().Get("dry_run") == "true" {
-		respondOK(w, reqID, cannedDryRunReport())
-		return
-	}
-
-	// Verify workflow exists.
+	// Verify workflow exists (needed by both dry-run and real submission).
 	wf, err := s.store.GetWorkflow(r.Context(), req.WorkflowID)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
@@ -48,6 +42,12 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	}
 	if wf == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", req.WorkflowID))
+		return
+	}
+
+	// Dry-run: validate without creating a submission.
+	if r.URL.Query().Get("dry_run") == "true" {
+		respondOK(w, reqID, s.buildDryRunReport(wf, req.Inputs))
 		return
 	}
 
@@ -219,20 +219,153 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func cannedDryRunReport() map[string]any {
-	return map[string]any{
-		"dry_run":      true,
-		"valid":        true,
-		"workflow":     map[string]any{"id": "wf_a1b2c3d4-e5f6-7890-abcd-ef1234567890", "name": "assembly-annotation-pipeline"},
-		"inputs_valid": true,
-		"steps": []map[string]any{
-			{"id": "assemble", "executor_type": "bvbrc", "bvbrc_app_id": "GenomeAssembly2", "depends_on": []string{}, "app_schema_valid": true, "inputs_compatible": true},
-			{"id": "annotate", "executor_type": "bvbrc", "bvbrc_app_id": "GenomeAnnotation", "depends_on": []string{"assemble"}, "app_schema_valid": true, "inputs_compatible": true},
-		},
-		"dag_acyclic":           true,
-		"execution_order":       []string{"assemble", "annotate"},
-		"executor_availability": map[string]string{"bvbrc": "available"},
-		"errors":                []any{},
-		"warnings":              []any{},
+// buildDryRunReport validates a workflow and inputs without creating a submission.
+func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) map[string]any {
+	var errors []map[string]string
+	var warnings []map[string]string
+
+	if inputs == nil {
+		inputs = map[string]any{}
 	}
+
+	// --- Input validation ---
+	inputsValid := true
+	provided := make(map[string]bool, len(inputs))
+	for k := range inputs {
+		provided[k] = true
+	}
+
+	// Check for missing required inputs.
+	for _, inp := range wf.Inputs {
+		if inp.Required && inp.Default == nil {
+			if !provided[inp.ID] {
+				inputsValid = false
+				errors = append(errors, map[string]string{
+					"field":   "inputs." + inp.ID,
+					"message": "required input " + inp.ID + " is missing",
+				})
+			}
+		}
+		delete(provided, inp.ID)
+	}
+
+	// Check for unknown inputs.
+	for k := range provided {
+		warnings = append(warnings, map[string]string{
+			"field":   "inputs." + k,
+			"message": "unknown input " + k + " (not declared in workflow)",
+		})
+	}
+
+	// --- Step analysis ---
+	steps := make([]map[string]any, 0, len(wf.Steps))
+	executorSet := make(map[model.ExecutorType]bool)
+
+	for _, step := range wf.Steps {
+		execType := model.ExecutorTypeLocal
+		if step.Hints != nil && step.Hints.ExecutorType != "" {
+			execType = step.Hints.ExecutorType
+		}
+		executorSet[execType] = true
+
+		available := s.registry != nil && s.registry.Has(execType)
+		if !available {
+			errors = append(errors, map[string]string{
+				"field":   "steps." + step.ID,
+				"message": "executor " + string(execType) + " is not available",
+			})
+		}
+
+		stepInfo := map[string]any{
+			"id":                 step.ID,
+			"executor_type":     string(execType),
+			"depends_on":        step.DependsOn,
+			"executor_available": available,
+		}
+		if step.Hints != nil && step.Hints.BVBRCAppID != "" {
+			stepInfo["bvbrc_app_id"] = step.Hints.BVBRCAppID
+		}
+		steps = append(steps, stepInfo)
+	}
+
+	// --- Execution order (topological sort from DependsOn) ---
+	order := topoSort(wf.Steps)
+	dagAcyclic := len(order) == len(wf.Steps)
+	if !dagAcyclic {
+		errors = append(errors, map[string]string{
+			"field":   "steps",
+			"message": "cyclic dependency detected",
+		})
+	}
+
+	// --- Executor availability summary ---
+	execAvail := make(map[string]string, len(executorSet))
+	for et := range executorSet {
+		if s.registry != nil && s.registry.Has(et) {
+			execAvail[string(et)] = "available"
+		} else {
+			execAvail[string(et)] = "unavailable"
+		}
+	}
+
+	valid := len(errors) == 0
+
+	// Ensure non-nil slices for clean JSON.
+	if errors == nil {
+		errors = []map[string]string{}
+	}
+	if warnings == nil {
+		warnings = []map[string]string{}
+	}
+
+	return map[string]any{
+		"dry_run":  true,
+		"valid":    valid,
+		"workflow": map[string]any{"id": wf.ID, "name": wf.Name, "step_count": len(wf.Steps)},
+		"inputs_valid":          inputsValid,
+		"steps":                 steps,
+		"dag_acyclic":           dagAcyclic,
+		"execution_order":       order,
+		"executor_availability": execAvail,
+		"errors":                errors,
+		"warnings":              warnings,
+	}
+}
+
+// topoSort returns step IDs in topological order using Kahn's algorithm.
+// Returns a partial result if a cycle exists.
+func topoSort(steps []model.Step) []string {
+	inDegree := make(map[string]int, len(steps))
+	forward := make(map[string][]string, len(steps))
+
+	for _, s := range steps {
+		if _, ok := inDegree[s.ID]; !ok {
+			inDegree[s.ID] = 0
+		}
+		for _, dep := range s.DependsOn {
+			forward[dep] = append(forward[dep], s.ID)
+			inDegree[s.ID]++
+		}
+	}
+
+	var queue, order []string
+	for _, s := range steps {
+		if inDegree[s.ID] == 0 {
+			queue = append(queue, s.ID)
+		}
+	}
+
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		order = append(order, node)
+		for _, succ := range forward[node] {
+			inDegree[succ]--
+			if inDegree[succ] == 0 {
+				queue = append(queue, succ)
+			}
+		}
+	}
+
+	return order
 }

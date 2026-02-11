@@ -37,3 +37,9 @@ func (r *Registry) Get(t model.ExecutorType) (Executor, error) {
 	}
 	return exec, nil
 }
+
+// Has reports whether an executor is registered for the given type.
+func (r *Registry) Has(t model.ExecutorType) bool {
+	_, ok := r.executors[t]
+	return ok
+}

@@ -3,22 +3,24 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 // schema contains the DDL for all GoWe tables.
 // Each statement uses IF NOT EXISTS for idempotency.
 var schema = []string{
 	`CREATE TABLE IF NOT EXISTS workflows (
-		id          TEXT PRIMARY KEY,
-		name        TEXT NOT NULL,
-		description TEXT NOT NULL DEFAULT '',
-		cwl_version TEXT NOT NULL,
-		raw_cwl     TEXT NOT NULL,
-		inputs      TEXT NOT NULL,
-		outputs     TEXT NOT NULL,
-		steps       TEXT NOT NULL,
-		created_at  TEXT NOT NULL,
-		updated_at  TEXT NOT NULL
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		description  TEXT NOT NULL DEFAULT '',
+		cwl_version  TEXT NOT NULL,
+		content_hash TEXT NOT NULL DEFAULT '',
+		raw_cwl      TEXT NOT NULL,
+		inputs       TEXT NOT NULL,
+		outputs      TEXT NOT NULL,
+		steps        TEXT NOT NULL,
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS submissions (
@@ -55,16 +57,32 @@ var schema = []string{
 		completed_at  TEXT
 	)`,
 
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''`,
+
 	`CREATE INDEX IF NOT EXISTS idx_submissions_workflow_id ON submissions(workflow_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_submissions_state ON submissions(state)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_submission_id ON tasks(submission_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state)`,
 }
 
-// migrate executes all schema DDL statements.
+// alterMigrations are ALTER TABLE statements for upgrading existing databases.
+// Errors containing "duplicate column" are ignored (column already exists).
+var alterMigrations = []string{
+	`ALTER TABLE workflows ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''`,
+}
+
+// migrate executes all schema DDL statements and alter migrations.
 func migrate(ctx context.Context, db *sql.DB) error {
 	for _, stmt := range schema {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range alterMigrations {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
 			return err
 		}
 	}

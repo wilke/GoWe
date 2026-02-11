@@ -72,7 +72,7 @@ func main() {
 	reg.Register(executor.NewDockerExecutor("", logger))
 
 	// Register BVBRCExecutor and create RPC caller if a token is available.
-	var serverOpts []server.Option
+	serverOpts := []server.Option{server.WithExecutorRegistry(reg)}
 	if tok, err := bvbrc.ResolveToken(); err == nil {
 		tokenInfo := bvbrc.ParseToken(tok)
 		if tokenInfo.IsExpired() {

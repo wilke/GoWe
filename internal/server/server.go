@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
+	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
@@ -25,6 +26,7 @@ type Server struct {
 	validator   *parser.Validator
 	store       store.Store
 	scheduler   scheduler.Scheduler
+	registry    *executor.Registry // optional; used by dry-run to check executor availability
 	bvbrcCaller bvbrc.RPCCaller    // optional; nil when no BV-BRC token is available
 	testApps    []map[string]any   // optional; static app list for testing without BV-BRC
 }
@@ -36,6 +38,13 @@ type Option func(*Server)
 func WithBVBRCCaller(caller bvbrc.RPCCaller) Option {
 	return func(s *Server) {
 		s.bvbrcCaller = caller
+	}
+}
+
+// WithExecutorRegistry sets the executor registry for dry-run validation.
+func WithExecutorRegistry(reg *executor.Registry) Option {
+	return func(s *Server) {
+		s.registry = reg
 	}
 }
 
