@@ -718,11 +718,28 @@ func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var items [][]any
-	for _, listing := range outer[0] {
-		json.Unmarshal(listing, &items)
-		break
+	// Select the listing corresponding to the requested path.
+	var listing json.RawMessage
+	if v, ok := outer[0][path]; ok {
+		listing = v
+	} else {
+		trimmed := strings.TrimSuffix(path, "/")
+		if trimmed != path {
+			if v, ok := outer[0][trimmed]; ok {
+				listing = v
+			}
+		}
 	}
 
+	if listing == nil {
+		http.Error(w, fmt.Sprintf(`{"error": "Workspace listing for path %q not found in response"}`, path), http.StatusInternalServerError)
+		return
+	}
+
+	if err := json.Unmarshal(listing, &items); err != nil {
+		http.Error(w, `{"error": "Failed to parse workspace listing"}`, http.StatusInternalServerError)
+		return
+	}
 	// Convert to structured response.
 	type wsItem struct {
 		Path     string `json:"path"`
