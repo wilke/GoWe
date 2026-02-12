@@ -22,9 +22,11 @@ type Pagination struct {
 
 // ListOptions configures list queries with pagination and filtering.
 type ListOptions struct {
-	Limit  int
-	Offset int
-	State  string // Optional state filter
+	Limit     int
+	Offset    int
+	State     string // Optional state filter
+	DateStart string // Optional start date filter (YYYY-MM-DD)
+	DateEnd   string // Optional end date filter (YYYY-MM-DD)
 }
 
 // DefaultListOptions returns sensible defaults.

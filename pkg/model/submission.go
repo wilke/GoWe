@@ -4,17 +4,19 @@ import "time"
 
 // Submission is a specific execution of a Workflow with concrete input values.
 type Submission struct {
-	ID           string          `json:"id"`
-	WorkflowID   string          `json:"workflow_id"`
-	WorkflowName string          `json:"workflow_name"`
-	State        SubmissionState `json:"state"`
-	Inputs       map[string]any  `json:"inputs"`
-	Outputs      map[string]any  `json:"outputs,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	SubmittedBy  string          `json:"submitted_by,omitempty"`
-	Tasks        []Task          `json:"tasks,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	CompletedAt  *time.Time      `json:"completed_at"`
+	ID            string            `json:"id"`
+	WorkflowID    string            `json:"workflow_id"`
+	WorkflowName  string            `json:"workflow_name"`
+	State         SubmissionState   `json:"state"`
+	Inputs        map[string]any    `json:"inputs"`
+	Outputs       map[string]any    `json:"outputs,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	SubmittedBy   string            `json:"submitted_by,omitempty"`
+	Tasks         []Task            `json:"tasks,omitempty"`
+	TaskSummary   TaskSummary       `json:"task_summary,omitempty"` // Computed field, not stored
+	QueuePosition int               `json:"queue_position,omitempty"` // Computed field for pending submissions
+	CreatedAt     time.Time         `json:"created_at"`
+	CompletedAt   *time.Time        `json:"completed_at"`
 }
 
 // TaskSummary provides an aggregate count of task states within a Submission.

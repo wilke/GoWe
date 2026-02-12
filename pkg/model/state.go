@@ -14,6 +14,11 @@ const (
 	TaskStateSkipped   TaskState = "SKIPPED"
 )
 
+// String returns the string representation of the task state.
+func (s TaskState) String() string {
+	return string(s)
+}
+
 // IsTerminal returns true if the task is in a final state.
 func (s TaskState) IsTerminal() bool {
 	switch s {
@@ -53,6 +58,11 @@ const (
 	SubmissionStateFailed    SubmissionState = "FAILED"
 	SubmissionStateCancelled SubmissionState = "CANCELLED"
 )
+
+// String returns the string representation of the submission state.
+func (s SubmissionState) String() string {
+	return string(s)
+}
 
 // IsTerminal returns true if the submission is in a final state.
 func (s SubmissionState) IsTerminal() bool {

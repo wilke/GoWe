@@ -1,0 +1,192 @@
+/* GoWe UI Custom Styles */
+
+/* Extend Tailwind with custom utilities */
+
+/* Toast notifications */
+.toast {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  padding: 1rem 1.5rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  transform: translateX(100%);
+  opacity: 0;
+  transition: all 0.3s ease-out;
+}
+
+.toast.show {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.toast.success {
+  background-color: #dcfce7;
+  color: #166534;
+  border-left: 4px solid #22c55e;
+}
+
+.toast.error {
+  background-color: #fee2e2;
+  color: #991b1b;
+  border-left: 4px solid #ef4444;
+}
+
+.toast.info {
+  background-color: #dbeafe;
+  color: #1e40af;
+  border-left: 4px solid #3b82f6;
+}
+
+/* Loading spinner */
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* HTMX loading states */
+.htmx-request .loading-indicator {
+  display: inline-block;
+}
+
+.loading-indicator {
+  display: none;
+}
+
+.htmx-request .loading-hide {
+  display: none;
+}
+
+/* Code blocks */
+pre code {
+  display: block;
+  overflow-x: auto;
+  padding: 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Form styles */
+input[type="text"],
+input[type="password"],
+input[type="email"],
+textarea,
+select {
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="email"]:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+/* Table styles */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+/* Responsive utilities */
+@media (max-width: 640px) {
+  .hide-mobile {
+    display: none;
+  }
+}
+
+/* State badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.badge-pending {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.badge-running {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
+
+.badge-success,
+.badge-completed {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.badge-failed {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.badge-cancelled {
+  background-color: #f3f4f6;
+  color: #374151;
+}
+
+/* File picker modal */
+#file-picker-modal .workspace-item {
+  transition: background-color 0.15s ease;
+}
+
+#file-picker-modal .workspace-item:hover {
+  background-color: #f3f4f6;
+}
+
+#file-picker-modal .workspace-item.file:hover {
+  background-color: #eff6ff;
+}
+
+/* File type icons */
+.file-icon-folder::before { content: '📁 '; }
+.file-icon-file::before { content: '📄 '; }
+.file-icon-dna::before { content: '🧬 '; }
+.file-icon-data::before { content: '📊 '; }
+
+/* Upload progress */
+.upload-progress {
+  height: 4px;
+  background-color: #e5e7eb;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.upload-progress-bar {
+  height: 100%;
+  background-color: #6366f1;
+  transition: width 0.3s ease;
+}

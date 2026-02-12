@@ -71,18 +71,27 @@ func main() {
 	reg.Register(executor.NewLocalExecutor("", logger))
 	reg.Register(executor.NewDockerExecutor("", logger))
 
-	// Register BVBRCExecutor and create RPC caller if a token is available.
+	// Register BVBRCExecutor and create RPC callers if a token is available.
+	const workspaceURL = "https://p3.theseed.org/services/Workspace"
+
 	serverOpts := []server.Option{server.WithExecutorRegistry(reg)}
 	if tok, err := bvbrc.ResolveToken(); err == nil {
 		tokenInfo := bvbrc.ParseToken(tok)
 		if tokenInfo.IsExpired() {
 			logger.Warn("BV-BRC token expired; bvbrc executor not registered")
 		} else {
+			// AppService caller for /apps and job submission.
 			bvbrcCfg := bvbrc.DefaultClientConfig()
 			bvbrcCfg.Token = tok
-			caller := bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
-			reg.Register(executor.NewBVBRCExecutor(caller, tokenInfo.Username, logger))
-			serverOpts = append(serverOpts, server.WithBVBRCCaller(caller))
+			appCaller := bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
+			reg.Register(executor.NewBVBRCExecutor(appCaller, tokenInfo.Username, logger))
+			serverOpts = append(serverOpts, server.WithBVBRCCaller(appCaller))
+
+			// Workspace caller for workspace browsing.
+			wsCfg := bvbrc.ClientConfig{AppServiceURL: workspaceURL, Token: tok}
+			wsCaller := bvbrc.NewHTTPRPCCaller(wsCfg, logger)
+			serverOpts = append(serverOpts, server.WithWorkspaceCaller(wsCaller))
+
 			logger.Info("bvbrc executor registered", "username", tokenInfo.Username)
 		}
 	} else {
