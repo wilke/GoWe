@@ -26,9 +26,9 @@ const Toast = {
     const closeButton = document.createElement('button');
     closeButton.className = 'ml-4 text-gray-400 hover:text-gray-600';
     closeButton.textContent = '×';
-    closeButton.onclick = function() {
+    closeButton.addEventListener('click', function() {
       this.parentElement.parentElement.remove();
-    };
+    });
     
     wrapper.appendChild(messageSpan);
     wrapper.appendChild(closeButton);
