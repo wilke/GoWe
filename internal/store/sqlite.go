@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/me/gowe/pkg/model"
@@ -286,28 +287,41 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	s.logger.Debug("sql", "op", "list", "table", "submissions", "limit", opts.Limit, "offset", opts.Offset)
 	opts.Clamp()
 
-	var total int
-	countQuery := `SELECT COUNT(*) FROM submissions`
-	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
-		FROM submissions ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	args := []any{opts.Limit, opts.Offset}
+	// Build WHERE clause dynamically based on filters.
+	var whereClauses []string
+	var countArgs []any
 
 	if opts.State != "" {
-		countQuery = `SELECT COUNT(*) FROM submissions WHERE state = ?`
-		listQuery = `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
-			FROM submissions WHERE state = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
-		args = []any{opts.State, opts.Limit, opts.Offset}
-
-		if err := s.db.QueryRowContext(ctx, countQuery, opts.State).Scan(&total); err != nil {
-			return nil, 0, err
-		}
-	} else {
-		if err := s.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
-			return nil, 0, err
-		}
+		whereClauses = append(whereClauses, "state = ?")
+		countArgs = append(countArgs, opts.State)
+	}
+	if opts.DateStart != "" {
+		whereClauses = append(whereClauses, "created_at >= ?")
+		countArgs = append(countArgs, opts.DateStart+"T00:00:00Z")
+	}
+	if opts.DateEnd != "" {
+		whereClauses = append(whereClauses, "created_at <= ?")
+		countArgs = append(countArgs, opts.DateEnd+"T23:59:59Z")
 	}
 
-	rows, err := s.db.QueryContext(ctx, listQuery, args...)
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Count query.
+	var total int
+	countQuery := `SELECT COUNT(*) FROM submissions` + whereSQL
+	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// List query with pagination.
+	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
+		FROM submissions` + whereSQL + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	listArgs := append(countArgs, opts.Limit, opts.Offset)
+
+	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -576,4 +590,74 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		tasks = append(tasks, &task)
 	}
 	return tasks, rows.Err()
+}
+
+// --- Session operations ---
+
+func (s *SQLiteStore) CreateSession(ctx context.Context, sess *model.Session) error {
+	s.logger.Debug("sql", "op", "insert", "table", "sessions", "id", sess.ID)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, user_id, username, role, token, token_exp, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.UserID, sess.Username, sess.Role,
+		sess.Token, sess.TokenExp.Unix(),
+		sess.CreatedAt.Unix(), sess.ExpiresAt.Unix(),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetSession(ctx context.Context, id string) (*model.Session, error) {
+	s.logger.Debug("sql", "op", "select", "table", "sessions", "id", id)
+
+	var sess model.Session
+	var tokenExp, createdAt, expiresAt int64
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, username, role, token, token_exp, created_at, expires_at
+		 FROM sessions WHERE id = ?`, id,
+	).Scan(&sess.ID, &sess.UserID, &sess.Username, &sess.Role,
+		&sess.Token, &tokenExp, &createdAt, &expiresAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	sess.TokenExp = time.Unix(tokenExp, 0)
+	sess.CreatedAt = time.Unix(createdAt, 0)
+	sess.ExpiresAt = time.Unix(expiresAt, 0)
+
+	return &sess, nil
+}
+
+func (s *SQLiteStore) DeleteSession(ctx context.Context, id string) error {
+	s.logger.Debug("sql", "op", "delete", "table", "sessions", "id", id)
+
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	s.logger.Debug("sql", "op", "delete_expired", "table", "sessions")
+
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE expires_at < ?`, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (s *SQLiteStore) DeleteSessionsByUserID(ctx context.Context, userID string) (int64, error) {
+	s.logger.Debug("sql", "op", "delete_by_user", "table", "sessions", "user_id", userID)
+
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
