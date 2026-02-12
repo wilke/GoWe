@@ -59,6 +59,12 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set the original CWL class (CommandLineTool, Workflow, or ExpressionTool).
+	mw.Class = graph.OriginalClass
+	if mw.Class == "" {
+		mw.Class = "Workflow"
+	}
+
 	// Override description if provided in request.
 	if req.Description != "" {
 		mw.Description = req.Description
@@ -94,16 +100,22 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		ID          string    `json:"id"`
 		Name        string    `json:"name"`
 		Description string    `json:"description,omitempty"`
+		Class       string    `json:"class"`
 		CWLVersion  string    `json:"cwl_version"`
 		StepCount   int       `json:"step_count"`
 		CreatedAt   time.Time `json:"created_at"`
 	}
 	summaries := make([]workflowSummary, len(workflows))
 	for i, wf := range workflows {
+		class := wf.Class
+		if class == "" {
+			class = "Workflow"
+		}
 		summaries[i] = workflowSummary{
 			ID:          wf.ID,
 			Name:        wf.Name,
 			Description: wf.Description,
+			Class:       class,
 			CWLVersion:  wf.CWLVersion,
 			StepCount:   len(wf.Steps),
 			CreatedAt:   wf.CreatedAt,
@@ -190,6 +202,11 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		updated.RawCWL = req.CWL
 		updated.CreatedAt = existing.CreatedAt
 		updated.UpdatedAt = time.Now().UTC()
+		// Set the original CWL class from the new graph.
+		updated.Class = graph.OriginalClass
+		if updated.Class == "" {
+			updated.Class = "Workflow"
+		}
 		if req.Description != "" {
 			updated.Description = req.Description
 		}

@@ -93,6 +93,12 @@ var alterStatements = []struct {
 		alterSQL: "ALTER TABLE workflows ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workflows_created_by ON workflows(created_by)",
 	},
+	{
+		table:    "workflows",
+		column:   "class",
+		alterSQL: "ALTER TABLE workflows ADD COLUMN class TEXT NOT NULL DEFAULT 'Workflow'",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workflows_class ON workflows(class)",
+	},
 }
 
 // migrate executes all schema DDL statements.

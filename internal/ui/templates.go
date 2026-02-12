@@ -155,6 +155,21 @@ var templateFuncs = template.FuncMap{
 	"urlquery": func(s string) string {
 		return template.URLQueryEscaper(s)
 	},
+	"isTool": func(class string) bool {
+		return class == "CommandLineTool" || class == "ExpressionTool"
+	},
+	"classBadge": func(class string) string {
+		if class == "CommandLineTool" || class == "ExpressionTool" {
+			return "Tool"
+		}
+		return "Workflow"
+	},
+	"classBadgeColor": func(class string) string {
+		if class == "CommandLineTool" || class == "ExpressionTool" {
+			return "bg-purple-100 text-purple-800"
+		}
+		return "bg-indigo-100 text-indigo-800"
+	},
 }
 
 // renderTemplate renders a template with the given data.
@@ -483,7 +498,12 @@ var templates = map[string]string{
                 <div class="px-4 py-4 sm:px-6 hover:bg-gray-50">
                     <div class="flex items-center justify-between">
                         <a href="/workflows/{{.ID}}" class="flex-1">
-                            <p class="text-sm font-medium text-indigo-600 truncate">{{.Name}}</p>
+                            <div class="flex items-center">
+                                <p class="text-sm font-medium text-indigo-600 truncate">{{.Name}}</p>
+                                <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{classBadgeColor .Class}}">
+                                    {{classBadge .Class}}
+                                </span>
+                            </div>
                             <p class="mt-1 text-sm text-gray-500">{{.Description}}</p>
                         </a>
                         <div class="ml-4 flex items-center space-x-2">
@@ -571,10 +591,21 @@ var templates = map[string]string{
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">{{.Workflow.ID}}</dd>
                 </div>
                 <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Type</dt>
+                    <dd class="mt-1 text-sm sm:mt-0 sm:col-span-2">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{classBadgeColor .Workflow.Class}}">
+                            {{classBadge .Workflow.Class}}
+                        </span>
+                        {{if isTool .Workflow.Class}}
+                        <span class="ml-2 text-gray-500">(auto-wrapped as single-step workflow)</span>
+                        {{end}}
+                    </dd>
+                </div>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
                     <dt class="text-sm font-medium text-gray-500">CWL Version</dt>
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Workflow.CWLVersion}}</dd>
                 </div>
-                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
                     <dt class="text-sm font-medium text-gray-500">Created</dt>
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Workflow.CreatedAt}}</dd>
                 </div>

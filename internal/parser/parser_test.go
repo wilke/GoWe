@@ -242,11 +242,189 @@ func TestParseGraph_InvalidYAML(t *testing.T) {
 	}
 }
 
-func TestParseGraph_NoGraph(t *testing.T) {
+func TestParseGraph_NoGraph_BareWorkflow(t *testing.T) {
 	p := testParser()
+	// Bare Workflow without $graph should fail (only tools can be bare).
 	_, err := p.ParseGraph([]byte("cwlVersion: v1.2\nclass: Workflow\n"))
 	if err == nil {
-		t.Error("expected error for missing $graph")
+		t.Error("expected error for bare Workflow without $graph")
+	}
+}
+
+func TestParseGraph_BareCommandLineTool(t *testing.T) {
+	p := testParser()
+	data := []byte(`cwlVersion: v1.2
+class: CommandLineTool
+id: my-echo
+baseCommand: [echo]
+inputs:
+  message:
+    type: string
+outputs:
+  output:
+    type: stdout
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+
+	// Should be auto-wrapped.
+	if graph.OriginalClass != "CommandLineTool" {
+		t.Errorf("OriginalClass = %q, want CommandLineTool", graph.OriginalClass)
+	}
+	if graph.Workflow == nil {
+		t.Fatal("Workflow is nil after auto-wrap")
+	}
+	if graph.Workflow.ID != "main" {
+		t.Errorf("Workflow.ID = %q, want main", graph.Workflow.ID)
+	}
+
+	// Synthetic workflow should have same inputs as tool.
+	if len(graph.Workflow.Inputs) != 1 {
+		t.Errorf("Workflow.Inputs count = %d, want 1", len(graph.Workflow.Inputs))
+	}
+	if msg, ok := graph.Workflow.Inputs["message"]; !ok || msg.Type != "string" {
+		t.Errorf("Workflow.Inputs[message] = %v, want {Type: string}", graph.Workflow.Inputs["message"])
+	}
+
+	// Synthetic workflow should have same outputs as tool.
+	if len(graph.Workflow.Outputs) != 1 {
+		t.Errorf("Workflow.Outputs count = %d, want 1", len(graph.Workflow.Outputs))
+	}
+	if out, ok := graph.Workflow.Outputs["output"]; !ok {
+		t.Error("missing output 'output'")
+	} else if out.OutputSource != "run_tool/output" {
+		t.Errorf("output.OutputSource = %q, want run_tool/output", out.OutputSource)
+	}
+
+	// Should have single step.
+	if len(graph.Workflow.Steps) != 1 {
+		t.Errorf("Steps count = %d, want 1", len(graph.Workflow.Steps))
+	}
+	step, ok := graph.Workflow.Steps["run_tool"]
+	if !ok {
+		t.Fatal("missing step run_tool")
+	}
+	if step.Run != "#my-echo" {
+		t.Errorf("step.Run = %q, want #my-echo", step.Run)
+	}
+
+	// Tool should be in the Tools map.
+	if len(graph.Tools) != 1 {
+		t.Errorf("Tools count = %d, want 1", len(graph.Tools))
+	}
+	if _, ok := graph.Tools["my-echo"]; !ok {
+		t.Error("missing tool my-echo in Tools map")
+	}
+}
+
+func TestParseGraph_BareCommandLineTool_NoID(t *testing.T) {
+	p := testParser()
+	// Tool without ID should get default "tool" ID.
+	data := []byte(`cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: [echo]
+inputs:
+  message:
+    type: string
+outputs:
+  output:
+    type: stdout
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+
+	if _, ok := graph.Tools["tool"]; !ok {
+		t.Error("expected tool with default ID 'tool'")
+	}
+	step := graph.Workflow.Steps["run_tool"]
+	if step.Run != "#tool" {
+		t.Errorf("step.Run = %q, want #tool", step.Run)
+	}
+}
+
+func TestParseGraph_BareExpressionTool(t *testing.T) {
+	p := testParser()
+	data := []byte(`cwlVersion: v1.2
+class: ExpressionTool
+id: add-numbers
+inputs:
+  a:
+    type: int
+  b:
+    type: int
+outputs:
+  result:
+    type: int
+expression: "${return {'result': inputs.a + inputs.b};}"
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+
+	if graph.OriginalClass != "ExpressionTool" {
+		t.Errorf("OriginalClass = %q, want ExpressionTool", graph.OriginalClass)
+	}
+	if len(graph.Workflow.Inputs) != 2 {
+		t.Errorf("Workflow.Inputs count = %d, want 2", len(graph.Workflow.Inputs))
+	}
+}
+
+func TestParseGraph_BareCommandLineTool_WithHints(t *testing.T) {
+	p := testParser()
+	data := []byte(`cwlVersion: v1.2
+class: CommandLineTool
+id: bvbrc-tool
+baseCommand: [echo]
+hints:
+  goweHint:
+    bvbrc_app_id: GenomeAssembly2
+    executor: bvbrc
+inputs:
+  message:
+    type: string
+outputs:
+  output:
+    type: stdout
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+
+	// Hints should be preserved on the tool.
+	tool := graph.Tools["bvbrc-tool"]
+	if tool == nil {
+		t.Fatal("tool is nil")
+	}
+	if tool.Hints == nil {
+		t.Fatal("tool.Hints is nil")
+	}
+	gowe, ok := tool.Hints["goweHint"].(map[string]any)
+	if !ok {
+		t.Fatal("goweHint not found")
+	}
+	if gowe["bvbrc_app_id"] != "GenomeAssembly2" {
+		t.Errorf("bvbrc_app_id = %v, want GenomeAssembly2", gowe["bvbrc_app_id"])
+	}
+}
+
+func TestParseGraph_PackedWorkflow_OriginalClass(t *testing.T) {
+	p := testParser()
+	data := loadTestdata(t, "packed/pipeline-packed.cwl")
+
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+
+	// Packed workflow should have OriginalClass = "Workflow".
+	if graph.OriginalClass != "Workflow" {
+		t.Errorf("OriginalClass = %q, want Workflow", graph.OriginalClass)
 	}
 }
 
