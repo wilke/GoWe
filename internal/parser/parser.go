@@ -23,7 +23,9 @@ func New(logger *slog.Logger) *Parser {
 }
 
 // ParseGraph parses a packed $graph CWL document into a GraphDocument.
-// The input must be a packed YAML document containing a $graph array.
+// The input can be:
+//   - A packed YAML document containing a $graph array with a Workflow
+//   - A bare CommandLineTool or ExpressionTool (auto-wrapped into a single-step Workflow)
 func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -32,19 +34,25 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 
 	version := stringField(raw, "cwlVersion")
 
-	graphRaw, ok := raw["$graph"]
-	if !ok {
-		return nil, fmt.Errorf("missing $graph: document must be in packed format")
+	// Check if this is a bare CommandLineTool or ExpressionTool (no $graph).
+	if _, hasGraph := raw["$graph"]; !hasGraph {
+		class := stringField(raw, "class")
+		if class == "CommandLineTool" || class == "ExpressionTool" {
+			return p.wrapToolAsWorkflow(raw, version)
+		}
+		return nil, fmt.Errorf("missing $graph: document must be packed format or a bare CommandLineTool/ExpressionTool")
 	}
 
+	graphRaw := raw["$graph"]
 	entries, ok := graphRaw.([]any)
 	if !ok {
 		return nil, fmt.Errorf("$graph must be an array")
 	}
 
 	graph := &cwl.GraphDocument{
-		CWLVersion: version,
-		Tools:      make(map[string]*cwl.CommandLineTool),
+		CWLVersion:    version,
+		OriginalClass: "Workflow",
+		Tools:         make(map[string]*cwl.CommandLineTool),
 	}
 
 	for i, entry := range entries {
@@ -88,6 +96,87 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 	}
 
 	return graph, nil
+}
+
+// wrapToolAsWorkflow wraps a bare CommandLineTool or ExpressionTool in a synthetic single-step Workflow.
+func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cwl.GraphDocument, error) {
+	class := stringField(toolRaw, "class")
+
+	// Parse the tool.
+	tool, err := p.parseTool(toolRaw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", class, err)
+	}
+
+	// Generate tool ID if not present.
+	toolID := tool.ID
+	if toolID == "" {
+		toolID = "tool"
+		tool.ID = toolID
+	}
+
+	// Build synthetic workflow inputs (same as tool inputs).
+	wfInputs := make(map[string]cwl.InputParam)
+	for id, inp := range tool.Inputs {
+		wfInputs[id] = cwl.InputParam{
+			Type:    inp.Type,
+			Doc:     inp.Doc,
+			Default: inp.Default,
+		}
+	}
+
+	// Build synthetic workflow outputs (same as tool outputs, with outputSource).
+	wfOutputs := make(map[string]cwl.OutputParam)
+	stepOutIDs := make([]string, 0, len(tool.Outputs))
+	for id, out := range tool.Outputs {
+		wfOutputs[id] = cwl.OutputParam{
+			Type:         out.Type,
+			OutputSource: "run_tool/" + id,
+		}
+		stepOutIDs = append(stepOutIDs, id)
+	}
+
+	// Build step inputs (map workflow inputs to step inputs).
+	stepIn := make(map[string]cwl.StepInput)
+	for id := range tool.Inputs {
+		stepIn[id] = cwl.StepInput{Source: id}
+	}
+
+	// Create synthetic workflow with single step.
+	wf := &cwl.Workflow{
+		ID:         "main",
+		Class:      "Workflow",
+		CWLVersion: version,
+		Doc:        tool.Doc,
+		Inputs:     wfInputs,
+		Outputs:    wfOutputs,
+		Steps: map[string]cwl.Step{
+			"run_tool": {
+				Run: "#" + toolID,
+				In:  stepIn,
+				Out: stepOutIDs,
+			},
+		},
+	}
+
+	// Copy hints from tool to step if present.
+	if tool.Hints != nil {
+		wf.Steps["run_tool"] = cwl.Step{
+			Run:   "#" + toolID,
+			In:    stepIn,
+			Out:   stepOutIDs,
+			Hints: tool.Hints,
+		}
+	}
+
+	p.logger.Debug("auto-wrapped tool as workflow", "tool_id", toolID, "class", class)
+
+	return &cwl.GraphDocument{
+		CWLVersion:    version,
+		OriginalClass: class,
+		Workflow:      wf,
+		Tools:         map[string]*cwl.CommandLineTool{toolID: tool},
+	}, nil
 }
 
 // parseWorkflow parses a single CWL Workflow from a raw map.

@@ -73,10 +73,16 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 		return fmt.Errorf("marshal steps: %w", err)
 	}
 
+	// Default class to "Workflow" if not set.
+	class := wf.Class
+	if class == "" {
+		class = "Workflow"
+	}
+
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workflows (id, name, description, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		wf.ID, wf.Name, wf.Description, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
+		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		wf.ID, wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON),
 		wf.CreatedAt.Format(time.RFC3339Nano), wf.UpdatedAt.Format(time.RFC3339Nano),
 	)
@@ -91,9 +97,9 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
 		 FROM workflows WHERE id = ?`, id,
-	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
+	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
 		&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
@@ -126,9 +132,9 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
 		 FROM workflows WHERE content_hash = ?`, hash,
-	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
+	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
 		&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
@@ -163,7 +169,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, description, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
 		 FROM workflows ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		opts.Limit, opts.Offset,
 	)
@@ -178,7 +184,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 		var inputsJSON, outputsJSON, stepsJSON string
 		var createdAt, updatedAt string
 
-		if err := rows.Scan(&wf.ID, &wf.Name, &wf.Description, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
+		if err := rows.Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
 			&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt); err != nil {
 			return nil, 0, err
 		}
@@ -209,10 +215,16 @@ func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) er
 		return fmt.Errorf("marshal steps: %w", err)
 	}
 
+	// Default class to "Workflow" if not set.
+	class := wf.Class
+	if class == "" {
+		class = "Workflow"
+	}
+
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE workflows SET name=?, description=?, cwl_version=?, content_hash=?, raw_cwl=?,
+		`UPDATE workflows SET name=?, description=?, class=?, cwl_version=?, content_hash=?, raw_cwl=?,
 		 inputs=?, outputs=?, steps=?, updated_at=? WHERE id=?`,
-		wf.Name, wf.Description, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
+		wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON),
 		wf.UpdatedAt.Format(time.RFC3339Nano), wf.ID,
 	)

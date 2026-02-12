@@ -7,6 +7,7 @@ type Workflow struct {
 	ID          string           `json:"id"`
 	Name        string           `json:"name"`
 	Description string           `json:"description,omitempty"`
+	Class       string           `json:"class"` // "CommandLineTool", "Workflow", or "ExpressionTool"
 	CWLVersion  string           `json:"cwl_version"`
 	ContentHash string           `json:"content_hash,omitempty"` // SHA-256 of RawCWL for deduplication
 	RawCWL      string           `json:"-"`                      // Original CWL document (not exposed in API list views)
@@ -15,6 +16,16 @@ type Workflow struct {
 	Steps       []Step           `json:"steps"`
 	CreatedAt   time.Time        `json:"created_at"`
 	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+// IsTool returns true if this workflow was originally a CommandLineTool or ExpressionTool.
+func (w *Workflow) IsTool() bool {
+	return w.Class == "CommandLineTool" || w.Class == "ExpressionTool"
+}
+
+// IsWorkflow returns true if this was originally a Workflow (or class is empty for backwards compatibility).
+func (w *Workflow) IsWorkflow() bool {
+	return w.Class == "Workflow" || w.Class == ""
 }
 
 // WorkflowInput describes a typed input parameter of a Workflow.
