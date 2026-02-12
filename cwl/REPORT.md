@@ -32,7 +32,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -61,7 +61,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -115,7 +115,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -165,7 +165,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -192,7 +192,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -222,7 +222,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -254,7 +254,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -296,7 +296,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -326,7 +326,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -371,7 +371,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -409,7 +409,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -446,7 +446,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -496,7 +496,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -544,7 +544,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -580,7 +580,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -615,7 +615,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -653,7 +653,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -688,7 +688,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -720,7 +720,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -760,7 +760,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -792,7 +792,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -823,7 +823,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -868,7 +868,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -902,7 +902,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -933,7 +933,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -964,7 +964,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1013,7 +1013,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1043,7 +1043,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1083,7 +1083,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1122,7 +1122,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1151,7 +1151,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1186,7 +1186,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1218,7 +1218,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1246,7 +1246,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1279,7 +1279,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1311,7 +1311,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1347,7 +1347,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1381,7 +1381,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 
@@ -1415,7 +1415,7 @@ Generated: 2026-02-12
 
 | Output | CWL Type | Notes |
 |--------|----------|-------|
-| result | Directory | All BV-BRC output files |
+| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |
 
 ### Review Notes
 

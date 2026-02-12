@@ -1,82 +1,91 @@
 # GoWe Scratchpad
 
-## Session: 2026-02-11
+## Session: 2026-02-12 (E2E Test)
 
-### Current State
-- **Phase 1**: Types + Logging — DONE (committed: f674576)
-- **Phase 2**: Skeleton Server — DONE (committed: 77bcc6b)
-- **Phase 3**: CLI + Bundler — DONE (committed: 77bcc6b)
-- **Phase 4**: CWL Parser + Validation — DONE (committed: 655f912, v0.4.0)
-- **Phase 5**: Store + Persistence (SQLite) — DONE (committed: 9108738, v0.5.0)
-- **Phase 6**: Scheduler + LocalExecutor — DONE (committed: 2bdff9f, v0.6.0)
-- **DockerExecutor**: DONE (committed: 5c99647)
-- **Phase 7**: BVBRCExecutor — DONE (committed: ee14cc3, v0.7.0)
-- **README.md**: Created (committed: 86a9439)
-- Build: `go build ./...` clean
-- Tests: `go test ./...` all 12 test packages pass (27 new tests in Phase 7)
-- Vet: `go vet ./...` clean
+### End-to-End Test: PASSED
 
-### Phase 7 — What was built
-- `internal/bvbrc/auth.go` — Token resolution (env → credentials.json → .bvbrc_token → .patric_token → .p3_token), parsing, expiry check
-- `internal/bvbrc/auth_test.go` — 7 unit tests
-- `internal/bvbrc/client.go` — RPCCaller interface, HTTPRPCCaller (JSON-RPC 1.1), RPCError type
-- `internal/bvbrc/client_test.go` — 5 unit tests with httptest.Server
-- `internal/executor/bvbrc.go` — BVBRCExecutor: Submit (start_app), Status (query_tasks), Cancel (kill_task), Logs (query_app_log)
-- `internal/executor/bvbrc_test.go` — 15 unit tests with mock RPCCaller
-- `internal/executor/bvbrc_integration_test.go` — 1 integration test (build-tag gated)
-- `internal/scheduler/resolve.go` — Inject `_bvbrc_app_id` reserved key from step hints
-- `internal/scheduler/resolve_test.go` — +2 tests for `_bvbrc_app_id` injection
-- `cmd/server/main.go` — Conditional BVBRCExecutor registration (soft — server starts without token)
+Successfully ran `test-pipeline.cwl` (Date -> Sleep) against live BV-BRC:
 
-### Key Decisions Made (Phase 7)
-- Async executor: Submit returns immediately with BV-BRC job UUID; scheduler polls via pollInFlight()
-- RPCCaller interface abstracts JSON-RPC 1.1 for mock-based testing
-- Soft registration: server starts fine without a BV-BRC token
-- No new dependencies — uses only net/http and encoding/json
-- Token resolution priority: BVBRC_TOKEN env → ~/.gowe/credentials.json → ~/.bvbrc_token → ~/.patric_token → ~/.p3_token
-- BV-BRC state mapping: queued→QUEUED, in-progress→RUNNING, completed→SUCCESS, failed/deleted/suspended→FAILED
+| Step | App | BV-BRC Job | State | Duration |
+|------|-----|-----------|-------|----------|
+| get_date | Date | 21463320 | SUCCESS | ~70s |
+| wait | Sleep | 21463323 | SUCCESS | ~4s |
 
-### GitHub Issues
-- #1–#5: Phases 1–5 (CLOSED)
-- #6: Phase 6 — Scheduler + LocalExecutor (CLOSED)
-- #7: Phase 7 — BVBRCExecutor (CLOSED via ee14cc3)
-- #8: Airflow provider (open, separate)
-- #9: API verification — BV-BRC endpoints (open, PLANNED — see below)
-- #10: Output registry (open)
-- #11: Phase 8 — MCP Server + Tool Gen (open)
+- Submission `sub_ff2295ed` reached COMPLETED
+- Resolver correctly tolerated missing upstream outputs (nil for optional trigger)
+- Both tasks transitioned: PENDING -> SCHEDULED -> QUEUED -> RUNNING -> SUCCESS
 
-### Next Task: Issue #9 — BV-BRC API Verification (PLANNED)
-Plan is at: `/Users/me/.claude/plans/tranquil-sparking-popcorn.md`
+### Bug Fixed This Session
 
-**What**: Issue #9 is about verifying `docs/BVBRC-API.md` against live BV-BRC endpoints. Three `[VERIFY]` tags in the doc mark uncertain sections.
+**Scientific notation job IDs** (`internal/executor/bvbrc.go:108`):
+- `fmt.Sprintf("%v", float64(21463320))` produced `"2.1463317e+07"`
+- `query_tasks` response keyed by `"21463320"` — lookup mismatch -> stuck at QUEUED
+- Fix: `strconv.FormatInt(int64(id), 10)` -> `"21463320"`
+- NOT YET COMMITTED
 
-**Approach**: Create `cmd/verify-bvbrc/main.go` — a one-shot CLI tool that:
-1. Resolves a BV-BRC token (reuses `internal/bvbrc.ResolveToken`)
-2. Checks service URL reachability (app_service, auth endpoint, workspace)
-3. Calls AppService methods: `enumerate_apps`, `query_app_description`, `query_tasks`, `query_task_summary`
-4. Calls Workspace.ls to verify response shape
-5. Prints pass/fail report, exits 0/1
-6. Skips `start_app` (would create a real job)
+### Known Issues Found During Test
 
-**Files to create/modify**:
-- `cmd/verify-bvbrc/main.go` — Create: verification CLI tool
-- `docs/BVBRC-API.md` — Modify: update `[VERIFY]` to `[VERIFIED <date>]` or `[FIXED]`
+1. **Logs empty** — `BVBRCExecutor.Logs()` calls `query_app_log` but returns empty for Date/Sleep. Issue #34.
+2. **task_summary counts zero** — `task_summary` in submission response shows all zeros despite tasks existing. Likely aggregation bug.
+3. **Date/Sleep produce no workspace output** — Expected; they're test apps. Real apps (GenomeAnnotation etc.) would write files.
 
-**Key details**:
-- Workspace uses different URL: `https://p3.theseed.org/services/Workspace` (needs second RPCCaller)
-- Auth endpoint check uses plain net/http (not RPC)
-- No new dependencies
-- Optional auth test if BVBRC_USERNAME/BVBRC_PASSWORD env vars are set
+### Uncommitted Change
 
-**Run**: `go run ./cmd/verify-bvbrc/` (requires BVBRC_TOKEN or ~/.bvbrc_token)
+- `internal/executor/bvbrc.go` — float64-to-int job ID fix (strconv.FormatInt)
 
-### Remaining Work After #9
-- Phase 8: MCP Server + Tool Gen (#11) — final planned phase
-- Output registry (#10)
-- Airflow provider (#8, separate)
+---
 
-### Reference
-- Phase 7 plan (overwritten with #9 plan): `/Users/me/.claude/plans/tranquil-sparking-popcorn.md`
-- Memory: `/Users/me/.claude/projects/-Users-me-Development-GoWe/memory/MEMORY.md`
-- Docs: `docs/GoWe-Implementation-Plan.md`, `docs/BVBRC-API.md`
-- BV-BRC API `[VERIFY]` tags at lines 7, 74, 623 of `docs/BVBRC-API.md`
+### Phase Completion Status
+
+- **Phase 1-7**: ALL DONE (v0.3.0 through v0.7.0)
+- **DockerExecutor**: DONE (5c99647)
+- **Phase 8**: MCP Server + Tool Gen — IN PROGRESS
+- **CWL Directory type**: DONE (8c57a81, #31)
+- **Auto-wrap bare CLTs**: DONE (43ca8f6, #28)
+
+### Recent Commits (main)
+
+```
+8c57a81 feat: map BV-BRC folder to CWL Directory with URI scheme support (#31)
+43ca8f6 feat: auto-wrap bare CommandLineTools as single-step Workflows (#28)
+07ee63a fix: handle numeric job IDs from BV-BRC start_app response
+4ffd2b4 fix: tolerate missing outputs on completed BV-BRC tasks in resolver
+```
+
+### Open Issues (as of 2026-02-12)
+
+**Gen-CWL-Tools improvements:**
+- #30: Semantic types for genome/feature IDs
+- #32: Enum values from allowed_values
+- #33: Framework-injected outputs
+
+**BV-BRC executor:**
+- #34: Fix BVBRCExecutor.Logs
+- #35: Document query_task_details API
+
+**Infrastructure:**
+- #9: API verification (PLANNED)
+- #10: Output registry
+- #11: Phase 8 — MCP Server + Tool Gen
+- #16: Add HTTP integration tests
+- #17: Set up CI/CD with GitHub Actions
+
+### p3 Tools
+
+Location: `/Users/me/Development/bvbrc/BV-BRC-Go-SDK/dist/bin/`
+Usage: `export PATH="/Users/me/Development/bvbrc/BV-BRC-Go-SDK/dist/bin:$PATH"`
+
+### Key Files Reference
+
+| File | Purpose |
+|------|---------|
+| `cmd/server/main.go` | Server entry point |
+| `internal/executor/bvbrc.go` | BVBRCExecutor (Submit/Status/Cancel/Logs) |
+| `internal/scheduler/resolve.go` | Input resolution + dependency checking |
+| `internal/scheduler/loop.go` | Scheduler main loop (5 phases per tick) |
+| `cwl/workflows/test-pipeline.cwl` | Date -> Sleep test workflow |
+| `cwl/jobs/test-pipeline.yml` | Job inputs for test pipeline |
+
+### YAML Gotcha
+
+`?` is a YAML special character. Inside flow mappings `{ }`, optional types like `string?` must be quoted: `{ type: "string?" }`. Block style doesn't need quoting.

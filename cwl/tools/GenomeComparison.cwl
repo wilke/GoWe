@@ -49,6 +49,6 @@ inputs:
 
 outputs:
   result:
-    type: Directory
+    type: File[]
     outputBinding:
-      glob: "."
+      glob: $(inputs.output_path.location)/$(inputs.output_file)*

@@ -275,12 +275,12 @@ func buildCWL(appID, label, desc string, inputs []inputReport) string {
 		}
 	}
 
-	// Outputs — generic Directory output.
+	// Outputs — result file derived from output_path + output_file inputs.
 	b.WriteString("\noutputs:\n")
 	b.WriteString("  result:\n")
-	b.WriteString("    type: Directory\n")
+	b.WriteString("    type: File[]\n")
 	b.WriteString("    outputBinding:\n")
-	b.WriteString("      glob: \".\"\n")
+	b.WriteString("      glob: $(inputs.output_path.location)/$(inputs.output_file)*\n")
 
 	return b.String()
 }
@@ -409,7 +409,7 @@ func writeReport(path string, reports []appReport) error {
 		b.WriteString("\n### Outputs (guessed)\n\n")
 		b.WriteString("| Output | CWL Type | Notes |\n")
 		b.WriteString("|--------|----------|-------|\n")
-		b.WriteString("| result | Directory | All BV-BRC output files |\n\n")
+		b.WriteString("| result | File[] | `$(inputs.output_path.location)/$(inputs.output_file)*` |\n\n")
 
 		b.WriteString("### Review Notes\n\n")
 		b.WriteString("- [ ] Verify input types — complex params may need File or array types\n")
