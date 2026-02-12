@@ -36,6 +36,14 @@ func ResolveTaskInputs(
 
 			val, ok := depTask.Outputs[outputID]
 			if !ok {
+				// Tolerate missing outputs on SUCCESS tasks with no output
+				// mapping (e.g. BV-BRC tasks that write to workspace, not
+				// local files). If the task has some outputs but not the
+				// requested one, still error (likely a source typo).
+				if depTask.State == model.TaskStateSuccess && len(depTask.Outputs) == 0 {
+					resolved[si.ID] = nil
+					continue
+				}
 				return fmt.Errorf("resolve: output %q not found on step %q for input %q", outputID, stepID, si.ID)
 			}
 

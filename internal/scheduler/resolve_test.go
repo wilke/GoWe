@@ -312,6 +312,70 @@ func TestResolveTaskInputs_NoBVBRCAppIDWithoutHints(t *testing.T) {
 	}
 }
 
+func TestResolveTaskInputs_MissingUpstreamOutput_SuccessEmptyOutputs(t *testing.T) {
+	// BV-BRC tasks complete successfully but never populate Outputs.
+	// The resolver should tolerate this (common trigger/dependency pattern).
+	upstream := &model.Task{
+		ID:      "task_0",
+		StepID:  "get_date",
+		State:   model.TaskStateSuccess,
+		Outputs: map[string]any{}, // empty — typical for BV-BRC
+	}
+	tasksByStepID := map[string]*model.Task{"get_date": upstream}
+
+	task := &model.Task{ID: "task_1", StepID: "wait"}
+	step := &model.Step{
+		ID: "wait",
+		In: []model.StepInput{
+			{ID: "trigger", Source: "get_date/date_result"},
+			{ID: "sleep_time", Source: "sleep_seconds"},
+		},
+	}
+	subInputs := map[string]any{"sleep_seconds": 5}
+
+	if err := ResolveTaskInputs(task, step, subInputs, tasksByStepID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// trigger should be nil (tolerated missing output)
+	if val, exists := task.Inputs["trigger"]; !exists {
+		t.Error("Inputs should contain key 'trigger'")
+	} else if val != nil {
+		t.Errorf("Inputs[\"trigger\"] = %v, want nil", val)
+	}
+	// sleep_time should resolve normally
+	if got := task.Inputs["sleep_time"]; got != 5 {
+		t.Errorf("Inputs[\"sleep_time\"] = %v, want 5", got)
+	}
+}
+
+func TestResolveTaskInputs_MissingUpstreamOutput_NilOutputs(t *testing.T) {
+	// Same as above but with nil Outputs map (not just empty).
+	upstream := &model.Task{
+		ID:     "task_0",
+		StepID: "get_date",
+		State:  model.TaskStateSuccess,
+		// Outputs is nil
+	}
+	tasksByStepID := map[string]*model.Task{"get_date": upstream}
+
+	task := &model.Task{ID: "task_1", StepID: "wait"}
+	step := &model.Step{
+		ID: "wait",
+		In: []model.StepInput{
+			{ID: "trigger", Source: "get_date/date_result"},
+		},
+	}
+
+	if err := ResolveTaskInputs(task, step, nil, tasksByStepID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val, exists := task.Inputs["trigger"]; !exists {
+		t.Error("Inputs should contain key 'trigger'")
+	} else if val != nil {
+		t.Errorf("Inputs[\"trigger\"] = %v, want nil", val)
+	}
+}
+
 func TestBuildTasksByStepID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "task_1", StepID: "step_a"},
