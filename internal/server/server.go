@@ -119,6 +119,9 @@ func (s *Server) routes() {
 	r.Use(requestIDMiddleware)
 	r.Use(loggingMiddleware(s.logger))
 
+	// Static files (JS, CSS, images)
+	r.Handle("/static/*", ui.StaticHandler("ui/assets"))
+
 	// UI routes (HTML)
 	s.ui.RegisterRoutes(r)
 

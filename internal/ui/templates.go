@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -116,6 +117,13 @@ var templateFuncs = template.FuncMap{
 		}
 		return (a * 100) / b
 	},
+	"toJSON": func(v any) template.JS {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return template.JS("[]")
+		}
+		return template.JS(b)
+	},
 	"truncate": func(s string, n int) string {
 		if len(s) <= n {
 			return s
@@ -185,6 +193,8 @@ var templates = map[string]string{
     <title>{{.Title}}</title>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/static/js/dag-editor.js"></script>
     <style>
         [x-cloak] { display: none !important; }
         .htmx-indicator { display: none; }
@@ -592,7 +602,36 @@ var templates = map[string]string{
         </div>
     </div>
 
-    <!-- Steps -->
+    <!-- Visual DAG -->
+    {{if .Workflow.Steps}}
+    <div class="mt-6 bg-white shadow overflow-hidden sm:rounded-lg">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow Graph</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <div id="dag-container"></div>
+        </div>
+    </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const steps = {{toJSON .Workflow.Steps}};
+        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
+            const app = Vue.createApp({
+                components: { DagEditor },
+                data() {
+                    return {
+                        steps: steps
+                    };
+                },
+                template: '<DagEditor :steps="steps" :readonly="true" />'
+            });
+            app.mount('#dag-container');
+        }
+    });
+    </script>
+    {{end}}
+
+    <!-- Steps List -->
     <div class="mt-6 bg-white shadow overflow-hidden sm:rounded-lg">
         <div class="px-4 py-5 sm:px-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Steps ({{len .Workflow.Steps}})</h3>
