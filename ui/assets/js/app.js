@@ -16,14 +16,23 @@ const Toast = {
 
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.innerHTML = `
-      <div class="flex items-center">
-        <span>${message}</span>
-        <button onclick="this.parentElement.parentElement.remove()" class="ml-4 text-gray-400 hover:text-gray-600">
-          &times;
-        </button>
-      </div>
-    `;
+    
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-center';
+    
+    const messageSpan = document.createElement('span');
+    messageSpan.textContent = message;
+    
+    const closeButton = document.createElement('button');
+    closeButton.className = 'ml-4 text-gray-400 hover:text-gray-600';
+    closeButton.textContent = '×';
+    closeButton.addEventListener('click', function() {
+      this.parentElement.parentElement.remove();
+    });
+    
+    wrapper.appendChild(messageSpan);
+    wrapper.appendChild(closeButton);
+    toast.appendChild(wrapper);
 
     this.container.appendChild(toast);
 
