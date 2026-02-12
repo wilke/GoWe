@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.egg-info/
+.eggs/
+*.pyc
+
+# Build outputs
+dist/
+build/
+*.js.map
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Package locks (optional - uncomment to track)
+# package-lock.json
