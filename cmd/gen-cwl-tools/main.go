@@ -213,8 +213,8 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 	}
 	if !hasOutput {
 		inputs = append(inputs, inputReport{
-			ID: "output_path", CWLType: "string", Required: true,
-			Desc: "Workspace path for results", BVBRCType: "string",
+			ID: "output_path", CWLType: "Directory?", Required: false,
+			Desc: "Workspace folder for results (framework parameter)", BVBRCType: "folder",
 		})
 	}
 	if !hasOutputFile {
@@ -295,6 +295,8 @@ func mapBVBRCType(bvbrcType string, required bool) string {
 		cwlType = "float"
 	case "boolean", "bool":
 		cwlType = "boolean"
+	case "folder":
+		cwlType = "Directory"
 	}
 	if !required {
 		cwlType += "?"

@@ -15,7 +15,7 @@ inputs:
     type: string
     doc: "Basename for the generated output files."
   output_path:
-    type: string
+    type: Directory
     doc: "Path to which the output will be written."
   SEQUENCE_ID:
     type: string

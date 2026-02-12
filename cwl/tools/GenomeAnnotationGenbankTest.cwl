@@ -23,7 +23,7 @@ inputs:
     doc: "If set, don't wait for the indexing to finish before marking the job complete."
     default: false
   output_path:
-    type: string?
+    type: Directory?
     doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
   output_file:
     type: string?

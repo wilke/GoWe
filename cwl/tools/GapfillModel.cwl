@@ -73,8 +73,8 @@ inputs:
   objective:
     type: string?
   output_path:
-    type: string
-    doc: "Workspace path for results"
+    type: Directory?
+    doc: "Workspace folder for results (framework parameter)"
 
 outputs:
   result:

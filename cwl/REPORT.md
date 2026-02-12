@@ -19,7 +19,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| output_path | string | folder | yes | — | Path to which the output will be written  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written  |
 | output_file | string | wsid | yes | — | Basename for the generated output files |
 | genome_ids | string | list | yes | — | Main genomes |
 | optional_genome_ids | string? | list | no | — | Optional genomes (not penalized for missing/duplicated genes) |
@@ -52,7 +52,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | genome_ids | string? | list | no | — | Genome Ids |
 | genome_groups | string? | list | no | — | Genome Groups |
@@ -82,7 +82,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | input_type | string | enum | yes | — | Input type (reads / contigs / genbank) [enum: reads, contigs, genbank] |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
@@ -136,7 +136,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | input_type | string | enum | yes | — | Input type (reads / contigs / genbank) [enum: reads, contigs, genbank] |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
@@ -185,7 +185,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -215,7 +215,7 @@ Generated: 2026-02-12
 | xfile | string | wstype | yes | — | Comparison values between samples |
 | mfile | string? | wstype | no | — | Metadata template filled out by the user |
 | ustring | string | string | yes | — | User information (JSON string) |
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -246,7 +246,7 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_libs | string? | group | no | — |  |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | recipe | string | list | yes | — | Recipe |
 
@@ -290,7 +290,7 @@ Generated: 2026-02-12
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | custom_bounds | string? | group | no | — |  |
 | objective | string? | group | no | — |  |
-| output_path | string | string | yes | — | Workspace path for results |
+| output_path | Directory? | folder | no | — | Workspace folder for results (framework parameter) |
 
 ### Outputs (guessed)
 
@@ -319,7 +319,7 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -365,7 +365,7 @@ Generated: 2026-02-12
 | uptake_limit | string? | group | no | — |  |
 | custom_bounds | string? | group | no | — |  |
 | objective | string? | group | no | — |  |
-| output_path | string | string | yes | — | Workspace path for results |
+| output_path | Directory? | folder | no | — | Workspace folder for results (framework parameter) |
 
 ### Outputs (guessed)
 
@@ -402,7 +402,7 @@ Generated: 2026-02-12
 | tree_type | string? | enum | no | — | Fields to be retrieved for each gene. [enum: viral_genome, gene] |
 | feature_metadata_fields | string? | string | no | — | Fields to be retrieved for each gene. |
 | genome_metadata_fields | string? | string | no | — | Fields to be retrieved for each genome. |
-| output_path | string | folder | yes | — | Path to which the output will be written. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
 
 ### Outputs (guessed)
@@ -439,7 +439,7 @@ Generated: 2026-02-12
 | minScaledPenalty | float? | float | no | — | Minimum breakpoint penalty after scaling the penalty by expected divergence. |
 | hmmPGoHomologous | float? | float | no | — | Probability of transitioning from the unrelated to the homologous state |
 | hmmPGoUnrelated | float? | float | no | — | Probability of transitioning from the homologous to the unrelated state |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -475,7 +475,7 @@ Generated: 2026-02-12
 | queue_nowait | boolean? | bool | no | false | If set, don't wait for the indexing to finish before marking the job complete. |
 | skip_indexing | boolean? | bool | no | false | If set, don't index this genome in solr. It will not be available for analysis through the PATRIC site. |
 | skip_workspace_output | boolean? | bool | no | false | If set, don't write anything to workspace. |
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | reference_genome_id | string? | string | no | — | Reference genome ID |
 | reference_virus_name | string? | string | no | — | Reference virus name |
@@ -523,7 +523,7 @@ Generated: 2026-02-12
 | skip_workspace_output | boolean? | bool | no | false | If set, don't write anything to workspace. |
 | container_id | string? | string | no | — | (Internal) Container to use for this run |
 | indexing_url | string? | string | no | — | (Internal) Override Data API URL for use in indexing |
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | reference_virus_name | string? | string | no | — | Reference virus name |
 | workflow | string? | string | no | — | Specifies a custom workflow document (expert). |
@@ -567,7 +567,7 @@ Generated: 2026-02-12
 | genbank_file | string | wstype | yes | — | Genome to process |
 | public | boolean? | bool | no | false | Make this genome public |
 | queue_nowait | boolean? | bool | no | false | If set, don't wait for the indexing to finish before marking the job complete. |
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | fix_errors | boolean? | bool | no | — | The automatic annotation process may run into problems, such as gene candidates overlapping RNAs, or genes embedded inside other genes. To automatically resolve these problems (even if that requires deleting some gene candidates), enable this option. |
 | fix_frameshifts | boolean? | bool | no | — | If you wish for the pipeline to fix frameshifts, enable this option. Otherwise frameshifts will not be corrected. |
@@ -608,7 +608,7 @@ Generated: 2026-02-12
 | pipeline | string? | string | no | — | Advanced assembly pipeline arguments that overrides recipe |
 | min_contig_len | int? | int | no | 300 | Filter out short contigs in final assembly |
 | min_contig_cov | float? | float | no | 5 | Filter out contigs with low read depth in final assembly |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -645,7 +645,7 @@ Generated: 2026-02-12
 | min_contig_len | int? | int | no | 300 | Filter out short contigs in final assembly |
 | min_contig_cov | float? | float | no | 5 | Filter out contigs with low read depth in final assembly |
 | genome_size | string? | string | no | "5M" | Estimated genome size (for canu) |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | debug_level | int? | int | no | 0 | Debugging level. |
 
@@ -681,7 +681,7 @@ Generated: 2026-02-12
 | max_e_val | float? | float | no | 1e-05 | Maximum E-value |
 | min_ident | float? | float | no | 0.1 | Minimum fraction identity |
 | min_positives | float? | float | no | 0.2 | Minimum fraction positive-scoring positions |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -713,7 +713,7 @@ Generated: 2026-02-12
 | input_fasta_file | string? | wsid | no | — | Input sequence as a workspace file of fasta data |
 | input_feature_group | string? | wsid | no | — | Input sequence as a workspace feature group |
 | types | string | string | yes | — | Selected types in the submission |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -753,7 +753,7 @@ Generated: 2026-02-12
 | db_taxon_list | string? | array | no | — | Database taxon list |
 | db_precomputed_database | string? | string | no | — | Precomputed database name |
 | blast_program | string? | enum | no | — | BLAST program to use [enum: blastp, blastn, blastx, tblastn, tblastx] |
-| output_path | string | folder | yes | — | Path to which the output will be written. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
 
 ### Outputs (guessed)
@@ -785,7 +785,7 @@ Generated: 2026-02-12
 | aligner | string? | enum | no | "Muscle" | Tool used for aligning multiple sequences to each other. [enum: Muscle] |
 | alphabet | string | enum | yes | "dna" | Determines which sequence alphabet is present. [enum: dna, protein] |
 | fasta_keyboard_input | string? | string | no | — | Text input for a fasta file. |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -816,7 +816,7 @@ Generated: 2026-02-12
 | group_file | string | wstype | yes | — | The location of a file that partitions sequences into groups. |
 | p_value | float | float | yes | 0.05 | The p-value cutoff for analyzing sequences. |
 | alignment_type | string | enum | yes | — | The file format type. [enum: aligned_dna_fasta, aligned_protein_fasta] |
-| output_path | string | folder | yes | — | Path to which the output will be written. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
 
 ### Outputs (guessed)
@@ -851,7 +851,7 @@ Generated: 2026-02-12
 | skip_indexing | boolean? | bool | no | false | If set, don't index the generated bins solr. They will not be available for analysis through the PATRIC site. |
 | recipe | string? | string | no | — | Specifies a non-default annotation recipe for annotation of bins |
 | viral_recipe | string? | string | no | — | Specifies a non-default annotation recipe for annotation of viral bins |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | force_local_assembly | boolean | bool | yes | false | If set, disable the use of remote clusters for assembly |
 | force_inline_annotation | boolean? | bool | no | true | If set, disable the use of the cluster for annotation |
@@ -895,7 +895,7 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -926,7 +926,7 @@ Generated: 2026-02-12
 | media | string? | wstype | no | — | Media formulation in which model should be initially gapfilled |
 | template_model | string? | wstype | no | — | Template upon which model should be constructed |
 | fulldb | boolean | bool | yes | false | Add all reactions from template to model regardless of annotation |
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -953,7 +953,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| output_path | string | folder | yes | — | Path to which the output will be written.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
 | in_genome_ids | string | list | yes | — | In-group genomes |
 | out_genome_ids | string | list | yes | — | Out-group genomes |
@@ -985,7 +985,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
-| output_path | string | folder | yes | — | Path to which the output will be written. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. |
 | SEQUENCE_ID | string | string | yes | — | Sequence ID |
 | SEQUENCE_TEMPLATE | string | string | yes | — | Nucleotide Sequence or (BVBRC Seq Id) |
 | SEQUENCE_TARGET | string? | array | no | — | Start/stop of region that primers must flank |
@@ -1034,7 +1034,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | genome_object | string | wstype | yes | — | Input set of DNA contigs for annotation |
-| output_path | string? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | workflow | string? | string | no | — | Specifies a custom workflow document (expert). |
 | recipe | string? | string | no | — | Specifies a non-default annotation recipe |
@@ -1073,7 +1073,7 @@ Generated: 2026-02-12
 | genome_type | string | enum | yes | — | genome is type bacteria or host [enum: bacteria, host] |
 | recipe | string | enum | yes | "HTSeq-DESeq" | Recipe used for RNAseq analysis [enum: HTSeq-DESeq, cufflinks, Host] |
 | host_ftp | string? | string | no | — | Host FTP prefix for obtaining files |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | trimming | boolean? | bool | no | false | run trimgalore on the reads |
 | unit_test | string? | string | no | — | Path to the json file used for unit testing |
@@ -1113,7 +1113,7 @@ Generated: 2026-02-12
 | genome_type | string? | enum | no | — | genome is type bacteria or host [enum: bacteria, host] |
 | recipe | string? | enum | no | "RNA-Rocket" | Recipe used for RNAseq analysis [enum: RNA-Rocket, Rockhopper, Host] |
 | host_ftp | string? | string | no | — | Host FTP prefix for obtaining files |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | unit_test | string? | string | no | — | Path to the json file used for unit testing |
 | skip_sampling | string? | string | no | — | flag to skip the sampling step in alignment.py |
@@ -1144,7 +1144,7 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | command | string | string | yes | — | ProbModelSEED command to run |
 | arguments | string | string | yes | — | ProbModelSEED arguments |
-| output_path | string | string | yes | — | Workspace path for results |
+| output_path | Directory? | folder | no | — | Workspace folder for results (framework parameter) |
 | output_file | string | string | yes | — | Prefix for output file names |
 
 ### Outputs (guessed)
@@ -1178,7 +1178,7 @@ Generated: 2026-02-12
 | min_depth | int? | int | no | 100 | Minimum coverage to add reads to consensus sequence |
 | max_depth | int? | int | no | 8000 | Maximum read depth to consider for consensus sequence |
 | keep_intermediates | int? | int | no | 0 | Keep all intermediate output from the pipeline |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | debug_level | int? | int | no | 0 | Debugging level. |
 
@@ -1211,7 +1211,7 @@ Generated: 2026-02-12
 | input_fasta_file | string? | wsid | no | — | Input sequence as a workspace file of fasta data |
 | input_genome_group | string? | wsid | no | — | Input sequence as a workspace genome group |
 | metadata | string? | wsid | no | — | Metadata as a workspace file of csv |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -1239,7 +1239,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | sleep_time | int? | int | no | 10 | Time to sleep, in seconds. |
-| output_path | string | string | yes | — | Workspace path for results |
+| output_path | Directory? | folder | no | — | Workspace folder for results (framework parameter) |
 | output_file | string | string | yes | — | Prefix for output file names |
 
 ### Outputs (guessed)
@@ -1272,7 +1272,7 @@ Generated: 2026-02-12
 | input_genome_group | string? | wsid | no | — | Input sequence as a workspace genome group |
 | ref_msa_fasta | string? | wsid | no | — | Reference multiple sequence alignment (Fasta-formatted) |
 | virus_type | string | string | yes | — | Virus type |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -1299,7 +1299,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| output_path | string | folder | yes | — | Path to which the output will be written.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
 | genome_ids | string | list | yes | — | Input genomes |
 | ksize | int | int | yes | 3 | Minimum neighborhood size for alignment |
@@ -1340,7 +1340,7 @@ Generated: 2026-02-12
 | save_unclassified_sequences | boolean? | bool | no | false | Save the unclassified sequences |
 | algorithm | string | enum | yes | "Kraken2" | Classification algorithm [enum: Kraken2] |
 | database | string | enum | yes | "Kraken2" | Target database [enum: Default NT, Kraken2, Greengenes, RDP, SILVA] |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -1374,7 +1374,7 @@ Generated: 2026-02-12
 | recipe | string? | enum | no | "gumbel" | Recipe used for TnSeq analysis [enum: griffin, tn5gaps, rankproduct, hmm, binomial, resampling] |
 | protocol | string? | enum | no | "sassetti" | Protocol used for TnSeq analysis [enum: sassetti, tn5, mme1] |
 | primer | string? | string | no | — | Primer DNA string for read trimming. |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)
@@ -1408,7 +1408,7 @@ Generated: 2026-02-12
 | reference_genome_id | string? | string | no | — | Reference genome ID |
 | mapper | string? | enum | no | "BWA-mem" | Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST] |
 | caller | string? | enum | no | "FreeBayes" | Tool used for calling variations based on short read mapping [enum: FreeBayes, SAMtools] |
-| output_path | string | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
+| output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
 
 ### Outputs (guessed)

@@ -16,8 +16,8 @@ inputs:
     doc: "Time to sleep, in seconds."
     default: 10
   output_path:
-    type: string
-    doc: "Workspace path for results"
+    type: Directory?
+    doc: "Workspace folder for results (framework parameter)"
   output_file:
     type: string
     doc: "Prefix for output file names"

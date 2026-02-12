@@ -147,6 +147,10 @@ var templateFuncs = template.FuncMap{
 		t = strings.TrimSuffix(t, "?")
 		return t == "File" || strings.HasPrefix(t, "File[")
 	},
+	"isDirectoryType": func(t string) bool {
+		t = strings.TrimSuffix(t, "?")
+		return t == "Directory"
+	},
 	"isArrayType": func(t string) bool {
 		// Check if CWL type is an array type
 		t = strings.TrimSuffix(t, "?")
@@ -1287,6 +1291,28 @@ var templates = map[string]string{
                                 {{end}}
                             </div>
                             <p class="mt-1 text-xs text-gray-500">{{if $.HasWorkspace}}Enter a workspace path or browse to select a file{{else}}Enter a BV-BRC workspace path (e.g., /user@bvbrc/home/file.fasta){{end}}</p>
+                            {{else if isDirectoryType .Type}}
+                            <!-- Directory input with workspace folder picker -->
+                            <div class="mt-1 flex items-center space-x-2">
+                                <input type="text" name="inputs[{{.ID}}]" id="input_{{.ID}}"
+                                       {{if .Required}}required{{end}}
+                                       {{if .Default}}value="{{.Default}}"{{end}}
+                                       placeholder="/username@bvbrc/home/folder"
+                                       class="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono">
+                                {{if $.HasWorkspace}}
+                                <button type="button"
+                                        onclick="GoWe.FilePicker.open('input_{{.ID}}', '{{$.WorkspacePath}}', {mode: 'folder'})"
+                                        class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                                    Browse
+                                </button>
+                                <button type="button"
+                                        onclick="GoWe.FolderCreator.create('input_{{.ID}}', '{{$.WorkspacePath}}')"
+                                        class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                                    + Create
+                                </button>
+                                {{end}}
+                            </div>
+                            <p class="mt-1 text-xs text-gray-500">{{if $.HasWorkspace}}Select a workspace folder or create a new one{{else}}Enter a BV-BRC workspace path (e.g., /user@bvbrc/home/output){{end}}</p>
                             {{else if isArrayType .Type}}
                             <!-- Array input -->
                             <textarea name="inputs[{{.ID}}]" id="input_{{.ID}}" rows="3"

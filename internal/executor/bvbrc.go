@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/me/gowe/internal/bvbrc"
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -55,13 +56,27 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", fmt.Errorf("task %s: bvbrc_app_id is missing", task.ID)
 	}
 
-	// Build params: copy task inputs, stripping reserved keys.
+	// Build params: copy task inputs, stripping reserved keys and
+	// extracting Directory locations for BV-BRC.
 	params := make(map[string]any, len(task.Inputs))
 	for k, v := range task.Inputs {
 		if reservedKeys[k] {
 			continue
 		}
-		params[k] = v
+		if dir, ok := v.(map[string]any); ok && dir["class"] == "Directory" {
+			loc, _ := dir["location"].(string)
+			scheme, path := cwl.ParseLocationScheme(loc)
+			switch scheme {
+			case cwl.SchemeWorkspace, "":
+				params[k] = path
+			case cwl.SchemeShock:
+				params[k] = loc
+			default:
+				return "", fmt.Errorf("task %s: unsupported scheme %q for Directory input %q", task.ID, scheme, k)
+			}
+		} else {
+			params[k] = v
+		}
 	}
 
 	// Determine workspace path from params or default.

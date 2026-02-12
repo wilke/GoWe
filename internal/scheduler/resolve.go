@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -92,8 +93,72 @@ func ResolveTaskInputs(
 		resolved["_bvbrc_app_id"] = step.Hints.BVBRCAppID
 	}
 
+	// Normalize typed values (e.g., wrap string → CWL Directory object).
+	if step.ToolInline != nil {
+		execType := ""
+		if step.Hints != nil {
+			execType = string(step.Hints.ExecutorType)
+		}
+		typeMap := buildInputTypeMap(step.ToolInline.Inputs)
+		for k, v := range resolved {
+			if cwlType, ok := typeMap[k]; ok {
+				resolved[k] = normalizeValue(v, cwlType, execType)
+			}
+		}
+	}
+
 	task.Inputs = resolved
 	return nil
+}
+
+// buildInputTypeMap creates an ID → CWL type lookup from tool inputs.
+func buildInputTypeMap(inputs []model.ToolInput) map[string]string {
+	m := make(map[string]string, len(inputs))
+	for _, inp := range inputs {
+		m[inp.ID] = inp.Type
+	}
+	return m
+}
+
+// normalizeValue wraps raw values in CWL typed objects when needed.
+func normalizeValue(val any, cwlType, execType string) any {
+	if val == nil {
+		return nil
+	}
+	baseType := strings.TrimSuffix(cwlType, "?")
+	if baseType == "Directory" {
+		return normalizeDirectory(val, execType)
+	}
+	return val
+}
+
+// normalizeDirectory ensures a value becomes a CWL Directory object
+// with a proper URI-schemed location.
+//   - string "ws:///path"         → {class: Directory, location: "ws:///path"}
+//   - string "/bare/path"         → infer scheme from executor → {class: Directory, location: "ws:///bare/path"}
+//   - map with class: "Directory" → pass-through
+func normalizeDirectory(val any, execType string) any {
+	switch v := val.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		scheme, _ := cwl.ParseLocationScheme(v)
+		if scheme == "" {
+			v = cwl.BuildLocation(cwl.InferScheme(execType), v)
+		}
+		return map[string]any{"class": "Directory", "location": v}
+	case map[string]any:
+		if v["class"] == "Directory" {
+			return v
+		}
+		if loc, ok := v["location"]; ok {
+			return map[string]any{"class": "Directory", "location": loc}
+		}
+		return val
+	default:
+		return val
+	}
 }
 
 // AreDependenciesSatisfied checks whether all upstream dependencies of the

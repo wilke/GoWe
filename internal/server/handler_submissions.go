@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -255,6 +256,26 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 			"field":   "inputs." + k,
 			"message": "unknown input " + k + " (not declared in workflow)",
 		})
+	}
+
+	// Warn about Directory inputs that look like they may not exist.
+	for _, inp := range wf.Inputs {
+		baseType := strings.TrimSuffix(inp.Type, "?")
+		if baseType != "Directory" {
+			continue
+		}
+		val, _ := inputs[inp.ID].(string)
+		if val == "" {
+			continue
+		}
+		// Bare string without scheme — likely a workspace path; warn if it
+		// doesn't start with / (common typo).
+		if !strings.HasPrefix(val, "/") && !strings.Contains(val, "://") {
+			warnings = append(warnings, map[string]string{
+				"field":   "inputs." + inp.ID,
+				"message": "Directory path " + val + " does not start with / or contain a scheme",
+			})
+		}
 	}
 
 	// --- Step analysis ---

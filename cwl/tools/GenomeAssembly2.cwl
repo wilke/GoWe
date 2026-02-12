@@ -47,7 +47,7 @@ inputs:
     doc: "Estimated genome size (for canu)"
     default: "5M"
   output_path:
-    type: string
+    type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
   output_file:
     type: string

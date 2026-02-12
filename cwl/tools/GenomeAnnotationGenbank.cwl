@@ -37,7 +37,7 @@ inputs:
     type: string?
     doc: "(Internal) Override Data API URL for use in indexing"
   output_path:
-    type: string?
+    type: Directory?
     doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
   output_file:
     type: string?

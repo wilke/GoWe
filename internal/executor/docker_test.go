@@ -232,6 +232,75 @@ func TestDockerExecutor_Logs(t *testing.T) {
 	}
 }
 
+func TestDockerExecutor_DirectoryFileSchemeMount(t *testing.T) {
+	runner := &mockRunner{
+		results: []mockResult{
+			{stdout: "ok\n", stderr: "", exitCode: 0},
+		},
+	}
+	tmpDir := t.TempDir()
+	e := newDockerExecutorWithRunner(tmpDir, newTestLogger(), runner)
+
+	// Create a directory to mount.
+	mountDir := filepath.Join(tmpDir, "mount_src")
+	os.MkdirAll(mountDir, 0o755)
+
+	task := &model.Task{
+		ID: "task_dir_mount",
+		Inputs: map[string]any{
+			"_base_command": []any{"ls"},
+			"_docker_image": "alpine:latest",
+			"output_path": map[string]any{
+				"class":    "Directory",
+				"location": "file://" + mountDir,
+			},
+		},
+	}
+
+	_, err := e.Submit(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	// Verify volume mount args include the Directory mount.
+	call := runner.calls[0]
+	foundMount := false
+	for i, a := range call.args {
+		if a == "-v" && i+1 < len(call.args) && strings.Contains(call.args[i+1], mountDir+":/work/output_path") {
+			foundMount = true
+			break
+		}
+	}
+	if !foundMount {
+		t.Errorf("expected volume mount for output_path, got args: %v", call.args)
+	}
+}
+
+func TestDockerExecutor_DirectoryUnsupportedScheme(t *testing.T) {
+	runner := &mockRunner{}
+	e := newDockerExecutorWithRunner(t.TempDir(), newTestLogger(), runner)
+
+	task := &model.Task{
+		ID: "task_bad_scheme",
+		Inputs: map[string]any{
+			"_base_command": []any{"ls"},
+			"_docker_image": "alpine:latest",
+			"output_path": map[string]any{
+				"class":    "Directory",
+				"location": "ws:///user@bvbrc/home/out",
+			},
+		},
+	}
+
+	_, err := e.Submit(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected error for ws:// scheme on Docker executor")
+	}
+	if !strings.Contains(err.Error(), "unsupported scheme") {
+		t.Errorf("error = %q, want it to mention unsupported scheme", err.Error())
+	}
+}
+
 func TestDockerExecutor_OutputGlob(t *testing.T) {
 	runner := &mockRunner{
 		results: []mockResult{

@@ -19,7 +19,7 @@ inputs:
     type: string?
     doc: "Sequence Read Archive (SRA) Run ID"
   output_path:
-    type: string
+    type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
   output_file:
     type: string

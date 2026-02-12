@@ -376,6 +376,201 @@ func TestResolveTaskInputs_MissingUpstreamOutput_NilOutputs(t *testing.T) {
 	}
 }
 
+func TestResolveTaskInputs_NormalizeDirectory_BareStringBVBRC(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "annotate"}
+	step := &model.Step{
+		ID: "annotate",
+		In: []model.StepInput{
+			{ID: "output_path", Source: "out_dir"},
+		},
+		Hints: &model.StepHints{
+			BVBRCAppID:   "GenomeAnnotation",
+			ExecutorType: model.ExecutorTypeBVBRC,
+		},
+		ToolInline: &model.Tool{
+			ID:    "annotate_tool",
+			Class: "CommandLineTool",
+			Inputs: []model.ToolInput{
+				{ID: "output_path", Type: "Directory?"},
+			},
+		},
+	}
+	subInputs := map[string]any{"out_dir": "/awilke@bvbrc/home/gowe-test"}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, ok := task.Inputs["output_path"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_path is %T, want map[string]any", task.Inputs["output_path"])
+	}
+	if dir["class"] != "Directory" {
+		t.Errorf("class = %v, want Directory", dir["class"])
+	}
+	wantLoc := "ws:///awilke@bvbrc/home/gowe-test"
+	if dir["location"] != wantLoc {
+		t.Errorf("location = %v, want %v", dir["location"], wantLoc)
+	}
+}
+
+func TestResolveTaskInputs_NormalizeDirectory_BareStringDocker(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "process"}
+	step := &model.Step{
+		ID: "process",
+		In: []model.StepInput{
+			{ID: "output_path", Source: "out_dir"},
+		},
+		Hints: &model.StepHints{
+			ExecutorType: model.ExecutorTypeContainer,
+			DockerImage:  "alpine:latest",
+		},
+		ToolInline: &model.Tool{
+			ID:    "process_tool",
+			Class: "CommandLineTool",
+			Inputs: []model.ToolInput{
+				{ID: "output_path", Type: "Directory"},
+			},
+		},
+	}
+	subInputs := map[string]any{"out_dir": "/tmp/output"}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, ok := task.Inputs["output_path"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_path is %T, want map[string]any", task.Inputs["output_path"])
+	}
+	if dir["class"] != "Directory" {
+		t.Errorf("class = %v, want Directory", dir["class"])
+	}
+	wantLoc := "file:///tmp/output"
+	if dir["location"] != wantLoc {
+		t.Errorf("location = %v, want %v", dir["location"], wantLoc)
+	}
+}
+
+func TestResolveTaskInputs_NormalizeDirectory_ExplicitScheme(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	step := &model.Step{
+		ID: "step1",
+		In: []model.StepInput{
+			{ID: "output_path", Source: "out_dir"},
+		},
+		Hints: &model.StepHints{
+			ExecutorType: model.ExecutorTypeBVBRC,
+		},
+		ToolInline: &model.Tool{
+			ID:    "tool1",
+			Class: "CommandLineTool",
+			Inputs: []model.ToolInput{
+				{ID: "output_path", Type: "Directory"},
+			},
+		},
+	}
+	subInputs := map[string]any{"out_dir": "ws:///awilke@bvbrc/home/gowe-test"}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, ok := task.Inputs["output_path"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_path is %T, want map[string]any", task.Inputs["output_path"])
+	}
+	if dir["location"] != "ws:///awilke@bvbrc/home/gowe-test" {
+		t.Errorf("location = %v, want ws:///awilke@bvbrc/home/gowe-test", dir["location"])
+	}
+}
+
+func TestResolveTaskInputs_NormalizeDirectory_MapPassthrough(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	dirObj := map[string]any{"class": "Directory", "location": "ws:///user/home/out"}
+	step := &model.Step{
+		ID: "step1",
+		In: []model.StepInput{
+			{ID: "output_path", Source: "out_dir"},
+		},
+		Hints: &model.StepHints{ExecutorType: model.ExecutorTypeBVBRC},
+		ToolInline: &model.Tool{
+			ID:    "tool1",
+			Class: "CommandLineTool",
+			Inputs: []model.ToolInput{
+				{ID: "output_path", Type: "Directory"},
+			},
+		},
+	}
+	subInputs := map[string]any{"out_dir": dirObj}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, ok := task.Inputs["output_path"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_path is %T, want map[string]any", task.Inputs["output_path"])
+	}
+	if dir["location"] != "ws:///user/home/out" {
+		t.Errorf("location = %v, want ws:///user/home/out", dir["location"])
+	}
+}
+
+func TestResolveTaskInputs_NormalizeDirectory_NilPassthrough(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	step := &model.Step{
+		ID: "step1",
+		In: []model.StepInput{
+			{ID: "output_path", Source: "out_dir"},
+		},
+		Hints: &model.StepHints{ExecutorType: model.ExecutorTypeBVBRC},
+		ToolInline: &model.Tool{
+			ID:    "tool1",
+			Class: "CommandLineTool",
+			Inputs: []model.ToolInput{
+				{ID: "output_path", Type: "Directory?"},
+			},
+		},
+	}
+	subInputs := map[string]any{"out_dir": nil}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if task.Inputs["output_path"] != nil {
+		t.Errorf("output_path = %v, want nil", task.Inputs["output_path"])
+	}
+}
+
+func TestResolveTaskInputs_NormalizeDirectory_NonDirectoryUnchanged(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	step := &model.Step{
+		ID: "step1",
+		In: []model.StepInput{
+			{ID: "name", Source: "user_name"},
+		},
+		Hints: &model.StepHints{ExecutorType: model.ExecutorTypeBVBRC},
+		ToolInline: &model.Tool{
+			ID:    "tool1",
+			Class: "CommandLineTool",
+			Inputs: []model.ToolInput{
+				{ID: "name", Type: "string"},
+			},
+		},
+	}
+	subInputs := map[string]any{"user_name": "alice"}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if task.Inputs["name"] != "alice" {
+		t.Errorf("name = %v, want alice", task.Inputs["name"])
+	}
+}
+
 func TestBuildTasksByStepID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "task_1", StepID: "step_a"},

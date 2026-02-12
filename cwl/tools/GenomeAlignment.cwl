@@ -43,7 +43,7 @@ inputs:
     type: float?
     doc: "Probability of transitioning from the homologous to the unrelated state"
   output_path:
-    type: string
+    type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data."
   output_file:
     type: string

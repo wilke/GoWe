@@ -234,10 +234,21 @@ const FilePicker = {
     this.modal = document.getElementById('file-picker-modal');
   },
 
-  open(inputId, initialPath) {
+  open(inputId, initialPath, options) {
     this.init();
     this.currentInputId = inputId;
     this.currentPath = initialPath || '';
+    this.mode = (options && options.mode) || 'file';
+    // Update modal title based on mode
+    const title = this.modal.querySelector('h3');
+    if (title) {
+      title.textContent = this.mode === 'folder' ? 'Select Workspace Folder' : 'Select File from Workspace';
+    }
+    // Show/hide upload section in folder mode
+    const upload = document.getElementById('file-picker-upload');
+    if (upload) {
+      upload.style.display = this.mode === 'folder' ? 'none' : '';
+    }
     this.modal.classList.remove('hidden');
     this.loadFolder(this.currentPath);
   },
@@ -283,7 +294,23 @@ const FilePicker = {
       });
 
       let html = '<div class="space-y-1">';
+
+      // In folder mode, show a "Select This Folder" button at the top
+      if (this.mode === 'folder') {
+        const escapedCurrent = data.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        html += `
+          <div onclick="GoWe.FilePicker.selectFile('${escapedCurrent}')"
+               class="px-3 py-2 rounded bg-indigo-50 hover:bg-indigo-100 cursor-pointer flex items-center justify-between border border-indigo-200 mb-2">
+            <span class="text-indigo-700 font-medium">Select This Folder</span>
+            <span class="text-xs text-indigo-400">${data.path}</span>
+          </div>
+        `;
+      }
+
       for (const item of data.items) {
+        // In folder mode, skip non-folder items
+        if (this.mode === 'folder' && !item.isFolder) continue;
+
         const icon = item.isFolder ? '📁' : '📄';
         const sizeStr = item.isFolder ? '' : ` (${GoWe.formatBytes(item.size)})`;
         // Escape path for use in onclick attribute
@@ -371,6 +398,41 @@ const FilePicker = {
   }
 };
 
+// Folder Creator for workspace directories
+const FolderCreator = {
+  async create(inputId, basePath) {
+    const name = prompt('Enter new folder name:');
+    if (!name || !name.trim()) return;
+
+    const folderPath = (basePath || '') + '/' + name.trim();
+
+    try {
+      const resp = await fetch('/api/workspace/create-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: folderPath })
+      });
+
+      const data = await resp.json();
+
+      if (data.error) {
+        Toast.error('Failed to create folder: ' + data.error);
+        return;
+      }
+
+      const input = document.getElementById(inputId);
+      if (input) {
+        input.value = data.path || folderPath;
+        input.dispatchEvent(new Event('change'));
+      }
+      Toast.success('Created folder: ' + name.trim());
+
+    } catch (err) {
+      Toast.error('Failed to create folder: ' + err.message);
+    }
+  }
+};
+
 // Export for use in templates
 window.GoWe = {
   Toast,
@@ -380,5 +442,6 @@ window.GoWe = {
   formatBytes,
   formatDuration,
   initSubmissionPolling,
-  FilePicker
+  FilePicker,
+  FolderCreator
 };

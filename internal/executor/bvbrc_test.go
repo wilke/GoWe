@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/me/gowe/internal/bvbrc"
@@ -167,6 +168,93 @@ func TestBVBRCExecutor_SubmitUsesInputAppID(t *testing.T) {
 	}
 	if mock.calls[0].Params[0] != "FallbackApp" {
 		t.Errorf("appID = %v, want FallbackApp", mock.calls[0].Params[0])
+	}
+}
+
+func TestBVBRCExecutor_SubmitDirectoryWSScheme(t *testing.T) {
+	mock := &mockRPCCaller{
+		result: json.RawMessage(`[{"id":"j1","status":"queued"}]`),
+	}
+	e := newTestBVBRCExecutor(mock)
+
+	task := &model.Task{
+		ID:         "task_1",
+		BVBRCAppID: "GenomeAnnotation",
+		Inputs: map[string]any{
+			"output_path": map[string]any{
+				"class":    "Directory",
+				"location": "ws:///awilke@bvbrc/home/gowe-test",
+			},
+		},
+	}
+
+	_, err := e.Submit(context.Background(), task)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify output_path was extracted as bare workspace path.
+	params := mock.calls[0].Params[1].(map[string]any)
+	got, _ := params["output_path"].(string)
+	want := "/awilke@bvbrc/home/gowe-test"
+	if got != want {
+		t.Errorf("output_path = %q, want %q", got, want)
+	}
+}
+
+func TestBVBRCExecutor_SubmitDirectoryShockScheme(t *testing.T) {
+	mock := &mockRPCCaller{
+		result: json.RawMessage(`[{"id":"j1","status":"queued"}]`),
+	}
+	e := newTestBVBRCExecutor(mock)
+
+	task := &model.Task{
+		ID:         "task_1",
+		BVBRCAppID: "App1",
+		Inputs: map[string]any{
+			"data_dir": map[string]any{
+				"class":    "Directory",
+				"location": "shock://p3.theseed.org/node/abc123",
+			},
+		},
+	}
+
+	_, err := e.Submit(context.Background(), task)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := mock.calls[0].Params[1].(map[string]any)
+	got, _ := params["data_dir"].(string)
+	want := "shock://p3.theseed.org/node/abc123"
+	if got != want {
+		t.Errorf("data_dir = %q, want %q", got, want)
+	}
+}
+
+func TestBVBRCExecutor_SubmitDirectoryUnsupportedScheme(t *testing.T) {
+	mock := &mockRPCCaller{
+		result: json.RawMessage(`[{"id":"j1","status":"queued"}]`),
+	}
+	e := newTestBVBRCExecutor(mock)
+
+	task := &model.Task{
+		ID:         "task_1",
+		BVBRCAppID: "App1",
+		Inputs: map[string]any{
+			"output_path": map[string]any{
+				"class":    "Directory",
+				"location": "file:///local/path",
+			},
+		},
+	}
+
+	_, err := e.Submit(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected error for file:// scheme on BV-BRC executor")
+	}
+	if !strings.Contains(err.Error(), "unsupported scheme") {
+		t.Errorf("error = %q, want it to mention unsupported scheme", err.Error())
 	}
 }
 

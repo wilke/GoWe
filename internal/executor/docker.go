@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -96,14 +97,36 @@ func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, 
 		return "", fmt.Errorf("task %s: create work dir: %w", task.ID, err)
 	}
 
+	// Collect Directory inputs as additional volume mounts.
+	var volumeArgs []string
+	for k, v := range task.Inputs {
+		if reservedKeys[k] {
+			continue
+		}
+		if dir, ok := v.(map[string]any); ok && dir["class"] == "Directory" {
+			loc, _ := dir["location"].(string)
+			scheme, path := cwl.ParseLocationScheme(loc)
+			switch scheme {
+			case cwl.SchemeFile, "":
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					return "", fmt.Errorf("task %s: mkdir for Directory input %q: %w", task.ID, k, err)
+				}
+				volumeArgs = append(volumeArgs, "-v", path+":/work/"+k)
+			default:
+				return "", fmt.Errorf("task %s: unsupported scheme %q for Docker Directory input %q", task.ID, scheme, k)
+			}
+		}
+	}
+
 	containerName := "gowe-" + task.ID
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
 		"-v", taskDir + ":/work",
 		"-w", "/work",
-		image,
 	}
+	args = append(args, volumeArgs...)
+	args = append(args, image)
 	args = append(args, parts...)
 
 	stdout, stderr, exitCode, runErr := e.runner.Run(ctx, "docker", args...)
