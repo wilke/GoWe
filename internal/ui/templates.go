@@ -702,7 +702,7 @@ var templates = map[string]string{
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Submissions</h1>
         <div class="flex items-center space-x-2">
-            <a href="/submissions/export?format=csv{{if .StateFilter}}&state={{.StateFilter}}{{end}}{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+            <a href="/submissions/export?format=csv{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                 <svg class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -722,23 +722,23 @@ var templates = map[string]string{
             <div>
                 <label class="block text-xs font-medium text-gray-500 mb-1">Status</label>
                 <div class="flex space-x-1">
-                    <a href="/submissions{{if .DateStart}}?date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                    <a href="/submissions?{{with .DateStart}}date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if not .StateFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         All
                     </a>
-                    <a href="/submissions?state=PENDING{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                    <a href="/submissions?state=PENDING{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "PENDING"}}bg-yellow-100 text-yellow-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Pending
                     </a>
-                    <a href="/submissions?state=RUNNING{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                    <a href="/submissions?state=RUNNING{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "RUNNING"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Running
                     </a>
-                    <a href="/submissions?state=COMPLETED{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                    <a href="/submissions?state=COMPLETED{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "COMPLETED"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Completed
                     </a>
-                    <a href="/submissions?state=FAILED{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+                    <a href="/submissions?state=FAILED{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "FAILED"}}bg-red-100 text-red-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Failed
                     </a>
@@ -856,7 +856,7 @@ var templates = map[string]string{
     {{if or .Pagination.HasPrev .Pagination.HasMore}}
     <div class="mt-4 flex justify-between">
         {{if .Pagination.HasPrev}}
-        <a href="?offset={{.Pagination.PrevOffset}}&limit={{.Pagination.Limit}}{{if .StateFilter}}&state={{.StateFilter}}{{end}}{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+        <a href="?offset={{.Pagination.PrevOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
            class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
             Previous
         </a>
@@ -867,7 +867,7 @@ var templates = map[string]string{
             Showing {{add .Pagination.Offset 1}} - {{add .Pagination.Offset (len .Submissions)}} of {{.Pagination.Total}}
         </span>
         {{if .Pagination.HasMore}}
-        <a href="?offset={{.Pagination.NextOffset}}&limit={{.Pagination.Limit}}{{if .StateFilter}}&state={{.StateFilter}}{{end}}{{if .DateStart}}&date_start={{.DateStart}}{{end}}{{if .DateEnd}}&date_end={{.DateEnd}}{{end}}"
+        <a href="?offset={{.Pagination.NextOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
            class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
             Next
         </a>
@@ -1510,16 +1510,31 @@ var templates = map[string]string{
         <ul class="divide-y divide-gray-200">
             {{range .Items}}
             {{if gt (len .) 0}}
-            {{$item := index . 0}}
+            {{$name := index . 0}}
+            {{$type := index . 1}}
+            {{$parent := index . 2}}
+            {{$fullPath := printf "%s%s" $parent $name}}
             <li>
-                <a href="/workspace?path={{$item}}" class="block hover:bg-gray-50 px-4 py-4">
+                {{if eq $type "folder"}}
+                <a href="/workspace?path={{urlquery $fullPath}}" class="block hover:bg-gray-50 px-4 py-4">
                     <div class="flex items-center">
-                        <svg class="h-5 w-5 text-gray-400 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                        <svg class="h-5 w-5 text-yellow-400 mr-3" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                         </svg>
-                        <span class="text-sm font-medium text-gray-900">{{$item}}</span>
+                        <span class="text-sm font-medium text-gray-900">{{$name}}</span>
                     </div>
                 </a>
+                {{else}}
+                <div class="block px-4 py-4">
+                    <div class="flex items-center">
+                        <svg class="h-5 w-5 text-gray-400 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                        </svg>
+                        <span class="text-sm text-gray-900">{{$name}}</span>
+                        <span class="ml-2 text-xs text-gray-500">{{$type}}</span>
+                    </div>
+                </div>
+                {{end}}
             </li>
             {{end}}
             {{else}}

@@ -18,26 +18,34 @@ import (
 
 // Server is the GoWe REST API server.
 type Server struct {
-	router      chi.Router
-	logger      *slog.Logger
-	config      config.ServerConfig
-	startTime   time.Time
-	parser      *parser.Parser
-	validator   *parser.Validator
-	store       store.Store
-	scheduler   scheduler.Scheduler
-	bvbrcCaller bvbrc.RPCCaller    // optional; nil when no BV-BRC token is available
-	testApps    []map[string]any   // optional; static app list for testing without BV-BRC
-	ui          *ui.UI             // UI handler for web interface
+	router          chi.Router
+	logger          *slog.Logger
+	config          config.ServerConfig
+	startTime       time.Time
+	parser          *parser.Parser
+	validator       *parser.Validator
+	store           store.Store
+	scheduler       scheduler.Scheduler
+	bvbrcCaller     bvbrc.RPCCaller  // optional; AppService caller, nil when no BV-BRC token
+	workspaceCaller bvbrc.RPCCaller  // optional; Workspace service caller
+	testApps        []map[string]any // optional; static app list for testing without BV-BRC
+	ui              *ui.UI           // UI handler for web interface
 }
 
 // Option configures optional Server dependencies.
 type Option func(*Server)
 
-// WithBVBRCCaller sets the BV-BRC RPC caller used by /apps and /workspace endpoints.
+// WithBVBRCCaller sets the BV-BRC RPC caller used by /apps endpoints.
 func WithBVBRCCaller(caller bvbrc.RPCCaller) Option {
 	return func(s *Server) {
 		s.bvbrcCaller = caller
+	}
+}
+
+// WithWorkspaceCaller sets the BV-BRC Workspace service caller.
+func WithWorkspaceCaller(caller bvbrc.RPCCaller) Option {
+	return func(s *Server) {
+		s.workspaceCaller = caller
 	}
 }
 
@@ -71,6 +79,9 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)
+	}
+	if s.workspaceCaller != nil {
+		s.ui.WithWorkspaceCaller(s.workspaceCaller)
 	}
 
 	s.routes()

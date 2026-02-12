@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,12 +20,13 @@ import (
 
 // UI handles the web user interface.
 type UI struct {
-	store       store.Store
-	sessions    *SessionManager
-	logger      *slog.Logger
-	bvbrcCaller bvbrc.RPCCaller
-	startTime   time.Time
-	secure      bool // Use secure cookies (HTTPS)
+	store           store.Store
+	sessions        *SessionManager
+	logger          *slog.Logger
+	bvbrcCaller     bvbrc.RPCCaller // AppService caller
+	workspaceCaller bvbrc.RPCCaller // Workspace service caller
+	startTime       time.Time
+	secure          bool // Use secure cookies (HTTPS)
 }
 
 // Config holds UI configuration.
@@ -43,9 +45,14 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 	}
 }
 
-// WithBVBRCCaller sets the BV-BRC RPC caller for workspace operations.
+// WithBVBRCCaller sets the BV-BRC RPC caller for AppService operations.
 func (ui *UI) WithBVBRCCaller(caller bvbrc.RPCCaller) {
 	ui.bvbrcCaller = caller
+}
+
+// WithWorkspaceCaller sets the BV-BRC RPC caller for Workspace operations.
+func (ui *UI) WithWorkspaceCaller(caller bvbrc.RPCCaller) {
+	ui.workspaceCaller = caller
 }
 
 // HandleLogin renders the login page.
@@ -86,17 +93,23 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse token to get expiry.
+	// Parse token to get expiry and canonical username.
 	tokenInfo := bvbrc.ParseToken(token)
+
+	// Use token username (e.g., "awilke@bvbrc") for session - this is needed for workspace paths.
+	sessionUsername := tokenInfo.Username
+	if sessionUsername == "" {
+		sessionUsername = username // Fallback to form input if token parsing fails
+	}
 
 	// Determine role (admin list can be configured via env or config).
 	role := model.RoleUser
-	if ui.isAdminUser(username) {
+	if ui.isAdminUser(sessionUsername) {
 		role = model.RoleAdmin
 	}
 
 	// Create session.
-	sess, err := ui.sessions.CreateSession(r.Context(), username, username, role, token, tokenInfo.Expiry)
+	sess, err := ui.sessions.CreateSession(r.Context(), sessionUsername, sessionUsername, role, token, tokenInfo.Expiry)
 	if err != nil {
 		ui.logger.Error("create session failed", "error", err)
 		http.Redirect(w, r, "/login?error=Session+creation+failed", http.StatusSeeOther)
@@ -642,29 +655,56 @@ func (ui *UI) HandleAdminHealth(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	if ui.bvbrcCaller == nil {
-		ui.renderError(w, "BV-BRC not configured", nil)
+	if ui.workspaceCaller == nil {
+		ui.renderError(w, "BV-BRC Workspace not configured", nil)
 		return
 	}
 
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		path = "/" + sess.Username
+		path = "/" + sess.Username + "/home"
 	}
 
-	// Call workspace list.
-	result, err := ui.bvbrcCaller.Call(r.Context(), "Workspace.ls", []any{
+	// Call workspace list using the Workspace service.
+	ui.logger.Debug("workspace ls request", "path", path)
+	result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.ls", []any{
 		map[string]any{"paths": []string{path}},
 	})
 	if err != nil {
+		ui.logger.Error("workspace ls failed", "path", path, "error", err)
 		ui.renderError(w, "Failed to list workspace", err)
 		return
 	}
 
-	var items [][]any
-	if err := json.Unmarshal(result, &items); err != nil {
+	ui.logger.Debug("workspace ls response", "raw", string(result))
+
+	// Response format: [{"/path": [[item], [item], ...]}]
+	var outer []map[string]json.RawMessage
+	if err := json.Unmarshal(result, &outer); err != nil || len(outer) == 0 {
+		ui.logger.Error("workspace parse failed", "error", err, "response", string(result))
 		ui.renderError(w, "Failed to parse workspace response", err)
 		return
+	}
+
+	// Extract items for the requested path.
+	var items [][]any
+	var foundKey string
+	for key := range outer[0] {
+		foundKey = key
+		break
+	}
+	ui.logger.Debug("workspace response keys", "requestedPath", path, "foundKey", foundKey)
+
+	if listing, ok := outer[0][path]; ok {
+		json.Unmarshal(listing, &items)
+	} else if listing, ok := outer[0][strings.TrimSuffix(path, "/")]; ok {
+		json.Unmarshal(listing, &items)
+	} else if len(outer[0]) > 0 {
+		// Use whatever key is in the response
+		for _, listing := range outer[0] {
+			json.Unmarshal(listing, &items)
+			break
+		}
 	}
 
 	data := map[string]any{
@@ -682,12 +722,16 @@ func (ui *UI) authenticateBVBRC(ctx context.Context, username, password string) 
 	// BV-BRC authentication endpoint.
 	const authURL = "https://user.patricbrc.org/authenticate"
 
-	payload := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authURL, strings.NewReader(payload))
+	// BV-BRC expects form-urlencoded data, not JSON.
+	data := url.Values{}
+	data.Set("username", username)
+	data.Set("password", password)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -701,7 +745,7 @@ func (ui *UI) authenticateBVBRC(ctx context.Context, username, password string) 
 		return "", fmt.Errorf("authentication failed: %s", resp.Status)
 	}
 
-	// The response is the token as plain text or JSON.
+	// The response is the token as plain text.
 	token := strings.TrimSpace(string(body))
 	if token == "" {
 		return "", fmt.Errorf("empty token received")
