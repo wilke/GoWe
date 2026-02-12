@@ -1,0 +1,31 @@
+cwlVersion: v1.2
+class: CommandLineTool
+
+doc: "Runs a ProbModelSEED job — Runs a ProbModelSEED modeling job"
+
+hints:
+  goweHint:
+    bvbrc_app_id: RunProbModelSEEDJob
+    executor: bvbrc
+
+baseCommand: [RunProbModelSEEDJob]
+
+inputs:
+  command:
+    type: string
+    doc: "ProbModelSEED command to run"
+  arguments:
+    type: string
+    doc: "ProbModelSEED arguments"
+  output_path:
+    type: string
+    doc: "Workspace path for results"
+  output_file:
+    type: string
+    doc: "Prefix for output file names"
+
+outputs:
+  result:
+    type: Directory
+    outputBinding:
+      glob: "."

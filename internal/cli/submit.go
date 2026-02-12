@@ -130,10 +130,16 @@ func printDryRunReport(data map[string]any) error {
 			id, _ := step["id"].(string)
 			execType, _ := step["executor_type"].(string)
 			appID, _ := step["bvbrc_app_id"].(string)
+			available, _ := step["executor_available"].(bool)
 			fmt.Printf("    %d. %s", i+1, id)
 			if appID != "" {
-				fmt.Printf(" -> %s (%s)", appID, execType)
+				fmt.Printf(" -> %s", appID)
 			}
+			fmt.Printf(" (%s", execType)
+			if !available {
+				fmt.Printf(", unavailable")
+			}
+			fmt.Printf(")")
 			fmt.Println()
 		}
 	}
@@ -146,11 +152,24 @@ func printDryRunReport(data map[string]any) error {
 		}
 	}
 
+	if inputsValid, ok := data["inputs_valid"].(bool); ok && !inputsValid {
+		fmt.Println("  Inputs: INVALID")
+	}
+
+	if execAvail, ok := data["executor_availability"].(map[string]any); ok && len(execAvail) > 0 {
+		fmt.Printf("  Executors:\n")
+		for name, status := range execAvail {
+			fmt.Printf("    %s: %s\n", name, status)
+		}
+	}
+
 	if errs, ok := data["errors"].([]any); ok && len(errs) > 0 {
 		fmt.Println("  Errors:")
 		for _, e := range errs {
 			if em, ok := e.(map[string]any); ok {
-				fmt.Printf("    - %s: %s\n", em["path"], em["message"])
+				field, _ := em["field"].(string)
+				msg, _ := em["message"].(string)
+				fmt.Printf("    - %s: %s\n", field, msg)
 			}
 		}
 	}
@@ -159,7 +178,9 @@ func printDryRunReport(data map[string]any) error {
 		fmt.Println("  Warnings:")
 		for _, w := range warns {
 			if wm, ok := w.(map[string]any); ok {
-				fmt.Printf("    - %s: %s\n", wm["path"], wm["message"])
+				field, _ := wm["field"].(string)
+				msg, _ := wm["message"].(string)
+				fmt.Printf("    - %s: %s\n", field, msg)
 			}
 		}
 	}

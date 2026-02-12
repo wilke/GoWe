@@ -10,16 +10,17 @@ import (
 // Each statement uses IF NOT EXISTS for idempotency.
 var schema = []string{
 	`CREATE TABLE IF NOT EXISTS workflows (
-		id          TEXT PRIMARY KEY,
-		name        TEXT NOT NULL,
-		description TEXT NOT NULL DEFAULT '',
-		cwl_version TEXT NOT NULL,
-		raw_cwl     TEXT NOT NULL,
-		inputs      TEXT NOT NULL,
-		outputs     TEXT NOT NULL,
-		steps       TEXT NOT NULL,
-		created_at  TEXT NOT NULL,
-		updated_at  TEXT NOT NULL
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		description  TEXT NOT NULL DEFAULT '',
+		cwl_version  TEXT NOT NULL,
+		content_hash TEXT NOT NULL DEFAULT '',
+		raw_cwl      TEXT NOT NULL,
+		inputs       TEXT NOT NULL,
+		outputs      TEXT NOT NULL,
+		steps        TEXT NOT NULL,
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS submissions (
@@ -89,6 +90,12 @@ var alterStatements = []struct {
 }{
 	{
 		table:    "workflows",
+		column:   "content_hash",
+		alterSQL: "ALTER TABLE workflows ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+		indexSQL: "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''",
+	},
+	{
+		table:    "workflows",
 		column:   "created_by",
 		alterSQL: "ALTER TABLE workflows ADD COLUMN created_by TEXT NOT NULL DEFAULT ''",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workflows_created_by ON workflows(created_by)",
@@ -101,7 +108,7 @@ var alterStatements = []struct {
 	},
 }
 
-// migrate executes all schema DDL statements.
+// migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
 func migrate(ctx context.Context, db *sql.DB) error {
 	for _, stmt := range schema {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -114,7 +121,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if err := addColumnIfNotExists(ctx, db, alter.table, alter.column, alter.alterSQL); err != nil {
 			return err
 		}
-		// Create index after column is added.
 		if alter.indexSQL != "" {
 			if _, err := db.ExecContext(ctx, alter.indexSQL); err != nil {
 				return err

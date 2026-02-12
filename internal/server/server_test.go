@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/me/gowe/internal/config"
+	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
@@ -297,6 +298,116 @@ $graph:
 	}
 }
 
+func TestCreateWorkflow_Deduplication(t *testing.T) {
+	srv := testServer()
+	cwlStr := loadPackedCWL(t)
+
+	bodyJSON, _ := json.Marshal(map[string]string{
+		"name": "first-workflow",
+		"cwl":  cwlStr,
+	})
+
+	// First create — should return 201.
+	w1, env1 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first POST: status=%d, want 201, body=%s", w1.Code, w1.Body.String())
+	}
+	var data1 map[string]any
+	json.Unmarshal(env1.Data, &data1)
+	id1, _ := data1["id"].(string)
+	hash1, _ := data1["content_hash"].(string)
+	if hash1 == "" {
+		t.Fatal("first workflow has no content_hash")
+	}
+
+	// Second create with identical CWL — should return 200 with same ID.
+	bodyJSON2, _ := json.Marshal(map[string]string{
+		"name": "second-workflow",
+		"cwl":  cwlStr,
+	})
+	w2, env2 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON2))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second POST: status=%d, want 200 (dedup), body=%s", w2.Code, w2.Body.String())
+	}
+	var data2 map[string]any
+	json.Unmarshal(env2.Data, &data2)
+	id2, _ := data2["id"].(string)
+
+	if id1 != id2 {
+		t.Errorf("dedup failed: id1=%s, id2=%s (should be same)", id1, id2)
+	}
+
+	// Verify only one workflow exists.
+	env := doGet(t, srv, "/api/v1/workflows/")
+	if env.Pagination.Total != 1 {
+		t.Errorf("total workflows = %d, want 1 (dedup should prevent duplicate)", env.Pagination.Total)
+	}
+}
+
+func TestCreateWorkflow_DifferentCWL_NoDedupe(t *testing.T) {
+	srv := testServer()
+	cwlStr := loadPackedCWL(t)
+
+	bodyJSON1, _ := json.Marshal(map[string]string{
+		"name": "wf-one",
+		"cwl":  cwlStr,
+	})
+	w1, env1 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON1))
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first POST: status=%d, want 201", w1.Code)
+	}
+	var data1 map[string]any
+	json.Unmarshal(env1.Data, &data1)
+	id1, _ := data1["id"].(string)
+
+	// Different CWL content — should create a new workflow.
+	differentCWL := `cwlVersion: v1.2
+$graph:
+  - id: echo
+    class: CommandLineTool
+    baseCommand: [echo]
+    inputs:
+      msg: { type: string, inputBinding: { position: 1 } }
+    outputs:
+      out: { type: stdout }
+  - id: main
+    class: Workflow
+    inputs:
+      message: string
+    outputs:
+      result:
+        type: File
+        outputSource: step1/out
+    steps:
+      step1:
+        run: "#echo"
+        in:
+          msg: message
+        out: [out]
+`
+	bodyJSON2, _ := json.Marshal(map[string]string{
+		"name": "wf-two",
+		"cwl":  differentCWL,
+	})
+	w2, env2 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON2))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("second POST: status=%d, want 201 (different CWL), body=%s", w2.Code, w2.Body.String())
+	}
+	var data2 map[string]any
+	json.Unmarshal(env2.Data, &data2)
+	id2, _ := data2["id"].(string)
+
+	if id1 == id2 {
+		t.Errorf("different CWL got same id: %s", id1)
+	}
+
+	// Should have 2 workflows.
+	env := doGet(t, srv, "/api/v1/workflows/")
+	if env.Pagination.Total != 2 {
+		t.Errorf("total workflows = %d, want 2", env.Pagination.Total)
+	}
+}
+
 func TestListWorkflows(t *testing.T) {
 	srv := testServer()
 
@@ -369,6 +480,43 @@ func TestDeleteWorkflow_NotFound(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status=%d, want 404", w.Code)
+	}
+}
+
+func TestDeleteWorkflow_ThenRecreate_Dedup(t *testing.T) {
+	srv := testServer()
+	cwlStr := loadPackedCWL(t)
+
+	bodyJSON, _ := json.Marshal(map[string]string{"name": "wf", "cwl": cwlStr})
+
+	// Create workflow.
+	w1, env1 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("create: status=%d, want 201", w1.Code)
+	}
+	var data1 map[string]any
+	json.Unmarshal(env1.Data, &data1)
+	id1, _ := data1["id"].(string)
+
+	// Delete it.
+	req := httptest.NewRequest("DELETE", "/api/v1/workflows/"+id1, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: status=%d, want 200", w.Code)
+	}
+
+	// Recreate with same CWL — should get 201 (new), not 200 (dedup).
+	w2, env2 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("recreate: status=%d, want 201 (deleted workflow should not dedup), body=%s", w2.Code, w2.Body.String())
+	}
+	var data2 map[string]any
+	json.Unmarshal(env2.Data, &data2)
+	id2, _ := data2["id"].(string)
+
+	if id1 == id2 {
+		t.Errorf("recreated workflow got same id as deleted: %s", id1)
 	}
 }
 
@@ -456,14 +604,19 @@ func TestCreateSubmission_WorkflowNotFound(t *testing.T) {
 
 func TestCreateSubmission_DryRun(t *testing.T) {
 	srv := testServer()
-	body := `{"workflow_id":"wf_123","inputs":{}}`
-	req := httptest.NewRequest("POST", "/api/v1/submissions/?dry_run=true", strings.NewReader(body))
+	wfID := createTestWorkflow(t, srv)
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "test.fastq", "reads_r2": "test2.fastq", "scientific_name": "E. coli", "taxonomy_id": 562},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/submissions/?dry_run=true", strings.NewReader(string(bodyJSON)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, want 200", w.Code)
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
 	}
 
 	var env envelope
@@ -474,8 +627,125 @@ func TestCreateSubmission_DryRun(t *testing.T) {
 	if data["dry_run"] != true {
 		t.Errorf("dry_run = %v, want true", data["dry_run"])
 	}
-	if data["valid"] != true {
-		t.Errorf("valid = %v, want true", data["valid"])
+
+	// Workflow info should match the real workflow.
+	wfInfo, _ := data["workflow"].(map[string]any)
+	if wfInfo["id"] != wfID {
+		t.Errorf("workflow.id = %v, want %s", wfInfo["id"], wfID)
+	}
+	if wfInfo["name"] != "test-workflow" {
+		t.Errorf("workflow.name = %v, want test-workflow", wfInfo["name"])
+	}
+	stepCount, _ := wfInfo["step_count"].(float64)
+	if stepCount != 2 {
+		t.Errorf("workflow.step_count = %v, want 2", wfInfo["step_count"])
+	}
+
+	// Steps should match real workflow steps.
+	steps, _ := data["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("steps count = %d, want 2", len(steps))
+	}
+
+	// DAG should be acyclic.
+	if data["dag_acyclic"] != true {
+		t.Errorf("dag_acyclic = %v, want true", data["dag_acyclic"])
+	}
+
+	// Execution order should have 2 entries.
+	order, _ := data["execution_order"].([]any)
+	if len(order) != 2 {
+		t.Errorf("execution_order length = %d, want 2", len(order))
+	}
+}
+
+func TestCreateSubmission_DryRun_WorkflowNotFound(t *testing.T) {
+	srv := testServer()
+	body := `{"workflow_id":"wf_nonexistent","inputs":{}}`
+	req := httptest.NewRequest("POST", "/api/v1/submissions/?dry_run=true", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateSubmission_DryRun_MissingInputs(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
+	reg := executor.NewRegistry(logger)
+	reg.Register(executor.NewLocalExecutor("", logger))
+	srv := testServer(WithExecutorRegistry(reg))
+	wfID := createTestWorkflow(t, srv)
+
+	// Submit with no inputs — required inputs are missing.
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/submissions/?dry_run=true", strings.NewReader(string(bodyJSON)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	var env envelope
+	json.Unmarshal(w.Body.Bytes(), &env)
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+
+	if data["inputs_valid"] != false {
+		t.Errorf("inputs_valid = %v, want false", data["inputs_valid"])
+	}
+	if data["valid"] != false {
+		t.Errorf("valid = %v, want false (missing inputs)", data["valid"])
+	}
+
+	errors, _ := data["errors"].([]any)
+	if len(errors) == 0 {
+		t.Error("expected errors for missing required inputs")
+	}
+}
+
+func TestCreateSubmission_DryRun_WithRegistry(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
+	reg := executor.NewRegistry(logger)
+	reg.Register(executor.NewLocalExecutor("", logger))
+	// No bvbrc executor registered — pipeline steps should show unavailable.
+
+	srv := testServer(WithExecutorRegistry(reg))
+	wfID := createTestWorkflow(t, srv)
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "r1.fq", "reads_r2": "r2.fq", "scientific_name": "E. coli", "taxonomy_id": 562},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/submissions/?dry_run=true", strings.NewReader(string(bodyJSON)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	var env envelope
+	json.Unmarshal(w.Body.Bytes(), &env)
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+
+	// BV-BRC executor not registered → steps should show executor_available=false.
+	if data["valid"] != false {
+		t.Errorf("valid = %v, want false (bvbrc executor unavailable)", data["valid"])
+	}
+
+	execAvail, _ := data["executor_availability"].(map[string]any)
+	if execAvail["bvbrc"] != "unavailable" {
+		t.Errorf("executor_availability.bvbrc = %v, want unavailable", execAvail["bvbrc"])
 	}
 }
 

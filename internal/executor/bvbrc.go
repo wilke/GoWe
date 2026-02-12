@@ -81,11 +81,8 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", fmt.Errorf("task %s: start_app: %w", task.ID, err)
 	}
 
-	// Response: result is [{id, status, ...}]
-	var jobs []struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
+	// Response: result is [{id, status, ...}] where id may be a number or string.
+	var jobs []map[string]any
 	if err := json.Unmarshal(result, &jobs); err != nil {
 		return "", fmt.Errorf("task %s: parse start_app response: %w", task.ID, err)
 	}
@@ -93,13 +90,14 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", fmt.Errorf("task %s: start_app returned empty result", task.ID)
 	}
 
+	jobID := fmt.Sprintf("%v", jobs[0]["id"])
 	e.logger.Info("job submitted",
 		"task_id", task.ID,
-		"bvbrc_job_id", jobs[0].ID,
-		"bvbrc_status", jobs[0].Status,
+		"bvbrc_job_id", jobID,
+		"bvbrc_status", jobs[0]["status"],
 	)
 
-	return jobs[0].ID, nil
+	return jobID, nil
 }
 
 // Status calls AppService.query_tasks and maps the BV-BRC status to a TaskState.

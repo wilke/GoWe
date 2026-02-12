@@ -9,7 +9,8 @@ type Workflow struct {
 	Description string           `json:"description,omitempty"`
 	Class       string           `json:"class"` // "CommandLineTool", "Workflow", or "ExpressionTool"
 	CWLVersion  string           `json:"cwl_version"`
-	RawCWL      string           `json:"-"` // Original CWL document (not exposed in API list views)
+	ContentHash string           `json:"content_hash,omitempty"` // SHA-256 of RawCWL for deduplication
+	RawCWL      string           `json:"-"`                      // Original CWL document (not exposed in API list views)
 	Inputs      []WorkflowInput  `json:"inputs"`
 	Outputs     []WorkflowOutput `json:"outputs"`
 	Steps       []Step           `json:"steps"`

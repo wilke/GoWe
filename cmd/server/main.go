@@ -74,7 +74,7 @@ func main() {
 	// Register BVBRCExecutor and create RPC callers if a token is available.
 	const workspaceURL = "https://p3.theseed.org/services/Workspace"
 
-	var serverOpts []server.Option
+	serverOpts := []server.Option{server.WithExecutorRegistry(reg)}
 	if tok, err := bvbrc.ResolveToken(); err == nil {
 		tokenInfo := bvbrc.ParseToken(tok)
 		if tokenInfo.IsExpired() {

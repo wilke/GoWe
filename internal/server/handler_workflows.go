@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -70,9 +72,26 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		mw.Description = req.Description
 	}
 
+	// Compute content hash for deduplication.
+	mw.RawCWL = req.CWL
+	hash := sha256.Sum256([]byte(req.CWL))
+	mw.ContentHash = hex.EncodeToString(hash[:])
+
+	// Check for existing workflow with same content.
+	existing, err := s.store.GetWorkflowByHash(r.Context(), mw.ContentHash)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if existing != nil {
+		s.logger.Info("workflow deduplicated", "id", existing.ID, "name", existing.Name, "hash", mw.ContentHash[:12])
+		respondOK(w, reqID, existing)
+		return
+	}
+
 	// Assign ID and persist.
 	mw.ID = "wf_" + uuid.New().String()
-	mw.RawCWL = req.CWL
 
 	if err := s.store.CreateWorkflow(r.Context(), mw); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,

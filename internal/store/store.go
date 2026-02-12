@@ -11,6 +11,7 @@ type Store interface {
 	// Workflow CRUD
 	CreateWorkflow(ctx context.Context, wf *model.Workflow) error
 	GetWorkflow(ctx context.Context, id string) (*model.Workflow, error)
+	GetWorkflowByHash(ctx context.Context, hash string) (*model.Workflow, error)
 	ListWorkflows(ctx context.Context, opts model.ListOptions) ([]*model.Workflow, int, error)
 	UpdateWorkflow(ctx context.Context, wf *model.Workflow) error
 	DeleteWorkflow(ctx context.Context, id string) error

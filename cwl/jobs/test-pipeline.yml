@@ -1,0 +1,9 @@
+# Job inputs for cwl/workflows/test-pipeline.cwl
+# Minimal test: Date → Sleep (sequential, ~15 seconds total)
+#
+# Usage:
+#   gowe submit cwl/workflows/test-pipeline.cwl --inputs cwl/jobs/test-pipeline.yml
+
+output_path: /awilke@bvbrc/home/gowe-test
+output_file: test-pipeline
+sleep_seconds: 1
