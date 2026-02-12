@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/pkg/cwl"
@@ -105,7 +106,17 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", fmt.Errorf("task %s: start_app returned empty result", task.ID)
 	}
 
-	jobID := fmt.Sprintf("%v", jobs[0]["id"])
+	// BV-BRC returns numeric job IDs; Go JSON decodes them as float64.
+	// Format as integer string to avoid scientific notation (e.g. "2.1e+07").
+	var jobID string
+	switch id := jobs[0]["id"].(type) {
+	case float64:
+		jobID = strconv.FormatInt(int64(id), 10)
+	case json.Number:
+		jobID = id.String()
+	default:
+		jobID = fmt.Sprintf("%v", id)
+	}
 	e.logger.Info("job submitted",
 		"task_id", task.ID,
 		"bvbrc_job_id", jobID,
