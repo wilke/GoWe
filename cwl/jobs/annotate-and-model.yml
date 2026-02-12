@@ -1,0 +1,19 @@
+# Job inputs for cwl/workflows/annotate-and-model.cwl
+# Scientific pipeline: GenomeAnnotation → ModelReconstruction (~10-15 min)
+#
+# BEFORE RUNNING: Upload contigs to BV-BRC workspace, then update the
+# "contigs" path below to point to your actual workspace file.
+#
+# Usage:
+#   gowe submit cwl/workflows/annotate-and-model.cwl --inputs cwl/jobs/annotate-and-model.yml
+
+# Workspace path to pre-assembled contigs (update this!)
+contigs: /awilke@bvbrc/home/gowe-test/contigs.fasta
+
+# Organism metadata
+scientific_name: "Escherichia coli K-12"
+taxonomy_id: 83333
+
+# Output location
+output_path: /awilke@bvbrc/home/gowe-test
+output_file: ecoli-annotate-model

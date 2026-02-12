@@ -57,8 +57,6 @@ var schema = []string{
 		completed_at  TEXT
 	)`,
 
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''`,
-
 	`CREATE INDEX IF NOT EXISTS idx_submissions_workflow_id ON submissions(workflow_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_submissions_state ON submissions(state)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_submission_id ON tasks(submission_id)`,
@@ -71,7 +69,13 @@ var alterMigrations = []string{
 	`ALTER TABLE workflows ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''`,
 }
 
-// migrate executes all schema DDL statements and alter migrations.
+// postMigrationIndexes are indexes that depend on columns added by alterMigrations.
+// They run after ALTER TABLE so the columns exist on both new and upgraded databases.
+var postMigrationIndexes = []string{
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''`,
+}
+
+// migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
 func migrate(ctx context.Context, db *sql.DB) error {
 	for _, stmt := range schema {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -83,6 +87,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			if strings.Contains(err.Error(), "duplicate column") {
 				continue
 			}
+			return err
+		}
+	}
+	for _, stmt := range postMigrationIndexes {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}

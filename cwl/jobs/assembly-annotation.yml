@@ -1,0 +1,20 @@
+# Job inputs for testdata/packed/pipeline-packed.cwl
+# Classic pipeline: GenomeAssembly2 → GenomeAnnotation (~20-40 min)
+#
+# BEFORE RUNNING: Upload paired-end reads to BV-BRC workspace, then update
+# the read file paths below to point to your actual workspace files.
+#
+# Usage:
+#   gowe submit testdata/packed/pipeline-packed.cwl --inputs cwl/jobs/assembly-annotation.yml
+
+# Workspace paths to paired-end read files (update these!)
+reads_r1:
+  class: File
+  path: /awilke@bvbrc/home/gowe-test/reads_R1.fastq.gz
+reads_r2:
+  class: File
+  path: /awilke@bvbrc/home/gowe-test/reads_R2.fastq.gz
+
+# Organism metadata
+scientific_name: "Escherichia coli K-12"
+taxonomy_id: 83333

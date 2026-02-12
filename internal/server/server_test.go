@@ -483,6 +483,43 @@ func TestDeleteWorkflow_NotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkflow_ThenRecreate_Dedup(t *testing.T) {
+	srv := testServer()
+	cwlStr := loadPackedCWL(t)
+
+	bodyJSON, _ := json.Marshal(map[string]string{"name": "wf", "cwl": cwlStr})
+
+	// Create workflow.
+	w1, env1 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("create: status=%d, want 201", w1.Code)
+	}
+	var data1 map[string]any
+	json.Unmarshal(env1.Data, &data1)
+	id1, _ := data1["id"].(string)
+
+	// Delete it.
+	req := httptest.NewRequest("DELETE", "/api/v1/workflows/"+id1, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: status=%d, want 200", w.Code)
+	}
+
+	// Recreate with same CWL — should get 201 (new), not 200 (dedup).
+	w2, env2 := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("recreate: status=%d, want 201 (deleted workflow should not dedup), body=%s", w2.Code, w2.Body.String())
+	}
+	var data2 map[string]any
+	json.Unmarshal(env2.Data, &data2)
+	id2, _ := data2["id"].(string)
+
+	if id1 == id2 {
+		t.Errorf("recreated workflow got same id as deleted: %s", id1)
+	}
+}
+
 func TestValidateWorkflow(t *testing.T) {
 	srv := testServer()
 	id := createTestWorkflow(t, srv)
