@@ -337,10 +337,17 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Load workflow for DAG visualization
+	var workflow *model.Workflow
+	if sub.WorkflowID != "" {
+		workflow, _ = ui.store.GetWorkflow(r.Context(), sub.WorkflowID)
+	}
+
 	data := map[string]any{
 		"Title":      fmt.Sprintf("Submission %s - GoWe", sub.ID),
 		"Session":    sess,
 		"Submission": sub,
+		"Workflow":   workflow,
 	}
 	ui.render(w, "submissions/detail", data)
 }

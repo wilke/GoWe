@@ -68,10 +68,13 @@ const DagEditor = {
         const node = {
           id: step.id || step.ID || `step-${index}`,
           label: step.id || step.ID || `Step ${index + 1}`,
-          type: step.run ? this.getStepType(step.run) : 'unknown',
+          type: this.getStepType(step),
+          toolClass: this.getToolClass(step),
+          bvbrcApp: this.getBvbrcApp(step),
+          executor: this.getExecutor(step),
           inputs: step.in || [],
           outputs: step.out || [],
-          state: 'pending',
+          state: null, // null means no state (workflow definition view)
           x: 0,
           y: 0,
           level: 0
@@ -123,17 +126,79 @@ const DagEditor = {
       this.updateDimensions();
     },
 
-    getStepType(run) {
+    getStepType(step) {
+      // Check for BV-BRC app first
+      const bvbrcApp = this.getBvbrcApp(step);
+      if (bvbrcApp) return 'BV-BRC App';
+
+      // Check tool_inline or run field
+      const toolInline = step.tool_inline || step.toolInline;
+      if (toolInline) {
+        const cls = toolInline.class || toolInline.Class;
+        if (cls === 'CommandLineTool') return 'CommandLineTool';
+        if (cls === 'Workflow') return 'Workflow';
+        if (cls === 'ExpressionTool') return 'ExpressionTool';
+        return cls || 'Tool';
+      }
+
+      // Check run field (CWL reference)
+      const run = step.run;
       if (typeof run === 'string') {
-        if (run.endsWith('.cwl')) return 'cwl';
-        if (run.includes('CommandLineTool')) return 'tool';
-        if (run.includes('Workflow')) return 'workflow';
-        return 'tool';
+        if (run.startsWith('#')) return 'Tool Reference';
+        if (run.endsWith('.cwl')) return 'CWL File';
+        return 'Tool';
       }
       if (typeof run === 'object') {
-        return run.class || 'tool';
+        return run.class || 'Tool';
       }
-      return 'unknown';
+
+      // Check tool_ref
+      if (step.tool_ref || step.toolRef) {
+        return 'Tool Reference';
+      }
+
+      return 'Step';
+    },
+
+    getToolClass(step) {
+      const toolInline = step.tool_inline || step.toolInline;
+      if (toolInline) {
+        return toolInline.class || toolInline.Class || null;
+      }
+      return null;
+    },
+
+    getBvbrcApp(step) {
+      // Check hints at step level
+      const hints = step.hints || step.Hints;
+      if (hints) {
+        if (hints.bvbrc_app_id) return hints.bvbrc_app_id;
+        if (hints.BvbrcAppID) return hints.BvbrcAppID;
+      }
+
+      // Check hints in tool_inline
+      const toolInline = step.tool_inline || step.toolInline;
+      if (toolInline && toolInline.hints) {
+        if (toolInline.hints.bvbrc_app_id) return toolInline.hints.bvbrc_app_id;
+        if (toolInline.hints.BvbrcAppID) return toolInline.hints.BvbrcAppID;
+      }
+
+      return null;
+    },
+
+    getExecutor(step) {
+      const hints = step.hints || step.Hints;
+      if (hints) {
+        if (hints.executor) return hints.executor;
+        if (hints.Executor) return hints.Executor;
+      }
+
+      const toolInline = step.tool_inline || step.toolInline;
+      if (toolInline && toolInline.hints) {
+        if (toolInline.hints.executor) return toolInline.hints.executor;
+      }
+
+      return null;
     },
 
     calculateLevels(nodeMap, edges) {
@@ -268,6 +333,12 @@ const DagEditor = {
     },
 
     getNodeColor(node) {
+      // No state = workflow definition view, use neutral color based on type
+      if (!node.state) {
+        if (node.bvbrcApp) return '#6366f1'; // Indigo for BV-BRC apps
+        return '#8b5cf6'; // Purple for other tools
+      }
+
       switch (node.state) {
         case 'success':
         case 'completed':
@@ -281,12 +352,19 @@ const DagEditor = {
           return '#f59e0b';
         case 'skipped':
           return '#9ca3af';
+        case 'pending':
+          return '#e5e7eb';
         default:
           return '#e5e7eb';
       }
     },
 
     getNodeTextColor(node) {
+      // No state = workflow definition view
+      if (!node.state) {
+        return '#ffffff';
+      }
+
       switch (node.state) {
         case 'success':
         case 'completed':
@@ -449,7 +527,15 @@ const DagEditor = {
         </div>
         <div class="dag-details-content">
           <p><strong>Type:</strong> {{ nodes.find(n => n.id === selectedNode)?.type }}</p>
-          <p><strong>State:</strong> {{ nodes.find(n => n.id === selectedNode)?.state }}</p>
+          <p v-if="nodes.find(n => n.id === selectedNode)?.bvbrcApp">
+            <strong>BV-BRC App:</strong> {{ nodes.find(n => n.id === selectedNode)?.bvbrcApp }}
+          </p>
+          <p v-if="nodes.find(n => n.id === selectedNode)?.executor">
+            <strong>Executor:</strong> {{ nodes.find(n => n.id === selectedNode)?.executor }}
+          </p>
+          <p v-if="nodes.find(n => n.id === selectedNode)?.state">
+            <strong>State:</strong> {{ nodes.find(n => n.id === selectedNode)?.state }}
+          </p>
         </div>
       </div>
     </div>

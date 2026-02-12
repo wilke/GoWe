@@ -1007,59 +1007,34 @@ var templates = map[string]string{
     {{end}}
 
     <!-- DAG Visualization -->
-    {{if gt (len .Submission.Tasks) 1}}
+    {{if and .Workflow (gt (len .Workflow.Steps) 0)}}
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
-        <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow DAG</h3>
-            <button onclick="document.getElementById('dag-view').classList.toggle('hidden')" class="text-sm text-indigo-600 hover:text-indigo-500">
-                Toggle View
-            </button>
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow Graph</h3>
         </div>
-        <div id="dag-view" class="border-t border-gray-200 p-4">
-            <svg id="dag-svg" class="w-full" style="min-height: 200px; background: #f9fafb;">
-                <!-- DAG nodes will be positioned here -->
-                {{$taskCount := len .Submission.Tasks}}
-                {{$width := 800}}
-                {{$nodeWidth := 120}}
-                {{$nodeHeight := 50}}
-                {{$ySpacing := 80}}
-
-                {{range $i, $task := .Submission.Tasks}}
-                <!-- Task node -->
-                <g transform="translate({{mul (add (div (sub $width $nodeWidth) 2) (mul (sub $i (div $taskCount 2)) 30)) 1}}, {{mul $i $ySpacing}})">
-                    <!-- Node rectangle with gradient -->
-                    <rect x="0" y="20" width="{{$nodeWidth}}" height="{{$nodeHeight}}" rx="6" ry="6"
-                          style="{{statePillGradient $task.State.String}} stroke: rgba(0,0,0,0.1); stroke-width: 1;"
-                          class="cursor-pointer hover:opacity-90">
-                        <title>{{$task.StepID}}: {{$task.State}}</title>
-                    </rect>
-                    <!-- Step ID text -->
-                    <text x="{{div $nodeWidth 2}}" y="45" text-anchor="middle" fill="white" font-size="11" font-weight="500"
-                          style="text-shadow: 0 1px 1px rgba(0,0,0,0.3);">
-                        {{truncate $task.StepID 14}}
-                    </text>
-                    <!-- State text -->
-                    <text x="{{div $nodeWidth 2}}" y="58" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="9">
-                        {{$task.State}}
-                    </text>
-                    <!-- Connector line to next task -->
-                    {{if lt $i (sub $taskCount 1)}}
-                    <line x1="{{div $nodeWidth 2}}" y1="70" x2="{{div $nodeWidth 2}}" y2="100"
-                          stroke="#9CA3AF" stroke-width="2" marker-end="url(#arrowhead)"/>
-                    {{end}}
-                </g>
-                {{end}}
-
-                <!-- Arrow marker definition -->
-                <defs>
-                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                        <polygon points="0 0, 10 3.5, 0 7" fill="#9CA3AF"/>
-                    </marker>
-                </defs>
-            </svg>
-            <p class="text-xs text-gray-500 mt-2 text-center">Click on a task to view details</p>
+        <div class="border-t border-gray-200">
+            <div id="submission-dag-container"></div>
         </div>
     </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const steps = {{toJSON .Workflow.Steps}};
+        const tasks = {{toJSON .Submission.Tasks}};
+        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
+            const app = Vue.createApp({
+                components: { DagEditor },
+                data() {
+                    return {
+                        steps: steps,
+                        tasks: tasks
+                    };
+                },
+                template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
+            });
+            app.mount('#submission-dag-container');
+        }
+    });
+    </script>
     {{end}}
 
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
