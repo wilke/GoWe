@@ -941,8 +941,12 @@ func (ui *UI) uploadToShock(ctx context.Context, shockURL, filename string, data
 	if err != nil {
 		return err
 	}
-	part.Write(data)
-	writer.Close()
+	if _, err = part.Write(data); err != nil {
+		return err
+	}
+	if err = writer.Close(); err != nil {
+		return err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shockURL, &buf)
 	if err != nil {
