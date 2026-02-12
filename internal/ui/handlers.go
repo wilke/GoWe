@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -366,11 +367,19 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 		selectedWorkflow, _ = ui.store.GetWorkflow(r.Context(), workflowID)
 	}
 
+	// Build workspace path for file picker.
+	workspacePath := ""
+	if sess != nil && sess.Username != "" {
+		workspacePath = "/" + sess.Username + "/home"
+	}
+
 	data := map[string]any{
 		"Title":            "Submit Workflow - GoWe",
 		"Session":          sess,
 		"Workflows":        workflows,
 		"SelectedWorkflow": selectedWorkflow,
+		"WorkspacePath":    workspacePath,
+		"HasWorkspace":     ui.workspaceCaller != nil,
 		"Error":            r.URL.Query().Get("error"),
 	}
 	ui.render(w, "submissions/create", data)
@@ -657,6 +666,273 @@ func (ui *UI) HandleAdminHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Workspace Handlers ---
+
+// HandleWorkspaceAPI returns workspace listing as JSON (for file picker modal).
+func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+
+	if ui.workspaceCaller == nil {
+		http.Error(w, `{"error": "Workspace not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		path = "/" + sess.Username + "/home"
+	}
+
+	result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.ls", []any{
+		map[string]any{"paths": []string{path}},
+	})
+	if err != nil {
+		ui.logger.Error("workspace API ls failed", "path", path, "error", err)
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse workspace response.
+	var outer []map[string]json.RawMessage
+	if err := json.Unmarshal(result, &outer); err != nil || len(outer) == 0 {
+		http.Error(w, `{"error": "Failed to parse workspace response"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var items [][]any
+	for _, listing := range outer[0] {
+		json.Unmarshal(listing, &items)
+		break
+	}
+
+	// Convert to structured response.
+	type wsItem struct {
+		Path     string `json:"path"`
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Size     int64  `json:"size"`
+		IsFolder bool   `json:"isFolder"`
+	}
+
+	response := struct {
+		Path  string   `json:"path"`
+		Items []wsItem `json:"items"`
+	}{
+		Path:  path,
+		Items: make([]wsItem, 0, len(items)),
+	}
+
+	for _, item := range items {
+		if len(item) < 2 {
+			continue
+		}
+		itemPath, _ := item[0].(string)
+		itemType, _ := item[1].(string)
+		var itemSize int64
+		if len(item) > 6 {
+			if size, ok := item[6].(float64); ok {
+				itemSize = int64(size)
+			}
+		}
+
+		// Extract name from path.
+		parts := strings.Split(strings.TrimSuffix(itemPath, "/"), "/")
+		name := parts[len(parts)-1]
+
+		isFolder := itemType == "folder" || itemType == "modelfolder"
+
+		response.Items = append(response.Items, wsItem{
+			Path:     itemPath,
+			Name:     name,
+			Type:     itemType,
+			Size:     itemSize,
+			IsFolder: isFolder,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleWorkspaceUpload handles file upload to BV-BRC workspace.
+func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+
+	if ui.workspaceCaller == nil {
+		http.Error(w, `{"error": "Workspace not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse multipart form (max 100MB).
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, `{"error": "No file provided"}`, http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Get destination folder.
+	destFolder := r.FormValue("folder")
+	if destFolder == "" {
+		destFolder = "/" + sess.Username + "/home"
+	}
+
+	// Read file content.
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	filename := header.Filename
+	destPath := strings.TrimSuffix(destFolder, "/") + "/" + filename
+
+	// Determine object type based on extension.
+	objType := "unspecified"
+	lower := strings.ToLower(filename)
+	switch {
+	case strings.HasSuffix(lower, ".fasta") || strings.HasSuffix(lower, ".fa") || strings.HasSuffix(lower, ".fna"):
+		objType = "contigs"
+	case strings.HasSuffix(lower, ".fastq") || strings.HasSuffix(lower, ".fq"):
+		objType = "reads"
+	case strings.HasSuffix(lower, ".fastq.gz") || strings.HasSuffix(lower, ".fq.gz"):
+		objType = "reads"
+	case strings.HasSuffix(lower, ".gff") || strings.HasSuffix(lower, ".gff3"):
+		objType = "gff"
+	case strings.HasSuffix(lower, ".gbk") || strings.HasSuffix(lower, ".genbank"):
+		objType = "genbank"
+	case strings.HasSuffix(lower, ".csv"):
+		objType = "csv"
+	case strings.HasSuffix(lower, ".tsv") || strings.HasSuffix(lower, ".txt"):
+		objType = "txt"
+	}
+
+	ui.logger.Info("uploading file to workspace",
+		"filename", filename,
+		"destPath", destPath,
+		"size", len(data),
+		"type", objType,
+	)
+
+	// For small files (< 10MB), use inline upload.
+	// For larger files, we'd need to use Shock upload (createUploadNodes).
+	const inlineLimit = 10 * 1024 * 1024 // 10MB
+
+	if len(data) < inlineLimit {
+		// Inline upload.
+		result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.create", []any{
+			map[string]any{
+				"objects": [][]any{
+					{destPath, objType, nil, data},
+				},
+				"overwrite": true,
+			},
+		})
+		if err != nil {
+			ui.logger.Error("workspace upload failed", "path", destPath, "error", err)
+			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		ui.logger.Debug("workspace upload response", "result", string(result))
+	} else {
+		// Large file - need Shock upload.
+		// First, create an upload node.
+		result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.create", []any{
+			map[string]any{
+				"objects": [][]any{
+					{destPath, objType, nil, nil},
+				},
+				"createUploadNodes": true,
+				"overwrite":         true,
+			},
+		})
+		if err != nil {
+			ui.logger.Error("workspace create upload node failed", "path", destPath, "error", err)
+			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		// Parse response to get Shock node ID.
+		var createResp [][][]any
+		if err := json.Unmarshal(result, &createResp); err != nil {
+			ui.logger.Error("workspace parse upload node failed", "error", err)
+			http.Error(w, `{"error": "Failed to parse upload node response"}`, http.StatusInternalServerError)
+			return
+		}
+
+		if len(createResp) == 0 || len(createResp[0]) == 0 || len(createResp[0][0]) < 11 {
+			http.Error(w, `{"error": "Invalid upload node response"}`, http.StatusInternalServerError)
+			return
+		}
+
+		shockNodeID, _ := createResp[0][0][10].(string)
+		if shockNodeID == "" {
+			http.Error(w, `{"error": "No Shock node ID in response"}`, http.StatusInternalServerError)
+			return
+		}
+
+		// Upload to Shock.
+		shockURL := "https://p3.theseed.org/services/shock_api/node/" + shockNodeID
+		if err := ui.uploadToShock(r.Context(), shockURL, filename, data, sess.Token); err != nil {
+			ui.logger.Error("shock upload failed", "url", shockURL, "error", err)
+			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Return success with the workspace path.
+	response := struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+		Type string `json:"type"`
+		Size int64  `json:"size"`
+	}{
+		Path: destPath,
+		Name: filename,
+		Type: objType,
+		Size: int64(len(data)),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// uploadToShock uploads file data to a Shock node.
+func (ui *UI) uploadToShock(ctx context.Context, shockURL, filename string, data []byte, token string) error {
+	// Create multipart form.
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	part, err := writer.CreateFormFile("upload", filename)
+	if err != nil {
+		return err
+	}
+	part.Write(data)
+	writer.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shockURL, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("shock upload failed (HTTP %d): %s", resp.StatusCode, body)
+	}
+
+	return nil
+}
 
 // HandleWorkspace renders the workspace browser.
 func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {

@@ -142,6 +142,19 @@ var templateFuncs = template.FuncMap{
 		}
 		return result
 	},
+	"isFileType": func(t string) bool {
+		// Check if CWL type is a File type (including optional File?)
+		t = strings.TrimSuffix(t, "?")
+		return t == "File" || strings.HasPrefix(t, "File[")
+	},
+	"isArrayType": func(t string) bool {
+		// Check if CWL type is an array type
+		t = strings.TrimSuffix(t, "?")
+		return strings.HasSuffix(t, "[]") || strings.HasPrefix(t, "File[]")
+	},
+	"urlquery": func(s string) string {
+		return template.URLQueryEscaper(s)
+	},
 }
 
 // renderTemplate renders a template with the given data.
@@ -1225,10 +1238,36 @@ var templates = map[string]string{
                                 {{if .Required}}<span class="text-red-500">*</span>{{end}}
                                 <span class="text-gray-400 font-normal">({{.Type}})</span>
                             </label>
+                            {{if isFileType .Type}}
+                            <!-- File input with workspace picker -->
+                            <div class="mt-1 flex items-center space-x-2">
+                                <input type="text" name="inputs[{{.ID}}]" id="input_{{.ID}}"
+                                       {{if .Required}}required{{end}}
+                                       placeholder="/username@bvbrc/home/path/to/file"
+                                       class="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono">
+                                {{if $.HasWorkspace}}
+                                <button type="button"
+                                        onclick="GoWe.FilePicker.open('input_{{.ID}}', '{{$.WorkspacePath}}')"
+                                        class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                                    📁 Browse
+                                </button>
+                                {{end}}
+                            </div>
+                            <p class="mt-1 text-xs text-gray-500">{{if $.HasWorkspace}}Enter a workspace path or browse to select a file{{else}}Enter a BV-BRC workspace path (e.g., /user@bvbrc/home/file.fasta){{end}}</p>
+                            {{else if isArrayType .Type}}
+                            <!-- Array input -->
+                            <textarea name="inputs[{{.ID}}]" id="input_{{.ID}}" rows="3"
+                                      {{if .Required}}required{{end}}
+                                      class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono"
+                                      placeholder="One value per line, or JSON array"></textarea>
+                            <p class="mt-1 text-xs text-gray-500">Enter one value per line, or a JSON array</p>
+                            {{else}}
+                            <!-- Standard text input -->
                             <input type="text" name="inputs[{{.ID}}]" id="input_{{.ID}}"
                                    {{if .Required}}required{{end}}
                                    {{if .Default}}value="{{.Default}}"{{end}}
                                    class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            {{end}}
                         </div>
                         {{end}}
                     </div>

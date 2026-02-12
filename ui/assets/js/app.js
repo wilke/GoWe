@@ -185,6 +185,178 @@ function formatDuration(seconds) {
   return `${hours}h ${mins}m`;
 }
 
+// File Picker for workspace files
+const FilePicker = {
+  modal: null,
+  currentPath: '',
+  currentInputId: null,
+  onSelect: null,
+
+  init() {
+    if (this.modal) return;
+
+    const modalHtml = `
+      <div id="file-picker-modal" class="fixed inset-0 z-50 hidden">
+        <div class="absolute inset-0 bg-black bg-opacity-50" onclick="GoWe.FilePicker.close()"></div>
+        <div class="absolute inset-4 md:inset-10 lg:inset-20 bg-white rounded-lg shadow-xl flex flex-col">
+          <div class="px-4 py-3 border-b flex items-center justify-between">
+            <h3 class="text-lg font-semibold">Select File from Workspace</h3>
+            <button onclick="GoWe.FilePicker.close()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+          </div>
+          <div class="px-4 py-2 bg-gray-50 border-b flex items-center space-x-2">
+            <button onclick="GoWe.FilePicker.goUp()" class="px-2 py-1 text-sm bg-gray-200 rounded hover:bg-gray-300">↑ Up</button>
+            <span id="file-picker-path" class="text-sm text-gray-600 font-mono truncate"></span>
+          </div>
+          <div id="file-picker-content" class="flex-1 overflow-auto p-4">
+            <div class="text-gray-500 text-center py-8">Loading...</div>
+          </div>
+          <div id="file-picker-upload" class="px-4 py-3 border-t bg-gray-50">
+            <div class="flex items-center space-x-2">
+              <span class="text-sm text-gray-600">Or upload a file:</span>
+              <input type="file" id="file-picker-upload-input" class="text-sm" onchange="GoWe.FilePicker.uploadFile(this)">
+              <span id="file-picker-upload-status" class="text-sm text-gray-500"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    this.modal = document.getElementById('file-picker-modal');
+  },
+
+  open(inputId, initialPath) {
+    this.init();
+    this.currentInputId = inputId;
+    this.currentPath = initialPath || '';
+    this.modal.classList.remove('hidden');
+    this.loadFolder(this.currentPath);
+  },
+
+  close() {
+    if (this.modal) {
+      this.modal.classList.add('hidden');
+    }
+  },
+
+  async loadFolder(path) {
+    const content = document.getElementById('file-picker-content');
+    const pathDisplay = document.getElementById('file-picker-path');
+
+    content.innerHTML = '<div class="text-gray-500 text-center py-8">Loading...</div>';
+
+    try {
+      const url = path ? `/api/workspace/ls?path=${encodeURIComponent(path)}` : '/api/workspace/ls';
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (data.error) {
+        content.innerHTML = `<div class="text-red-500 text-center py-8">${data.error}</div>`;
+        return;
+      }
+
+      this.currentPath = data.path;
+      pathDisplay.textContent = data.path;
+
+      if (data.items.length === 0) {
+        content.innerHTML = '<div class="text-gray-500 text-center py-8">Empty folder</div>';
+        return;
+      }
+
+      // Sort: folders first, then files
+      data.items.sort((a, b) => {
+        if (a.isFolder && !b.isFolder) return -1;
+        if (!a.isFolder && b.isFolder) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      let html = '<div class="space-y-1">';
+      for (const item of data.items) {
+        const icon = item.isFolder ? '📁' : '📄';
+        const sizeStr = item.isFolder ? '' : ` (${GoWe.formatBytes(item.size)})`;
+        const clickAction = item.isFolder
+          ? `GoWe.FilePicker.loadFolder('${item.path}')`
+          : `GoWe.FilePicker.selectFile('${item.path}')`;
+        const bgClass = item.isFolder ? 'hover:bg-gray-100' : 'hover:bg-blue-50 cursor-pointer';
+
+        html += `
+          <div onclick="${clickAction}" class="px-3 py-2 rounded ${bgClass} flex items-center justify-between">
+            <span>${icon} ${item.name}</span>
+            <span class="text-xs text-gray-400">${item.type}${sizeStr}</span>
+          </div>
+        `;
+      }
+      html += '</div>';
+      content.innerHTML = html;
+
+    } catch (err) {
+      content.innerHTML = `<div class="text-red-500 text-center py-8">Failed to load: ${err.message}</div>`;
+    }
+  },
+
+  goUp() {
+    if (!this.currentPath) return;
+    const parts = this.currentPath.split('/').filter(p => p);
+    if (parts.length <= 2) return; // Don't go above /user/home
+    parts.pop();
+    this.loadFolder('/' + parts.join('/'));
+  },
+
+  selectFile(path) {
+    if (this.currentInputId) {
+      const input = document.getElementById(this.currentInputId);
+      if (input) {
+        input.value = path;
+        // Trigger change event for any listeners
+        input.dispatchEvent(new Event('change'));
+      }
+    }
+    this.close();
+    Toast.success(`Selected: ${path.split('/').pop()}`);
+  },
+
+  async uploadFile(fileInput) {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const status = document.getElementById('file-picker-upload-status');
+    status.textContent = 'Uploading...';
+    status.className = 'text-sm text-blue-500';
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('folder', this.currentPath);
+
+    try {
+      const resp = await fetch('/api/workspace/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await resp.json();
+
+      if (data.error) {
+        status.textContent = data.error;
+        status.className = 'text-sm text-red-500';
+        return;
+      }
+
+      status.textContent = 'Uploaded!';
+      status.className = 'text-sm text-green-500';
+
+      // Select the uploaded file
+      this.selectFile(data.path);
+
+      // Reset file input
+      fileInput.value = '';
+
+    } catch (err) {
+      status.textContent = `Failed: ${err.message}`;
+      status.className = 'text-sm text-red-500';
+    }
+  }
+};
+
 // Export for use in templates
 window.GoWe = {
   Toast,
@@ -193,5 +365,6 @@ window.GoWe = {
   copyToClipboard,
   formatBytes,
   formatDuration,
-  initSubmissionPolling
+  initSubmissionPolling,
+  FilePicker
 };
