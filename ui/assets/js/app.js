@@ -245,8 +245,11 @@ const FilePicker = {
 
     content.innerHTML = '<div class="text-gray-500 text-center py-8">Loading...</div>';
 
+    console.log('FilePicker.loadFolder called with path:', path);
+
     try {
       const url = path ? `/api/workspace/ls?path=${encodeURIComponent(path)}` : '/api/workspace/ls';
+      console.log('FilePicker fetching URL:', url);
       const resp = await fetch(url);
       const data = await resp.json();
 
@@ -274,9 +277,11 @@ const FilePicker = {
       for (const item of data.items) {
         const icon = item.isFolder ? '📁' : '📄';
         const sizeStr = item.isFolder ? '' : ` (${GoWe.formatBytes(item.size)})`;
+        // Escape path for use in onclick attribute
+        const escapedPath = item.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         const clickAction = item.isFolder
-          ? `GoWe.FilePicker.loadFolder('${item.path}')`
-          : `GoWe.FilePicker.selectFile('${item.path}')`;
+          ? `GoWe.FilePicker.loadFolder('${escapedPath}')`
+          : `GoWe.FilePicker.selectFile('${escapedPath}')`;
         const bgClass = item.isFolder ? 'hover:bg-gray-100' : 'hover:bg-blue-50 cursor-pointer';
 
         html += `

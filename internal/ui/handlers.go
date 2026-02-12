@@ -368,9 +368,12 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build workspace path for file picker.
+	// Workspace is available if user has a session with a token (even if no global workspace caller).
 	workspacePath := ""
-	if sess != nil && sess.Username != "" {
+	hasWorkspace := false
+	if sess != nil && sess.Username != "" && sess.Token != "" {
 		workspacePath = "/" + sess.Username + "/home"
+		hasWorkspace = true
 	}
 
 	data := map[string]any{
@@ -379,7 +382,7 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 		"Workflows":        workflows,
 		"SelectedWorkflow": selectedWorkflow,
 		"WorkspacePath":    workspacePath,
-		"HasWorkspace":     ui.workspaceCaller != nil,
+		"HasWorkspace":     hasWorkspace,
 		"Error":            r.URL.Query().Get("error"),
 	}
 	ui.render(w, "submissions/create", data)
@@ -667,12 +670,29 @@ func (ui *UI) HandleAdminHealth(w http.ResponseWriter, r *http.Request) {
 
 // --- Workspace Handlers ---
 
+// getWorkspaceCaller returns a workspace caller, using the session token if no global caller is configured.
+func (ui *UI) getWorkspaceCaller(sess *model.Session) bvbrc.RPCCaller {
+	if ui.workspaceCaller != nil {
+		return ui.workspaceCaller
+	}
+	// Create a caller using the session token.
+	if sess != nil && sess.Token != "" {
+		cfg := bvbrc.ClientConfig{
+			AppServiceURL: "https://p3.theseed.org/services/Workspace",
+			Token:         sess.Token,
+		}
+		return bvbrc.NewHTTPRPCCaller(cfg, ui.logger)
+	}
+	return nil
+}
+
 // HandleWorkspaceAPI returns workspace listing as JSON (for file picker modal).
 func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	if ui.workspaceCaller == nil {
-		http.Error(w, `{"error": "Workspace not configured"}`, http.StatusServiceUnavailable)
+	caller := ui.getWorkspaceCaller(sess)
+	if caller == nil {
+		http.Error(w, `{"error": "Workspace not configured - please log in"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -681,7 +701,7 @@ func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 		path = "/" + sess.Username + "/home"
 	}
 
-	result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.ls", []any{
+	result, err := caller.Call(r.Context(), "Workspace.ls", []any{
 		map[string]any{"paths": []string{path}},
 	})
 	if err != nil {
@@ -734,13 +754,23 @@ func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Extract name from path.
-		parts := strings.Split(strings.TrimSuffix(itemPath, "/"), "/")
-		name := parts[len(parts)-1]
+		// The workspace API may return full paths or just names.
+		// Ensure we have a full path.
+		name := itemPath
+		fullPath := itemPath
+		if strings.Contains(itemPath, "/") {
+			// Already a full path - extract name from it
+			parts := strings.Split(strings.TrimSuffix(itemPath, "/"), "/")
+			name = parts[len(parts)-1]
+		} else {
+			// Just a name - construct full path from current directory
+			fullPath = strings.TrimSuffix(path, "/") + "/" + itemPath
+		}
 
 		isFolder := itemType == "folder" || itemType == "modelfolder"
 
 		response.Items = append(response.Items, wsItem{
-			Path:     itemPath,
+			Path:     fullPath,
 			Name:     name,
 			Type:     itemType,
 			Size:     itemSize,
@@ -756,8 +786,9 @@ func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	if ui.workspaceCaller == nil {
-		http.Error(w, `{"error": "Workspace not configured"}`, http.StatusServiceUnavailable)
+	caller := ui.getWorkspaceCaller(sess)
+	if caller == nil {
+		http.Error(w, `{"error": "Workspace not configured - please log in"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -823,7 +854,7 @@ func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 
 	if len(data) < inlineLimit {
 		// Inline upload.
-		result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.create", []any{
+		result, err := caller.Call(r.Context(), "Workspace.create", []any{
 			map[string]any{
 				"objects": [][]any{
 					{destPath, objType, nil, data},
@@ -840,7 +871,7 @@ func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Large file - need Shock upload.
 		// First, create an upload node.
-		result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.create", []any{
+		result, err := caller.Call(r.Context(), "Workspace.create", []any{
 			map[string]any{
 				"objects": [][]any{
 					{destPath, objType, nil, nil},
@@ -938,8 +969,9 @@ func (ui *UI) uploadToShock(ctx context.Context, shockURL, filename string, data
 func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	if ui.workspaceCaller == nil {
-		ui.renderError(w, "BV-BRC Workspace not configured", nil)
+	caller := ui.getWorkspaceCaller(sess)
+	if caller == nil {
+		ui.renderError(w, "BV-BRC Workspace not configured - please log in", nil)
 		return
 	}
 
@@ -950,7 +982,7 @@ func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	// Call workspace list using the Workspace service.
 	ui.logger.Debug("workspace ls request", "path", path)
-	result, err := ui.workspaceCaller.Call(r.Context(), "Workspace.ls", []any{
+	result, err := caller.Call(r.Context(), "Workspace.ls", []any{
 		map[string]any{"paths": []string{path}},
 	})
 	if err != nil {

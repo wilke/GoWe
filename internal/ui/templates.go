@@ -208,6 +208,8 @@ var templates = map[string]string{
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="/static/js/dag-editor.js"></script>
+    <script src="/static/js/app.js"></script>
+    <link rel="stylesheet" href="/static/css/app.css">
     <style>
         [x-cloak] { display: none !important; }
         .htmx-indicator { display: none; }
