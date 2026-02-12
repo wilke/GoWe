@@ -26,6 +26,17 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
+# Built CLI tools (root-level)
+/smoke-test
+/verify-bvbrc
+
+# Workspace files
+*.code-workspace
+
+# Temp / scratch
+/tmp/
+/reports/
+
 # Environment
 .env
 .env.local

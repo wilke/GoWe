@@ -4,8 +4,8 @@
 > **Generated**: 2026-02-09
 > **Source Repositories**: wilke/BV-BRC-Go-SDK, BV-BRC/BV-BRC-Web, BV-BRC/app_service, BV-BRC/Workspace
 > **Note**: This document is compiled from BV-BRC source code analysis, API documentation, and the
-> PATRIC/BV-BRC platform architecture. Sections marked with `[VERIFY]` should be confirmed against
-> live endpoints. Clone https://github.com/wilke/BV-BRC-Go-SDK for the reference Go implementation.
+> PATRIC/BV-BRC platform architecture. Verified against live endpoints on 2026-02-11 using
+> `cmd/verify-bvbrc`. Clone https://github.com/wilke/BV-BRC-Go-SDK for the reference Go implementation.
 
 ---
 
@@ -71,8 +71,10 @@ The primary APIs for job submission and scheduling use **JSON-RPC 1.1** over HTT
 | **User Service** | `https://user.patricbrc.org/` | Authentication (legacy URL still active) |
 | **Shock** | `https://p3.theseed.org/services/shock_api` | Large file storage |
 
-> `[VERIFY]` Some URLs may have been updated. Check `https://www.bv-brc.org/api/` and
-> `https://p3.theseed.org/services/` for current availability.
+> `[VERIFIED 2026-02-11]` All service URLs confirmed reachable: `app_service` (HTTP 500 without
+> auth, expected), `Workspace` (HTTP 500 without auth, expected), `user.patricbrc.org/authenticate`
+> (HTTP 401 without credentials, expected). Note: workspace paths use the raw username from the
+> token (e.g., `/awilke@bvbrc/home/`), not the `@patricbrc.org` suffix shown in some examples.
 
 ---
 
@@ -585,7 +587,12 @@ List all available bioinformatics applications.
 
 #### `AppService.query_app_description`
 
-Get detailed description of a specific application.
+> `[VERIFIED 2026-02-11]` This method does **not exist** on the live BV-BRC App Service.
+> Calling it (and `app_schema`) returns JSON-RPC error -32601 ("not a valid method").
+> The BV-BRC Go SDK confirms only `enumerate_apps` is available for app listing.
+> Use `enumerate_apps` to retrieve app details including parameters.
+
+~~Get detailed description of a specific application.~~
 
 **Parameters**:
 
@@ -595,32 +602,50 @@ Get detailed description of a specific application.
 
 ### Available Applications (Common)
 
-| App ID | Label | Description |
-|--------|-------|-------------|
-| `GenomeAssembly2` | Genome Assembly | Assemble reads (SPAdes, MEGAHIT, etc.) |
-| `GenomeAnnotation` | Genome Annotation | RASTtk annotation pipeline |
-| `ComprehensiveGenomeAnalysis` | Comprehensive Genome Analysis | Assembly + Annotation + Analysis |
-| `TaxonomicClassification` | Taxonomic Classification | Kraken2 / metagenomic classification |
-| `MetagenomicBinning` | Metagenomic Binning | Bin metagenomic contigs |
-| `PhylogeneticTree` | Phylogenetic Tree | Build phylogenetic trees |
-| `GenomeAlignment` | Genome Alignment | Whole genome alignment |
-| `Variation` | Variation Analysis | SNP/variant calling |
-| `RNASeq` | RNA-Seq Analysis | Differential expression analysis |
-| `TnSeq` | Tn-Seq Analysis | Transposon insertion sequencing |
-| `DifferentialExpression` | Differential Expression | Gene expression comparison |
-| `ProteinFamily` | Protein Family Sorter | Analyze protein families |
-| `Proteome` | Proteome Comparison | Compare proteomes |
-| `FastqUtils` | FASTQ Utilities | Read trimming, filtering, QC |
-| `MetagenomicReadMapping` | Metagenomic Read Mapping | Map reads to reference genomes |
-| `CodonTree` | Codon Tree | Build codon-based phylogenetic trees |
-| `MSA` | Multiple Sequence Alignment | Align multiple sequences (MAFFT, MUSCLE) |
-| `SubspeciesClassification` | Subspecies Classification | Classify bacterial subspecies |
-| `Homology` | Homology Search | BLAST searches |
-| `GenomeComparison` | Genome Comparison | Compare multiple genomes |
-| `HASubtypeNumberingConversion` | HA Subtype Numbering | Influenza HA numbering |
-| `PrimerDesign` | Primer Design | Design PCR primers |
+| App ID | Description |
+|--------|-------------|
+| `CodonTree` | Build codon-based phylogenetic trees |
+| `ComparativeSystems` | Comparative systems analysis |
+| `ComprehensiveGenomeAnalysis` | Assembly + Annotation + Analysis |
+| `ComprehensiveSARS2Analysis` | SARS-CoV-2 specific analysis pipeline |
+| `Date` | Date utility (test/lightweight job) |
+| `DifferentialExpression` | Gene expression comparison |
+| `FastqUtils` | Read trimming, filtering, QC |
+| `FluxBalanceAnalysis` | Metabolic flux balance analysis |
+| `FunctionalClassification` | Functional classification of sequences |
+| `GapfillModel` | Gapfill metabolic model |
+| `GeneTree` | Build gene-level phylogenetic trees |
+| `GenomeAlignment` | Whole genome alignment |
+| `GenomeAnnotation` | RASTtk annotation pipeline |
+| `GenomeAnnotationGenbank` | Annotate from GenBank submission |
+| `GenomeAnnotationGenbankTest` | GenBank annotation (test) |
+| `GenomeAssembly` | Legacy genome assembly |
+| `GenomeAssembly2` | Assemble reads (SPAdes, MEGAHIT, etc.) |
+| `GenomeComparison` | Compare multiple genomes |
+| `HASubtypeNumberingConversion` | Influenza HA numbering |
+| `Homology` | BLAST searches |
+| `MSA` | Align multiple sequences (MAFFT, MUSCLE) |
+| `MetaCATS` | Metagenomic CATS analysis |
+| `MetagenomeBinning` | Bin metagenomic contigs |
+| `MetagenomicReadMapping` | Map reads to reference genomes |
+| `ModelReconstruction` | Metabolic model reconstruction |
+| `PhylogeneticTree` | Build phylogenetic trees |
+| `PrimerDesign` | Design PCR primers |
+| `RASTJob` | RAST annotation job |
+| `RNASeq` | RNA-Seq analysis |
+| `RNASeq2` | RNA-Seq analysis (v2) |
+| `RunProbModelSEEDJob` | ProbModelSEED job |
+| `SARS2Assembly` | SARS-CoV-2 assembly |
+| `SequenceSubmission` | Sequence submission pipeline |
+| `Sleep` | Sleep utility (test job) |
+| `SubspeciesClassification` | Classify bacterial subspecies |
+| `SyntenyGraph` | Synteny analysis |
+| `TaxonomicClassification` | Kraken2 / metagenomic classification |
+| `TnSeq` | Transposon insertion sequencing |
+| `Variation` | SNP/variant calling |
 
-> `[VERIFY]` The complete list of available apps may change. Use `enumerate_apps` for the current list.
+> `[VERIFIED 2026-02-11]` Live `enumerate_apps` returned 39 apps (table below updated).
+> Use `enumerate_apps` for the authoritative current list.
 
 ### App-Specific Parameters
 
@@ -698,13 +723,16 @@ workspace root identified by `/<username>@patricbrc.org/`.
 
 ### Workspace Path Convention
 
+Workspace paths use the raw username from the authentication token (the `un` field).
+Modern tokens use `@bvbrc` (e.g., `awilke@bvbrc`); legacy tokens may use `@patricbrc.org`.
+
 ```
-/<username>@patricbrc.org/<workspace_name>/<path>/<to>/<object>
+/<token_username>/<workspace_name>/<path>/<to>/<object>
 ```
 
 Default workspaces:
-- `/username@patricbrc.org/home/` - User's home workspace
-- `/username@patricbrc.org/public/` - Publicly shared data
+- `/<username>/home/` - User's home workspace (e.g., `/awilke@bvbrc/home/`)
+- `/<username>/public/` - Publicly shared data
 - `/PATRIC@patricbrc.org/PATRIC/` - System reference data (read-only)
 
 ### Workspace Object Types
@@ -2150,7 +2178,7 @@ BV-BRC CLI tools typically use `~/.bvbrc/config.json` or `~/.patric/config.json`
 | `AppService.kill_task` | Cancel a running/queued task | `[task_id: string]` | `int` (1=success) | Yes |
 | `AppService.rerun_task` | Re-submit a task | `[task_id: string]` | `Task` object | Yes |
 | `AppService.enumerate_apps` | List available applications | `[]` | `AppDescription[]` | No |
-| `AppService.query_app_description` | Get app details | `[app_id: string]` | `AppDescription` | No |
+| ~~`AppService.query_app_description`~~ | ~~Get app details~~ (not available on live service) | `[app_id: string]` | — | — |
 | `AppService.query_app_log` | Get task execution log | `[task_id: string]` | Log text | Yes |
 
 ### Workspace Endpoints (`https://p3.theseed.org/services/Workspace`)

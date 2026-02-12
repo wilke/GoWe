@@ -35,7 +35,7 @@ type WorkflowOutput struct {
 type Step struct {
 	ID        string     `json:"id"`
 	ToolRef   string     `json:"tool_ref"`
-	ToolInline *Tool     `json:"-"` // Resolved tool (not serialized in API responses)
+	ToolInline *Tool     `json:"tool_inline,omitempty"`
 	DependsOn []string   `json:"depends_on"`
 	In        []StepInput  `json:"in"`
 	Out       []string     `json:"out"`
@@ -54,6 +54,7 @@ type StepInput struct {
 type StepHints struct {
 	BVBRCAppID   string       `json:"bvbrc_app_id,omitempty"`
 	ExecutorType ExecutorType `json:"executor,omitempty"`
+	DockerImage  string       `json:"docker_image,omitempty"`
 }
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.
