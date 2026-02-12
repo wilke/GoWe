@@ -49,6 +49,10 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 
 		// Workspace
 		r.Get("/workspace", ui.HandleWorkspace)
+		r.Route("/api/workspace", func(r chi.Router) {
+			r.Get("/ls", ui.HandleWorkspaceAPI)
+			r.Post("/upload", ui.HandleWorkspaceUpload)
+		})
 
 		// Admin routes (admin role required).
 		r.Route("/admin", func(r chi.Router) {
