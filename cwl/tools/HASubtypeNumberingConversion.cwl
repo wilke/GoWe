@@ -13,25 +13,25 @@ baseCommand: [HASubtypeNumberingConversion]
 inputs:
   input_source:
     type: string
-    doc: "Source of input (id_list, fasta_data, fasta_file, genome_group)"
+    doc: "Source of input (id_list, fasta_data, fasta_file, genome_group) [enum: fasta_data, fasta_file, feature_group] [bvbrc:enum]"
   input_fasta_data:
     type: string?
     doc: "Input sequence in fasta formats"
   input_fasta_file:
     type: string?
-    doc: "Input sequence as a workspace file of fasta data"
+    doc: "Input sequence as a workspace file of fasta data [bvbrc:wsid]"
   input_feature_group:
     type: string?
-    doc: "Input sequence as a workspace feature group"
+    doc: "Input sequence as a workspace feature group [bvbrc:wsid]"
   types:
     type: string
     doc: "Selected types in the submission"
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
   result:

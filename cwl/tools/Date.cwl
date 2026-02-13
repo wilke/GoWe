@@ -13,10 +13,10 @@ baseCommand: [Date]
 inputs:
   output_path:
     type: Directory?
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string?
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
   result:

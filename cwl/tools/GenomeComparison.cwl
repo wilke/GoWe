@@ -15,11 +15,11 @@ inputs:
     type: string?
     doc: "Genome IDs"
   user_genomes:
-    type: string?
-    doc: "Genome protein sequence files in FASTA"
+    type: File?
+    doc: "Genome protein sequence files in FASTA [bvbrc:wstype]"
   user_feature_groups:
-    type: string?
-    doc: "User feature groups"
+    type: File?
+    doc: "User feature groups [bvbrc:wstype]"
   reference_genome_index:
     type: int?
     doc: "Index of genome to be used as reference (1-based)"
@@ -42,10 +42,10 @@ inputs:
     default: 0.2
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
   result:

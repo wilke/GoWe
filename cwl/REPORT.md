@@ -1,6 +1,6 @@
 # BV-BRC CWL Tools Report
 
-Generated: 2026-02-12
+Generated: 2026-02-13
 
 ## Summary
 
@@ -21,8 +21,8 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | output_path | Directory | folder | yes | — | Path to which the output will be written  |
 | output_file | string | wsid | yes | — | Basename for the generated output files |
-| genome_ids | string | list | yes | — | Main genomes |
-| optional_genome_ids | string? | list | no | — | Optional genomes (not penalized for missing/duplicated genes) |
+| genome_ids | string[] | list | yes | — | Main genomes |
+| optional_genome_ids | string[]? | list | no | — | Optional genomes (not penalized for missing/duplicated genes) |
 | number_of_genes | int? | int | no | "20" | Desired number of genes |
 | bootstraps | int? | int | no | "100" | Number of bootstrap replicates |
 | max_genomes_missing | int? | int | no | "0" | Number of main genomes allowed missing from any PGFam |
@@ -54,8 +54,8 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
-| genome_ids | string? | list | no | — | Genome Ids |
-| genome_groups | string? | list | no | — | Genome Groups |
+| genome_ids | string[]? | list | no | — | Genome Ids |
+| genome_groups | string[]? | list | no | — | Genome Groups |
 
 ### Outputs (guessed)
 
@@ -87,8 +87,8 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
-| reference_assembly | string? | wstype | no | — | Reference set of assembled DNA contigs |
-| gto | string? | wstype | no | — | Preannotated genome object |
+| reference_assembly | File? | wstype | no | — | Reference set of assembled DNA contigs |
+| gto | File? | wstype | no | — | Preannotated genome object |
 | recipe | string? | enum | no | "auto" | Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell] |
 | racon_iter | int? | int | no | 2 | Racon polishing iterations (for long reads) |
 | pilon_iter | int? | int | no | 2 | Pilon polishing iterations (for short reads) |
@@ -96,8 +96,8 @@ Generated: 2026-02-12
 | min_contig_len | int? | int | no | 300 | Filter out short contigs in final assembly |
 | min_contig_cov | float? | float | no | 5 | Filter out contigs with low read depth in final assembly |
 | genome_size | string? | string | no | "5M" | Estimated genome size (for canu) |
-| genbank_file | string? | wstype | no | — | Genome to process |
-| contigs | string? | wstype | no | — | Input set of DNA contigs for annotation |
+| genbank_file | File? | wstype | no | — | Genome to process |
+| contigs | File? | wstype | no | — | Input set of DNA contigs for annotation |
 | scientific_name | string | string | yes | — | Scientific name of genome to be annotated |
 | taxonomy_id | int? | int | no | — | NCBI Taxonomy identfier for this genome |
 | code | string | enum | yes | 11 | Genetic code used in translation of DNA sequences [enum: 11, 4] |
@@ -144,8 +144,8 @@ Generated: 2026-02-12
 | recipe | string? | enum | no | "auto" | Recipe used for assembly [enum: auto, cdc-illumina, cdc-nanopore, artic-nanopore] |
 | min_depth | int? | int | no | 100 | Minimum coverage to add reads to consensus sequence |
 | keep_intermediates | int? | int | no | 0 | Keep all intermediate output from the pipeline |
-| genbank_file | string? | wstype | no | — | Genome to process |
-| contigs | string? | wstype | no | — | Input set of DNA contigs for annotation |
+| genbank_file | File? | wstype | no | — | Genome to process |
+| contigs | File? | wstype | no | — | Input set of DNA contigs for annotation |
 | scientific_name | string | string | yes | — | Scientific name of genome to be annotated |
 | taxonomy_id | int | int | yes | — | NCBI Taxonomy identfier for this genome |
 | code | string | enum | yes | 1 | Genetic code used in translation of DNA sequences |
@@ -212,8 +212,8 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| xfile | string | wstype | yes | — | Comparison values between samples |
-| mfile | string? | wstype | no | — | Metadata template filled out by the user |
+| xfile | File | wstype | yes | — | Comparison values between samples |
+| mfile | File? | wstype | no | — | Metadata template filled out by the user |
 | ustring | string | string | yes | — | User information (JSON string) |
 | output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
@@ -248,7 +248,7 @@ Generated: 2026-02-12
 | srr_libs | string? | group | no | — |  |
 | output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. Defaults to the basename of the input data. |
-| recipe | string | list | yes | — | Recipe |
+| recipe | string[] | list | yes | — | Recipe |
 
 ### Outputs (guessed)
 
@@ -274,8 +274,8 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| model | string | wstype | yes | — | Model on which to run flux balance analysis |
-| media | string? | wstype | no | — | Media formulation for flux balance analysis |
+| model | File | wstype | yes | — | Model on which to run flux balance analysis |
+| media | File? | wstype | no | — | Media formulation for flux balance analysis |
 | fva | boolean? | bool | no | false | Minimize and maximize each reaction to permit classificaton of reaction activity |
 | predict_essentiality | boolean? | bool | no | false | Simulate the knockout of each gene in the model to evaluate gene essentiality |
 | minimizeflux | boolean? | bool | no | false | Minimize sum of all fluxes in reported optimal solution |
@@ -346,9 +346,9 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| model | string | wstype | yes | — | Model on which to run flux balance analysis |
-| media | string? | wstype | no | — | Media formulation for flux balance analysis |
-| probanno | string? | wstype | no | — | Computed alternative potential annotations for genes to use in gapfilling functions |
+| model | File | wstype | yes | — | Model on which to run flux balance analysis |
+| media | File? | wstype | no | — | Media formulation for flux balance analysis |
+| probanno | File? | wstype | no | — | Computed alternative potential annotations for genes to use in gapfilling functions |
 | alpha | float? | float | no | 0 | Increase alpha to increase piority for comprehensive gapfilling |
 | allreversible | boolean? | bool | no | false | Ignore existing reaction reversibilities and make all reactions reversible |
 | allowunbalanced | boolean? | bool | no | false | Allow unbalanced reactions in gapfilling |
@@ -429,7 +429,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| genome_ids | string | list | yes | — | Genome IDs to Align |
+| genome_ids | string[] | list | yes | — | Genome IDs to Align |
 | recipe | string? | enum | no | "progressiveMauve" | Mauve method to be used [enum: progressiveMauve, mauveAligner] |
 | seedWeight | float? | float | no | — | Seed weight for calculating initial anchors. |
 | maxGappedAlignerLength | float? | float | no | — | Maximum number of base pairs to attempt aligning with the gapped aligner. |
@@ -466,7 +466,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| contigs | string | wstype | yes | — | Input set of DNA contigs for annotation |
+| contigs | File | wstype | yes | — | Input set of DNA contigs for annotation |
 | scientific_name | string | string | yes | — | Scientific name of genome to be annotated |
 | taxonomy_id | int? | int | no | — | NCBI Taxonomy identfier for this genome |
 | code | string | enum | yes | 11 | Genetic code used in translation of DNA sequences [enum: 11, 4] |
@@ -516,7 +516,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| genbank_file | string | wstype | yes | — | Genome to process |
+| genbank_file | File | wstype | yes | — | Genome to process |
 | public | boolean? | bool | no | false | Make this genome public |
 | queue_nowait | boolean? | bool | no | false | If set, don't wait for the indexing to finish before marking the job complete. |
 | skip_indexing | boolean? | bool | no | false | If set, don't index this genome in solr. It will not be available for analysis through the PATRIC site. |
@@ -564,7 +564,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| genbank_file | string | wstype | yes | — | Genome to process |
+| genbank_file | File | wstype | yes | — | Genome to process |
 | public | boolean? | bool | no | false | Make this genome public |
 | queue_nowait | boolean? | bool | no | false | If set, don't wait for the indexing to finish before marking the job complete. |
 | output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
@@ -603,7 +603,7 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
-| reference_assembly | string? | wstype | no | — | Reference set of assembled DNA contigs |
+| reference_assembly | File? | wstype | no | — | Reference set of assembled DNA contigs |
 | recipe | string? | enum | no | "auto" | Recipe used for assembly [enum: auto, full_spades, fast, miseq, smart, kiki] |
 | pipeline | string? | string | no | — | Advanced assembly pipeline arguments that overrides recipe |
 | min_contig_len | int? | int | no | 300 | Filter out short contigs in final assembly |
@@ -674,8 +674,8 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | genome_ids | string? | string | no | — | Genome IDs |
-| user_genomes | string? | wstype | no | — | Genome protein sequence files in FASTA |
-| user_feature_groups | string? | wstype | no | — | User feature groups |
+| user_genomes | File? | wstype | no | — | Genome protein sequence files in FASTA |
+| user_feature_groups | File? | wstype | no | — | User feature groups |
 | reference_genome_index | int? | int | no | 1 | Index of genome to be used as reference (1-based) |
 | min_seq_cov | float? | float | no | 0.3 | Minimum coverage of query and subject |
 | max_e_val | float? | float | no | 1e-05 | Maximum E-value |
@@ -743,14 +743,14 @@ Generated: 2026-02-12
 | input_type | string | enum | yes | — | Type of input (dna or aa) [enum: dna, aa] |
 | input_source | string | enum | yes | — | Source of input (id_list, fasta_data, fasta_file) [enum: id_list, fasta_data, fasta_file] |
 | input_fasta_data | string? | string | no | — | Input sequence in fasta formats |
-| input_id_list | string? | array | no | — | Input sequence as a list of sequence identifiers |
+| input_id_list | string[]? | array | no | — | Input sequence as a list of sequence identifiers |
 | input_fasta_file | string? | wsid | no | — | Input sequence as a workspace file of fasta data |
 | db_type | string | enum | yes | — | Database type to search (protein / DNA / RNA / contigs) [enum: faa, ffn, frn, fna] |
 | db_source | string | enum | yes | — | Source of database (fasta_data, fasta_file, genome_list, taxon_list, precomputed_database) [enum: fasta_data, fasta_file, genome_list, taxon_list, precomputed_database] |
 | db_fasta_data | string? | string | no | — | Database sequences as fasta |
 | db_fasta_file | string? | wsid | no | — | Database fasta file |
-| db_genome_list | string? | array | no | — | Database genome list |
-| db_taxon_list | string? | array | no | — | Database taxon list |
+| db_genome_list | string[]? | array | no | — | Database genome list |
+| db_taxon_list | string[]? | array | no | — | Database taxon list |
 | db_precomputed_database | string? | string | no | — | Precomputed database name |
 | blast_program | string? | enum | no | — | BLAST program to use [enum: blastp, blastn, blastx, tblastn, tblastx] |
 | output_path | Directory | folder | yes | — | Path to which the output will be written. |
@@ -781,7 +781,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | fasta_files | string? | group | no | — |  |
-| feature_groups | string? | wstype | no | — | Feature groups |
+| feature_groups | File? | wstype | no | — | Feature groups |
 | aligner | string? | enum | no | "Muscle" | Tool used for aligning multiple sequences to each other. [enum: Muscle] |
 | alphabet | string | enum | yes | "dna" | Determines which sequence alphabet is present. [enum: dna, protein] |
 | fasta_keyboard_input | string? | string | no | — | Text input for a fasta file. |
@@ -812,8 +812,8 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| alignment_file | string | wstype | yes | — | The location of the alignment file. |
-| group_file | string | wstype | yes | — | The location of a file that partitions sequences into groups. |
+| alignment_file | File | wstype | yes | — | The location of the alignment file. |
+| group_file | File | wstype | yes | — | The location of a file that partitions sequences into groups. |
 | p_value | float | float | yes | 0.05 | The p-value cutoff for analyzing sequences. |
 | alignment_type | string | enum | yes | — | The file format type. [enum: aligned_dna_fasta, aligned_protein_fasta] |
 | output_path | Directory | folder | yes | — | Path to which the output will be written. |
@@ -846,7 +846,7 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
-| contigs | string? | wstype | no | — | Input set of DNA contigs for annotation |
+| contigs | File? | wstype | no | — | Input set of DNA contigs for annotation |
 | genome_group | string? | string | no | — | Name of genome group into whcih the generated genome ids will be placed.  |
 | skip_indexing | boolean? | bool | no | false | If set, don't index the generated bins solr. They will not be available for analysis through the PATRIC site. |
 | recipe | string? | string | no | — | Specifies a non-default annotation recipe for annotation of bins |
@@ -890,7 +890,7 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | gene_set_type | string | enum | yes | — | Gene set type (predefined list / fasta file / feature group ) [enum: predefined_list, fasta_file, feature_group] |
 | gene_set_name | string? | enum | no | — | Predefined gene set name [enum: MLST, CARD] |
-| gene_set_fasta | string? | wstype | no | — | Protein data in FASTA format |
+| gene_set_fasta | File? | wstype | no | — | Protein data in FASTA format |
 | gene_set_feature_group | string? | string | no | — | Name of feature group that defines the gene set  |
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
@@ -922,9 +922,9 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| genome | string | wstype | yes | — | Input annotated genome for model reconstruction |
-| media | string? | wstype | no | — | Media formulation in which model should be initially gapfilled |
-| template_model | string? | wstype | no | — | Template upon which model should be constructed |
+| genome | File | wstype | yes | — | Input annotated genome for model reconstruction |
+| media | File? | wstype | no | — | Media formulation in which model should be initially gapfilled |
+| template_model | File? | wstype | no | — | Template upon which model should be constructed |
 | fulldb | boolean | bool | yes | false | Add all reactions from template to model regardless of annotation |
 | output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
@@ -955,8 +955,8 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | output_path | Directory | folder | yes | — | Path to which the output will be written.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
-| in_genome_ids | string | list | yes | — | In-group genomes |
-| out_genome_ids | string | list | yes | — | Out-group genomes |
+| in_genome_ids | string[] | list | yes | — | In-group genomes |
+| out_genome_ids | string[] | list | yes | — | Out-group genomes |
 | full_tree_method | string? | string | no | "ml" | Full tree method |
 | refinement | string? | string | no | "yes" | Automated progressive refinement |
 
@@ -988,11 +988,11 @@ Generated: 2026-02-12
 | output_path | Directory | folder | yes | — | Path to which the output will be written. |
 | SEQUENCE_ID | string | string | yes | — | Sequence ID |
 | SEQUENCE_TEMPLATE | string | string | yes | — | Nucleotide Sequence or (BVBRC Seq Id) |
-| SEQUENCE_TARGET | string? | array | no | — | Start/stop of region that primers must flank |
-| SEQUENCE_INCLUDED_REGION | string? | array | no | — | Region where primers can be picked |
-| SEQUENCE_EXCLUDED_REGION | string? | array | no | — | Region where primers cannot overlap |
-| SEQUENCE_OVERLAP_JUNCTION_LIST | string? | array | no | — | Start position and length of region that primers must flank |
-| PRIMER_PRODUCT_SIZE_RANGE | string? | array | no | — | Min, max product size |
+| SEQUENCE_TARGET | string[]? | array | no | — | Start/stop of region that primers must flank |
+| SEQUENCE_INCLUDED_REGION | string[]? | array | no | — | Region where primers can be picked |
+| SEQUENCE_EXCLUDED_REGION | string[]? | array | no | — | Region where primers cannot overlap |
+| SEQUENCE_OVERLAP_JUNCTION_LIST | string[]? | array | no | — | Start position and length of region that primers must flank |
+| PRIMER_PRODUCT_SIZE_RANGE | string[]? | array | no | — | Min, max product size |
 | PRIMER_NUM_RETURN | int? | integer | no | — | Max num primer pairs to report |
 | PRIMER_MIN_SIZE | int? | integer | no | — | Min primer length |
 | PRIMER_OPT_SIZE | int? | integer | no | — | Optimal primer length |
@@ -1033,7 +1033,7 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| genome_object | string | wstype | yes | — | Input set of DNA contigs for annotation |
+| genome_object | File | wstype | yes | — | Input set of DNA contigs for annotation |
 | output_path | Directory? | folder | no | — | Path to which the output will be written. Defaults to the directory containing the input data.  |
 | output_file | string? | wsid | no | — | Basename for the generated output files. Defaults to the basename of the input data. |
 | workflow | string? | string | no | — | Specifies a custom workflow document (expert). |
@@ -1145,7 +1145,7 @@ Generated: 2026-02-12
 | command | string | string | yes | — | ProbModelSEED command to run |
 | arguments | string | string | yes | — | ProbModelSEED arguments |
 | output_path | Directory? | folder | no | — | Workspace folder for results (framework parameter) |
-| output_file | string | string | yes | — | Prefix for output file names |
+| output_file | string? | string | no | — | Prefix for output file names (framework parameter) |
 
 ### Outputs (guessed)
 
@@ -1240,7 +1240,7 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | sleep_time | int? | int | no | 10 | Time to sleep, in seconds. |
 | output_path | Directory? | folder | no | — | Workspace folder for results (framework parameter) |
-| output_file | string | string | yes | — | Prefix for output file names |
+| output_file | string? | string | no | — | Prefix for output file names (framework parameter) |
 
 ### Outputs (guessed)
 
@@ -1301,7 +1301,7 @@ Generated: 2026-02-12
 |-----------|----------|-------------|----------|---------|-------------|
 | output_path | Directory | folder | yes | — | Path to which the output will be written.  |
 | output_file | string | wsid | yes | — | Basename for the generated output files. |
-| genome_ids | string | list | yes | — | Input genomes |
+| genome_ids | string[] | list | yes | — | Input genomes |
 | ksize | int | int | yes | 3 | Minimum neighborhood size for alignment |
 | context | string | string | yes | "genome" | Context of alignment |
 | diversity | string | string | yes | "species" | Diversity quotient calculation |
@@ -1332,7 +1332,7 @@ Generated: 2026-02-12
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
 | input_type | string | enum | yes | — | Input type (reads / contigs) [enum: reads, contigs] |
-| contigs | string? | wstype | no | — | Input set of DNA contigs for classification |
+| contigs | File? | wstype | no | — | Input set of DNA contigs for classification |
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
@@ -1367,8 +1367,8 @@ Generated: 2026-02-12
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
-| experimental_conditions | string? | list | no | — | Experimental conditions |
-| contrasts | string? | list | no | — | Contrasts |
+| experimental_conditions | string[]? | list | no | — | Experimental conditions |
+| contrasts | string[]? | list | no | — | Contrasts |
 | read_files | string? | group | no | — |  |
 | reference_genome_id | string? | string | no | — | Reference genome ID |
 | recipe | string? | enum | no | "gumbel" | Recipe used for TnSeq analysis [enum: griffin, tn5gaps, rankproduct, hmm, binomial, resampling] |
@@ -1397,7 +1397,7 @@ Generated: 2026-02-12
 **Description**: Identify and annotate small nucleotide variations relative to a reference genome
 **File**: `tools/Variation.cwl`
 
-### Inputs (9 parameters)
+### Inputs (8 parameters)
 
 | Parameter | CWL Type | BV-BRC Type | Required | Default | Description |
 |-----------|----------|-------------|----------|---------|-------------|
@@ -1405,7 +1405,6 @@ Generated: 2026-02-12
 | paired_end_libs | string? | group | no | — |  |
 | single_end_libs | string? | group | no | — |  |
 | srr_ids | string? | string | no | — | Sequence Read Archive (SRA) Run ID |
-| reference_genome_id | string? | string | no | — | Reference genome ID |
 | mapper | string? | enum | no | "BWA-mem" | Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST] |
 | caller | string? | enum | no | "FreeBayes" | Tool used for calling variations based on short read mapping [enum: FreeBayes, SAMtools] |
 | output_path | Directory | folder | yes | — | Path to which the output will be written. Defaults to the directory containing the input data. |

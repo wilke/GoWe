@@ -15,29 +15,63 @@ inputs:
     type: string
     doc: "Reference genome ID"
   paired_end_libs:
-    type: string?
+    type:
+      - "null"
+      - type: array
+        items:
+          type: record
+          name: paired_end_lib
+          fields:
+            - name: read1
+              type: File
+              doc: "Forward reads"
+            - name: read2
+              type: File?
+              doc: "Reverse reads"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
+            - name: interleaved
+              type: boolean
+              default: false
+            - name: read_orientation_outward
+              type: boolean
+              default: false
+    doc: " [bvbrc:group]"
   single_end_libs:
-    type: string?
+    type:
+      - "null"
+      - type: array
+        items:
+          type: record
+          name: single_end_lib
+          fields:
+            - name: read
+              type: File
+              doc: "Read file"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
+    doc: " [bvbrc:group]"
   srr_ids:
     type: string?
     doc: "Sequence Read Archive (SRA) Run ID"
-  reference_genome_id:
-    type: string?
-    doc: "Reference genome ID"
   mapper:
     type: string?
-    doc: "Tool used for mapping short reads against the reference genome"
+    doc: "Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST] [bvbrc:enum]"
     default: "BWA-mem"
   caller:
     type: string?
-    doc: "Tool used for calling variations based on short read mapping"
+    doc: "Tool used for calling variations based on short read mapping [enum: FreeBayes, SAMtools] [bvbrc:enum]"
     default: "FreeBayes"
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data."
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data. [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
   result:

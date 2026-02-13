@@ -12,33 +12,33 @@ baseCommand: [GapfillModel]
 
 inputs:
   model:
-    type: string
-    doc: "Model on which to run flux balance analysis"
+    type: File
+    doc: "Model on which to run flux balance analysis [bvbrc:wstype]"
   media:
-    type: string?
-    doc: "Media formulation for flux balance analysis"
+    type: File?
+    doc: "Media formulation for flux balance analysis [bvbrc:wstype]"
   probanno:
-    type: string?
-    doc: "Computed alternative potential annotations for genes to use in gapfilling functions"
+    type: File?
+    doc: "Computed alternative potential annotations for genes to use in gapfilling functions [bvbrc:wstype]"
   alpha:
     type: float?
     doc: "Increase alpha to increase piority for comprehensive gapfilling"
     default: 0
   allreversible:
     type: boolean?
-    doc: "Ignore existing reaction reversibilities and make all reactions reversible"
+    doc: "Ignore existing reaction reversibilities and make all reactions reversible [bvbrc:bool]"
     default: false
   allowunbalanced:
     type: boolean?
-    doc: "Allow unbalanced reactions in gapfilling"
+    doc: "Allow unbalanced reactions in gapfilling [bvbrc:bool]"
     default: false
   integrate_solution:
     type: boolean?
-    doc: "Integrate first gapfilling solution"
+    doc: "Integrate first gapfilling solution [bvbrc:bool]"
     default: false
   thermo_const_type:
     type: string?
-    doc: "Type of thermodynamic constraints"
+    doc: "Type of thermodynamic constraints [enum: None, Simple] [bvbrc:enum]"
   media_supplement:
     type: string?
     doc: "Additional compounds to supplement media in FBA simulaton"
@@ -65,16 +65,19 @@ inputs:
     default: 1
   output_file:
     type: string?
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
   uptake_limit:
     type: string?
+    doc: " [bvbrc:group]"
   custom_bounds:
     type: string?
+    doc: " [bvbrc:group]"
   objective:
     type: string?
+    doc: " [bvbrc:group]"
   output_path:
     type: Directory?
-    doc: "Workspace folder for results (framework parameter)"
+    doc: "Workspace folder for results (framework parameter) [bvbrc:folder]"
 
 outputs:
   result:

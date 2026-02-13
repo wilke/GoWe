@@ -13,16 +13,16 @@ baseCommand: [ComparativeSystems]
 inputs:
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
   genome_ids:
-    type: string?
-    doc: "Genome Ids"
+    type: string[]?
+    doc: "Genome Ids [bvbrc:list]"
   genome_groups:
-    type: string?
-    doc: "Genome Groups"
+    type: string[]?
+    doc: "Genome Groups [bvbrc:list]"
 
 outputs:
   result:

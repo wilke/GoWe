@@ -17,6 +17,56 @@ import (
 
 const appServiceURL = "https://p3.theseed.org/services/app_service"
 
+// recordField describes a single field within a CWL record type.
+type recordField struct {
+	Name    string
+	Type    string // CWL type: "File", "File?", "string?", "boolean", etc.
+	Doc     string
+	Default string // YAML literal default value, empty if none
+}
+
+// groupSchemas maps BV-BRC group parameter IDs to their CWL record field schemas.
+// Populated from Go SDK verification (Phase 2).
+var groupSchemas = map[string][]recordField{
+	// Read library groups — used by ~10 apps (Assembly, CGA, Variation, RNASeq, Binning, FastqUtils, etc.)
+	"paired_end_libs": {
+		{Name: "read1", Type: "File", Doc: "Forward reads"},
+		{Name: "read2", Type: "File?", Doc: "Reverse reads"},
+		{Name: "platform", Type: "string?", Doc: "Sequencing platform", Default: `"infer"`},
+		{Name: "interleaved", Type: "boolean", Default: "false"},
+		{Name: "read_orientation_outward", Type: "boolean", Default: "false"},
+	},
+	"single_end_libs": {
+		{Name: "read", Type: "File", Doc: "Read file"},
+		{Name: "platform", Type: "string?", Doc: "Sequencing platform", Default: `"infer"`},
+	},
+	// Singular variants — ViralAssembly uses single object, not array
+	"paired_end_lib": {
+		{Name: "read1", Type: "File", Doc: "Forward reads"},
+		{Name: "read2", Type: "File?", Doc: "Reverse reads"},
+	},
+	"single_end_lib": {
+		{Name: "read", Type: "File", Doc: "Read file"},
+	},
+	// SRR accession groups
+	"srr_libs": {
+		{Name: "srr_accession", Type: "string", Doc: "SRA run accession"},
+	},
+	"srr_ids": {
+		{Name: "srr_accession", Type: "string", Doc: "SRA run accession"},
+	},
+	// MSA app — array of FASTA files with type annotation
+	"fasta_files": {
+		{Name: "file", Type: "File", Doc: "FASTA sequence file"},
+		{Name: "type", Type: "string?", Doc: "File type (feature_dna_fasta or feature_protein_fasta)"},
+	},
+	// GeneTree app — array of sequence files
+	"sequences": {
+		{Name: "filename", Type: "File", Doc: "Sequence file"},
+		{Name: "type", Type: "string?", Doc: "Sequence type (FASTA)"},
+	},
+}
+
 func main() {
 	outputDir := flag.String("output-dir", "cwl", "Root output directory for generated CWL files")
 	debug := flag.Bool("debug", false, "Enable debug logging")
@@ -112,13 +162,14 @@ type appReport struct {
 }
 
 type inputReport struct {
-	ID       string
-	CWLType  string
-	Required bool
-	Default  string
-	Desc     string
-	BVBRCType string
-	EnumVals []string
+	ID          string
+	CWLType     string
+	Required    bool
+	Default     string
+	Desc        string
+	BVBRCType   string
+	EnumVals    []string
+	GroupFields []recordField // non-nil for group params with known schema
 }
 
 // fetchApps calls enumerate_apps and unwraps the [[...]] response.
@@ -157,8 +208,9 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 		File:        fmt.Sprintf("tools/%s.cwl", appID),
 	}
 
-	// Extract and map parameters.
+	// Extract and map parameters (deduplicate by ID — some apps list params twice).
 	var inputs []inputReport
+	seen := map[string]bool{}
 	if params, ok := app["parameters"].([]any); ok {
 		for _, raw := range params {
 			p, ok := raw.(map[string]any)
@@ -166,9 +218,10 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 				continue
 			}
 			id, _ := p["id"].(string)
-			if id == "" {
+			if id == "" || seen[id] {
 				continue
 			}
+			seen[id] = true
 
 			bvbrcType, _ := p["type"].(string)
 			required := isRequired(p["required"])
@@ -188,14 +241,23 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 				}
 			}
 
+			// Look up group schema for group-type parameters.
+			var groupFields []recordField
+			if strings.EqualFold(bvbrcType, "group") {
+				if fields, ok := groupSchemas[id]; ok {
+					groupFields = fields
+				}
+			}
+
 			inputs = append(inputs, inputReport{
-				ID:        id,
-				CWLType:   cwlType,
-				Required:  required,
-				Default:   defVal,
-				Desc:      paramDesc,
-				BVBRCType: bvbrcType,
-				EnumVals:  enumVals,
+				ID:          id,
+				CWLType:     cwlType,
+				Required:    required,
+				Default:     defVal,
+				Desc:        paramDesc,
+				BVBRCType:   bvbrcType,
+				EnumVals:    enumVals,
+				GroupFields: groupFields,
 			})
 		}
 	}
@@ -219,8 +281,8 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 	}
 	if !hasOutputFile {
 		inputs = append(inputs, inputReport{
-			ID: "output_file", CWLType: "string", Required: true,
-			Desc: "Prefix for output file names", BVBRCType: "string",
+			ID: "output_file", CWLType: "string?", Required: false,
+			Desc: "Prefix for output file names (framework parameter)", BVBRCType: "string",
 		})
 	}
 
@@ -266,11 +328,27 @@ func buildCWL(appID, label, desc string, inputs []inputReport) string {
 	b.WriteString("inputs:\n")
 	for _, inp := range inputs {
 		b.WriteString(fmt.Sprintf("  %s:\n", inp.ID))
-		b.WriteString(fmt.Sprintf("    type: %s\n", inp.CWLType))
-		if inp.Desc != "" {
-			b.WriteString(fmt.Sprintf("    doc: %q\n", inp.Desc))
+
+		// Emit type: record array for group params with known schema,
+		// otherwise emit simple type string.
+		if len(inp.GroupFields) > 0 {
+			writeRecordArrayType(&b, inp.ID, inp.GroupFields, inp.Required)
+		} else {
+			b.WriteString(fmt.Sprintf("    type: %s\n", inp.CWLType))
 		}
-		if inp.Default != "" {
+
+		// Build doc string with enum values and BV-BRC type annotations.
+		docStr := inp.Desc
+		if len(inp.EnumVals) > 0 {
+			docStr += fmt.Sprintf(" [enum: %s]", strings.Join(inp.EnumVals, ", "))
+		}
+		if inp.BVBRCType != "" && inp.BVBRCType != "string" && inp.BVBRCType != "int" && inp.BVBRCType != "float" && inp.BVBRCType != "boolean" {
+			docStr += fmt.Sprintf(" [bvbrc:%s]", inp.BVBRCType)
+		}
+		if docStr != "" {
+			b.WriteString(fmt.Sprintf("    doc: %q\n", docStr))
+		}
+		if inp.Default != "" && len(inp.GroupFields) == 0 {
 			b.WriteString(fmt.Sprintf("    default: %s\n", inp.Default))
 		}
 	}
@@ -285,6 +363,54 @@ func buildCWL(appID, label, desc string, inputs []inputReport) string {
 	return b.String()
 }
 
+// writeRecordArrayType emits a CWL v1.2 record array type for group parameters.
+func writeRecordArrayType(b *strings.Builder, paramID string, fields []recordField, required bool) {
+	// Derive record name from param ID (e.g. "paired_end_libs" → "paired_end_lib").
+	recordName := strings.TrimSuffix(paramID, "s")
+	if recordName == paramID {
+		recordName = paramID + "_record"
+	}
+
+	if !required {
+		// Optional record array: use YAML sequence (null union).
+		b.WriteString("    type:\n")
+		b.WriteString("      - \"null\"\n")
+		b.WriteString("      - type: array\n")
+		b.WriteString("        items:\n")
+		b.WriteString("          type: record\n")
+		b.WriteString(fmt.Sprintf("          name: %s\n", recordName))
+		b.WriteString("          fields:\n")
+		for _, f := range fields {
+			b.WriteString(fmt.Sprintf("            - name: %s\n", f.Name))
+			b.WriteString(fmt.Sprintf("              type: %s\n", f.Type))
+			if f.Doc != "" {
+				b.WriteString(fmt.Sprintf("              doc: %q\n", f.Doc))
+			}
+			if f.Default != "" {
+				b.WriteString(fmt.Sprintf("              default: %s\n", f.Default))
+			}
+		}
+	} else {
+		// Required record array.
+		b.WriteString("    type:\n")
+		b.WriteString("      type: array\n")
+		b.WriteString("      items:\n")
+		b.WriteString("        type: record\n")
+		b.WriteString(fmt.Sprintf("        name: %s\n", recordName))
+		b.WriteString("        fields:\n")
+		for _, f := range fields {
+			b.WriteString(fmt.Sprintf("          - name: %s\n", f.Name))
+			b.WriteString(fmt.Sprintf("            type: %s\n", f.Type))
+			if f.Doc != "" {
+				b.WriteString(fmt.Sprintf("            doc: %q\n", f.Doc))
+			}
+			if f.Default != "" {
+				b.WriteString(fmt.Sprintf("            default: %s\n", f.Default))
+			}
+		}
+	}
+}
+
 // mapBVBRCType converts a BV-BRC parameter type to a CWL type.
 func mapBVBRCType(bvbrcType string, required bool) string {
 	cwlType := "string"
@@ -297,6 +423,12 @@ func mapBVBRCType(bvbrcType string, required bool) string {
 		cwlType = "boolean"
 	case "folder":
 		cwlType = "Directory"
+	case "list", "array":
+		cwlType = "string[]"
+	case "wstype":
+		cwlType = "File"
+	case "group":
+		cwlType = "string" // fallback; overridden by group schema lookup
 	}
 	if !required {
 		cwlType += "?"

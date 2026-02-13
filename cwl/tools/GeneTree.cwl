@@ -25,20 +25,20 @@ inputs:
     doc: "Delete Gappy Sequences Threshold"
   alphabet:
     type: string
-    doc: "Sequence alphabet: DNA or RNA or Protein"
+    doc: "Sequence alphabet: DNA or RNA or Protein [enum: DNA, Protein] [bvbrc:enum]"
   substitution_model:
     type: string?
-    doc: "Substitution Model"
+    doc: "Substitution Model [enum: HKY85, JC69, K80, F81, F84, TN93, GTR, LG, WAG, JTT, MtREV, Dayhoff, DCMut, RtREV, CpREV, VT, AB, Blosum62, MtMam, MtArt, HIVw, HIVb] [bvbrc:enum]"
   bootstrap:
     type: int?
-    doc: "Perform boostrapping"
+    doc: "Perform boostrapping [bvbrc:integer]"
   recipe:
     type: string?
-    doc: "Recipe used for FeatureTree analysis"
+    doc: "Recipe used for FeatureTree analysis [enum: RAxML, PhyML, FastTree] [bvbrc:enum]"
     default: "RAxML"
   tree_type:
     type: string?
-    doc: "Fields to be retrieved for each gene."
+    doc: "Fields to be retrieved for each gene. [enum: viral_genome, gene] [bvbrc:enum]"
   feature_metadata_fields:
     type: string?
     doc: "Fields to be retrieved for each gene."
@@ -47,10 +47,10 @@ inputs:
     doc: "Fields to be retrieved for each genome."
   output_path:
     type: Directory
-    doc: "Path to which the output will be written."
+    doc: "Path to which the output will be written. [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files."
+    doc: "Basename for the generated output files. [bvbrc:wsid]"
 
 outputs:
   result:

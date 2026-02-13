@@ -13,25 +13,25 @@ baseCommand: [SequenceSubmission]
 inputs:
   input_source:
     type: string
-    doc: "Source of input (id_list, fasta_data, fasta_file, genome_group)"
+    doc: "Source of input (id_list, fasta_data, fasta_file, genome_group) [enum: id_list, fasta_data, fasta_file, genome_group] [bvbrc:enum]"
   input_fasta_data:
     type: string?
     doc: "Input sequence in fasta formats"
   input_fasta_file:
     type: string?
-    doc: "Input sequence as a workspace file of fasta data"
+    doc: "Input sequence as a workspace file of fasta data [bvbrc:wsid]"
   input_genome_group:
     type: string?
-    doc: "Input sequence as a workspace genome group"
+    doc: "Input sequence as a workspace genome group [bvbrc:wsid]"
   metadata:
     type: string?
-    doc: "Metadata as a workspace file of csv"
+    doc: "Metadata as a workspace file of csv [bvbrc:wsid]"
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
   result:

@@ -13,16 +13,16 @@ baseCommand: [CodonTree]
 inputs:
   output_path:
     type: Directory
-    doc: "Path to which the output will be written "
+    doc: "Path to which the output will be written  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files"
+    doc: "Basename for the generated output files [bvbrc:wsid]"
   genome_ids:
-    type: string
-    doc: "Main genomes"
+    type: string[]
+    doc: "Main genomes [bvbrc:list]"
   optional_genome_ids:
-    type: string?
-    doc: "Optional genomes (not penalized for missing/duplicated genes)"
+    type: string[]?
+    doc: "Optional genomes (not penalized for missing/duplicated genes) [bvbrc:list]"
   number_of_genes:
     type: int?
     doc: "Desired number of genes"

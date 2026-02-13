@@ -287,8 +287,13 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 			case string:
 				tool.Inputs[id] = cwl.ToolInputParam{Type: val}
 			case map[string]any:
+				typeStr := stringField(val, "type")
+				if typeStr == "" {
+					// Complex type (record array, null union, etc.) — serialize to string tag.
+					typeStr = serializeCWLType(val["type"])
+				}
 				tool.Inputs[id] = cwl.ToolInputParam{
-					Type:    stringField(val, "type"),
+					Type:    typeStr,
 					Doc:     stringField(val, "doc"),
 					Default: val["default"],
 				}
@@ -478,6 +483,44 @@ func computeDependsOn(inputs []model.StepInput, workflowInputs map[string]bool) 
 }
 
 // --- Helper functions ---
+
+// serializeCWLType converts a complex CWL type (map or array) to a string tag.
+// Examples: {type: array, items: {type: record, name: "paired_end_lib"}} → "record:paired_end_lib[]"
+// A YAML sequence like ["null", {type: array, ...}] indicates an optional complex type.
+func serializeCWLType(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]any:
+		base := stringField(t, "type")
+		if base == "array" {
+			items := serializeCWLType(t["items"])
+			return items + "[]"
+		}
+		if base == "record" {
+			name := stringField(t, "name")
+			if name != "" {
+				return "record:" + name
+			}
+			return "record"
+		}
+		return base
+	case []any:
+		// Union type like ["null", {type: array, ...}] — find the non-null member.
+		for _, member := range t {
+			if s, ok := member.(string); ok && s == "null" {
+				continue
+			}
+			inner := serializeCWLType(member)
+			if inner != "" {
+				return inner + "?"
+			}
+		}
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
 
 // stringField safely extracts a string from a map.
 func stringField(m map[string]any, key string) string {

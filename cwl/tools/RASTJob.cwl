@@ -12,14 +12,14 @@ baseCommand: [RASTJob]
 
 inputs:
   genome_object:
-    type: string
-    doc: "Input set of DNA contigs for annotation"
+    type: File
+    doc: "Input set of DNA contigs for annotation [bvbrc:wstype]"
   output_path:
     type: Directory?
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string?
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
   workflow:
     type: string?
     doc: "Specifies a custom workflow document (expert)."

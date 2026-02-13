@@ -12,21 +12,58 @@ baseCommand: [MetagenomeBinning]
 
 inputs:
   paired_end_libs:
-    type: string?
+    type:
+      - "null"
+      - type: array
+        items:
+          type: record
+          name: paired_end_lib
+          fields:
+            - name: read1
+              type: File
+              doc: "Forward reads"
+            - name: read2
+              type: File?
+              doc: "Reverse reads"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
+            - name: interleaved
+              type: boolean
+              default: false
+            - name: read_orientation_outward
+              type: boolean
+              default: false
+    doc: " [bvbrc:group]"
   single_end_libs:
-    type: string?
+    type:
+      - "null"
+      - type: array
+        items:
+          type: record
+          name: single_end_lib
+          fields:
+            - name: read
+              type: File
+              doc: "Read file"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
+    doc: " [bvbrc:group]"
   srr_ids:
     type: string?
     doc: "Sequence Read Archive (SRA) Run ID"
   contigs:
-    type: string?
-    doc: "Input set of DNA contigs for annotation"
+    type: File?
+    doc: "Input set of DNA contigs for annotation [bvbrc:wstype]"
   genome_group:
     type: string?
     doc: "Name of genome group into whcih the generated genome ids will be placed. "
   skip_indexing:
     type: boolean?
-    doc: "If set, don't index the generated bins solr. They will not be available for analysis through the PATRIC site."
+    doc: "If set, don't index the generated bins solr. They will not be available for analysis through the PATRIC site. [bvbrc:bool]"
     default: false
   recipe:
     type: string?
@@ -36,33 +73,33 @@ inputs:
     doc: "Specifies a non-default annotation recipe for annotation of viral bins"
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. Defaults to the directory containing the input data. "
+    doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files. Defaults to the basename of the input data."
+    doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
   force_local_assembly:
     type: boolean
-    doc: "If set, disable the use of remote clusters for assembly"
+    doc: "If set, disable the use of remote clusters for assembly [bvbrc:bool]"
     default: false
   force_inline_annotation:
     type: boolean?
-    doc: "If set, disable the use of the cluster for annotation"
+    doc: "If set, disable the use of the cluster for annotation [bvbrc:bool]"
     default: true
   perform_bacterial_binning:
     type: boolean?
-    doc: "If set, perform bacterial binning"
+    doc: "If set, perform bacterial binning [bvbrc:bool]"
     default: true
   perform_viral_binning:
     type: boolean?
-    doc: "If set, perform viral binning of any contings unbinned after bacterial binning"
+    doc: "If set, perform viral binning of any contings unbinned after bacterial binning [bvbrc:bool]"
     default: false
   perform_viral_annotation:
     type: boolean?
-    doc: "If set, perform viral annotation and loading of viral genomes into PATRIC database of any binned viruses"
+    doc: "If set, perform viral annotation and loading of viral genomes into PATRIC database of any binned viruses [bvbrc:bool]"
     default: false
   perform_bacterial_annotation:
     type: boolean?
-    doc: "If set, perform bacterial annotation and loading of bacterial genomes into PATRIC database of any binned bacterial genomes"
+    doc: "If set, perform bacterial annotation and loading of bacterial genomes into PATRIC database of any binned bacterial genomes [bvbrc:bool]"
     default: true
   assembler:
     type: string?

@@ -13,16 +13,16 @@ baseCommand: [PhylogeneticTree]
 inputs:
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. "
+    doc: "Path to which the output will be written.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files."
+    doc: "Basename for the generated output files. [bvbrc:wsid]"
   in_genome_ids:
-    type: string
-    doc: "In-group genomes"
+    type: string[]
+    doc: "In-group genomes [bvbrc:list]"
   out_genome_ids:
-    type: string
-    doc: "Out-group genomes"
+    type: string[]
+    doc: "Out-group genomes [bvbrc:list]"
   full_tree_method:
     type: string?
     doc: "Full tree method"

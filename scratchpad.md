@@ -1,37 +1,81 @@
 # GoWe Scratchpad
 
-## Session: 2026-02-12 (E2E Test)
+## Session: 2026-02-13 (BV-BRC App Specs Research)
 
-### End-to-End Test: PASSED
+### BV-BRC App Specs Summary: COMPLETE
+
+Researched all 34 BV-BRC template-based repos (42 distinct apps):
+- Fetched app_spec JSON files from all repos
+- Fetched README/md documentation from all repos
+- Analyzed service-scripts for concrete output file patterns
+- Compiled into `docs/BVBRC-App-Specs-Summary.md`
+
+**Key findings:**
+- 39 existing CWL tools, 6 apps need new CWL tools: CEIRRDataSubmission, CoreGenomeMLST, SARS2Wastewater, TreeSort, ViralAssembly, WholeGenomeSNPAnalysis
+- 4 existing CWL tools not covered by research (FluxBalanceAnalysis, FunctionalClassification, PhylogeneticTree, RNASeq2)
+- Special behaviors documented: donot_create_result_folder (Sleep, GapfillModel, ModelReconstruction, RunProbModelSEEDJob), singular lib params (ViralAssembly, FastqUtils, MetagenomicReadMapping), wrapper apps (ComprehensiveGenomeAnalysis, ComprehensiveSARS2Analysis)
+- All inputs mapped to CWL types with correct group/record array handling
+- Concrete output files identified from service-script analysis (save_file_to_file, p3-cp, write_dir patterns)
+
+### Next Steps
+- Update gen-cwl-tools to use concrete output patterns instead of generic File[] glob
+- Create CWL tools for 6 missing apps
+- Resolve 4 unmatched existing CWL tools
+
+---
+
+## Session: 2026-02-12 (E2E Test + BV-BRC Output Investigation)
+
+### E2E Test: PASSED (run 2)
 
 Successfully ran `test-pipeline.cwl` (Date -> Sleep) against live BV-BRC:
 
-| Step | App | BV-BRC Job | State | Duration |
-|------|-----|-----------|-------|----------|
-| get_date | Date | 21463320 | SUCCESS | ~70s |
-| wait | Sleep | 21463323 | SUCCESS | ~4s |
+| Step | App | BV-BRC Job | State |
+|------|-----|-----------|-------|
+| get_date | Date | 21463335 | SUCCESS |
+| wait | Sleep | 21463336 | SUCCESS |
 
-- Submission `sub_ff2295ed` reached COMPLETED
-- Resolver correctly tolerated missing upstream outputs (nil for optional trigger)
-- Both tasks transitioned: PENDING -> SCHEDULED -> QUEUED -> RUNNING -> SUCCESS
+- Submission `sub_45f030ee` reached COMPLETED
+- **Date app produced output**: `/awilke@bvbrc/home/gowe-test/.test-pipeline/now`
+- Content: `Thu Feb 12 17:01:36 CST 2026`
 
-### Bug Fixed This Session
+### BV-BRC Output Convention (NEW FINDING)
+
+Documented in `docs/BVBRC-App-Output-Convention.md`. Key points:
+
+**Framework creates two workspace objects per job:**
+```
+{output_path}/{output_file}      <-- job_result JSON metadata
+{output_path}/.{output_file}/    <-- hidden folder with actual output files
+```
+
+- `result_folder = output_path + "/." + output_file` (dot prefix!)
+- Apps write to `$app->result_folder()`, never use output_path/output_file directly
+- `write_results()` enumerates the hidden folder and creates the job_result manifest
+- The job_result JSON contains `output_files: [[path, uuid], ...]` — authoritative manifest
+
+**Impact on GoWe:**
+- Current CWL glob `$(inputs.output_path.location)/$(inputs.output_file)*` matches the job_result metadata, not the actual files
+- For real output resolution, GoWe should either:
+  1. Read the `job_result` object and parse `output_files` (preferred)
+  2. List `{output_path}/.{output_file}/` via Workspace.ls
+- The `test-pipeline/` visible folder was empty; actual output was in `.test-pipeline/now`
+
+### Created This Session
+
+- `docs/BVBRC-App-Output-Convention.md` — full documentation of the output convention
+- `scripts/test-e2e.sh` — shell script to run E2E test pipeline
+
+### Previous Bug Fix (committed earlier)
 
 **Scientific notation job IDs** (`internal/executor/bvbrc.go:108`):
-- `fmt.Sprintf("%v", float64(21463320))` produced `"2.1463317e+07"`
-- `query_tasks` response keyed by `"21463320"` — lookup mismatch -> stuck at QUEUED
-- Fix: `strconv.FormatInt(int64(id), 10)` -> `"21463320"`
-- NOT YET COMMITTED
+- Fixed with `strconv.FormatInt(int64(id), 10)` — committed as `8cc0a7a`
 
-### Known Issues Found During Test
+### Known Issues
 
-1. **Logs empty** — `BVBRCExecutor.Logs()` calls `query_app_log` but returns empty for Date/Sleep. Issue #34.
-2. **task_summary counts zero** — `task_summary` in submission response shows all zeros despite tasks existing. Likely aggregation bug.
-3. **Date/Sleep produce no workspace output** — Expected; they're test apps. Real apps (GenomeAnnotation etc.) would write files.
-
-### Uncommitted Change
-
-- `internal/executor/bvbrc.go` — float64-to-int job ID fix (strconv.FormatInt)
+1. **Logs empty** — `BVBRCExecutor.Logs()` returns empty for Date/Sleep. Issue #34.
+2. **task_summary counts zero** — aggregation bug in submission response.
+3. **CWL glob pattern incorrect** — matches job_result metadata, not actual output files. Needs output resolver rework.
 
 ---
 
@@ -42,14 +86,15 @@ Successfully ran `test-pipeline.cwl` (Date -> Sleep) against live BV-BRC:
 - **Phase 8**: MCP Server + Tool Gen — IN PROGRESS
 - **CWL Directory type**: DONE (8c57a81, #31)
 - **Auto-wrap bare CLTs**: DONE (43ca8f6, #28)
+- **CWL Tool Generation**: v0.8.0 (42df7cb) — 39 tools with File[] output type
 
 ### Recent Commits (main)
 
 ```
+42df7cb feat: regenerate CWL tools with File[] output type and path-derived glob (v0.8.0)
+8cc0a7a fix: format BV-BRC job IDs as integers to prevent scientific notation
 8c57a81 feat: map BV-BRC folder to CWL Directory with URI scheme support (#31)
 43ca8f6 feat: auto-wrap bare CommandLineTools as single-step Workflows (#28)
-07ee63a fix: handle numeric job IDs from BV-BRC start_app response
-4ffd2b4 fix: tolerate missing outputs on completed BV-BRC tasks in resolver
 ```
 
 ### Open Issues (as of 2026-02-12)
@@ -65,15 +110,10 @@ Successfully ran `test-pipeline.cwl` (Date -> Sleep) against live BV-BRC:
 
 **Infrastructure:**
 - #9: API verification (PLANNED)
-- #10: Output registry
+- #10: Output registry — now informed by BV-BRC output convention findings
 - #11: Phase 8 — MCP Server + Tool Gen
 - #16: Add HTTP integration tests
 - #17: Set up CI/CD with GitHub Actions
-
-### p3 Tools
-
-Location: `/Users/me/Development/bvbrc/BV-BRC-Go-SDK/dist/bin/`
-Usage: `export PATH="/Users/me/Development/bvbrc/BV-BRC-Go-SDK/dist/bin:$PATH"`
 
 ### Key Files Reference
 
@@ -85,6 +125,17 @@ Usage: `export PATH="/Users/me/Development/bvbrc/BV-BRC-Go-SDK/dist/bin:$PATH"`
 | `internal/scheduler/loop.go` | Scheduler main loop (5 phases per tick) |
 | `cwl/workflows/test-pipeline.cwl` | Date -> Sleep test workflow |
 | `cwl/jobs/test-pipeline.yml` | Job inputs for test pipeline |
+| `scripts/test-e2e.sh` | E2E test runner script |
+| `docs/BVBRC-App-Output-Convention.md` | BV-BRC output convention docs |
+
+### BV-BRC Source References
+
+| File | Purpose |
+|------|---------|
+| `bvbrc_standalone_apps/service-scripts/App-Date.pl` | Date app implementation |
+| `bvbrc_standalone_apps/app_specs/Date.json` | Date app spec |
+| `dev_container/modules/app_service/lib/Bio/KBase/AppService/AppScript.pm` | App framework |
+| `BV-BRC-Web/public/js/p3/widget/viewer/JobResult.js` | Web UI job result viewer |
 
 ### YAML Gotcha
 

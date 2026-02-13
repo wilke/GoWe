@@ -29,6 +29,7 @@ Thumbs.db
 # Built CLI tools (root-level)
 /smoke-test
 /verify-bvbrc
+/gen-cwl-tools
 
 # Workspace files
 *.code-workspace

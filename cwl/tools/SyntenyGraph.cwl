@@ -13,13 +13,13 @@ baseCommand: [SyntenyGraph]
 inputs:
   output_path:
     type: Directory
-    doc: "Path to which the output will be written. "
+    doc: "Path to which the output will be written.  [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files."
+    doc: "Basename for the generated output files. [bvbrc:wsid]"
   genome_ids:
-    type: string
-    doc: "Input genomes"
+    type: string[]
+    doc: "Input genomes [bvbrc:list]"
   ksize:
     type: int
     doc: "Minimum neighborhood size for alignment"

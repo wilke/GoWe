@@ -17,10 +17,10 @@ inputs:
     default: 10
   output_path:
     type: Directory?
-    doc: "Workspace folder for results (framework parameter)"
+    doc: "Workspace folder for results (framework parameter) [bvbrc:folder]"
   output_file:
-    type: string
-    doc: "Prefix for output file names"
+    type: string?
+    doc: "Prefix for output file names (framework parameter)"
 
 outputs:
   result:

@@ -12,24 +12,24 @@ baseCommand: [MetaCATS]
 
 inputs:
   alignment_file:
-    type: string
-    doc: "The location of the alignment file."
+    type: File
+    doc: "The location of the alignment file. [bvbrc:wstype]"
   group_file:
-    type: string
-    doc: "The location of a file that partitions sequences into groups."
+    type: File
+    doc: "The location of a file that partitions sequences into groups. [bvbrc:wstype]"
   p_value:
     type: float
     doc: "The p-value cutoff for analyzing sequences."
     default: 0.05
   alignment_type:
     type: string
-    doc: "The file format type."
+    doc: "The file format type. [enum: aligned_dna_fasta, aligned_protein_fasta] [bvbrc:enum]"
   output_path:
     type: Directory
-    doc: "Path to which the output will be written."
+    doc: "Path to which the output will be written. [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for the generated output files."
+    doc: "Basename for the generated output files. [bvbrc:wsid]"
 
 outputs:
   result:
