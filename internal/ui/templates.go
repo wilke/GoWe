@@ -1247,7 +1247,7 @@ var templates = map[string]string{
     </div>
     {{end}}
 
-    <form action="/api/v1/submissions" method="POST" class="space-y-6">
+    <form action="/submissions" method="POST" class="space-y-6">
         <div class="bg-white shadow sm:rounded-lg">
             <div class="px-4 py-5 sm:p-6">
                 <div class="space-y-6">

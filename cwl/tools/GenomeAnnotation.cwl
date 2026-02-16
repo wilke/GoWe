@@ -21,13 +21,13 @@ inputs:
     type: int?
     doc: "NCBI Taxonomy identfier for this genome"
   code:
-    type: string
-    doc: "Genetic code used in translation of DNA sequences [enum: 11, 4] [bvbrc:enum]"
-    default: 11
+    type: int?
+    doc: "Genetic code used in translation of DNA sequences [enum: 0, 1, 4, 11, 25] [bvbrc:enum]"
+    default: 0
   domain:
     type: string
-    doc: "Domain of the submitted genome [enum: Bacteria, Archaea] [bvbrc:enum]"
-    default: "Bacteria"
+    doc: "Domain of the submitted genome [enum: Bacteria, Archaea, Viruses, auto] [bvbrc:enum]"
+    default: "auto"
   public:
     type: boolean?
     doc: "Make this genome public [bvbrc:bool]"
@@ -89,6 +89,9 @@ inputs:
   analyze_quality:
     type: boolean?
     doc: "If enabled, run quality analysis on genome [bvbrc:bool]"
+  assembly_output:
+    type: Directory?
+    doc: "Workspace path to assembly output [bvbrc:folder]"
   custom_pipeline:
     type: string?
     doc: "Customize the RASTtk pipeline [bvbrc:group]"

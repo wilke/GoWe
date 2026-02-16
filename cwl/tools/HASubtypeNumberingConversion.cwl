@@ -13,16 +13,19 @@ baseCommand: [HASubtypeNumberingConversion]
 inputs:
   input_source:
     type: string
-    doc: "Source of input (id_list, fasta_data, fasta_file, genome_group) [enum: fasta_data, fasta_file, feature_group] [bvbrc:enum]"
+    doc: "Source of input [enum: feature_list, fasta_data, fasta_file, feature_group] [bvbrc:enum]"
   input_fasta_data:
     type: string?
-    doc: "Input sequence in fasta formats"
+    doc: "FASTA data"
   input_fasta_file:
     type: string?
-    doc: "Input sequence as a workspace file of fasta data [bvbrc:wsid]"
+    doc: "Workspace FASTA file [bvbrc:wsid]"
   input_feature_group:
     type: string?
-    doc: "Input sequence as a workspace feature group [bvbrc:wsid]"
+    doc: "Feature group [bvbrc:wsid]"
+  input_feature_list:
+    type: string?
+    doc: "Feature IDs"
   types:
     type: string
     doc: "Selected types in the submission"

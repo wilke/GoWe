@@ -44,6 +44,12 @@ inputs:
             - name: read_orientation_outward
               type: boolean
               default: false
+            - name: insert_size_mean
+              type: int?
+              doc: "Insert size mean"
+            - name: insert_size_stdev
+              type: float?
+              doc: "Insert size standard deviation"
     doc: " [bvbrc:group]"
   single_end_libs:
     type:
@@ -62,8 +68,8 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string?
-    doc: "Sequence Read Archive (SRA) Run ID"
+    type: string[]?
+    doc: "Sequence Read Archive (SRA) Run IDs"
   reference_assembly:
     type: File?
     doc: "Reference set of assembled DNA contigs [bvbrc:wstype]"
@@ -72,7 +78,7 @@ inputs:
     doc: "Preannotated genome object [bvbrc:wstype]"
   recipe:
     type: string?
-    doc: "Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell] [bvbrc:enum]"
+    doc: "Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell, flye] [bvbrc:enum]"
     default: "auto"
   racon_iter:
     type: int?
@@ -86,6 +92,18 @@ inputs:
     type: boolean?
     doc: "Trim reads before assembly"
     default: false
+  normalize:
+    type: boolean?
+    doc: "Normalize reads (BBNorm)"
+    default: false
+  filtlong:
+    type: boolean?
+    doc: "Filter long reads"
+    default: false
+  target_depth:
+    type: int?
+    doc: "Target depth for BBNorm/Filtlong"
+    default: 200
   min_contig_len:
     type: int?
     doc: "Filter out short contigs in final assembly"
@@ -95,9 +113,9 @@ inputs:
     doc: "Filter out contigs with low read depth in final assembly"
     default: 5
   genome_size:
-    type: string?
+    type: int?
     doc: "Estimated genome size (for canu)"
-    default: "5M"
+    default: 5000000
   genbank_file:
     type: File?
     doc: "Genome to process [bvbrc:wstype]"
@@ -111,13 +129,13 @@ inputs:
     type: int?
     doc: "NCBI Taxonomy identfier for this genome"
   code:
-    type: string
-    doc: "Genetic code used in translation of DNA sequences [enum: 11, 4] [bvbrc:enum]"
-    default: 11
+    type: int?
+    doc: "Genetic code used in translation of DNA sequences [enum: 0, 1, 4, 11, 25] [bvbrc:enum]"
+    default: 0
   domain:
     type: string
-    doc: "Domain of the submitted genome [enum: Bacteria, Archaea] [bvbrc:enum]"
-    default: "Bacteria"
+    doc: "Domain of the submitted genome [enum: Bacteria, Archaea, Viruses, auto] [bvbrc:enum]"
+    default: "auto"
   public:
     type: boolean?
     doc: "Make this genome public [bvbrc:bool]"

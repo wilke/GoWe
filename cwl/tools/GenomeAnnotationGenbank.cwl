@@ -67,6 +67,12 @@ inputs:
   import_only:
     type: boolean?
     doc: "Import this genome (do not reannotate gene calls or protein functions) [bvbrc:bool]"
+  raw_import_only:
+    type: boolean?
+    doc: "Import without postprocessing"
+  skip_contigs:
+    type: boolean?
+    doc: "Do not import contigs"
   fix_errors:
     type: boolean?
     doc: "The automatic annotation process may run into problems, such as gene candidates overlapping RNAs, or genes embedded inside other genes. To automatically resolve these problems (even if that requires deleting some gene candidates), enable this option. [bvbrc:bool]"

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
@@ -386,6 +387,115 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 		"Error":            r.URL.Query().Get("error"),
 	}
 	ui.render(w, "submissions/create", data)
+}
+
+// HandleSubmissionCreatePost processes the submission creation form.
+func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/submissions/new?error=Invalid+request", http.StatusSeeOther)
+		return
+	}
+
+	workflowID := r.FormValue("workflow_id")
+	if workflowID == "" {
+		http.Redirect(w, r, "/submissions/new?error=Workflow+is+required", http.StatusSeeOther)
+		return
+	}
+
+	wf, err := ui.store.GetWorkflow(r.Context(), workflowID)
+	if err != nil || wf == nil {
+		http.Redirect(w, r, "/submissions/new?error=Workflow+not+found", http.StatusSeeOther)
+		return
+	}
+
+	// Collect inputs from form fields named inputs[key].
+	inputs := make(map[string]any)
+	for _, inp := range wf.Inputs {
+		val := r.FormValue("inputs[" + inp.ID + "]")
+		if val == "" {
+			if inp.Default != nil {
+				inputs[inp.ID] = inp.Default
+			}
+			continue
+		}
+		// Coerce values based on declared type.
+		switch {
+		case inp.Type == "int" || inp.Type == "int?":
+			if n, err := strconv.Atoi(val); err == nil {
+				inputs[inp.ID] = n
+				continue
+			}
+		case inp.Type == "float" || inp.Type == "double" || inp.Type == "float?" || inp.Type == "double?":
+			if f, err := strconv.ParseFloat(val, 64); err == nil {
+				inputs[inp.ID] = f
+				continue
+			}
+		case inp.Type == "boolean" || inp.Type == "boolean?":
+			inputs[inp.ID] = val == "true" || val == "on" || val == "1"
+			continue
+		}
+		inputs[inp.ID] = val
+	}
+
+	// Parse optional labels JSON.
+	labels := map[string]string{}
+	if labelsStr := r.FormValue("labels"); labelsStr != "" {
+		_ = json.Unmarshal([]byte(labelsStr), &labels)
+	}
+
+	now := time.Now().UTC()
+	sub := &model.Submission{
+		ID:           "sub_" + uuid.New().String(),
+		WorkflowID:   wf.ID,
+		WorkflowName: wf.Name,
+		State:        model.SubmissionStatePending,
+		Inputs:       inputs,
+		Outputs:      map[string]any{},
+		Labels:       labels,
+		CreatedAt:    now,
+	}
+	if sess != nil {
+		sub.SubmittedBy = sess.Username
+	}
+
+	if err := ui.store.CreateSubmission(r.Context(), sub); err != nil {
+		ui.logger.Error("create submission failed", "error", err)
+		http.Redirect(w, r, "/submissions/new?workflow_id="+workflowID+"&error=Failed+to+create+submission", http.StatusSeeOther)
+		return
+	}
+
+	// Create tasks for each workflow step.
+	for _, step := range wf.Steps {
+		var execType model.ExecutorType
+		var bvbrcAppID string
+		if step.Hints != nil {
+			if step.Hints.ExecutorType != "" {
+				execType = step.Hints.ExecutorType
+			}
+			bvbrcAppID = step.Hints.BVBRCAppID
+		}
+
+		task := &model.Task{
+			ID:           "task_" + uuid.New().String(),
+			SubmissionID: sub.ID,
+			StepID:       step.ID,
+			State:        model.TaskStatePending,
+			ExecutorType: execType,
+			BVBRCAppID:   bvbrcAppID,
+			Inputs:       map[string]any{},
+			Outputs:      map[string]any{},
+			DependsOn:    step.DependsOn,
+			MaxRetries:   3,
+			CreatedAt:    now,
+		}
+		if err := ui.store.CreateTask(r.Context(), task); err != nil {
+			ui.logger.Error("create task failed", "step", step.ID, "error", err)
+		}
+	}
+
+	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)
+	http.Redirect(w, r, "/submissions/"+sub.ID, http.StatusSeeOther)
 }
 
 // HandleSubmissionCancel cancels a running submission (HTMX).

@@ -11,19 +11,56 @@ hints:
 baseCommand: [MetaCATS]
 
 inputs:
-  alignment_file:
-    type: File
-    doc: "The location of the alignment file. [bvbrc:wstype]"
-  group_file:
-    type: File
-    doc: "The location of a file that partitions sequences into groups. [bvbrc:wstype]"
   p_value:
     type: float
-    doc: "The p-value cutoff for analyzing sequences."
+    doc: "P-value cutoff"
     default: 0.05
-  alignment_type:
+  year_ranges:
+    type: string?
+    doc: "Year ranges"
+  metadata_group:
+    type: string?
+    doc: "Metadata type"
+  input_type:
     type: string
-    doc: "The file format type. [enum: aligned_dna_fasta, aligned_protein_fasta] [bvbrc:enum]"
+    doc: "Input type [enum: auto, groups, files] [bvbrc:enum]"
+  alphabet:
+    type: string
+    doc: "Sequence alphabet [enum: na, aa] [bvbrc:enum]"
+    default: "na"
+  groups:
+    type: string[]?
+    doc: "Feature groups [bvbrc:list]"
+  alignment_file:
+    type: File?
+    doc: "Alignment file [bvbrc:wstype]"
+  group_file:
+    type: File?
+    doc: "Group file [bvbrc:wstype]"
+  alignment_type:
+    type: string?
+    doc: "Alignment type [enum: aligned_dna_fasta, aligned_protein_fasta] [bvbrc:enum]"
+  auto_groups:
+    type:
+      - "null"
+      - type: array
+        items:
+          type: record
+          name: auto_group
+          fields:
+            - name: id
+              type: string
+              doc: "Sequence ID"
+            - name: grp
+              type: string
+              doc: "Group assignment"
+            - name: g_id
+              type: string
+              doc: "Genome ID"
+            - name: metadata
+              type: string
+              doc: "Metadata value"
+    doc: " [bvbrc:group]"
   output_path:
     type: Directory
     doc: "Path to which the output will be written. [bvbrc:folder]"

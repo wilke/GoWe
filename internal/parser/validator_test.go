@@ -155,7 +155,7 @@ func TestValidate_StepMissingRun(t *testing.T) {
 	}
 }
 
-func TestValidate_StepNoOutputs(t *testing.T) {
+func TestValidate_StepNoOutputs_Allowed(t *testing.T) {
 	v := testValidator()
 	g := validGraph()
 	g.Workflow.Steps["no_out"] = cwl.Step{
@@ -164,11 +164,8 @@ func TestValidate_StepNoOutputs(t *testing.T) {
 		Out: []string{},
 	}
 	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
-	}
-	if !hasFieldError(apiErr.Details, "steps.no_out.out") {
-		t.Errorf("expected out error, got %v", apiErr.Details)
+	if apiErr != nil {
+		t.Fatalf("steps with no outputs should be allowed, got %v", apiErr.Details)
 	}
 }
 

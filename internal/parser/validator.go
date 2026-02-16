@@ -95,14 +95,8 @@ func (v *Validator) validateSteps(graph *cwl.GraphDocument) []model.FieldError {
 				Message: fmt.Sprintf("step %q is missing 'run' reference", id),
 			})
 		}
-		// CWL allows steps with no outputs (side-effect only tools).
-		// Only enforce for Workflows where downstream steps need outputs.
-		if graph.OriginalClass == "Workflow" && len(step.Out) == 0 {
-			errs = append(errs, model.FieldError{
-				Field:   fmt.Sprintf("steps.%s.out", id),
-				Message: fmt.Sprintf("step %q has no outputs", id),
-			})
-		}
+		// CWL allows steps with no outputs (side-effect only tools,
+		// e.g. BV-BRC apps that write to workspace). No error needed.
 	}
 
 	return errs

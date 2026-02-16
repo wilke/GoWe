@@ -8,7 +8,7 @@ $graph:
         executor: bvbrc
     baseCommand: [Date]
     inputs:
-      output_path: { type: "string?" }
+      output_path: { type: "Directory?" }
       output_file: { type: "string?" }
     outputs:
       date_result: { type: File, outputBinding: { glob: "*.txt" } }
@@ -22,16 +22,15 @@ $graph:
     baseCommand: [Sleep]
     inputs:
       sleep_time: { type: int, default: 1 }
-      output_path: { type: string }
+      output_path: { type: Directory }
       output_file: { type: string }
       trigger: { type: "File?" }
-    outputs:
-      sleep_result: { type: File, outputBinding: { glob: "*.txt" } }
+    outputs: []
 
   - id: main
     class: Workflow
     inputs:
-      output_path: string
+      output_path: Directory
       output_file: string
       sleep_seconds:
         type: int
@@ -50,11 +49,8 @@ $graph:
           output_path: output_path
           output_file: output_file
           trigger: get_date/date_result
-        out: [sleep_result]
+        out: []
     outputs:
       date_output:
         type: File
         outputSource: get_date/date_result
-      sleep_output:
-        type: File
-        outputSource: wait/sleep_result

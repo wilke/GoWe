@@ -24,8 +24,44 @@ inputs:
     type: string?
     doc: "Input sequence as a workspace genome group [bvbrc:wsid]"
   metadata:
+    type: string
+    doc: "Metadata CSV file [bvbrc:wsid]"
+  affiliation:
     type: string?
-    doc: "Metadata as a workspace file of csv [bvbrc:wsid]"
+    doc: "Submitter affiliation"
+  first_name:
+    type: string
+    doc: "Submitter first name"
+  last_name:
+    type: string
+    doc: "Submitter last name"
+  email:
+    type: string
+    doc: "Submitter email"
+  consortium:
+    type: string?
+    doc: "Consortium"
+  country:
+    type: string?
+    doc: "Country"
+  phoneNumber:
+    type: string?
+    doc: "Phone number"
+  street:
+    type: string?
+    doc: "Street address"
+  postal_code:
+    type: string?
+    doc: "Postal code"
+  city:
+    type: string?
+    doc: "City"
+  state:
+    type: string?
+    doc: "State"
+  numberOfSequences:
+    type: string?
+    doc: "Number of sequences"
   output_path:
     type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"

@@ -12,11 +12,11 @@ baseCommand: [GeneTree]
 
 inputs:
   sequences:
-    type: string
-    doc: "Sequence Data Inputs"
+    type: string[]
+    doc: "Sequence Data Inputs [bvbrc:list]"
   alignment_program:
     type: string?
-    doc: "Alignment Program"
+    doc: "Alignment Program [enum: muscle, mafft] [bvbrc:enum]"
   trim_threshold:
     type: float?
     doc: "Alignment End-Trimming Threshold"
@@ -40,11 +40,11 @@ inputs:
     type: string?
     doc: "Fields to be retrieved for each gene. [enum: viral_genome, gene] [bvbrc:enum]"
   feature_metadata_fields:
-    type: string?
-    doc: "Fields to be retrieved for each gene."
+    type: string[]?
+    doc: "Gene metadata fields [bvbrc:list]"
   genome_metadata_fields:
-    type: string?
-    doc: "Fields to be retrieved for each genome."
+    type: string[]?
+    doc: "Genome metadata fields [bvbrc:list]"
   output_path:
     type: Directory
     doc: "Path to which the output will be written. [bvbrc:folder]"

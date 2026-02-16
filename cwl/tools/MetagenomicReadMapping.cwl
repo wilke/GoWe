@@ -26,44 +26,26 @@ inputs:
   paired_end_libs:
     type:
       - "null"
-      - type: array
-        items:
-          type: record
-          name: paired_end_lib
-          fields:
-            - name: read1
-              type: File
-              doc: "Forward reads"
-            - name: read2
-              type: File?
-              doc: "Reverse reads"
-            - name: platform
-              type: string?
-              doc: "Sequencing platform"
-              default: "infer"
-            - name: interleaved
-              type: boolean
-              default: false
-            - name: read_orientation_outward
-              type: boolean
-              default: false
-    doc: " [bvbrc:group]"
+      - type: record
+        name: paired_end_lib
+        fields:
+          - name: read1
+            type: File
+            doc: "Forward reads"
+          - name: read2
+            type: File?
+            doc: "Reverse reads"
+    doc: "Paired-end reads (singular)"
   single_end_libs:
     type:
       - "null"
-      - type: array
-        items:
-          type: record
-          name: single_end_lib
-          fields:
-            - name: read
-              type: File
-              doc: "Read file"
-            - name: platform
-              type: string?
-              doc: "Sequencing platform"
-              default: "infer"
-    doc: " [bvbrc:group]"
+      - type: record
+        name: single_end_lib
+        fields:
+          - name: read
+            type: File
+            doc: "Read file"
+    doc: "Single-end reads (singular)"
   srr_ids:
     type: string?
     doc: "Sequence Read Archive (SRA) Run ID"

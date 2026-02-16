@@ -11,18 +11,15 @@ hints:
 baseCommand: [PrimerDesign]
 
 inputs:
-  output_file:
+  input_type:
     type: string
-    doc: "Basename for the generated output files. [bvbrc:wsid]"
-  output_path:
-    type: Directory
-    doc: "Path to which the output will be written. [bvbrc:folder]"
+    doc: "Input type [enum: sequence_text, workplace_fasta, database_id] [bvbrc:enum]"
+  sequence_input:
+    type: string
+    doc: "DNA sequence data"
   SEQUENCE_ID:
-    type: string
+    type: string?
     doc: "Sequence ID"
-  SEQUENCE_TEMPLATE:
-    type: string
-    doc: "Nucleotide Sequence or (BVBRC Seq Id)"
   SEQUENCE_TARGET:
     type: string[]?
     doc: "Start/stop of region that primers must flank [bvbrc:array]"
@@ -34,7 +31,10 @@ inputs:
     doc: "Region where primers cannot overlap [bvbrc:array]"
   SEQUENCE_OVERLAP_JUNCTION_LIST:
     type: string[]?
-    doc: "Start position and length of region that primers must flank [bvbrc:array]"
+    doc: "Junction overlap list [bvbrc:array]"
+  PRIMER_PICK_INTERNAL_OLIGO:
+    type: int?
+    doc: "Pick internal oligo (1=yes)"
   PRIMER_PRODUCT_SIZE_RANGE:
     type: string[]?
     doc: "Min, max product size [bvbrc:array]"
@@ -83,6 +83,12 @@ inputs:
   PRIMER_DNTP_CONC:
     type: float?
     doc: "Concentration of dNTPs (mM) [bvbrc:number]"
+  output_path:
+    type: Directory
+    doc: "Path to which the output will be written. [bvbrc:folder]"
+  output_file:
+    type: string
+    doc: "Basename for the generated output files. [bvbrc:wsid]"
 
 outputs:
   result:

@@ -18,27 +18,33 @@ inputs:
     type: string
     doc: "Basename for the generated output files [bvbrc:wsid]"
   genome_ids:
-    type: string[]
+    type: string[]?
     doc: "Main genomes [bvbrc:list]"
+  genome_groups:
+    type: string[]?
+    doc: "Genome groups [bvbrc:list]"
   optional_genome_ids:
     type: string[]?
     doc: "Optional genomes (not penalized for missing/duplicated genes) [bvbrc:list]"
+  genome_metadata_fields:
+    type: string[]?
+    doc: "Metadata fields to retrieve for each genome [bvbrc:list]"
   number_of_genes:
     type: int?
     doc: "Desired number of genes"
-    default: "20"
+    default: 20
   bootstraps:
     type: int?
     doc: "Number of bootstrap replicates"
-    default: "100"
+    default: 100
   max_genomes_missing:
     type: int?
     doc: "Number of main genomes allowed missing from any PGFam"
-    default: "0"
+    default: 0
   max_allowed_dups:
     type: int?
     doc: "Number of duplications allowed for main genomes in any PGFam"
-    default: "0"
+    default: 0
 
 outputs:
   result:

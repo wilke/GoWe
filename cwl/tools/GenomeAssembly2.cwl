@@ -53,11 +53,11 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string?
-    doc: "Sequence Read Archive (SRA) Run ID"
+    type: string[]?
+    doc: "Sequence Read Archive (SRA) Run IDs"
   recipe:
     type: string?
-    doc: "Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell] [bvbrc:enum]"
+    doc: "Recipe used for assembly [enum: auto, unicycler, flye, meta-flye, canu, spades, meta-spades, plasmid-spades, single-cell, megahit] [bvbrc:enum]"
     default: "auto"
   racon_iter:
     type: int?
@@ -71,6 +71,22 @@ inputs:
     type: boolean?
     doc: "Trim reads before assembly"
     default: false
+  normalize:
+    type: boolean?
+    doc: "Normalize reads (BBNorm)"
+    default: false
+  filtlong:
+    type: boolean?
+    doc: "Filter long reads"
+    default: false
+  target_depth:
+    type: int?
+    doc: "Target depth"
+    default: 200
+  max_bases:
+    type: int?
+    doc: "Max bases triggering downsampling"
+    default: 10000000000
   min_contig_len:
     type: int?
     doc: "Filter out short contigs in final assembly"
@@ -80,9 +96,9 @@ inputs:
     doc: "Filter out contigs with low read depth in final assembly"
     default: 5
   genome_size:
-    type: string?
+    type: int?
     doc: "Estimated genome size (for canu)"
-    default: "5M"
+    default: 5000000
   output_path:
     type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"

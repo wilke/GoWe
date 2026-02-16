@@ -28,16 +28,15 @@ inputs:
             - name: read2
               type: File?
               doc: "Reverse reads"
-            - name: platform
-              type: string?
-              doc: "Sequencing platform"
-              default: "infer"
             - name: interleaved
               type: boolean
               default: false
-            - name: read_orientation_outward
-              type: boolean
-              default: false
+            - name: insert_size_mean
+              type: int?
+              doc: "Insert size mean"
+            - name: insert_size_stdev
+              type: float?
+              doc: "Insert size standard deviation"
     doc: " [bvbrc:group]"
   single_end_libs:
     type:
@@ -50,21 +49,17 @@ inputs:
             - name: read
               type: File
               doc: "Read file"
-            - name: platform
-              type: string?
-              doc: "Sequencing platform"
-              default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string?
-    doc: "Sequence Read Archive (SRA) Run ID"
+    type: string[]?
+    doc: "Sequence Read Archive (SRA) Run IDs"
   mapper:
     type: string?
-    doc: "Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST] [bvbrc:enum]"
+    doc: "Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST, minimap2, Snippy] [bvbrc:enum]"
     default: "BWA-mem"
   caller:
     type: string?
-    doc: "Tool used for calling variations based on short read mapping [enum: FreeBayes, SAMtools] [bvbrc:enum]"
+    doc: "Tool used for calling variations based on short read mapping [enum: FreeBayes, BCFtools, Snippy] [bvbrc:enum]"
     default: "FreeBayes"
   output_path:
     type: Directory

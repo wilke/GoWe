@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -52,7 +53,7 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	// Convert to model.
 	name := req.Name
 	if name == "" {
-		name = "unnamed-workflow"
+		name = inferWorkflowName(graph)
 	}
 	mw, err := s.parser.ToModel(graph, name)
 	if err != nil {
@@ -305,4 +306,41 @@ func (s *Server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) 
 		"errors":   []any{},
 		"warnings": []any{},
 	})
+}
+
+// inferWorkflowName derives a workflow name from the parsed CWL graph.
+// For Workflows (multi-step): use the workflow ID.
+// For CommandLineTools: bvbrc_app_id > baseCommand > fallback.
+func inferWorkflowName(graph *cwl.GraphDocument) string {
+	// Multi-step workflows: use the workflow ID.
+	if graph.OriginalClass == "Workflow" && graph.Workflow != nil && graph.Workflow.ID != "" {
+		return graph.Workflow.ID
+	}
+
+	// Try bvbrc_app_id from the first tool's goweHint.
+	for _, tool := range graph.Tools {
+		if gowe, ok := tool.Hints["goweHint"].(map[string]any); ok {
+			if appID, ok := gowe["bvbrc_app_id"].(string); ok && appID != "" {
+				return appID
+			}
+		}
+	}
+
+	// Fall back to baseCommand from the first tool.
+	for _, tool := range graph.Tools {
+		switch bc := tool.BaseCommand.(type) {
+		case string:
+			if bc != "" {
+				return bc
+			}
+		case []any:
+			if len(bc) > 0 {
+				if s, ok := bc[0].(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+
+	return "unnamed-workflow"
 }

@@ -53,8 +53,15 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
+    type: string[]?
+    doc: "Sequence Read Archive (SRA) Run IDs"
+  primers:
+    type: string
+    doc: "Primer set [enum: ARTIC, midnight, qiagen, swift, varskip, varskip-long]"
+    default: "ARTIC"
+  primer_version:
     type: string?
-    doc: "Sequence Read Archive (SRA) Run ID"
+    doc: "Primer version"
   recipe:
     type: string?
     doc: "Recipe used for assembly [enum: auto, onecodex, cdc-illumina, cdc-nanopore, artic-nanopore] [bvbrc:enum]"

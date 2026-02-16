@@ -34,6 +34,7 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 		r.Route("/submissions", func(r chi.Router) {
 			r.Get("/", ui.HandleSubmissionList)
 			r.Get("/new", ui.HandleSubmissionCreate)
+			r.Post("/", ui.HandleSubmissionCreatePost)
 			r.Get("/export", ui.HandleSubmissionExport)
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", ui.HandleSubmissionDetail)

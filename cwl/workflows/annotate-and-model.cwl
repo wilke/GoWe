@@ -13,7 +13,7 @@ $graph:
       taxonomy_id: { type: int }
       code: { type: int, default: 11 }
       domain: { type: string, default: "Bacteria" }
-      output_path: { type: string }
+      output_path: { type: Directory }
       output_file: { type: string }
     outputs:
       annotated_genome: { type: File, outputBinding: { glob: "*.genome" } }
@@ -27,7 +27,7 @@ $graph:
     baseCommand: [ModelReconstruction]
     inputs:
       genome: { type: File }
-      output_path: { type: string }
+      output_path: { type: Directory }
       output_file: { type: string }
     outputs:
       model: { type: File, outputBinding: { glob: "*.model" } }
@@ -38,7 +38,7 @@ $graph:
       contigs: string
       scientific_name: string
       taxonomy_id: int
-      output_path: string
+      output_path: Directory
       output_file: string
     steps:
       annotate:

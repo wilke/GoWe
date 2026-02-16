@@ -21,11 +21,11 @@ inputs:
     type: string?
     doc: " [bvbrc:group]"
   reference_genome_id:
-    type: string?
+    type: string
     doc: "Reference genome ID"
   recipe:
     type: string?
-    doc: "Recipe used for TnSeq analysis [enum: griffin, tn5gaps, rankproduct, hmm, binomial, resampling] [bvbrc:enum]"
+    doc: "Recipe used for TnSeq analysis [enum: gumbel, griffin, tn5gaps, rankproduct, hmm, binomial, resampling] [bvbrc:enum]"
     default: "gumbel"
   protocol:
     type: string?
