@@ -63,7 +63,9 @@ func (v *Validator) validateWorkflow(graph *cwl.GraphDocument) []model.FieldErro
 	if len(wf.Steps) == 0 {
 		errs = append(errs, model.FieldError{Field: "steps", Message: "workflow must have at least one step"})
 	}
-	if len(wf.Outputs) == 0 {
+	// CWL allows CommandLineTools with no outputs (side-effect only).
+	// Only enforce the "at least one output" rule for Workflows.
+	if graph.OriginalClass == "Workflow" && len(wf.Outputs) == 0 {
 		errs = append(errs, model.FieldError{Field: "outputs", Message: "workflow must have at least one output"})
 	}
 
@@ -93,7 +95,9 @@ func (v *Validator) validateSteps(graph *cwl.GraphDocument) []model.FieldError {
 				Message: fmt.Sprintf("step %q is missing 'run' reference", id),
 			})
 		}
-		if len(step.Out) == 0 {
+		// CWL allows steps with no outputs (side-effect only tools).
+		// Only enforce for Workflows where downstream steps need outputs.
+		if graph.OriginalClass == "Workflow" && len(step.Out) == 0 {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("steps.%s.out", id),
 				Message: fmt.Sprintf("step %q has no outputs", id),

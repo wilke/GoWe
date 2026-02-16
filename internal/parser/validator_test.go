@@ -15,7 +15,8 @@ func testValidator() *Validator {
 // validGraph returns a minimal valid GraphDocument for testing.
 func validGraph() *cwl.GraphDocument {
 	return &cwl.GraphDocument{
-		CWLVersion: "v1.2",
+		CWLVersion:    "v1.2",
+		OriginalClass: "Workflow",
 		Workflow: &cwl.Workflow{
 			ID:    "main",
 			Class: "Workflow",
@@ -290,6 +291,33 @@ func TestValidate_StepInputNoSourceNoDefault(t *testing.T) {
 	}
 	if !hasFieldErrorMsg(apiErr.Details, "no source and no default") {
 		t.Errorf("expected no source error, got %v", apiErr.Details)
+	}
+}
+
+func TestValidate_CommandLineTool_EmptyOutputs(t *testing.T) {
+	v := testValidator()
+	g := &cwl.GraphDocument{
+		CWLVersion:    "v1.2",
+		OriginalClass: "CommandLineTool",
+		Workflow: &cwl.Workflow{
+			ID:     "main",
+			Class:  "Workflow",
+			Inputs: map[string]cwl.InputParam{"x": {Type: "int"}},
+			Outputs: map[string]cwl.OutputParam{},
+			Steps: map[string]cwl.Step{
+				"run_tool": {
+					Run: "#tool",
+					In:  map[string]cwl.StepInput{"x": {Source: "x"}},
+					Out: []string{},
+				},
+			},
+		},
+		Tools: map[string]*cwl.CommandLineTool{
+			"tool": {ID: "tool", Class: "CommandLineTool"},
+		},
+	}
+	if apiErr := v.Validate(g); apiErr != nil {
+		t.Errorf("CommandLineTool with empty outputs should be valid, got %v", apiErr)
 	}
 }
 
