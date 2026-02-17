@@ -241,12 +241,14 @@ func (p *Parser) parseWorkflow(raw map[string]any) (*cwl.Workflow, error) {
 // parseStep parses a single CWL workflow step from a raw map.
 func (p *Parser) parseStep(raw map[string]any) (cwl.Step, error) {
 	step := cwl.Step{
-		Run:     stringField(raw, "run"),
-		Out:     stringSlice(raw, "out"),
-		Scatter: stringSlice(raw, "scatter"),
-		When:    stringField(raw, "when"),
-		Hints:   mapField(raw, "hints"),
-		In:      make(map[string]cwl.StepInput),
+		Run:           stringField(raw, "run"),
+		Out:           stringSlice(raw, "out"),
+		Scatter:       stringSlice(raw, "scatter"),
+		ScatterMethod: stringField(raw, "scatterMethod"),
+		When:          stringField(raw, "when"),
+		Hints:         mapField(raw, "hints"),
+		Requirements:  mapField(raw, "requirements"),
+		In:            make(map[string]cwl.StepInput),
 	}
 
 	// Parse step inputs: value is string (shorthand source) or map (expanded).
@@ -270,15 +272,39 @@ func (p *Parser) parseStep(raw map[string]any) (cwl.Step, error) {
 // parseTool parses a single CWL CommandLineTool from a raw map.
 func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	tool := &cwl.CommandLineTool{
-		ID:          stringField(raw, "id"),
-		Class:       stringField(raw, "class"),
-		CWLVersion:  stringField(raw, "cwlVersion"),
-		Doc:         stringField(raw, "doc"),
-		BaseCommand: raw["baseCommand"],
-		Hints:       mapField(raw, "hints"),
-		Inputs:      make(map[string]cwl.ToolInputParam),
-		Outputs:     make(map[string]cwl.ToolOutputParam),
+		ID:           stringField(raw, "id"),
+		Class:        stringField(raw, "class"),
+		CWLVersion:   stringField(raw, "cwlVersion"),
+		Doc:          stringField(raw, "doc"),
+		Label:        stringField(raw, "label"),
+		BaseCommand:  raw["baseCommand"],
+		Hints:        mapField(raw, "hints"),
+		Requirements: mapField(raw, "requirements"),
+		Stdin:        stringField(raw, "stdin"),
+		Stdout:       stringField(raw, "stdout"),
+		Stderr:       stringField(raw, "stderr"),
+		Inputs:       make(map[string]cwl.ToolInputParam),
+		Outputs:      make(map[string]cwl.ToolOutputParam),
 	}
+
+	// Parse arguments array.
+	if args, ok := raw["arguments"].([]any); ok {
+		for _, arg := range args {
+			switch a := arg.(type) {
+			case string:
+				tool.Arguments = append(tool.Arguments, a)
+			case map[string]any:
+				// Structured argument with position, prefix, valueFrom, etc.
+				parsedArg := parseArgument(a)
+				tool.Arguments = append(tool.Arguments, parsedArg)
+			}
+		}
+	}
+
+	// Parse exit codes.
+	tool.SuccessCodes = intSlice(raw, "successCodes")
+	tool.TemporaryFailCodes = intSlice(raw, "temporaryFailCodes")
+	tool.PermanentFailCodes = intSlice(raw, "permanentFailCodes")
 
 	// Parse tool inputs: value is string (shorthand type) or map (expanded).
 	if inputs, ok := raw["inputs"].(map[string]any); ok {
@@ -287,16 +313,7 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 			case string:
 				tool.Inputs[id] = cwl.ToolInputParam{Type: val}
 			case map[string]any:
-				typeStr := stringField(val, "type")
-				if typeStr == "" {
-					// Complex type (record array, null union, etc.) — serialize to string tag.
-					typeStr = serializeCWLType(val["type"])
-				}
-				tool.Inputs[id] = cwl.ToolInputParam{
-					Type:    typeStr,
-					Doc:     stringField(val, "doc"),
-					Default: val["default"],
-				}
+				tool.Inputs[id] = parseToolInput(val)
 			}
 		}
 	}
@@ -305,20 +322,186 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	if outputs, ok := raw["outputs"].(map[string]any); ok {
 		for id, v := range outputs {
 			if m, ok := v.(map[string]any); ok {
-				out := cwl.ToolOutputParam{
-					Type: stringField(m, "type"),
-				}
-				if ob, ok := m["outputBinding"].(map[string]any); ok {
-					out.OutputBinding = &cwl.OutputBinding{
-						Glob: stringField(ob, "glob"),
-					}
-				}
-				tool.Outputs[id] = out
+				tool.Outputs[id] = parseToolOutput(m)
 			}
 		}
 	}
 
 	return tool, nil
+}
+
+// parseToolInput parses a single tool input parameter from a raw map.
+func parseToolInput(val map[string]any) cwl.ToolInputParam {
+	typeStr := stringField(val, "type")
+	if typeStr == "" {
+		// Complex type (record array, null union, etc.) — serialize to string tag.
+		typeStr = serializeCWLType(val["type"])
+	}
+
+	inp := cwl.ToolInputParam{
+		Type:         typeStr,
+		Doc:          stringField(val, "doc"),
+		Label:        stringField(val, "label"),
+		Default:      val["default"],
+		Format:       val["format"],
+		Streamable:   boolField(val, "streamable"),
+		LoadContents: boolField(val, "loadContents"),
+		LoadListing:  stringField(val, "loadListing"),
+	}
+
+	// Parse inputBinding.
+	if ib, ok := val["inputBinding"].(map[string]any); ok {
+		inp.InputBinding = parseInputBinding(ib)
+	}
+
+	// Parse secondaryFiles.
+	inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
+
+	return inp
+}
+
+// parseToolOutput parses a single tool output parameter from a raw map.
+func parseToolOutput(m map[string]any) cwl.ToolOutputParam {
+	out := cwl.ToolOutputParam{
+		Type:       stringField(m, "type"),
+		Doc:        stringField(m, "doc"),
+		Label:      stringField(m, "label"),
+		Format:     m["format"],
+		Streamable: boolField(m, "streamable"),
+	}
+
+	// Parse outputBinding.
+	if ob, ok := m["outputBinding"].(map[string]any); ok {
+		out.OutputBinding = parseOutputBinding(ob)
+	}
+
+	// Parse secondaryFiles.
+	out.SecondaryFiles = parseSecondaryFiles(m["secondaryFiles"])
+
+	return out
+}
+
+// parseInputBinding parses a CWL inputBinding from a raw map.
+func parseInputBinding(ib map[string]any) *cwl.InputBinding {
+	binding := &cwl.InputBinding{
+		Prefix:        stringField(ib, "prefix"),
+		ItemSeparator: stringField(ib, "itemSeparator"),
+		ValueFrom:     stringField(ib, "valueFrom"),
+		LoadContents:  boolField(ib, "loadContents"),
+	}
+
+	// Parse position (can be int or expression string).
+	if pos, ok := ib["position"]; ok {
+		switch p := pos.(type) {
+		case int:
+			binding.Position = &p
+		case float64:
+			pi := int(p)
+			binding.Position = &pi
+		}
+	}
+
+	// Parse separate (default is true).
+	if sep, ok := ib["separate"]; ok {
+		if b, ok := sep.(bool); ok {
+			binding.Separate = &b
+		}
+	}
+
+	// Parse shellQuote (default is true).
+	if sq, ok := ib["shellQuote"]; ok {
+		if b, ok := sq.(bool); ok {
+			binding.ShellQuote = &b
+		}
+	}
+
+	return binding
+}
+
+// parseOutputBinding parses a CWL outputBinding from a raw map.
+func parseOutputBinding(ob map[string]any) *cwl.OutputBinding {
+	binding := &cwl.OutputBinding{
+		LoadContents: boolField(ob, "loadContents"),
+		LoadListing:  stringField(ob, "loadListing"),
+		OutputEval:   stringField(ob, "outputEval"),
+	}
+
+	// Glob can be string or []string.
+	if glob, ok := ob["glob"]; ok {
+		binding.Glob = glob
+	}
+
+	return binding
+}
+
+// parseArgument parses a structured argument from a raw map.
+func parseArgument(a map[string]any) cwl.Argument {
+	arg := cwl.Argument{
+		Prefix:    stringField(a, "prefix"),
+		ValueFrom: stringField(a, "valueFrom"),
+	}
+
+	// Parse position.
+	if pos, ok := a["position"]; ok {
+		switch p := pos.(type) {
+		case int:
+			arg.Position = &p
+		case float64:
+			pi := int(p)
+			arg.Position = &pi
+		}
+	}
+
+	// Parse separate.
+	if sep, ok := a["separate"]; ok {
+		if b, ok := sep.(bool); ok {
+			arg.Separate = &b
+		}
+	}
+
+	// Parse shellQuote.
+	if sq, ok := a["shellQuote"]; ok {
+		if b, ok := sq.(bool); ok {
+			arg.ShellQuote = &b
+		}
+	}
+
+	return arg
+}
+
+// parseSecondaryFiles parses the secondaryFiles field.
+func parseSecondaryFiles(v any) []cwl.SecondaryFileSchema {
+	if v == nil {
+		return nil
+	}
+
+	var result []cwl.SecondaryFileSchema
+
+	switch sf := v.(type) {
+	case string:
+		// Single pattern string.
+		result = append(result, cwl.SecondaryFileSchema{Pattern: sf})
+	case []any:
+		for _, item := range sf {
+			switch s := item.(type) {
+			case string:
+				result = append(result, cwl.SecondaryFileSchema{Pattern: s})
+			case map[string]any:
+				result = append(result, cwl.SecondaryFileSchema{
+					Pattern:  stringField(s, "pattern"),
+					Required: s["required"],
+				})
+			}
+		}
+	case map[string]any:
+		// Single structured entry.
+		result = append(result, cwl.SecondaryFileSchema{
+			Pattern:  stringField(sf, "pattern"),
+			Required: sf["required"],
+		})
+	}
+
+	return result
 }
 
 // ToModel converts a typed CWL GraphDocument to a domain model Workflow.
@@ -449,7 +632,18 @@ func convertTool(ct *cwl.CommandLineTool) *model.Tool {
 	for id, out := range ct.Outputs {
 		to := model.ToolOutput{ID: id, Type: out.Type}
 		if out.OutputBinding != nil {
-			to.Glob = out.OutputBinding.Glob
+			// Glob can be string or []string; convert to string for model.
+			switch g := out.OutputBinding.Glob.(type) {
+			case string:
+				to.Glob = g
+			case []any:
+				// Take first glob pattern for the simplified model.
+				if len(g) > 0 {
+					if s, ok := g[0].(string); ok {
+						to.Glob = s
+					}
+				}
+			}
 		}
 		t.Outputs = append(t.Outputs, to)
 	}
@@ -564,6 +758,47 @@ func stringSlice(m map[string]any, key string) []string {
 func mapField(m map[string]any, key string) map[string]any {
 	if v, ok := m[key].(map[string]any); ok {
 		return v
+	}
+	return nil
+}
+
+// boolField safely extracts a bool from a map.
+func boolField(m map[string]any, key string) bool {
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return false
+}
+
+// intSlice safely extracts a []int from a map value.
+// YAML decoder produces []any with int/float64 values.
+func intSlice(m map[string]any, key string) []int {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+
+	switch s := v.(type) {
+	case []int:
+		return s
+	case []any:
+		var result []int
+		for _, item := range s {
+			switch i := item.(type) {
+			case int:
+				result = append(result, i)
+			case float64:
+				result = append(result, int(i))
+			}
+		}
+		if len(result) == 0 {
+			return nil
+		}
+		return result
 	}
 	return nil
 }

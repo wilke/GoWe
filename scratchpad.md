@@ -1,5 +1,53 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-17 (CWL Full Parser Implementation - Issue #36)
+
+### Status: COMPLETED
+
+Successfully implemented a complete CWL v1.2 parser and cwl-runner for the GoWe project.
+
+### Files Created
+
+1. **pkg/cwl/binding.go** - InputBinding, OutputBinding, Argument, SecondaryFileSchema, Dirent, EnvironmentDef types
+2. **pkg/cwl/requirements.go** - All CWL requirement types (Docker, Resource, InitialWorkDir, EnvVar, Shell, InlineJavascript, etc.)
+3. **internal/cwlexpr/evaluator.go** - JavaScript expression evaluator using goja
+4. **internal/cwlexpr/context.go** - Expression context (inputs, self, runtime)
+5. **internal/cwlexpr/evaluator_test.go** - Unit tests for expression evaluation
+6. **internal/cmdline/builder.go** - Command line construction from CommandLineTool
+7. **internal/cmdline/builder_test.go** - Unit tests for command line builder
+8. **internal/cwlrunner/runner.go** - Main CWL runner orchestration
+9. **internal/cwlrunner/execute.go** - Local and Docker execution engines
+10. **internal/cwlrunner/scatter.go** - Scatter method implementations
+11. **internal/cwlrunner/runner_test.go** - Unit tests for runner
+12. **cmd/cwl-runner/main.go** - CLI entry point
+13. **scripts/run-conformance.sh** - Conformance test runner script
+14. **testdata/cwl-conformance/** - Test fixtures
+
+### Files Modified
+
+1. **pkg/cwl/tool.go** - Enhanced CommandLineTool with Arguments, Stdin, Stdout, Stderr, exit codes; enhanced ToolInputParam with InputBinding; added ExpressionTool type
+2. **pkg/cwl/workflow.go** - Added ScatterMethod, Requirements to Step
+3. **internal/parser/parser.go** - Enhanced parsing for all new binding/requirement fields
+4. **go.mod** - Added goja dependency
+
+### Key Features
+
+1. **CWL Expression Evaluator** - Parameter references, expressions, code blocks, interpolation
+2. **Command Line Builder** - Position sorting, prefix handling, valueFrom evaluation
+3. **cwl-runner CLI** - validate, dag, print-command, execute modes
+4. **Execution** - Local and Docker modes with output collection
+5. **Scatter** - dotproduct, nested_crossproduct, flat_crossproduct
+
+### Verification
+
+```bash
+go test ./...  # All tests pass
+./bin/cwl-runner validate testdata/cwl-conformance/echo.cwl
+./bin/cwl-runner --no-container testdata/cwl-conformance/echo.cwl testdata/cwl-conformance/echo-job.yml
+```
+
+---
+
 ## Session: 2026-02-13 (BV-BRC App Specs Research)
 
 ### BV-BRC App Specs Summary: COMPLETE

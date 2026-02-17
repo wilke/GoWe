@@ -29,12 +29,14 @@ type OutputParam struct {
 
 // Step is a CWL workflow step.
 type Step struct {
-	Run     string
-	In      map[string]StepInput
-	Out     []string
-	Scatter []string
-	When    string
-	Hints   map[string]any
+	Run           string
+	In            map[string]StepInput
+	Out           []string
+	Scatter       []string
+	ScatterMethod string // "dotproduct", "nested_crossproduct", or "flat_crossproduct"
+	When          string
+	Hints         map[string]any
+	Requirements  map[string]any
 }
 
 // StepInput is a normalized CWL step input.
