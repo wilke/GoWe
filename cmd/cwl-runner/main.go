@@ -19,6 +19,7 @@ var (
 	forceDocker  bool
 	outputFormat string
 	verbose      bool
+	quiet        bool
 )
 
 func main() {
@@ -50,6 +51,7 @@ Examples:
 	rootCmd.PersistentFlags().BoolVar(&forceDocker, "docker", false, "Force Docker execution")
 	rootCmd.PersistentFlags().StringVar(&outputFormat, "output-format", "json", "Output format (json|yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress informational output")
 
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
@@ -65,6 +67,9 @@ func newLogger() *slog.Logger {
 	level := slog.LevelInfo
 	if verbose {
 		level = slog.LevelDebug
+	}
+	if quiet {
+		level = slog.LevelError
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
