@@ -1,0 +1,4 @@
+input_file:
+  class: File
+  path: echo.cwl
+lines_only: true

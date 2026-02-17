@@ -198,6 +198,28 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 		pos = *binding.Position
 	}
 
+	// Special handling for boolean values.
+	if boolVal, ok := value.(bool); ok {
+		if !boolVal {
+			// False booleans are omitted entirely.
+			return nil, nil
+		}
+		// True booleans with prefix: output just the prefix.
+		if binding.Prefix != "" {
+			return &cmdPart{
+				position: pos,
+				name:     name,
+				args:     []string{binding.Prefix},
+			}, nil
+		}
+		// True boolean without prefix: output "true".
+		return &cmdPart{
+			position: pos,
+			name:     name,
+			args:     []string{"true"},
+		}, nil
+	}
+
 	// Determine the value to use.
 	var strValue string
 	if binding.ValueFrom != "" {
