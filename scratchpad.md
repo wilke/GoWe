@@ -1,5 +1,33 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-17 Continued (CWL Conformance Test Improvements)
+
+### Status: IN PROGRESS
+
+Improving CWL conformance test pass rate from 7/84 to 26/84 (31%).
+
+### Changes Made This Session
+
+1. **Array-style parsing** - Added support for array-style inputs/outputs/hints/requirements
+2. **Bare Workflow support** - Parser now handles bare Workflow class without $graph
+3. **Stdin redirection** - Fixed Docker stdin piping with `-i` flag
+4. **File path resolution** - Fixed File objects to always have path/basename/dirname/nameroot/nameext
+5. **Checksum computation** - Added SHA1 checksum to output File objects
+6. **Tool input defaults** - Merge tool defaults with job inputs
+7. **Shorthand output types** - Handle `stdout_file: stdout` format
+8. **Stdout/stderr capture** - Automatic capture for type outputs
+9. **Passthrough workflows** - Workflows can pass inputs directly to outputs
+
+### Current Status: 26/84 tests passing
+
+### Key Remaining Issues
+- External tool file references (workflows referencing external .cwl files)
+- Some expression evaluation edge cases
+- Directory type handling
+- Record type handling
+
+---
+
 ## Session: 2026-02-17 (CWL Full Parser Implementation - Issue #36)
 
 ### Status: COMPLETED

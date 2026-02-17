@@ -34,13 +34,17 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 
 	version := stringField(raw, "cwlVersion")
 
-	// Check if this is a bare CommandLineTool or ExpressionTool (no $graph).
+	// Check if this is a bare document (no $graph).
 	if _, hasGraph := raw["$graph"]; !hasGraph {
 		class := stringField(raw, "class")
-		if class == "CommandLineTool" || class == "ExpressionTool" {
+		switch class {
+		case "CommandLineTool", "ExpressionTool":
 			return p.wrapToolAsWorkflow(raw, version)
+		case "Workflow":
+			return p.parseBareWorkflow(raw, version)
+		default:
+			return nil, fmt.Errorf("missing $graph: document must be packed format or a bare CommandLineTool/ExpressionTool/Workflow")
 		}
-		return nil, fmt.Errorf("missing $graph: document must be packed format or a bare CommandLineTool/ExpressionTool")
 	}
 
 	graphRaw := raw["$graph"]
@@ -96,6 +100,30 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 	}
 
 	return graph, nil
+}
+
+// parseBareWorkflow parses a bare Workflow document (without $graph).
+func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.GraphDocument, error) {
+	wf, err := p.parseWorkflow(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse Workflow: %w", err)
+	}
+
+	if version != "" && wf.CWLVersion == "" {
+		wf.CWLVersion = version
+	}
+
+	p.logger.Debug("parsed bare workflow", "id", wf.ID)
+
+	// Bare workflows may have inline tool definitions in steps.
+	// For now, we create an empty tools map since bare workflows
+	// typically reference external tools or use no tools (like any-type-compat).
+	return &cwl.GraphDocument{
+		CWLVersion:    version,
+		OriginalClass: "Workflow",
+		Workflow:      wf,
+		Tools:         make(map[string]*cwl.CommandLineTool),
+	}, nil
 }
 
 // wrapToolAsWorkflow wraps a bare CommandLineTool or ExpressionTool in a synthetic single-step Workflow.
@@ -191,51 +219,88 @@ func (p *Parser) parseWorkflow(raw map[string]any) (*cwl.Workflow, error) {
 		Steps:      make(map[string]cwl.Step),
 	}
 
-	// Parse inputs: value is string (shorthand type) or map (expanded).
-	if inputs, ok := raw["inputs"].(map[string]any); ok {
-		for id, v := range inputs {
-			switch val := v.(type) {
-			case string:
-				wf.Inputs[id] = cwl.InputParam{Type: val}
-			case map[string]any:
-				wf.Inputs[id] = cwl.InputParam{
-					Type:    stringField(val, "type"),
-					Doc:     stringField(val, "doc"),
-					Default: val["default"],
-				}
-			default:
-				return nil, fmt.Errorf("input %q: unexpected type %T", id, v)
+	// Parse inputs: supports both array-style and map-style.
+	inputs := normalizeToMap(raw["inputs"])
+	for id, v := range inputs {
+		switch val := v.(type) {
+		case string:
+			wf.Inputs[id] = cwl.InputParam{Type: val}
+		case map[string]any:
+			wf.Inputs[id] = cwl.InputParam{
+				Type:    stringField(val, "type"),
+				Doc:     stringField(val, "doc"),
+				Default: val["default"],
+			}
+		default:
+			return nil, fmt.Errorf("input %q: unexpected type %T", id, v)
+		}
+	}
+
+	// Parse outputs: supports both array-style and map-style.
+	outputs := normalizeToMap(raw["outputs"])
+	for id, v := range outputs {
+		if m, ok := v.(map[string]any); ok {
+			wf.Outputs[id] = cwl.OutputParam{
+				Type:         stringField(m, "type"),
+				OutputSource: stringField(m, "outputSource"),
+				Doc:          stringField(m, "doc"),
 			}
 		}
 	}
 
-	// Parse outputs: always expanded (type + outputSource).
-	if outputs, ok := raw["outputs"].(map[string]any); ok {
-		for id, v := range outputs {
-			if m, ok := v.(map[string]any); ok {
-				wf.Outputs[id] = cwl.OutputParam{
-					Type:         stringField(m, "type"),
-					OutputSource: stringField(m, "outputSource"),
-					Doc:          stringField(m, "doc"),
-				}
+	// Parse steps: supports both array-style and map-style.
+	steps := normalizeToMap(raw["steps"])
+	for id, v := range steps {
+		if m, ok := v.(map[string]any); ok {
+			step, err := p.parseStep(m)
+			if err != nil {
+				return nil, fmt.Errorf("step %q: %w", id, err)
 			}
-		}
-	}
-
-	// Parse steps.
-	if steps, ok := raw["steps"].(map[string]any); ok {
-		for id, v := range steps {
-			if m, ok := v.(map[string]any); ok {
-				step, err := p.parseStep(m)
-				if err != nil {
-					return nil, fmt.Errorf("step %q: %w", id, err)
-				}
-				wf.Steps[id] = step
-			}
+			wf.Steps[id] = step
 		}
 	}
 
 	return wf, nil
+}
+
+// normalizeToMap converts array-style CWL definitions to map-style.
+// CWL supports both: inputs: [{id: x, type: File}] and inputs: {x: {type: File}}.
+func normalizeToMap(v any) map[string]any {
+	switch val := v.(type) {
+	case map[string]any:
+		return val
+	case []any:
+		result := make(map[string]any)
+		for _, item := range val {
+			if m, ok := item.(map[string]any); ok {
+				if id, ok := m["id"].(string); ok {
+					result[id] = m
+				}
+			}
+		}
+		return result
+	}
+	return make(map[string]any)
+}
+
+// normalizeHintsToMap converts array-style hints/requirements to map-style keyed by class.
+// CWL supports both: hints: [{class: DockerRequirement, ...}] and hints: {DockerRequirement: {...}}.
+func normalizeHintsToMap(v any) map[string]any {
+	switch val := v.(type) {
+	case map[string]any:
+		return val
+	case []any:
+		result := make(map[string]any)
+		for _, item := range val {
+			if m, ok := item.(map[string]any); ok {
+				if class, ok := m["class"].(string); ok {
+					result[class] = m
+				}
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 // parseStep parses a single CWL workflow step from a raw map.
@@ -251,17 +316,16 @@ func (p *Parser) parseStep(raw map[string]any) (cwl.Step, error) {
 		In:            make(map[string]cwl.StepInput),
 	}
 
-	// Parse step inputs: value is string (shorthand source) or map (expanded).
-	if in, ok := raw["in"].(map[string]any); ok {
-		for id, v := range in {
-			switch val := v.(type) {
-			case string:
-				step.In[id] = cwl.StepInput{Source: val}
-			case map[string]any:
-				step.In[id] = cwl.StepInput{
-					Source:  stringField(val, "source"),
-					Default: val["default"],
-				}
+	// Parse step inputs: supports both array-style and map-style.
+	in := normalizeToMap(raw["in"])
+	for id, v := range in {
+		switch val := v.(type) {
+		case string:
+			step.In[id] = cwl.StepInput{Source: val}
+		case map[string]any:
+			step.In[id] = cwl.StepInput{
+				Source:  stringField(val, "source"),
+				Default: val["default"],
 			}
 		}
 	}
@@ -278,8 +342,8 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 		Doc:          stringField(raw, "doc"),
 		Label:        stringField(raw, "label"),
 		BaseCommand:  raw["baseCommand"],
-		Hints:        mapField(raw, "hints"),
-		Requirements: mapField(raw, "requirements"),
+		Hints:        normalizeHintsToMap(raw["hints"]),
+		Requirements: normalizeHintsToMap(raw["requirements"]),
 		Stdin:        stringField(raw, "stdin"),
 		Stdout:       stringField(raw, "stdout"),
 		Stderr:       stringField(raw, "stderr"),
@@ -306,24 +370,26 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	tool.TemporaryFailCodes = intSlice(raw, "temporaryFailCodes")
 	tool.PermanentFailCodes = intSlice(raw, "permanentFailCodes")
 
-	// Parse tool inputs: value is string (shorthand type) or map (expanded).
-	if inputs, ok := raw["inputs"].(map[string]any); ok {
-		for id, v := range inputs {
-			switch val := v.(type) {
-			case string:
-				tool.Inputs[id] = cwl.ToolInputParam{Type: val}
-			case map[string]any:
-				tool.Inputs[id] = parseToolInput(val)
-			}
+	// Parse tool inputs: supports both array-style and map-style.
+	inputs := normalizeToMap(raw["inputs"])
+	for id, v := range inputs {
+		switch val := v.(type) {
+		case string:
+			tool.Inputs[id] = cwl.ToolInputParam{Type: val}
+		case map[string]any:
+			tool.Inputs[id] = parseToolInput(val)
 		}
 	}
 
-	// Parse tool outputs.
-	if outputs, ok := raw["outputs"].(map[string]any); ok {
-		for id, v := range outputs {
-			if m, ok := v.(map[string]any); ok {
-				tool.Outputs[id] = parseToolOutput(m)
-			}
+	// Parse tool outputs: supports both array-style and map-style, and shorthand types.
+	outputs := normalizeToMap(raw["outputs"])
+	for id, v := range outputs {
+		switch val := v.(type) {
+		case string:
+			// Shorthand format: output_id: type_name (e.g., "stdout_file: stdout")
+			tool.Outputs[id] = cwl.ToolOutputParam{Type: val}
+		case map[string]any:
+			tool.Outputs[id] = parseToolOutput(val)
 		}
 	}
 

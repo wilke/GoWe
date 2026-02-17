@@ -2,6 +2,7 @@ package cwlrunner
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,10 +53,16 @@ func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cm
 		cmd.Stdin = stdin
 	}
 
-	// Handle stdout.
+	// Determine stdout capture filename.
+	stdoutCapture := cmdResult.Stdout
+	if stdoutCapture == "" && hasStdoutOutput(tool) {
+		stdoutCapture = "cwl.stdout.txt"
+	}
+
+	// Handle stdout - capture to file if specified or needed for output.
 	var stdoutFile *os.File
-	if cmdResult.Stdout != "" {
-		stdoutPath := filepath.Join(workDir, cmdResult.Stdout)
+	if stdoutCapture != "" {
+		stdoutPath := filepath.Join(workDir, stdoutCapture)
 		var err error
 		stdoutFile, err = os.Create(stdoutPath)
 		if err != nil {
@@ -64,13 +71,19 @@ func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cm
 		defer stdoutFile.Close()
 		cmd.Stdout = stdoutFile
 	} else {
-		cmd.Stdout = os.Stdout
+		cmd.Stdout = io.Discard
 	}
 
-	// Handle stderr.
+	// Determine stderr capture filename.
+	stderrCapture := cmdResult.Stderr
+	if stderrCapture == "" && hasStderrOutput(tool) {
+		stderrCapture = "cwl.stderr.txt"
+	}
+
+	// Handle stderr - capture to file if specified or needed for output.
 	var stderrFile *os.File
-	if cmdResult.Stderr != "" {
-		stderrPath := filepath.Join(workDir, cmdResult.Stderr)
+	if stderrCapture != "" {
+		stderrPath := filepath.Join(workDir, stderrCapture)
 		var err error
 		stderrFile, err = os.Create(stderrPath)
 		if err != nil {
@@ -79,7 +92,7 @@ func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cm
 		defer stderrFile.Close()
 		cmd.Stderr = stderrFile
 	} else {
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = io.Discard
 	}
 
 	// Run command.
@@ -120,7 +133,7 @@ func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool,
 	}
 
 	// Build Docker command.
-	dockerArgs := []string{"run", "--rm"}
+	dockerArgs := []string{"run", "--rm", "-i"}
 
 	// Mount working directory.
 	absWorkDir, _ := filepath.Abs(workDir)
@@ -161,10 +174,16 @@ func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool,
 		cmd.Stdin = stdin
 	}
 
-	// Handle stdout.
+	// Determine stdout capture filename.
+	stdoutCapture := cmdResult.Stdout
+	if stdoutCapture == "" && hasStdoutOutput(tool) {
+		stdoutCapture = "cwl.stdout.txt"
+	}
+
+	// Handle stdout - capture to file if specified or needed for output.
 	var stdoutFile *os.File
-	if cmdResult.Stdout != "" {
-		stdoutPath := filepath.Join(workDir, cmdResult.Stdout)
+	if stdoutCapture != "" {
+		stdoutPath := filepath.Join(workDir, stdoutCapture)
 		var err error
 		stdoutFile, err = os.Create(stdoutPath)
 		if err != nil {
@@ -173,13 +192,20 @@ func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool,
 		defer stdoutFile.Close()
 		cmd.Stdout = stdoutFile
 	} else {
-		cmd.Stdout = os.Stdout
+		// Discard stdout to keep JSON output clean.
+		cmd.Stdout = io.Discard
 	}
 
-	// Handle stderr.
+	// Determine stderr capture filename.
+	stderrCapture := cmdResult.Stderr
+	if stderrCapture == "" && hasStderrOutput(tool) {
+		stderrCapture = "cwl.stderr.txt"
+	}
+
+	// Handle stderr - capture to file if specified or needed for output.
 	var stderrFile *os.File
-	if cmdResult.Stderr != "" {
-		stderrPath := filepath.Join(workDir, cmdResult.Stderr)
+	if stderrCapture != "" {
+		stderrPath := filepath.Join(workDir, stderrCapture)
 		var err error
 		stderrFile, err = os.Create(stderrPath)
 		if err != nil {
@@ -188,7 +214,7 @@ func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool,
 		defer stderrFile.Close()
 		cmd.Stderr = stderrFile
 	} else {
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = io.Discard
 	}
 
 	// Run Docker command.
@@ -313,6 +339,26 @@ func isSuccessCode(code int, successCodes []int) bool {
 	return false
 }
 
+// hasStdoutOutput checks if the tool has any output of type "stdout".
+func hasStdoutOutput(tool *cwl.CommandLineTool) bool {
+	for _, output := range tool.Outputs {
+		if output.Type == "stdout" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasStderrOutput checks if the tool has any output of type "stderr".
+func hasStderrOutput(tool *cwl.CommandLineTool) bool {
+	for _, output := range tool.Outputs {
+		if output.Type == "stderr" {
+			return true
+		}
+	}
+	return false
+}
+
 // collectOutputs collects tool outputs from the working directory.
 func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, inputs map[string]any) (map[string]any, error) {
 	outputs := make(map[string]any)
@@ -328,9 +374,13 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 
 	// Collect outputs based on type and outputBinding.
 	for outputID, output := range tool.Outputs {
-		// Handle stdout type - the file name is in tool.Stdout
-		if output.Type == "stdout" && tool.Stdout != "" {
-			stdoutPath := filepath.Join(workDir, tool.Stdout)
+		// Handle stdout type - check tool.Stdout or use default filename
+		if output.Type == "stdout" {
+			stdoutFile := tool.Stdout
+			if stdoutFile == "" {
+				stdoutFile = "cwl.stdout.txt" // default CWL stdout filename
+			}
+			stdoutPath := filepath.Join(workDir, stdoutFile)
 			if fileInfo, err := os.Stat(stdoutPath); err == nil && !fileInfo.IsDir() {
 				fileObj, err := createFileObject(stdoutPath, false)
 				if err != nil {
@@ -341,9 +391,13 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 			}
 		}
 
-		// Handle stderr type - the file name is in tool.Stderr
-		if output.Type == "stderr" && tool.Stderr != "" {
-			stderrPath := filepath.Join(workDir, tool.Stderr)
+		// Handle stderr type - check tool.Stderr or use default filename
+		if output.Type == "stderr" {
+			stderrFile := tool.Stderr
+			if stderrFile == "" {
+				stderrFile = "cwl.stderr.txt" // default CWL stderr filename
+			}
+			stderrPath := filepath.Join(workDir, stderrFile)
 			if fileInfo, err := os.Stat(stderrPath); err == nil && !fileInfo.IsDir() {
 				fileObj, err := createFileObject(stderrPath, false)
 				if err != nil {
@@ -457,6 +511,12 @@ func createFileObject(path string, loadContents bool) (map[string]any, error) {
 	basename := filepath.Base(path)
 	nameroot, nameext := splitNameExtension(basename)
 
+	// Compute SHA1 checksum.
+	checksum, err := computeChecksum(path)
+	if err != nil {
+		return nil, fmt.Errorf("compute checksum: %w", err)
+	}
+
 	obj := map[string]any{
 		"class":    "File",
 		"location": "file://" + absPath,
@@ -466,6 +526,7 @@ func createFileObject(path string, loadContents bool) (map[string]any, error) {
 		"nameroot": nameroot,
 		"nameext":  nameext,
 		"size":     info.Size(),
+		"checksum": checksum,
 	}
 
 	if loadContents {
@@ -477,6 +538,22 @@ func createFileObject(path string, loadContents bool) (map[string]any, error) {
 	}
 
 	return obj, nil
+}
+
+// computeChecksum computes the SHA1 checksum of a file.
+func computeChecksum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("sha1$%x", h.Sum(nil)), nil
 }
 
 // splitNameExtension splits a filename into nameroot and nameext.

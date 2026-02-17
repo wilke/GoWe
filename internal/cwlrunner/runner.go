@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
@@ -27,6 +28,9 @@ type Runner struct {
 	NoContainer  bool
 	ForceDocker  bool
 	OutputFormat string // "json" or "yaml"
+
+	// Internal state.
+	cwlDir string // directory of CWL file, for resolving relative paths in defaults
 }
 
 // NewRunner creates a new CWL runner.
@@ -49,6 +53,12 @@ func (r *Runner) LoadDocument(cwlPath string) (*cwl.GraphDocument, error) {
 	graph, err := r.parser.ParseGraph(data)
 	if err != nil {
 		return nil, fmt.Errorf("parse CWL: %w", err)
+	}
+
+	// Store CWL directory for resolving relative paths in defaults.
+	r.cwlDir = filepath.Dir(cwlPath)
+	if r.cwlDir == "" {
+		r.cwlDir = "."
 	}
 
 	return graph, nil
@@ -130,12 +140,15 @@ func (r *Runner) PrintCommandLine(ctx context.Context, cwlPath, jobPath string, 
 
 	// Build command line for each tool.
 	for toolID, tool := range graph.Tools {
+		// Merge tool defaults with resolved inputs.
+		mergedInputs := mergeToolDefaults(tool, resolvedInputs, r.cwlDir)
+
 		builder := cmdline.NewBuilder(expressionLib)
 		runtime := cwlexpr.DefaultRuntimeContext()
 		runtime.OutDir = r.OutDir
 		runtime.TmpDir = filepath.Join(r.OutDir, "tmp")
 
-		result, err := builder.Build(tool, resolvedInputs, runtime)
+		result, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return fmt.Errorf("build command for %s: %w", toolID, err)
 		}
@@ -212,6 +225,9 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, inputs map[string]any) (map[string]any, error) {
 	r.logger.Info("executing tool", "id", tool.ID)
 
+	// Merge tool input defaults with provided inputs.
+	mergedInputs := mergeToolDefaults(tool, inputs, r.cwlDir)
+
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph)
 
@@ -221,7 +237,7 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	runtime.OutDir = r.OutDir
 	runtime.TmpDir = filepath.Join(r.OutDir, "tmp")
 
-	cmdResult, err := builder.Build(tool, inputs, runtime)
+	cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 	if err != nil {
 		return nil, fmt.Errorf("build command: %w", err)
 	}
@@ -237,9 +253,9 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
-		outputs, err = r.executeInDocker(ctx, tool, cmdResult, inputs, dockerImage)
+		outputs, err = r.executeInDocker(ctx, tool, cmdResult, mergedInputs, dockerImage)
 	} else {
-		outputs, err = r.executeLocal(ctx, tool, cmdResult, inputs)
+		outputs, err = r.executeLocal(ctx, tool, cmdResult, mergedInputs)
 	}
 
 	if err != nil {
@@ -304,8 +320,8 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 		}
 	}
 
-	// Collect workflow outputs.
-	workflowOutputs := collectWorkflowOutputs(graph.Workflow, stepOutputs)
+	// Collect workflow outputs (pass inputs for passthrough workflows).
+	workflowOutputs := collectWorkflowOutputs(graph.Workflow, inputs, stepOutputs)
 	return r.writeOutputs(workflowOutputs, w)
 }
 
@@ -429,19 +445,69 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 		resolved[k] = v
 	}
 
-	// Resolve path or location.
-	if path, ok := resolved["path"].(string); ok {
-		if !filepath.IsAbs(path) {
-			resolved["path"] = filepath.Join(baseDir, path)
-		}
-	}
+	// Step 1: Resolve location (make it absolute if relative).
 	if loc, ok := resolved["location"].(string); ok {
 		if !filepath.IsAbs(loc) && !isURI(loc) {
 			resolved["location"] = filepath.Join(baseDir, loc)
 		}
 	}
 
+	// Step 2: Resolve path (make it absolute if relative).
+	if path, ok := resolved["path"].(string); ok {
+		if !filepath.IsAbs(path) {
+			resolved["path"] = filepath.Join(baseDir, path)
+		}
+	}
+
+	// Step 3: If path not set, derive from location.
+	if _, hasPath := resolved["path"]; !hasPath {
+		if loc, ok := resolved["location"].(string); ok {
+			// Strip file:// prefix if present.
+			if strings.HasPrefix(loc, "file://") {
+				resolved["path"] = loc[7:]
+			} else if !strings.Contains(loc, "://") {
+				resolved["path"] = loc
+			}
+		}
+	}
+
+	// Step 4: Final check - ensure path is absolute.
+	// Note: path has already been joined with baseDir in steps 2 or 3,
+	// so we only need to call Abs() to resolve the full path.
+	if path, ok := resolved["path"].(string); ok && !filepath.IsAbs(path) {
+		absPath, err := filepath.Abs(path)
+		if err == nil {
+			resolved["path"] = absPath
+		}
+	}
+
+	// Step 5: Compute basename, dirname, nameroot, nameext if path is available.
+	if path, ok := resolved["path"].(string); ok && path != "" {
+		if _, hasBasename := resolved["basename"]; !hasBasename {
+			resolved["basename"] = filepath.Base(path)
+		}
+		if _, hasDirname := resolved["dirname"]; !hasDirname {
+			resolved["dirname"] = filepath.Dir(path)
+		}
+		basename := filepath.Base(path)
+		if _, hasNameroot := resolved["nameroot"]; !hasNameroot {
+			nameroot, nameext := splitBasenameExt(basename)
+			resolved["nameroot"] = nameroot
+			resolved["nameext"] = nameext
+		}
+	}
+
 	return resolved
+}
+
+// splitBasenameExt splits a filename into nameroot and nameext.
+func splitBasenameExt(basename string) (string, string) {
+	for i := len(basename) - 1; i > 0; i-- {
+		if basename[i] == '.' {
+			return basename[:i], basename[i:]
+		}
+	}
+	return basename, ""
 }
 
 // isURI checks if a string is a URI.
@@ -484,11 +550,11 @@ func resolveSource(source string, workflowInputs map[string]any, stepOutputs map
 	return workflowInputs[source]
 }
 
-// collectWorkflowOutputs collects outputs from completed steps.
-func collectWorkflowOutputs(wf *cwl.Workflow, stepOutputs map[string]map[string]any) map[string]any {
+// collectWorkflowOutputs collects outputs from completed steps or passthrough from inputs.
+func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, stepOutputs map[string]map[string]any) map[string]any {
 	outputs := make(map[string]any)
 	for outputID, output := range wf.Outputs {
-		outputs[outputID] = resolveSource(output.OutputSource, nil, stepOutputs)
+		outputs[outputID] = resolveSource(output.OutputSource, workflowInputs, stepOutputs)
 	}
 	return outputs
 }
@@ -562,4 +628,53 @@ func stripHash(ref string) string {
 		return ref[1:]
 	}
 	return ref
+}
+
+// mergeToolDefaults merges tool input defaults with provided inputs.
+// Defaults are only used for inputs not provided in the job file.
+func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) map[string]any {
+	merged := make(map[string]any)
+
+	// Copy provided inputs.
+	for k, v := range inputs {
+		merged[k] = v
+	}
+
+	// Add defaults for missing inputs.
+	for inputID, inputDef := range tool.Inputs {
+		if _, exists := merged[inputID]; !exists && inputDef.Default != nil {
+			// Resolve default value (especially File objects).
+			defaultVal := resolveDefaultValue(inputDef.Default, cwlDir)
+			merged[inputID] = defaultVal
+		}
+	}
+
+	return merged
+}
+
+// resolveDefaultValue resolves a default value, handling File objects specially.
+func resolveDefaultValue(v any, cwlDir string) any {
+	switch val := v.(type) {
+	case map[string]any:
+		if class, ok := val["class"].(string); ok {
+			if class == "File" || class == "Directory" {
+				// Resolve File/Directory paths relative to CWL file.
+				return resolveFileObject(val, cwlDir)
+			}
+		}
+		// Recursively resolve nested maps.
+		resolved := make(map[string]any)
+		for k, v := range val {
+			resolved[k] = resolveDefaultValue(v, cwlDir)
+		}
+		return resolved
+	case []any:
+		resolved := make([]any, len(val))
+		for i, item := range val {
+			resolved[i] = resolveDefaultValue(item, cwlDir)
+		}
+		return resolved
+	default:
+		return v
+	}
 }

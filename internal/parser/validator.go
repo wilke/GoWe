@@ -57,12 +57,8 @@ func (v *Validator) validateWorkflow(graph *cwl.GraphDocument) []model.FieldErro
 		return []model.FieldError{{Field: "$graph", Message: "no Workflow entry found in $graph"}}
 	}
 
-	if len(wf.Inputs) == 0 {
-		errs = append(errs, model.FieldError{Field: "inputs", Message: "workflow must have at least one input"})
-	}
-	if len(wf.Steps) == 0 {
-		errs = append(errs, model.FieldError{Field: "steps", Message: "workflow must have at least one step"})
-	}
+	// CWL v1.2 allows workflows with no inputs (they can have defaults or be passthrough).
+	// CWL v1.2 allows workflows with no steps (passthrough workflows that connect inputs to outputs).
 	// CWL allows CommandLineTools with no outputs (side-effect only).
 	// Only enforce the "at least one output" rule for Workflows.
 	if graph.OriginalClass == "Workflow" && len(wf.Outputs) == 0 {
@@ -149,12 +145,16 @@ func (v *Validator) validateOutputSources(graph *cwl.GraphDocument) []model.Fiel
 		return nil
 	}
 
-	// Build set of valid step/output pairs.
-	validOutputs := make(map[string]bool)
+	// Build set of valid sources: step outputs and workflow inputs (for passthrough).
+	validSources := make(map[string]bool)
 	for stepID, step := range wf.Steps {
 		for _, outID := range step.Out {
-			validOutputs[stepID+"/"+outID] = true
+			validSources[stepID+"/"+outID] = true
 		}
+	}
+	// CWL allows workflow outputs to directly reference workflow inputs (passthrough).
+	for inputID := range wf.Inputs {
+		validSources[inputID] = true
 	}
 
 	for id, out := range wf.Outputs {
@@ -165,10 +165,10 @@ func (v *Validator) validateOutputSources(graph *cwl.GraphDocument) []model.Fiel
 			})
 			continue
 		}
-		if !validOutputs[out.OutputSource] {
+		if !validSources[out.OutputSource] {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("outputs.%s.outputSource", id),
-				Message: fmt.Sprintf("outputSource %q does not match any step output", out.OutputSource),
+				Message: fmt.Sprintf("outputSource %q does not match any step output or workflow input", out.OutputSource),
 			})
 		}
 	}
