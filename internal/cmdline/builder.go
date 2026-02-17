@@ -212,15 +212,17 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 				args:     []string{binding.Prefix},
 			}, nil
 		}
-		// True boolean without prefix: output "true".
-		return &cmdPart{
-			position: pos,
-			name:     name,
-			args:     []string{"true"},
-		}, nil
+		// True boolean without prefix and empty inputBinding: omit entirely.
+		// CWL spec: "if inputBinding is empty, the boolean does not appear on command line"
+		return nil, nil
 	}
 
-	// Determine the value to use.
+	// Handle array values specially.
+	if arrVal, ok := value.([]any); ok {
+		return b.buildArrayInputBinding(name, input, arrVal, pos, ctx)
+	}
+
+	// Determine the value to use for non-array values.
 	var strValue string
 	if binding.ValueFrom != "" {
 		// Evaluate valueFrom expression.
@@ -239,6 +241,68 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 	}
 
 	args := buildPrefixedArgs(binding.Prefix, strValue, binding.Separate)
+	return &cmdPart{
+		position: pos,
+		name:     name,
+		args:     args,
+	}, nil
+}
+
+// buildArrayInputBinding handles array input bindings per CWL spec.
+// Supports both array-level binding (input.InputBinding) and item-level binding (input.ItemInputBinding).
+func (b *Builder) buildArrayInputBinding(name string, input *cwl.ToolInputParam, values []any, pos int, ctx *cwlexpr.Context) (*cmdPart, error) {
+	binding := input.InputBinding
+	itemBinding := input.ItemInputBinding
+
+	// If itemSeparator is set, join all values with that separator.
+	if binding.ItemSeparator != "" {
+		var items []string
+		for _, item := range values {
+			s := inputValueToString(item, "")
+			if s != "" {
+				items = append(items, s)
+			}
+		}
+		if len(items) == 0 {
+			return nil, nil
+		}
+		joined := strings.Join(items, binding.ItemSeparator)
+		args := buildPrefixedArgs(binding.Prefix, joined, binding.Separate)
+		return &cmdPart{
+			position: pos,
+			name:     name,
+			args:     args,
+		}, nil
+	}
+
+	// Build arguments for the array.
+	var args []string
+
+	// Array-level prefix appears once before all items.
+	if binding.Prefix != "" {
+		args = append(args, binding.Prefix)
+	}
+
+	// Each array element gets item-level binding (if present) or no prefix.
+	for _, item := range values {
+		s := inputValueToString(item, "")
+		if s == "" {
+			continue
+		}
+		if itemBinding != nil && itemBinding.Prefix != "" {
+			// Item-level prefix for each element.
+			itemArgs := buildPrefixedArgs(itemBinding.Prefix, s, itemBinding.Separate)
+			args = append(args, itemArgs...)
+		} else {
+			// No item-level prefix.
+			args = append(args, s)
+		}
+	}
+
+	if len(args) == 0 {
+		return nil, nil
+	}
+
 	return &cmdPart{
 		position: pos,
 		name:     name,

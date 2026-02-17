@@ -253,9 +253,10 @@ func TestCreateWorkflow_MissingCWL(t *testing.T) {
 
 func TestCreateWorkflow_InvalidCWL(t *testing.T) {
 	srv := testServer()
+	// Invalid YAML/CWL that fails parsing.
 	bodyJSON, _ := json.Marshal(map[string]string{
 		"name": "bad",
-		"cwl":  "cwlVersion: v1.2\nclass: Workflow\n",
+		"cwl":  "this is not valid yaml or cwl: [[[",
 	})
 	w, _ := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
 	if w.Code != http.StatusBadRequest {

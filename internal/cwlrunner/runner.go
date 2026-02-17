@@ -143,11 +143,10 @@ func (r *Runner) PrintCommandLine(ctx context.Context, cwlPath, jobPath string, 
 		// Merge tool defaults with resolved inputs.
 		mergedInputs := mergeToolDefaults(tool, resolvedInputs, r.cwlDir)
 
-		builder := cmdline.NewBuilder(expressionLib)
-		runtime := cwlexpr.DefaultRuntimeContext()
-		runtime.OutDir = r.OutDir
-		runtime.TmpDir = filepath.Join(r.OutDir, "tmp")
+		// Build runtime context from tool requirements.
+		runtime := buildRuntimeContext(tool, r.OutDir)
 
+		builder := cmdline.NewBuilder(expressionLib)
 		result, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return fmt.Errorf("build command for %s: %w", toolID, err)
@@ -231,12 +230,11 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph)
 
+	// Build runtime context from tool requirements.
+	runtime := buildRuntimeContext(tool, r.OutDir)
+
 	// Build command line.
 	builder := cmdline.NewBuilder(expressionLib)
-	runtime := cwlexpr.DefaultRuntimeContext()
-	runtime.OutDir = r.OutDir
-	runtime.TmpDir = filepath.Join(r.OutDir, "tmp")
-
 	cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 	if err != nil {
 		return nil, fmt.Errorf("build command: %w", err)
@@ -620,6 +618,69 @@ func getDockerImage(tool *cwl.CommandLineTool) string {
 		}
 	}
 	return ""
+}
+
+// getResourceRequirement extracts ResourceRequirement from hints or requirements.
+func getResourceRequirement(tool *cwl.CommandLineTool) map[string]any {
+	// Check requirements first.
+	if tool.Requirements != nil {
+		if rr, ok := tool.Requirements["ResourceRequirement"].(map[string]any); ok {
+			return rr
+		}
+	}
+	// Then hints.
+	if tool.Hints != nil {
+		if rr, ok := tool.Hints["ResourceRequirement"].(map[string]any); ok {
+			return rr
+		}
+	}
+	return nil
+}
+
+// buildRuntimeContext creates a RuntimeContext from tool requirements.
+func buildRuntimeContext(tool *cwl.CommandLineTool, outDir string) *cwlexpr.RuntimeContext {
+	runtime := cwlexpr.DefaultRuntimeContext()
+	runtime.OutDir = outDir
+	runtime.TmpDir = filepath.Join(outDir, "tmp")
+
+	// Apply ResourceRequirement if present.
+	rr := getResourceRequirement(tool)
+	if rr != nil {
+		// CWL allows coresMin/coresMax - use coresMin if present.
+		if coresMin, ok := rr["coresMin"]; ok {
+			switch v := coresMin.(type) {
+			case int:
+				runtime.Cores = v
+			case float64:
+				runtime.Cores = int(v)
+			}
+		}
+		// If no coresMin, try cores.
+		if runtime.Cores == 1 {
+			if cores, ok := rr["cores"]; ok {
+				switch v := cores.(type) {
+				case int:
+					runtime.Cores = v
+				case float64:
+					runtime.Cores = int(v)
+				}
+			}
+		}
+
+		// Apply RAM requirements.
+		if ramMin, ok := rr["ramMin"]; ok {
+			switch v := ramMin.(type) {
+			case int:
+				runtime.Ram = int64(v)
+			case int64:
+				runtime.Ram = v
+			case float64:
+				runtime.Ram = int64(v)
+			}
+		}
+	}
+
+	return runtime
 }
 
 // stripHash removes the leading "#" from a tool reference.

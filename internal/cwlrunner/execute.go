@@ -135,13 +135,13 @@ func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool,
 	// Build Docker command.
 	dockerArgs := []string{"run", "--rm", "-i"}
 
-	// Mount working directory.
-	absWorkDir, _ := filepath.Abs(workDir)
+	// Mount working directory (resolve symlinks for macOS /tmp -> /private/tmp).
+	absWorkDir := resolveSymlinks(workDir)
 	dockerArgs = append(dockerArgs, "-v", absWorkDir+":/var/spool/cwl:rw")
 	dockerArgs = append(dockerArgs, "-w", "/var/spool/cwl")
 
 	// Mount tmp directory.
-	absTmpDir, _ := filepath.Abs(tmpDir)
+	absTmpDir := resolveSymlinks(tmpDir)
 	dockerArgs = append(dockerArgs, "-v", absTmpDir+":/tmp:rw")
 
 	// Mount input files that are outside working directory.
@@ -306,6 +306,18 @@ func collectInputMounts(inputs map[string]any) map[string]string {
 	return mounts
 }
 
+// resolveSymlinks resolves symlinks in a path for Docker mounts.
+// On macOS, /tmp is a symlink to /private/tmp which can cause issues with Docker.
+func resolveSymlinks(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// If resolution fails (e.g., path doesn't exist yet), return absolute path.
+		abs, _ := filepath.Abs(path)
+		return abs
+	}
+	return resolved
+}
+
 // collectInputMountsValue collects mount points from a value.
 func collectInputMountsValue(v any, mounts map[string]string) {
 	switch val := v.(type) {
@@ -314,7 +326,9 @@ func collectInputMountsValue(v any, mounts map[string]string) {
 			if class == "File" || class == "Directory" {
 				if path, ok := val["path"].(string); ok {
 					if filepath.IsAbs(path) {
-						mounts[path] = path
+						// Resolve symlinks for Docker mount compatibility.
+						resolved := resolveSymlinks(path)
+						mounts[resolved] = resolved
 					}
 				}
 			}
@@ -363,7 +377,8 @@ func hasStderrOutput(tool *cwl.CommandLineTool) bool {
 func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, inputs map[string]any) (map[string]any, error) {
 	outputs := make(map[string]any)
 
-	// Check for cwl.output.json first.
+	// Check for cwl.output.json first - per CWL spec, if this file exists,
+	// it provides THE complete output object.
 	cwlOutputPath := filepath.Join(workDir, "cwl.output.json")
 	if data, err := os.ReadFile(cwlOutputPath); err == nil {
 		if err := jsonUnmarshal(data, &outputs); err != nil {
@@ -374,11 +389,20 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 
 	// Collect outputs based on type and outputBinding.
 	for outputID, output := range tool.Outputs {
+
 		// Handle stdout type - check tool.Stdout or use default filename
 		if output.Type == "stdout" {
 			stdoutFile := tool.Stdout
 			if stdoutFile == "" {
 				stdoutFile = "cwl.stdout.txt" // default CWL stdout filename
+			} else if cwlexpr.IsExpression(stdoutFile) {
+				// Evaluate stdout filename expression.
+				ctx := cwlexpr.NewContext(inputs)
+				evaluator := cwlexpr.NewEvaluator(nil)
+				evaluated, err := evaluator.EvaluateString(stdoutFile, ctx)
+				if err == nil {
+					stdoutFile = evaluated
+				}
 			}
 			stdoutPath := filepath.Join(workDir, stdoutFile)
 			if fileInfo, err := os.Stat(stdoutPath); err == nil && !fileInfo.IsDir() {
@@ -396,6 +420,14 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 			stderrFile := tool.Stderr
 			if stderrFile == "" {
 				stderrFile = "cwl.stderr.txt" // default CWL stderr filename
+			} else if cwlexpr.IsExpression(stderrFile) {
+				// Evaluate stderr filename expression.
+				ctx := cwlexpr.NewContext(inputs)
+				evaluator := cwlexpr.NewEvaluator(nil)
+				evaluated, err := evaluator.EvaluateString(stderrFile, ctx)
+				if err == nil {
+					stderrFile = evaluated
+				}
 			}
 			stderrPath := filepath.Join(workDir, stderrFile)
 			if fileInfo, err := os.Stat(stderrPath); err == nil && !fileInfo.IsDir() {

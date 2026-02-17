@@ -4,7 +4,7 @@
 
 ### Status: IN PROGRESS
 
-Improving CWL conformance test pass rate from 7/84 to 26/84 (31%).
+Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
 
 ### Changes Made This Session
 
@@ -17,14 +17,23 @@ Improving CWL conformance test pass rate from 7/84 to 26/84 (31%).
 7. **Shorthand output types** - Handle `stdout_file: stdout` format
 8. **Stdout/stderr capture** - Automatic capture for type outputs
 9. **Passthrough workflows** - Workflows can pass inputs directly to outputs
+10. **Docker symlink resolution** - Fixed /tmp symlink issue on macOS for Docker mounts
+11. **cwl.output.json handling** - Use as complete output when present (per CWL spec)
+12. **ResourceRequirement** - Extract coresMin/ramMin from hints/requirements for runtime
+13. **Nested array bindings** - Support item-level inputBinding for arrays (e.g., `-XXX -YYY file1 -YYY file2`)
+14. **Stdout expression evaluation** - Evaluate expressions in stdout filename for output collection
+15. **Boolean empty inputBinding** - Boolean with `inputBinding: {}` is omitted from command line
+16. **ItemInputBinding parsing** - Parse inputBinding from inside array type definitions
 
-### Current Status: 26/84 tests passing
+### Current Status: 30/84 tests passing (36%)
 
 ### Key Remaining Issues
-- External tool file references (workflows referencing external .cwl files)
-- Some expression evaluation edge cases
-- Directory type handling
+- External tool file references (workflows referencing external .cwl files) - major category
+- $import feature not implemented (params_inc.yml etc.)
+- File literal inputs (contents field)
+- Directory type outputs
 - Record type handling
+- Some format checking tests
 
 ---
 

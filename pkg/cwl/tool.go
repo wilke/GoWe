@@ -48,6 +48,10 @@ type ToolInputParam struct {
 	// InputBinding controls how this parameter appears on the command line.
 	InputBinding *InputBinding
 
+	// ItemInputBinding is the inputBinding for array items (nested binding in array type).
+	// This is parsed from the inputBinding inside the array type definition.
+	ItemInputBinding *InputBinding
+
 	// SecondaryFiles specifies additional files associated with this input.
 	SecondaryFiles []SecondaryFileSchema
 

@@ -86,29 +86,51 @@ func TestValidate_UnsupportedVersion(t *testing.T) {
 	}
 }
 
-func TestValidate_NoInputs(t *testing.T) {
+func TestValidate_NoInputs_Allowed(t *testing.T) {
+	// CWL v1.2 allows workflows with no inputs (they can have defaults).
 	v := testValidator()
-	g := validGraph()
-	g.Workflow.Inputs = map[string]cwl.InputParam{}
-	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
+	g := &cwl.GraphDocument{
+		CWLVersion:    "v1.2",
+		OriginalClass: "Workflow",
+		Workflow: &cwl.Workflow{
+			ID:      "main",
+			Class:   "Workflow",
+			Inputs:  map[string]cwl.InputParam{},
+			Outputs: map[string]cwl.OutputParam{"out": {Type: "File", OutputSource: "step1/out"}},
+			Steps: map[string]cwl.Step{
+				"step1": {
+					Run: "#tool1",
+					In:  map[string]cwl.StepInput{"x": {Default: "value"}}, // use default, not source
+					Out: []string{"out"},
+				},
+			},
+		},
+		Tools: map[string]*cwl.CommandLineTool{
+			"tool1": {ID: "tool1", Class: "CommandLineTool"},
+		},
 	}
-	if !hasFieldError(apiErr.Details, "inputs") {
-		t.Errorf("expected inputs error, got %v", apiErr.Details)
+	if apiErr := v.Validate(g); apiErr != nil {
+		t.Errorf("expected valid, got %v", apiErr)
 	}
 }
 
-func TestValidate_NoSteps(t *testing.T) {
+func TestValidate_NoSteps_PassthroughWorkflow(t *testing.T) {
+	// CWL v1.2 allows passthrough workflows (outputs directly from inputs).
 	v := testValidator()
-	g := validGraph()
-	g.Workflow.Steps = map[string]cwl.Step{}
-	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
+	g := &cwl.GraphDocument{
+		CWLVersion:    "v1.2",
+		OriginalClass: "Workflow",
+		Workflow: &cwl.Workflow{
+			ID:      "main",
+			Class:   "Workflow",
+			Inputs:  map[string]cwl.InputParam{"in1": {Type: "File"}},
+			Outputs: map[string]cwl.OutputParam{"out": {Type: "File", OutputSource: "in1"}}, // passthrough
+			Steps:   map[string]cwl.Step{},
+		},
+		Tools: map[string]*cwl.CommandLineTool{},
 	}
-	if !hasFieldError(apiErr.Details, "steps") {
-		t.Errorf("expected steps error, got %v", apiErr.Details)
+	if apiErr := v.Validate(g); apiErr != nil {
+		t.Errorf("expected valid, got %v", apiErr)
 	}
 }
 

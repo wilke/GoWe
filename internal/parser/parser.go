@@ -420,6 +420,16 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 		inp.InputBinding = parseInputBinding(ib)
 	}
 
+	// Parse item-level inputBinding from array type definition.
+	// Example: type: { type: array, items: File, inputBinding: { prefix: "-YYY" } }
+	if typeMap, ok := val["type"].(map[string]any); ok {
+		if typeMap["type"] == "array" {
+			if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
+				inp.ItemInputBinding = parseInputBinding(itemIB)
+			}
+		}
+	}
+
 	// Parse secondaryFiles.
 	inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
 

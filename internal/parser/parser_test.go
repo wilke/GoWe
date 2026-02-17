@@ -242,12 +242,30 @@ func TestParseGraph_InvalidYAML(t *testing.T) {
 	}
 }
 
-func TestParseGraph_NoGraph_BareWorkflow(t *testing.T) {
+func TestParseGraph_BareWorkflow(t *testing.T) {
 	p := testParser()
-	// Bare Workflow without $graph should fail (only tools can be bare).
-	_, err := p.ParseGraph([]byte("cwlVersion: v1.2\nclass: Workflow\n"))
-	if err == nil {
-		t.Error("expected error for bare Workflow without $graph")
+	// CWL v1.2 allows bare Workflow documents.
+	data := []byte(`cwlVersion: v1.2
+class: Workflow
+id: my-workflow
+inputs:
+  in1:
+    type: File
+outputs:
+  out1:
+    type: File
+    outputSource: in1
+steps: {}
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if graph.Workflow == nil {
+		t.Error("expected workflow to be parsed")
+	}
+	if graph.OriginalClass != "Workflow" {
+		t.Errorf("expected OriginalClass=Workflow, got %s", graph.OriginalClass)
 	}
 }
 
