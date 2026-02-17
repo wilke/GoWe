@@ -25,15 +25,24 @@ Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
 15. **Boolean empty inputBinding** - Boolean with `inputBinding: {}` is omitted from command line
 16. **ItemInputBinding parsing** - Parse inputBinding from inside array type definitions
 
-### Current Status: 30/84 tests passing (36%)
+### Current Status: 45/84 tests passing (54%)
+
+### Changes Made This Session (Continued)
+17. **File literal support** - Materialize Files with `contents` field as temp files with symlink resolution for Docker
+18. **cwl.output.json processing** - Process File/Directory objects to resolve relative paths and add metadata (checksum, size, etc.)
+19. **Directory type outputs** - Support Directory type in outputBinding with listing of contents
+20. **Directory input listing** - Recursively resolve File/Directory objects in Directory listing
+21. **Packed tool-only files** - Support `$graph` files containing only CommandLineTools (no Workflow), creating synthetic workflows
+22. **Tool ID hash handling** - Strip `#` prefix from tool IDs for consistent lookup in `$graph` files
 
 ### Key Remaining Issues
 - External tool file references (workflows referencing external .cwl files) - major category
 - $import feature not implemented (params_inc.yml etc.)
-- File literal inputs (contents field)
-- Directory type outputs
 - Record type handling
-- Some format checking tests
+- Format checking tests (format field on outputs)
+- ShellCommandRequirement (for shell builtins like exit)
+- Position expressions in inputBinding
+- should_fail tests (null for Any type without default)
 
 ---
 

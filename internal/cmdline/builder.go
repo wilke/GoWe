@@ -217,23 +217,32 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 		return nil, nil
 	}
 
+	// If valueFrom is set, it replaces the input value entirely.
+	// This must be checked before array handling since valueFrom can replace an array with a scalar.
+	if binding.ValueFrom != "" {
+		evaluated, err := b.evaluator.Evaluate(binding.ValueFrom, ctx)
+		if err != nil {
+			return nil, err
+		}
+		strValue := valueToString(evaluated)
+		if strValue == "" {
+			return nil, nil
+		}
+		args := buildPrefixedArgs(binding.Prefix, strValue, binding.Separate)
+		return &cmdPart{
+			position: pos,
+			name:     name,
+			args:     args,
+		}, nil
+	}
+
 	// Handle array values specially.
 	if arrVal, ok := value.([]any); ok {
 		return b.buildArrayInputBinding(name, input, arrVal, pos, ctx)
 	}
 
 	// Determine the value to use for non-array values.
-	var strValue string
-	if binding.ValueFrom != "" {
-		// Evaluate valueFrom expression.
-		evaluated, err := b.evaluator.Evaluate(binding.ValueFrom, ctx)
-		if err != nil {
-			return nil, err
-		}
-		strValue = valueToString(evaluated)
-	} else {
-		strValue = inputValueToString(value, binding.ItemSeparator)
-	}
+	strValue := inputValueToString(value, binding.ItemSeparator)
 
 	// Skip empty values.
 	if strValue == "" {

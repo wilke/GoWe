@@ -384,6 +384,8 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 		if err := jsonUnmarshal(data, &outputs); err != nil {
 			return nil, fmt.Errorf("parse cwl.output.json: %w", err)
 		}
+		// Process File/Directory objects to resolve paths and add metadata.
+		processOutputObjects(outputs, workDir)
 		return outputs, nil
 	}
 
@@ -446,7 +448,7 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 			continue
 		}
 
-		collected, err := r.collectOutputBinding(output.OutputBinding, workDir, inputs, tool)
+		collected, err := r.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool)
 		if err != nil {
 			return nil, fmt.Errorf("output %s: %w", outputID, err)
 		}
@@ -457,7 +459,7 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 }
 
 // collectOutputBinding collects files matching an output binding.
-func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, workDir string, inputs map[string]any, tool *cwl.CommandLineTool) (any, error) {
+func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any, workDir string, inputs map[string]any, tool *cwl.CommandLineTool) (any, error) {
 	if binding.Glob == nil {
 		return nil, nil
 	}
@@ -468,6 +470,9 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, workDir string
 		return nil, nil
 	}
 
+	// Check if output type is Directory.
+	expectDirectory := isDirectoryType(outputType)
+
 	var collected []map[string]any
 	for _, pattern := range patterns {
 		matches, err := filepath.Glob(filepath.Join(workDir, pattern))
@@ -476,11 +481,22 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, workDir string
 		}
 
 		for _, match := range matches {
-			fileObj, err := createFileObject(match, binding.LoadContents)
+			var obj map[string]any
+			var err error
+			info, statErr := os.Stat(match)
+			if statErr != nil {
+				return nil, statErr
+			}
+
+			if info.IsDir() || expectDirectory {
+				obj, err = createDirectoryObject(match)
+			} else {
+				obj, err = createFileObject(match, binding.LoadContents)
+			}
 			if err != nil {
 				return nil, err
 			}
-			collected = append(collected, fileObj)
+			collected = append(collected, obj)
 		}
 	}
 
@@ -618,4 +634,176 @@ func loadFileContents(path string) (string, error) {
 // jsonUnmarshal is a helper for JSON unmarshaling.
 func jsonUnmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
+}
+
+// processOutputObjects recursively processes File/Directory objects in outputs
+// to resolve relative paths and add metadata (checksum, size, etc.).
+func processOutputObjects(outputs map[string]any, workDir string) {
+	for k, v := range outputs {
+		outputs[k] = processOutputValue(v, workDir)
+	}
+}
+
+// processOutputValue processes a single output value recursively.
+func processOutputValue(v any, workDir string) any {
+	switch val := v.(type) {
+	case map[string]any:
+		if class, ok := val["class"].(string); ok && class == "File" {
+			return processFileOutput(val, workDir)
+		}
+		if class, ok := val["class"].(string); ok && class == "Directory" {
+			return processDirectoryOutput(val, workDir)
+		}
+		// Recursively process nested maps.
+		for k, item := range val {
+			val[k] = processOutputValue(item, workDir)
+		}
+		return val
+	case []any:
+		for i, item := range val {
+			val[i] = processOutputValue(item, workDir)
+		}
+		return val
+	default:
+		return v
+	}
+}
+
+// processFileOutput processes a File object from cwl.output.json.
+// Resolves relative paths and adds metadata.
+func processFileOutput(obj map[string]any, workDir string) map[string]any {
+	// Resolve path if relative.
+	if path, ok := obj["path"].(string); ok {
+		if !filepath.IsAbs(path) {
+			obj["path"] = filepath.Join(workDir, path)
+		}
+	}
+
+	// Resolve location if relative.
+	if loc, ok := obj["location"].(string); ok {
+		if !filepath.IsAbs(loc) && !strings.Contains(loc, "://") {
+			obj["location"] = filepath.Join(workDir, loc)
+		}
+	}
+
+	// If location is not set but path is, derive location.
+	if _, hasLoc := obj["location"]; !hasLoc {
+		if path, ok := obj["path"].(string); ok {
+			obj["location"] = path
+		}
+	}
+
+	// Get the actual path for metadata.
+	path := ""
+	if p, ok := obj["path"].(string); ok {
+		path = p
+	} else if loc, ok := obj["location"].(string); ok {
+		path = loc
+	}
+
+	if path == "" {
+		return obj
+	}
+
+	// Add file metadata if not present.
+	info, err := os.Stat(path)
+	if err != nil {
+		return obj
+	}
+
+	if _, hasSize := obj["size"]; !hasSize {
+		obj["size"] = info.Size()
+	}
+
+	if _, hasChecksum := obj["checksum"]; !hasChecksum {
+		checksum, err := computeChecksum(path)
+		if err == nil {
+			obj["checksum"] = checksum
+		}
+	}
+
+	if _, hasBasename := obj["basename"]; !hasBasename {
+		obj["basename"] = filepath.Base(path)
+	}
+
+	return obj
+}
+
+// processDirectoryOutput processes a Directory object from cwl.output.json.
+func processDirectoryOutput(obj map[string]any, workDir string) map[string]any {
+	// Resolve path if relative.
+	if path, ok := obj["path"].(string); ok {
+		if !filepath.IsAbs(path) {
+			obj["path"] = filepath.Join(workDir, path)
+		}
+	}
+
+	// Resolve location if relative.
+	if loc, ok := obj["location"].(string); ok {
+		if !filepath.IsAbs(loc) && !strings.Contains(loc, "://") {
+			obj["location"] = filepath.Join(workDir, loc)
+		}
+	}
+
+	// If location is not set but path is, derive location.
+	if _, hasLoc := obj["location"]; !hasLoc {
+		if path, ok := obj["path"].(string); ok {
+			obj["location"] = path
+		}
+	}
+
+	return obj
+}
+
+// isDirectoryType checks if the output type is Directory.
+func isDirectoryType(outputType any) bool {
+	switch t := outputType.(type) {
+	case string:
+		return t == "Directory" || t == "Directory?"
+	case map[string]any:
+		if typeName, ok := t["type"].(string); ok {
+			return typeName == "Directory"
+		}
+	}
+	return false
+}
+
+// createDirectoryObject creates a CWL Directory object from a path.
+func createDirectoryObject(path string) (map[string]any, error) {
+	absPath, _ := filepath.Abs(path)
+	basename := filepath.Base(path)
+
+	obj := map[string]any{
+		"class":    "Directory",
+		"location": "file://" + absPath,
+		"path":     absPath,
+		"basename": basename,
+	}
+
+	// Build listing of directory contents.
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return obj, nil // Return without listing if can't read directory.
+	}
+
+	var listing []map[string]any
+	for _, entry := range entries {
+		entryPath := filepath.Join(path, entry.Name())
+		if entry.IsDir() {
+			dirObj, err := createDirectoryObject(entryPath)
+			if err == nil {
+				listing = append(listing, dirObj)
+			}
+		} else {
+			fileObj, err := createFileObject(entryPath, false)
+			if err == nil {
+				listing = append(listing, fileObj)
+			}
+		}
+	}
+
+	// Always include listing (empty array if no contents).
+	obj["listing"] = listing
+
+	return obj, nil
 }

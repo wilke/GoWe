@@ -443,6 +443,21 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 		resolved[k] = v
 	}
 
+	// Handle file literals: File objects with "contents" but no path/location.
+	// These need to be materialized as actual files.
+	if contents, hasContents := resolved["contents"].(string); hasContents {
+		_, hasPath := resolved["path"]
+		_, hasLocation := resolved["location"]
+		if !hasPath && !hasLocation {
+			// File literal - materialize to temp file.
+			tempFile, err := materializeFileLiteral(contents, resolved)
+			if err == nil {
+				resolved["path"] = tempFile
+				resolved["location"] = "file://" + tempFile
+			}
+		}
+	}
+
 	// Step 1: Resolve location (make it absolute if relative).
 	if loc, ok := resolved["location"].(string); ok {
 		if !filepath.IsAbs(loc) && !isURI(loc) {
@@ -495,6 +510,24 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 		}
 	}
 
+	// Step 6: For Directory objects, resolve listing entries.
+	if listing, ok := resolved["listing"].([]any); ok {
+		// Get the directory path for resolving relative paths in listing.
+		dirPath := baseDir
+		if path, ok := resolved["path"].(string); ok {
+			dirPath = path
+		}
+		resolvedListing := make([]any, len(listing))
+		for i, item := range listing {
+			if itemMap, ok := item.(map[string]any); ok {
+				resolvedListing[i] = resolveFileObject(itemMap, dirPath)
+			} else {
+				resolvedListing[i] = item
+			}
+		}
+		resolved["listing"] = resolvedListing
+	}
+
 	return resolved
 }
 
@@ -506,6 +539,35 @@ func splitBasenameExt(basename string) (string, string) {
 		}
 	}
 	return basename, ""
+}
+
+// materializeFileLiteral creates a temp file from file literal contents.
+// Per CWL spec, file literals with "contents" field are written to a temp file.
+func materializeFileLiteral(contents string, fileObj map[string]any) (string, error) {
+	// Use basename if provided, otherwise generate a name.
+	basename := "cwl_literal"
+	if b, ok := fileObj["basename"].(string); ok && b != "" {
+		basename = b
+	}
+
+	// Create temp directory for file literals.
+	// Resolve symlinks (e.g., /var -> /private/var on macOS) for Docker compatibility.
+	tempDir := os.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempDir); err == nil {
+		tempDir = resolved
+	}
+	tempDir = filepath.Join(tempDir, "cwl-literals")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return "", err
+	}
+
+	// Create the temp file.
+	tempPath := filepath.Join(tempDir, basename)
+	if err := os.WriteFile(tempPath, []byte(contents), 0644); err != nil {
+		return "", err
+	}
+
+	return tempPath, nil
 }
 
 // isURI checks if a string is a URI.

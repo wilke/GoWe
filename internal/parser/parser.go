@@ -71,14 +71,18 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 			if graph.Workflow != nil {
 				return nil, fmt.Errorf("$graph contains multiple Workflow entries")
 			}
-			wf, err := p.parseWorkflow(m)
+			wfResult, err := p.parseWorkflow(m)
 			if err != nil {
 				return nil, fmt.Errorf("$graph[%d] (Workflow): %w", i, err)
 			}
-			if version != "" && wf.CWLVersion == "" {
-				wf.CWLVersion = version
+			if version != "" && wfResult.Workflow.CWLVersion == "" {
+				wfResult.Workflow.CWLVersion = version
 			}
-			graph.Workflow = wf
+			graph.Workflow = wfResult.Workflow
+			// Add inline tools from workflow steps.
+			for toolID, tool := range wfResult.InlineTools {
+				graph.Tools[toolID] = tool
+			}
 
 		case "CommandLineTool", "ExpressionTool":
 			tool, err := p.parseTool(m)
@@ -88,7 +92,12 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 			if tool.ID == "" {
 				return nil, fmt.Errorf("$graph[%d] (%s): missing id", i, class)
 			}
-			graph.Tools[tool.ID] = tool
+			// Strip leading "#" from tool ID for consistent lookup.
+			toolID := tool.ID
+			if strings.HasPrefix(toolID, "#") {
+				toolID = toolID[1:]
+			}
+			graph.Tools[toolID] = tool
 
 		default:
 			return nil, fmt.Errorf("$graph[%d]: unknown class %q", i, class)
@@ -96,33 +105,106 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 	}
 
 	if graph.Workflow == nil {
-		return nil, fmt.Errorf("$graph contains no Workflow entry")
+		// No workflow found - create a synthetic one from the main tool.
+		// Look for tool with id "main" (IDs are stored without "#" prefix), or use the first tool.
+		var mainTool *cwl.CommandLineTool
+		if tool, ok := graph.Tools["main"]; ok {
+			mainTool = tool
+		} else {
+			// Use the first tool in the map.
+			for _, tool := range graph.Tools {
+				mainTool = tool
+				break
+			}
+		}
+		if mainTool == nil {
+			return nil, fmt.Errorf("$graph contains no Workflow or tool entries")
+		}
+		graph.Workflow = createSyntheticWorkflow(mainTool)
+		graph.OriginalClass = mainTool.Class
+		p.logger.Debug("created synthetic workflow from packed tool", "tool_id", mainTool.ID)
 	}
 
 	return graph, nil
 }
 
+// createSyntheticWorkflow creates a workflow that wraps a single tool.
+func createSyntheticWorkflow(tool *cwl.CommandLineTool) *cwl.Workflow {
+	// Build workflow inputs (same as tool inputs).
+	wfInputs := make(map[string]cwl.InputParam)
+	for id, inp := range tool.Inputs {
+		wfInputs[id] = cwl.InputParam{
+			Type:    inp.Type,
+			Doc:     inp.Doc,
+			Default: inp.Default,
+		}
+	}
+
+	// Build workflow outputs (same as tool outputs, with outputSource).
+	wfOutputs := make(map[string]cwl.OutputParam)
+	stepOutIDs := make([]string, 0, len(tool.Outputs))
+	for id, out := range tool.Outputs {
+		wfOutputs[id] = cwl.OutputParam{
+			Type:         out.Type,
+			OutputSource: "run_tool/" + id,
+		}
+		stepOutIDs = append(stepOutIDs, id)
+	}
+
+	// Build step inputs (map workflow inputs to step inputs).
+	stepIn := make(map[string]cwl.StepInput)
+	for id := range tool.Inputs {
+		stepIn[id] = cwl.StepInput{Source: id}
+	}
+
+	// Create Run reference - always use "#" prefix with the stripped ID.
+	toolID := tool.ID
+	if strings.HasPrefix(toolID, "#") {
+		toolID = toolID[1:]
+	}
+	runRef := "#" + toolID
+
+	return &cwl.Workflow{
+		ID:         "main",
+		Class:      "Workflow",
+		CWLVersion: tool.CWLVersion,
+		Doc:        tool.Doc,
+		Inputs:     wfInputs,
+		Outputs:    wfOutputs,
+		Steps: map[string]cwl.Step{
+			"run_tool": {
+				Run: runRef,
+				In:  stepIn,
+				Out: stepOutIDs,
+			},
+		},
+	}
+}
+
 // parseBareWorkflow parses a bare Workflow document (without $graph).
 func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.GraphDocument, error) {
-	wf, err := p.parseWorkflow(raw)
+	wfResult, err := p.parseWorkflow(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse Workflow: %w", err)
 	}
 
-	if version != "" && wf.CWLVersion == "" {
-		wf.CWLVersion = version
+	if version != "" && wfResult.Workflow.CWLVersion == "" {
+		wfResult.Workflow.CWLVersion = version
 	}
 
-	p.logger.Debug("parsed bare workflow", "id", wf.ID)
+	p.logger.Debug("parsed bare workflow", "id", wfResult.Workflow.ID)
 
-	// Bare workflows may have inline tool definitions in steps.
-	// For now, we create an empty tools map since bare workflows
-	// typically reference external tools or use no tools (like any-type-compat).
+	// Initialize tools map with any inline tools from steps.
+	tools := wfResult.InlineTools
+	if tools == nil {
+		tools = make(map[string]*cwl.CommandLineTool)
+	}
+
 	return &cwl.GraphDocument{
 		CWLVersion:    version,
 		OriginalClass: "Workflow",
-		Workflow:      wf,
-		Tools:         make(map[string]*cwl.CommandLineTool),
+		Workflow:      wfResult.Workflow,
+		Tools:         tools,
 	}, nil
 }
 
@@ -207,8 +289,18 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 	}, nil
 }
 
+// workflowParseResult holds the result of parsing a workflow.
+type workflowParseResult struct {
+	Workflow    *cwl.Workflow
+	InlineTools map[string]*cwl.CommandLineTool
+}
+
 // parseWorkflow parses a single CWL Workflow from a raw map.
-func (p *Parser) parseWorkflow(raw map[string]any) (*cwl.Workflow, error) {
+func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) {
+	result := workflowParseResult{
+		InlineTools: make(map[string]*cwl.CommandLineTool),
+	}
+
 	wf := &cwl.Workflow{
 		ID:         stringField(raw, "id"),
 		Class:      stringField(raw, "class"),
@@ -232,7 +324,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (*cwl.Workflow, error) {
 				Default: val["default"],
 			}
 		default:
-			return nil, fmt.Errorf("input %q: unexpected type %T", id, v)
+			return result, fmt.Errorf("input %q: unexpected type %T", id, v)
 		}
 	}
 
@@ -252,15 +344,21 @@ func (p *Parser) parseWorkflow(raw map[string]any) (*cwl.Workflow, error) {
 	steps := normalizeToMap(raw["steps"])
 	for id, v := range steps {
 		if m, ok := v.(map[string]any); ok {
-			step, err := p.parseStep(m)
+			stepResult, err := p.parseStep(m, id)
 			if err != nil {
-				return nil, fmt.Errorf("step %q: %w", id, err)
+				return result, fmt.Errorf("step %q: %w", id, err)
 			}
-			wf.Steps[id] = step
+			wf.Steps[id] = stepResult.Step
+			// Collect inline tools.
+			if stepResult.InlineTool != nil {
+				toolID := stepResult.InlineTool.ID
+				result.InlineTools[toolID] = stepResult.InlineTool
+			}
 		}
 	}
 
-	return wf, nil
+	result.Workflow = wf
+	return result, nil
 }
 
 // normalizeToMap converts array-style CWL definitions to map-style.
@@ -303,10 +401,16 @@ func normalizeHintsToMap(v any) map[string]any {
 	return nil
 }
 
+// stepParseResult holds the result of parsing a workflow step.
+type stepParseResult struct {
+	Step       cwl.Step
+	InlineTool *cwl.CommandLineTool // non-nil if step has inline tool
+}
+
 // parseStep parses a single CWL workflow step from a raw map.
-func (p *Parser) parseStep(raw map[string]any) (cwl.Step, error) {
+func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, error) {
+	result := stepParseResult{}
 	step := cwl.Step{
-		Run:           stringField(raw, "run"),
 		Out:           stringSlice(raw, "out"),
 		Scatter:       stringSlice(raw, "scatter"),
 		ScatterMethod: stringField(raw, "scatterMethod"),
@@ -314,6 +418,27 @@ func (p *Parser) parseStep(raw map[string]any) (cwl.Step, error) {
 		Hints:         mapField(raw, "hints"),
 		Requirements:  mapField(raw, "requirements"),
 		In:            make(map[string]cwl.StepInput),
+	}
+
+	// Handle 'run' field: can be a string reference or an inline tool map.
+	switch runVal := raw["run"].(type) {
+	case string:
+		step.Run = runVal
+	case map[string]any:
+		// Inline tool - parse it and generate a reference.
+		tool, err := p.parseTool(runVal)
+		if err != nil {
+			return result, fmt.Errorf("parse inline tool: %w", err)
+		}
+		// Generate ID for inline tool based on step ID.
+		inlineID := stepID + "_inline"
+		if tool.ID == "" {
+			tool.ID = inlineID
+		} else {
+			inlineID = tool.ID
+		}
+		step.Run = "#" + inlineID
+		result.InlineTool = tool
 	}
 
 	// Parse step inputs: supports both array-style and map-style.
@@ -330,7 +455,8 @@ func (p *Parser) parseStep(raw map[string]any) (cwl.Step, error) {
 		}
 	}
 
-	return step, nil
+	result.Step = step
+	return result, nil
 }
 
 // parseTool parses a single CWL CommandLineTool from a raw map.

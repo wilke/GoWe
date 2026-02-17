@@ -447,6 +447,7 @@ func TestParseGraph_PackedWorkflow_OriginalClass(t *testing.T) {
 }
 
 func TestParseGraph_NoWorkflow(t *testing.T) {
+	// When $graph contains only tools, a synthetic workflow should be created.
 	p := testParser()
 	data := []byte(`cwlVersion: v1.2
 $graph:
@@ -455,9 +456,18 @@ $graph:
     inputs: {}
     outputs: {}
 `)
-	_, err := p.ParseGraph(data)
-	if err == nil {
-		t.Error("expected error for missing Workflow in $graph")
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Errorf("expected success for $graph with only tools, got error: %v", err)
+	}
+	if graph == nil {
+		t.Fatal("expected non-nil graph")
+	}
+	if graph.Workflow == nil {
+		t.Error("expected synthetic workflow to be created")
+	}
+	if graph.Tools["tool1"] == nil {
+		t.Error("expected tool1 to be in tools map")
 	}
 }
 
