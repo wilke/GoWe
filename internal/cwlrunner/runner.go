@@ -147,7 +147,10 @@ func (r *Runner) PrintCommandLine(ctx context.Context, cwlPath, jobPath string, 
 	// Build command line for each tool.
 	for toolID, tool := range graph.Tools {
 		// Merge tool defaults with resolved inputs.
-		mergedInputs := mergeToolDefaults(tool, resolvedInputs, r.cwlDir)
+		mergedInputs, err := mergeToolDefaults(tool, resolvedInputs, r.cwlDir)
+		if err != nil {
+			return fmt.Errorf("process inputs for %s: %w", toolID, err)
+		}
 
 		// Build runtime context from tool requirements.
 		runtime := buildRuntimeContext(tool, r.OutDir)
@@ -265,7 +268,10 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	r.logger.Info("executing tool", "id", tool.ID)
 
 	// Merge tool input defaults with provided inputs.
-	mergedInputs := mergeToolDefaults(tool, inputs, r.cwlDir)
+	mergedInputs, err := mergeToolDefaults(tool, inputs, r.cwlDir)
+	if err != nil {
+		return nil, fmt.Errorf("process inputs: %w", err)
+	}
 
 	// Validate inputs against tool schema.
 	if err := validateToolInputs(tool, mergedInputs); err != nil {
@@ -907,24 +913,100 @@ func stripHash(ref string) string {
 
 // mergeToolDefaults merges tool input defaults with provided inputs.
 // Defaults are only used for inputs not provided in the job file.
-func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) map[string]any {
+// Only inputs declared in the tool's inputs are included; undeclared inputs are ignored.
+// This is per CWL v1.2 spec: step inputs not declared in the tool are not passed to the tool.
+// Also processes loadContents for File inputs (with 64KB limit).
+func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) (map[string]any, error) {
 	merged := make(map[string]any)
 
-	// Copy provided inputs.
-	for k, v := range inputs {
-		merged[k] = v
-	}
-
-	// Add defaults for missing inputs.
+	// Only include inputs that are declared in the tool's inputs.
 	for inputID, inputDef := range tool.Inputs {
-		if _, exists := merged[inputID]; !exists && inputDef.Default != nil {
-			// Resolve default value (especially File objects).
-			defaultVal := resolveDefaultValue(inputDef.Default, cwlDir)
-			merged[inputID] = defaultVal
+		var val any
+		if v, exists := inputs[inputID]; exists {
+			val = v
+		} else if inputDef.Default != nil {
+			// Use default value if input not provided.
+			val = resolveDefaultValue(inputDef.Default, cwlDir)
 		}
+
+		// Process loadContents for File inputs.
+		if val != nil && inputDef.LoadContents {
+			processedVal, err := processLoadContents(val, cwlDir)
+			if err != nil {
+				return nil, fmt.Errorf("input %q: %w", inputID, err)
+			}
+			val = processedVal
+		}
+
+		merged[inputID] = val
 	}
 
-	return merged
+	return merged, nil
+}
+
+// processLoadContents loads file contents into a File object (with 64KB limit).
+func processLoadContents(val any, cwlDir string) (any, error) {
+	const maxLoadContentsSize = 64 * 1024 // 64KB
+
+	switch v := val.(type) {
+	case map[string]any:
+		if class, ok := v["class"].(string); ok && class == "File" {
+			// Get the file path.
+			path := ""
+			if p, ok := v["path"].(string); ok {
+				path = p
+			} else if loc, ok := v["location"].(string); ok {
+				path = strings.TrimPrefix(loc, "file://")
+			}
+			if path == "" {
+				return nil, fmt.Errorf("File object has no path or location")
+			}
+
+			// Resolve relative paths.
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(cwlDir, path)
+			}
+
+			// Check file size.
+			info, err := os.Stat(path)
+			if err != nil {
+				return nil, fmt.Errorf("stat file: %w", err)
+			}
+			if info.Size() > maxLoadContentsSize {
+				return nil, fmt.Errorf("loadContents: file %q is %d bytes, exceeds 64KB limit", path, info.Size())
+			}
+
+			// Read contents.
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read file contents: %w", err)
+			}
+
+			// Create a copy of the map with contents added.
+			result := make(map[string]any)
+			for k, val := range v {
+				result[k] = val
+			}
+			result["contents"] = string(content)
+			return result, nil
+		}
+		return val, nil
+
+	case []any:
+		// Process array of Files.
+		result := make([]any, len(v))
+		for i, item := range v {
+			processed, err := processLoadContents(item, cwlDir)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = processed
+		}
+		return result, nil
+
+	default:
+		return val, nil
+	}
 }
 
 // resolveDefaultValue resolves a default value, handling File objects specially.

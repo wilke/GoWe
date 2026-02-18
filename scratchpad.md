@@ -1,51 +1,40 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-17 Late Night (CWL Conformance - 94%)
+
+### Status: 79/84 TESTS PASSING (94%)
+
+Improved CWL conformance test pass rate from 66/84 to **79/84 (94%)**.
+
+### Key Improvements (66/84 → 79/84)
+
+41. **Record field inputBindings** - Added support for record types with field-level inputBindings
+42. **Union type parsing fix** - Fixed `["null", "boolean"]` → `boolean?` conversion
+43. **External tool file loading** - Workflows can now reference external .cwl files
+44. **ExpressionTool support** - Parse and execute ExpressionTools in $graph documents
+45. **EnvVarRequirement** - Environment variables now set for tool execution
+46. **Step input defaults** - Properly resolve defaults including File objects
+47. **File objects in arguments** - Extract path from File objects instead of JSON
+48. **JavaScript object literals** - Fixed `$({'key': value})` expression parsing
+49. **.length validation** - Properly fail when accessing .length on non-array values
+50. **Undeclared input validation** - Accessing undeclared inputs now fails (v0.8.6 → 79/84)
+51. **Step input filtering** - Only declared tool inputs passed per CWL v1.2 spec
+52. **loadContents 64KB limit** - Input files >64KB now correctly fail loadContents
+
+### Current Status: 79/84 tests passing (94%)
+
+### Remaining Failures (5 tests)
+- **Test 10, 27** - Platform difference: macOS `rev`/`sort` differ from Linux
+- **Tests 53, 54** - SecondaryFiles handling in records
+- **Test 69** - Docker mount issues with colons in paths (Docker uses : as volume separator)
+
+### Git Status
+- v0.8.6: `74addc5 feat: improve CWL conformance from 66/84 to 77/84 (92%)`
+- Latest: `d20a787 feat: improve CWL conformance from 77/84 to 79/84 (94%)`
+
+---
+
 ## Session: 2026-02-17 Late Evening (CWL Conformance Continued)
-
-### Status: IMPROVED
-
-Improved CWL conformance test pass rate from 66/84 to 72/84 (86%).
-
-### Changes Made This Session
-
-41. **Record field inputBindings** - Added support for record types with field-level inputBindings:
-    - Added RecordField type with Name, Type, InputBinding, Doc, Label
-    - Added RecordFields slice to ToolInputParam
-    - Added parseRecordFields and parseRecordField functions
-    - Added buildRecordInputBinding to expand record fields into command line arguments
-    - Fields are sorted by their inputBinding position within the record
-
-42. **Union type parsing fix** - Fixed stringField to return empty for complex types:
-    - `stringField` was using `fmt.Sprintf("%v", v)` for non-strings, converting `["null", "boolean"]` to `[null boolean]`
-    - Now returns empty string for complex types on "type" key, triggering serializeCWLType
-    - Union types like `["null", "boolean"]` now correctly serialize to `boolean?`
-
-43. **External tool file loading** - Added support for workflows referencing external .cwl files:
-    - Parser stores baseDir for resolving relative paths
-    - parseBareWorkflow loads external tool files referenced in step.Run
-    - stripHash function converts external file references to tool IDs
-    - Validator validates external tool references using derived tool IDs
-
-### Current Status: 72/84 tests passing (86%)
-
-### Remaining Failures (12 tests)
-- **Test 10** (revsort) - Platform difference: macOS `rev`/`sort` produce different output than Linux
-- **Test 25** (imported-hint) - $import in hints not fully supported
-- **Test 27** (revsort-packed) - Same platform difference as test 10
-- **Test 37** (fail-unconnected) - Should fail: step passes undeclared input to tool
-- **Tests 40, 43** - External tool loading edge cases
-- **Tests 53, 54** - SecondaryFiles handling
-- **Tests 63, 64** - loadContents 64KB limit enforcement
-- **Test 66** - Should fail: .length on non-array
-- **Test 69** - Colon in paths breaks Docker mounts
-
-### Files Modified This Session
-- `pkg/cwl/binding.go` - Added RecordField type
-- `pkg/cwl/tool.go` - Added RecordFields to ToolInputParam
-- `internal/parser/parser.go` - Added baseDir, parseRecordFields, external tool loading
-- `internal/parser/validator.go` - Handle external tool file references
-- `internal/cmdline/builder.go` - Added buildRecordInputBinding
-- `internal/cwlrunner/runner.go` - stripHash handles external file references
 
 ---
 

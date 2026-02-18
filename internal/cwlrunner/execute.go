@@ -679,6 +679,11 @@ func createFileObject(path string, loadContents bool) (map[string]any, error) {
 	}
 
 	if loadContents {
+		// CWL spec: loadContents is limited to 64KB (65536 bytes).
+		const maxLoadContentsSize = 64 * 1024
+		if info.Size() > maxLoadContentsSize {
+			return nil, fmt.Errorf("loadContents: file %q is %d bytes, exceeds 64KB limit", path, info.Size())
+		}
 		content, err := loadFileContents(path)
 		if err != nil {
 			return nil, err

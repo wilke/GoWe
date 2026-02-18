@@ -138,6 +138,10 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 		if err != nil {
 			return nil, fmt.Errorf("expression error in $(%s): %w", matches[0].expr, err)
 		}
+		// CWL validation: undefined values indicate invalid property access.
+		if val == goja.Undefined() {
+			return nil, fmt.Errorf("expression $(%s) returned undefined (invalid property access)", matches[0].expr)
+		}
 		return val.Export(), nil
 	}
 
@@ -157,6 +161,10 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 		val, err := vm.RunString(match.expr)
 		if err != nil {
 			return nil, fmt.Errorf("expression error in $(%s): %w", match.expr, err)
+		}
+		// CWL validation: undefined values indicate invalid property access.
+		if val == goja.Undefined() {
+			return nil, fmt.Errorf("expression $(%s) returned undefined (invalid property access)", match.expr)
 		}
 
 		// Convert to string and append

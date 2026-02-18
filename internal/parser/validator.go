@@ -214,6 +214,54 @@ func (v *Validator) validateToolRefs(graph *cwl.GraphDocument) []model.FieldErro
 	return errs
 }
 
+// validateStepInputs checks that step inputs match the tool's declared inputs.
+// CWL spec requires that step inputs correspond to inputs declared by the tool.
+func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldError {
+	var errs []model.FieldError
+	if graph.Workflow == nil {
+		return nil
+	}
+
+	for stepID, step := range graph.Workflow.Steps {
+		if step.Run == "" {
+			continue // Already caught by validateSteps.
+		}
+
+		// Resolve the tool reference to get the tool's declared inputs.
+		ref := step.Run
+		if len(ref) > 0 && ref[0] == '#' {
+			ref = ref[1:]
+		}
+		if strings.HasSuffix(ref, ".cwl") {
+			base := filepath.Base(ref)
+			ref = strings.TrimSuffix(base, ".cwl")
+		}
+
+		// Get the tool's declared inputs.
+		var toolInputs map[string]cwl.ToolInputParam
+		if tool, ok := graph.Tools[ref]; ok {
+			toolInputs = tool.Inputs
+		} else if exprTool, ok := graph.ExpressionTools[ref]; ok {
+			toolInputs = exprTool.Inputs
+		} else {
+			// Tool not found - already reported by validateToolRefs.
+			continue
+		}
+
+		// Check each step input against the tool's declared inputs.
+		for inID := range step.In {
+			if _, declared := toolInputs[inID]; !declared {
+				errs = append(errs, model.FieldError{
+					Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
+					Message: fmt.Sprintf("step %q input %q is not declared in the tool's inputs", stepID, inID),
+				})
+			}
+		}
+	}
+
+	return errs
+}
+
 func (v *Validator) validateDAG(graph *cwl.GraphDocument) []model.FieldError {
 	if graph.Workflow == nil {
 		return nil
