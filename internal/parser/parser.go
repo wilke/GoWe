@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +24,24 @@ func New(logger *slog.Logger) *Parser {
 	return &Parser{logger: logger.With("component", "parser")}
 }
 
+// ParseGraphWithBase parses a CWL document and resolves $import directives.
+// baseDir is used to resolve relative import paths.
+func (p *Parser) ParseGraphWithBase(data []byte, baseDir string) (*cwl.GraphDocument, error) {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("YAML parse error: %w", err)
+	}
+
+	// Resolve $import directives.
+	resolved, err := resolveImports(raw, baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve imports: %w", err)
+	}
+	raw = resolved.(map[string]any)
+
+	return p.parseGraphFromRaw(raw)
+}
+
 // ParseGraph parses a packed $graph CWL document into a GraphDocument.
 // The input can be:
 //   - A packed YAML document containing a $graph array with a Workflow
@@ -31,7 +51,11 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("YAML parse error: %w", err)
 	}
+	return p.parseGraphFromRaw(raw)
+}
 
+// parseGraphFromRaw parses an already-unmarshaled CWL document.
+func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, error) {
 	version := stringField(raw, "cwlVersion")
 
 	// Check if this is a bare document (no $graph).
@@ -1039,4 +1063,62 @@ func extractStepHints(hints map[string]any) *model.StepHints {
 		return nil
 	}
 	return &h
+}
+
+// resolveImports recursively resolves $import directives in a CWL document.
+// It loads referenced files and replaces the $import directive with the file contents.
+func resolveImports(v any, baseDir string) (any, error) {
+	switch val := v.(type) {
+	case map[string]any:
+		// Check if this is an $import directive.
+		if importPath, ok := val["$import"].(string); ok && len(val) == 1 {
+			// Resolve the import path relative to baseDir.
+			fullPath := importPath
+			if !filepath.IsAbs(importPath) {
+				fullPath = filepath.Join(baseDir, importPath)
+			}
+
+			// Read and parse the imported file.
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				return nil, fmt.Errorf("read import %q: %w", importPath, err)
+			}
+
+			var imported any
+			if err := yaml.Unmarshal(data, &imported); err != nil {
+				return nil, fmt.Errorf("parse import %q: %w", importPath, err)
+			}
+
+			// Recursively resolve imports in the imported content.
+			importDir := filepath.Dir(fullPath)
+			return resolveImports(imported, importDir)
+		}
+
+		// Recursively process all values in the map.
+		result := make(map[string]any)
+		for k, v := range val {
+			resolved, err := resolveImports(v, baseDir)
+			if err != nil {
+				return nil, err
+			}
+			result[k] = resolved
+		}
+		return result, nil
+
+	case []any:
+		// Recursively process all elements in the array.
+		result := make([]any, len(val))
+		for i, item := range val {
+			resolved, err := resolveImports(item, baseDir)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = resolved
+		}
+		return result, nil
+
+	default:
+		// Primitive values are returned as-is.
+		return v, nil
+	}
 }

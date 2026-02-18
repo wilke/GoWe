@@ -2,12 +2,20 @@
 
 ## Session: 2026-02-17 Continued (CWL Conformance Test Improvements)
 
-### Status: IN PROGRESS
+### Status: IMPROVED
 
-Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
+Improved CWL conformance test pass rate from 54/84 to 61/84 (73%).
 
-### Changes Made This Session
+### Changes Made This Session (Latest)
 
+33. **$import support** - Resolve `$import` directives in CWL documents (e.g., `outputs: {"$import": params_inc.yml}`)
+34. **Argument ordering** - Arguments come before inputs at the same position (fixed via isArgument flag)
+35. **Float formatting in JSON** - Output floats without scientific notation in both command line and JSON output
+36. **Float formatting in expressions** - Format floats without e-notation when converting to strings in expressions
+
+### Current Status: 61/84 tests passing (73%)
+
+### Previous Changes This Session
 1. **Array-style parsing** - Added support for array-style inputs/outputs/hints/requirements
 2. **Bare Workflow support** - Parser now handles bare Workflow class without $graph
 3. **Stdin redirection** - Fixed Docker stdin piping with `-i` flag
@@ -24,10 +32,6 @@ Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
 14. **Stdout expression evaluation** - Evaluate expressions in stdout filename for output collection
 15. **Boolean empty inputBinding** - Boolean with `inputBinding: {}` is omitted from command line
 16. **ItemInputBinding parsing** - Parse inputBinding from inside array type definitions
-
-### Current Status: 54/84 tests passing (64%)
-
-### Changes Made This Session (Continued)
 17. **File literal support** - Materialize Files with `contents` field as temp files with symlink resolution for Docker
 18. **cwl.output.json processing** - Process File/Directory objects to resolve relative paths and add metadata (checksum, size, etc.)
 19. **Directory type outputs** - Support Directory type in outputBinding with listing of contents
@@ -45,9 +49,15 @@ Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
 31. **Null in expressions** - Output "null" for nil values in string interpolation (for JSON)
 32. **Docker path resolution** - Always resolve to absolute paths for Docker mounts
 
-### Key Remaining Issues
-- External tool file references (workflows referencing external .cwl files) - major category (~10 tests)
-- $import feature not implemented (params_inc.yml etc.)
+### Key Remaining Issues (23 failing tests)
+- **External tool file references** (tests 8, 10, 36, 40-43, 54) - workflows referencing external .cwl files
+- **EnvVarRequirement** (test 25) - environment variable setup not implemented
+- **Format checking** (tests 14-16) - output format field not supported
+- **Record field inputBindings** (test 74) - record fields with individual inputBindings
+- **ShellCommandRequirement** (test 59) - shell command execution for `exit` command
+- **loadContents limit** (tests 63-64) - 64KB limit enforcement
+- **length on non-array** (test 66) - should fail when accessing .length on non-array
+- **Colon in paths** (test 69) - Docker mount issues with colons
 - Record type with field-level inputBindings
 - Format checking tests (format field on outputs)
 - ShellCommandRequirement (for shell builtins like exit)

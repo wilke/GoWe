@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/me/gowe/internal/cmdline"
@@ -50,15 +52,16 @@ func (r *Runner) LoadDocument(cwlPath string) (*cwl.GraphDocument, error) {
 		return nil, fmt.Errorf("read CWL file: %w", err)
 	}
 
-	graph, err := r.parser.ParseGraph(data)
-	if err != nil {
-		return nil, fmt.Errorf("parse CWL: %w", err)
-	}
-
-	// Store CWL directory for resolving relative paths in defaults.
+	// Store CWL directory for resolving relative paths in defaults and imports.
 	r.cwlDir = filepath.Dir(cwlPath)
 	if r.cwlDir == "" {
 		r.cwlDir = "."
+	}
+
+	// Use ParseGraphWithBase to resolve $import directives.
+	graph, err := r.parser.ParseGraphWithBase(data, r.cwlDir)
+	if err != nil {
+		return nil, fmt.Errorf("parse CWL: %w", err)
 	}
 
 	return graph, nil
@@ -335,7 +338,9 @@ func (r *Runner) writeOutputs(outputs map[string]any, w io.Writer) error {
 	case "yaml":
 		data, err = yaml.Marshal(outputs)
 	default:
-		data, err = json.MarshalIndent(outputs, "", "  ")
+		// Convert floats to json.Number to avoid scientific notation.
+		converted := convertFloatsToNumbers(outputs)
+		data, err = json.MarshalIndent(converted, "", "  ")
 	}
 
 	if err != nil {
@@ -348,6 +353,30 @@ func (r *Runner) writeOutputs(outputs map[string]any, w io.Writer) error {
 	}
 	fmt.Fprintln(w)
 	return nil
+}
+
+// convertFloatsToNumbers recursively converts float64 values to json.Number
+// to avoid scientific notation in JSON output.
+func convertFloatsToNumbers(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		result := make(map[string]any)
+		for k, v := range val {
+			result[k] = convertFloatsToNumbers(v)
+		}
+		return result
+	case []any:
+		result := make([]any, len(val))
+		for i, v := range val {
+			result[i] = convertFloatsToNumbers(v)
+		}
+		return result
+	case float64:
+		// Format without scientific notation.
+		return json.Number(strconv.FormatFloat(val, 'f', -1, 64))
+	default:
+		return v
+	}
 }
 
 // DAGOutput represents the DAG structure for JSON output.
@@ -479,10 +508,18 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 	if _, hasPath := resolved["path"]; !hasPath {
 		if loc, ok := resolved["location"].(string); ok {
 			// Strip file:// prefix if present.
+			var path string
 			if strings.HasPrefix(loc, "file://") {
-				resolved["path"] = loc[7:]
+				path = loc[7:]
 			} else if !strings.Contains(loc, "://") {
-				resolved["path"] = loc
+				path = loc
+			}
+			// URL-decode the path (handle %23 -> # etc).
+			if path != "" {
+				if decoded, err := url.PathUnescape(path); err == nil {
+					path = decoded
+				}
+				resolved["path"] = path
 			}
 		}
 	}

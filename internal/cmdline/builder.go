@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/me/gowe/internal/cwlexpr"
@@ -77,10 +78,14 @@ func (b *Builder) Build(tool *cwl.CommandLineTool, inputs map[string]any, runtim
 		}
 	}
 
-	// Sort parts by position, then by name (for stability).
+	// Sort parts by position, then arguments before inputs, then by name (for stability).
 	sort.Slice(parts, func(i, j int) bool {
 		if parts[i].position != parts[j].position {
 			return parts[i].position < parts[j].position
+		}
+		// At same position, arguments come before inputs.
+		if parts[i].isArgument != parts[j].isArgument {
+			return parts[i].isArgument
 		}
 		return parts[i].name < parts[j].name
 	})
@@ -127,9 +132,10 @@ func (b *Builder) Build(tool *cwl.CommandLineTool, inputs map[string]any, runtim
 
 // cmdPart represents a part of the command line with its position for sorting.
 type cmdPart struct {
-	position int
-	name     string   // for stable sorting when positions are equal
-	args     []string // the actual command-line arguments
+	position   int
+	isArgument bool     // arguments come before inputs at same position
+	name       string   // for stable sorting when positions are equal
+	args       []string // the actual command-line arguments
 }
 
 // buildArgument builds a command-line part from a CWL argument.
@@ -147,9 +153,10 @@ func (b *Builder) buildArgument(arg any, index int, inputs map[string]any, runti
 			return nil, err
 		}
 		return &cmdPart{
-			position: 0, // default position for string arguments
-			name:     fmt.Sprintf("arg_%d", index),
-			args:     []string{value},
+			position:   0, // default position for string arguments
+			isArgument: true,
+			name:       fmt.Sprintf("arg_%d", index),
+			args:       []string{value},
 		}, nil
 
 	case cwl.Argument:
@@ -167,9 +174,10 @@ func (b *Builder) buildArgument(arg any, index int, inputs map[string]any, runti
 
 		args := buildPrefixedArgs(a.Prefix, value, a.Separate)
 		return &cmdPart{
-			position: pos,
-			name:     fmt.Sprintf("arg_%d", index),
-			args:     args,
+			position:   pos,
+			isArgument: true,
+			name:       fmt.Sprintf("arg_%d", index),
+			args:       args,
 		}, nil
 	}
 
@@ -371,8 +379,12 @@ func inputValueToString(value any, itemSeparator string) string {
 			return "true"
 		}
 		return "" // false booleans typically omit the argument entirely
-	case int, int64, float64:
-		return fmt.Sprintf("%v", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return formatFloat(v)
 	case map[string]any:
 		// File or Directory object - use path.
 		if path, ok := v["path"].(string); ok {
@@ -475,4 +487,13 @@ func (b *Builder) evaluatePosition(pos any, ctx *cwlexpr.Context) (int, error) {
 	default:
 		return 0, fmt.Errorf("unexpected position type: %T", pos)
 	}
+}
+
+// formatFloat formats a float without scientific notation.
+// Uses decimal notation to avoid e-notation for small/large numbers.
+func formatFloat(f float64) string {
+	// Use -1 precision to get the minimum digits needed.
+	// Use 'f' format to avoid scientific notation.
+	s := strconv.FormatFloat(f, 'f', -1, 64)
+	return s
 }

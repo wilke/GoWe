@@ -5,6 +5,7 @@ package cwlexpr
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -246,6 +247,7 @@ func IsExpression(s string) bool {
 // toString converts any value to a string representation.
 // Maps and arrays are converted to JSON format.
 // nil values become "null" (JSON representation).
+// Floats are formatted without scientific notation.
 func toString(v any) string {
 	if v == nil {
 		return "null"
@@ -258,16 +260,46 @@ func toString(v any) string {
 			return "true"
 		}
 		return "false"
-	case int, int64, float64:
-		return fmt.Sprintf("%v", val)
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		// Format without scientific notation.
+		return strconv.FormatFloat(val, 'f', -1, 64)
 	case map[string]any, []any:
-		// Convert maps and arrays to JSON.
-		jsonBytes, err := json.Marshal(val)
+		// Convert floats to json.Number before marshaling to avoid scientific notation.
+		converted := convertFloatsForJSON(val)
+		jsonBytes, err := json.Marshal(converted)
 		if err != nil {
 			return fmt.Sprintf("%v", v)
 		}
 		return string(jsonBytes)
 	default:
 		return fmt.Sprintf("%v", val)
+	}
+}
+
+// convertFloatsForJSON recursively converts float64 values to json.Number
+// to avoid scientific notation in JSON output.
+func convertFloatsForJSON(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		result := make(map[string]any)
+		for k, v := range val {
+			result[k] = convertFloatsForJSON(v)
+		}
+		return result
+	case []any:
+		result := make([]any, len(val))
+		for i, v := range val {
+			result[i] = convertFloatsForJSON(v)
+		}
+		return result
+	case float64:
+		// Format without scientific notation.
+		return json.Number(strconv.FormatFloat(val, 'f', -1, 64))
+	default:
+		return v
 	}
 }

@@ -488,6 +488,7 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 
 	// Check if output type is Directory.
 	expectDirectory := isDirectoryType(outputType)
+	expectFile := isFileType(outputType)
 
 	var collected []map[string]any
 	for _, pattern := range patterns {
@@ -507,14 +508,22 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 		}
 
 		for _, match := range matches {
-			var obj map[string]any
-			var err error
 			info, statErr := os.Stat(match)
 			if statErr != nil {
 				return nil, statErr
 			}
 
-			if info.IsDir() || expectDirectory {
+			// Type checking: raise error if types don't match.
+			if expectFile && info.IsDir() {
+				return nil, fmt.Errorf("type error: output type is File but glob matched directory %q", match)
+			}
+			if expectDirectory && !info.IsDir() {
+				return nil, fmt.Errorf("type error: output type is Directory but glob matched file %q", match)
+			}
+
+			var obj map[string]any
+			var err error
+			if info.IsDir() {
 				obj, err = createDirectoryObject(match)
 			} else {
 				obj, err = createFileObject(match, binding.LoadContents)
@@ -538,7 +547,14 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 		return evaluator.Evaluate(binding.OutputEval, ctx)
 	}
 
-	// Return single file or array.
+	// Check if output type is an array type.
+	isArrayType := isArrayOutputType(outputType)
+
+	// Return single file or array based on type.
+	if isArrayType {
+		// Always return array for array types.
+		return collected, nil
+	}
 	if len(collected) == 1 {
 		return collected[0], nil
 	}
@@ -788,10 +804,46 @@ func processDirectoryOutput(obj map[string]any, workDir string) map[string]any {
 func isDirectoryType(outputType any) bool {
 	switch t := outputType.(type) {
 	case string:
-		return t == "Directory" || t == "Directory?"
+		return t == "Directory" || t == "Directory?" || t == "Directory[]"
 	case map[string]any:
 		if typeName, ok := t["type"].(string); ok {
-			return typeName == "Directory"
+			return typeName == "Directory" || typeName == "array"
+		}
+		if items, ok := t["items"].(string); ok {
+			return items == "Directory"
+		}
+	}
+	return false
+}
+
+// isFileType checks if the output type is File.
+func isFileType(outputType any) bool {
+	switch t := outputType.(type) {
+	case string:
+		return t == "File" || t == "File?" || t == "File[]"
+	case map[string]any:
+		if typeName, ok := t["type"].(string); ok {
+			if typeName == "File" {
+				return true
+			}
+			if typeName == "array" {
+				if items, ok := t["items"].(string); ok {
+					return items == "File"
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isArrayOutputType checks if the output type is an array type.
+func isArrayOutputType(outputType any) bool {
+	switch t := outputType.(type) {
+	case string:
+		return strings.HasSuffix(t, "[]")
+	case map[string]any:
+		if typeName, ok := t["type"].(string); ok {
+			return typeName == "array"
 		}
 	}
 	return false
