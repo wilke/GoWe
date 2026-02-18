@@ -1,5 +1,54 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-17 Late Evening (CWL Conformance Continued)
+
+### Status: IMPROVED
+
+Improved CWL conformance test pass rate from 66/84 to 72/84 (86%).
+
+### Changes Made This Session
+
+41. **Record field inputBindings** - Added support for record types with field-level inputBindings:
+    - Added RecordField type with Name, Type, InputBinding, Doc, Label
+    - Added RecordFields slice to ToolInputParam
+    - Added parseRecordFields and parseRecordField functions
+    - Added buildRecordInputBinding to expand record fields into command line arguments
+    - Fields are sorted by their inputBinding position within the record
+
+42. **Union type parsing fix** - Fixed stringField to return empty for complex types:
+    - `stringField` was using `fmt.Sprintf("%v", v)` for non-strings, converting `["null", "boolean"]` to `[null boolean]`
+    - Now returns empty string for complex types on "type" key, triggering serializeCWLType
+    - Union types like `["null", "boolean"]` now correctly serialize to `boolean?`
+
+43. **External tool file loading** - Added support for workflows referencing external .cwl files:
+    - Parser stores baseDir for resolving relative paths
+    - parseBareWorkflow loads external tool files referenced in step.Run
+    - stripHash function converts external file references to tool IDs
+    - Validator validates external tool references using derived tool IDs
+
+### Current Status: 72/84 tests passing (86%)
+
+### Remaining Failures (12 tests)
+- **Test 10** (revsort) - Platform difference: macOS `rev`/`sort` produce different output than Linux
+- **Test 25** (imported-hint) - $import in hints not fully supported
+- **Test 27** (revsort-packed) - Same platform difference as test 10
+- **Test 37** (fail-unconnected) - Should fail: step passes undeclared input to tool
+- **Tests 40, 43** - External tool loading edge cases
+- **Tests 53, 54** - SecondaryFiles handling
+- **Tests 63, 64** - loadContents 64KB limit enforcement
+- **Test 66** - Should fail: .length on non-array
+- **Test 69** - Colon in paths breaks Docker mounts
+
+### Files Modified This Session
+- `pkg/cwl/binding.go` - Added RecordField type
+- `pkg/cwl/tool.go` - Added RecordFields to ToolInputParam
+- `internal/parser/parser.go` - Added baseDir, parseRecordFields, external tool loading
+- `internal/parser/validator.go` - Handle external tool file references
+- `internal/cmdline/builder.go` - Added buildRecordInputBinding
+- `internal/cwlrunner/runner.go` - stripHash handles external file references
+
+---
+
 ## Session: 2026-02-17 Evening (CWL Conformance Continued)
 
 ### Status: IMPROVED
@@ -21,17 +70,7 @@ Improved CWL conformance test pass rate from 62/84 to 66/84 (79%).
     - Normalize source references like `#main/rev/output` -> `rev/output`
     - Preserve local references like `echo_1/fileout`
 
-### Current Status: 66/84 tests passing (79%)
-
-### Remaining Failures (18 tests)
-- **External tool file references** (tests 8, 10, 27, 36, 40-43, 54) - workflows referencing external .cwl files
-- **Hints with $import** (test 25) - hints importing external files
-- **Any type validation** (tests 38-39) - should-fail tests for Any type
-- **SecondaryFiles handling** (tests 53, 54)
-- **loadContents limit** (tests 63, 64) - 64KB limit enforcement
-- **length on non-array** (test 66) - should fail when accessing .length on non-array
-- **Colon in paths** (test 69) - path handling with colons
-- **Record field inputBindings** (test 74) - record fields with individual inputBindings
+### Previous Status: 66/84 tests passing (79%)
 
 ---
 

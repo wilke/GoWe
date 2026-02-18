@@ -109,3 +109,22 @@ type EnvironmentDef struct {
 	// EnvValue is the value (can be an expression).
 	EnvValue string `json:"envValue"`
 }
+
+// RecordField represents a field in a CWL record type.
+// See https://www.commonwl.org/v1.2/CommandLineTool.html#CommandInputRecordField
+type RecordField struct {
+	// Name is the field name.
+	Name string `json:"name"`
+
+	// Type is the field type (e.g., "string", "int", "File").
+	Type string `json:"type"`
+
+	// InputBinding controls how this field appears on the command line.
+	InputBinding *InputBinding `json:"inputBinding,omitempty"`
+
+	// Doc is documentation for this field.
+	Doc string `json:"doc,omitempty"`
+
+	// Label is a human-readable label.
+	Label string `json:"label,omitempty"`
+}

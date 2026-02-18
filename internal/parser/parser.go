@@ -16,7 +16,8 @@ import (
 
 // Parser converts raw CWL YAML into typed CWL structs and domain models.
 type Parser struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	baseDir string // Base directory for resolving relative file references
 }
 
 // New creates a Parser with the given logger.
@@ -25,7 +26,7 @@ func New(logger *slog.Logger) *Parser {
 }
 
 // ParseGraphWithBase parses a CWL document and resolves $import directives.
-// baseDir is used to resolve relative import paths.
+// baseDir is used to resolve relative import paths and external tool references.
 func (p *Parser) ParseGraphWithBase(data []byte, baseDir string) (*cwl.GraphDocument, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -38,6 +39,9 @@ func (p *Parser) ParseGraphWithBase(data []byte, baseDir string) (*cwl.GraphDocu
 		return nil, fmt.Errorf("resolve imports: %w", err)
 	}
 	raw = resolved.(map[string]any)
+
+	// Store base directory for resolving external tool references.
+	p.baseDir = baseDir
 
 	return p.parseGraphFromRaw(raw)
 }
@@ -122,7 +126,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 				graph.Tools[toolID] = tool
 			}
 
-		case "CommandLineTool", "ExpressionTool":
+		case "CommandLineTool":
 			tool, err := p.parseTool(m)
 			if err != nil {
 				return nil, fmt.Errorf("$graph[%d] (%s): %w", i, class, err)
@@ -136,6 +140,24 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 				toolID = toolID[1:]
 			}
 			graph.Tools[toolID] = tool
+
+		case "ExpressionTool":
+			exprTool, err := p.parseExpressionTool(m)
+			if err != nil {
+				return nil, fmt.Errorf("$graph[%d] (%s): %w", i, class, err)
+			}
+			if exprTool.ID == "" {
+				return nil, fmt.Errorf("$graph[%d] (%s): missing id", i, class)
+			}
+			// Strip leading "#" from tool ID for consistent lookup.
+			toolID := exprTool.ID
+			if strings.HasPrefix(toolID, "#") {
+				toolID = toolID[1:]
+			}
+			if graph.ExpressionTools == nil {
+				graph.ExpressionTools = make(map[string]*cwl.ExpressionTool)
+			}
+			graph.ExpressionTools[toolID] = exprTool
 
 		default:
 			return nil, fmt.Errorf("$graph[%d]: unknown class %q", i, class)
@@ -238,11 +260,85 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 		tools = make(map[string]*cwl.CommandLineTool)
 	}
 
+	// Initialize expression tools map.
+	var exprTools map[string]*cwl.ExpressionTool
+
+	// Load external tool files referenced by steps.
+	for stepID, step := range wfResult.Workflow.Steps {
+		if step.Run == "" || strings.HasPrefix(step.Run, "#") {
+			continue // Internal reference or empty
+		}
+		// Check if this is an external file reference (ends with .cwl).
+		if strings.HasSuffix(step.Run, ".cwl") {
+			toolPath := step.Run
+			if !filepath.IsAbs(toolPath) && p.baseDir != "" {
+				toolPath = filepath.Join(p.baseDir, toolPath)
+			}
+
+			// Check if already loaded.
+			toolID := strings.TrimSuffix(filepath.Base(step.Run), ".cwl")
+			if _, exists := tools[toolID]; exists {
+				continue
+			}
+			if exprTools != nil {
+				if _, exists := exprTools[toolID]; exists {
+					continue
+				}
+			}
+
+			// Load and parse the external tool file.
+			toolData, err := os.ReadFile(toolPath)
+			if err != nil {
+				return nil, fmt.Errorf("load external tool %s for step %s: %w", step.Run, stepID, err)
+			}
+
+			var toolRaw map[string]any
+			if err := yaml.Unmarshal(toolData, &toolRaw); err != nil {
+				return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
+			}
+
+			// Resolve $imports in the external tool.
+			toolBaseDir := filepath.Dir(toolPath)
+			resolved, err := resolveImports(toolRaw, toolBaseDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve imports in %s: %w", step.Run, err)
+			}
+			toolRaw = resolved.(map[string]any)
+
+			class := stringField(toolRaw, "class")
+			if class == "ExpressionTool" {
+				exprTool, err := p.parseExpressionTool(toolRaw)
+				if err != nil {
+					return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
+				}
+				if exprTool.ID == "" {
+					exprTool.ID = toolID
+				}
+				if exprTools == nil {
+					exprTools = make(map[string]*cwl.ExpressionTool)
+				}
+				exprTools[exprTool.ID] = exprTool
+				p.logger.Debug("loaded external expression tool", "path", step.Run, "id", exprTool.ID)
+			} else {
+				tool, err := p.parseTool(toolRaw)
+				if err != nil {
+					return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
+				}
+				if tool.ID == "" {
+					tool.ID = toolID
+				}
+				tools[tool.ID] = tool
+				p.logger.Debug("loaded external tool", "path", step.Run, "id", tool.ID)
+			}
+		}
+	}
+
 	return &cwl.GraphDocument{
-		CWLVersion:    version,
-		OriginalClass: "Workflow",
-		Workflow:      wfResult.Workflow,
-		Tools:         tools,
+		CWLVersion:      version,
+		OriginalClass:   "Workflow",
+		Workflow:        wfResult.Workflow,
+		Tools:           tools,
+		ExpressionTools: exprTools,
 	}, nil
 }
 
@@ -634,6 +730,51 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	return tool, nil
 }
 
+// parseExpressionTool parses a CWL ExpressionTool from a raw map.
+func (p *Parser) parseExpressionTool(raw map[string]any) (*cwl.ExpressionTool, error) {
+	tool := &cwl.ExpressionTool{
+		ID:           stringField(raw, "id"),
+		Class:        stringField(raw, "class"),
+		CWLVersion:   stringField(raw, "cwlVersion"),
+		Doc:          stringField(raw, "doc"),
+		Label:        stringField(raw, "label"),
+		Expression:   stringField(raw, "expression"),
+		Hints:        normalizeHintsToMap(raw["hints"]),
+		Requirements: normalizeHintsToMap(raw["requirements"]),
+		Inputs:       make(map[string]cwl.ToolInputParam),
+		Outputs:      make(map[string]cwl.ExpressionToolOutputParam),
+	}
+
+	// Parse tool inputs: supports both array-style and map-style.
+	inputs := normalizeToMap(raw["inputs"])
+	for id, v := range inputs {
+		switch val := v.(type) {
+		case string:
+			tool.Inputs[id] = cwl.ToolInputParam{Type: val}
+		case map[string]any:
+			tool.Inputs[id] = parseToolInput(val)
+		}
+	}
+
+	// Parse tool outputs: supports both array-style and map-style.
+	outputs := normalizeToMap(raw["outputs"])
+	for id, v := range outputs {
+		switch val := v.(type) {
+		case string:
+			tool.Outputs[id] = cwl.ExpressionToolOutputParam{Type: val}
+		case map[string]any:
+			tool.Outputs[id] = cwl.ExpressionToolOutputParam{
+				Type:   stringField(val, "type"),
+				Doc:    stringField(val, "doc"),
+				Label:  stringField(val, "label"),
+				Format: val["format"],
+			}
+		}
+	}
+
+	return tool, nil
+}
+
 // parseToolInput parses a single tool input parameter from a raw map.
 func parseToolInput(val map[string]any) cwl.ToolInputParam {
 	typeStr := stringField(val, "type")
@@ -665,6 +806,11 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 			if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
 				inp.ItemInputBinding = parseInputBinding(itemIB)
 			}
+		}
+		// Parse record field definitions.
+		// Example: type: { type: record, fields: [{name: a, type: int, inputBinding: {prefix: -a}}] }
+		if typeMap["type"] == "record" {
+			inp.RecordFields = parseRecordFields(typeMap["fields"])
 		}
 	}
 
@@ -731,6 +877,54 @@ func parseInputBinding(ib map[string]any) *cwl.InputBinding {
 	}
 
 	return binding
+}
+
+// parseRecordFields parses record field definitions from a CWL type.
+// Fields can be an array or map of field definitions.
+func parseRecordFields(fields any) []cwl.RecordField {
+	if fields == nil {
+		return nil
+	}
+
+	var result []cwl.RecordField
+
+	switch f := fields.(type) {
+	case []any:
+		// Array of field definitions.
+		for _, item := range f {
+			if fieldMap, ok := item.(map[string]any); ok {
+				result = append(result, parseRecordField(fieldMap))
+			}
+		}
+	case map[string]any:
+		// Map of field name -> field definition.
+		for name, val := range f {
+			if fieldMap, ok := val.(map[string]any); ok {
+				field := parseRecordField(fieldMap)
+				field.Name = name
+				result = append(result, field)
+			}
+		}
+	}
+
+	return result
+}
+
+// parseRecordField parses a single record field definition.
+func parseRecordField(m map[string]any) cwl.RecordField {
+	field := cwl.RecordField{
+		Name:  stringField(m, "name"),
+		Type:  serializeCWLType(m["type"]),
+		Doc:   stringField(m, "doc"),
+		Label: stringField(m, "label"),
+	}
+
+	// Parse inputBinding for this field.
+	if ib, ok := m["inputBinding"].(map[string]any); ok {
+		field.InputBinding = parseInputBinding(ib)
+	}
+
+	return field
 }
 
 // parseOutputBinding parses a CWL outputBinding from a raw map.
@@ -1033,6 +1227,8 @@ func serializeCWLType(v any) string {
 }
 
 // stringField safely extracts a string from a map.
+// For the "type" key specifically, if the value is not a string (e.g., array for union types),
+// this returns empty string so that serializeCWLType can handle complex types.
 func stringField(m map[string]any, key string) string {
 	v, ok := m[key]
 	if !ok {
@@ -1041,7 +1237,13 @@ func stringField(m map[string]any, key string) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	// Handle YAML type coercion (e.g., type: int parsed as int).
+	// For non-string values (arrays, maps), return empty to signal complex type.
+	// The caller (parseToolInput) will use serializeCWLType for complex types.
+	// Exception: for certain fields like position that might be numeric, use Sprintf.
+	if key == "type" {
+		return ""
+	}
+	// Handle YAML type coercion (e.g., position: 1 parsed as int).
 	return fmt.Sprintf("%v", v)
 }
 

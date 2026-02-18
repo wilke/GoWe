@@ -123,7 +123,18 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 
 	// If the entire string is a single expression, return the evaluated value directly
 	if len(matches) == 1 && matches[0].start == 0 && matches[0].end == len(expr) {
-		val, err := vm.RunString(matches[0].expr)
+		exprCode := matches[0].expr
+		// If the expression starts with {, it's an object literal and needs parentheses.
+		if strings.HasPrefix(strings.TrimSpace(exprCode), "{") {
+			exprCode = "(" + exprCode + ")"
+		}
+
+		// CWL validation: Check .length access on non-array/non-string values.
+		if err := validateLengthAccess(vm, exprCode); err != nil {
+			return nil, err
+		}
+
+		val, err := vm.RunString(exprCode)
 		if err != nil {
 			return nil, fmt.Errorf("expression error in $(%s): %w", matches[0].expr, err)
 		}
@@ -136,6 +147,11 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 	for _, match := range matches {
 		// Append text before this expression
 		result.WriteString(expr[lastEnd:match.start])
+
+		// CWL validation: Check .length access on non-array/non-string values.
+		if err := validateLengthAccess(vm, match.expr); err != nil {
+			return nil, err
+		}
 
 		// Evaluate the expression
 		val, err := vm.RunString(match.expr)
@@ -235,6 +251,49 @@ func (e *Evaluator) EvaluateInt(expr string, ctx *Context) (int64, error) {
 		return int64(v), nil
 	default:
 		return 0, fmt.Errorf("expression did not return integer: %T", val)
+	}
+}
+
+// validateLengthAccess validates that .length is only accessed on arrays, strings,
+// or objects with a 'length' property. CWL spec requires accessing .length on
+// other types to be an error, unlike JavaScript which silently returns undefined.
+func validateLengthAccess(vm *goja.Runtime, exprCode string) error {
+	// Check if expression ends with .length
+	if !strings.HasSuffix(exprCode, ".length") {
+		return nil
+	}
+
+	// Extract the base expression (everything before .length)
+	baseExpr := strings.TrimSuffix(exprCode, ".length")
+	if baseExpr == "" {
+		return nil
+	}
+
+	// Evaluate the base expression to check its type
+	baseVal, err := vm.RunString(baseExpr)
+	if err != nil {
+		// If base expression fails, let the full expression fail naturally
+		return nil
+	}
+
+	exported := baseVal.Export()
+	if exported == nil {
+		return fmt.Errorf("cannot access .length on null value in expression: %s", exprCode)
+	}
+
+	// Check if the value supports .length (array, string, or object with length field)
+	switch v := exported.(type) {
+	case []any, string:
+		// Valid - arrays and strings support .length
+		return nil
+	case map[string]any:
+		// Valid if the map has a 'length' field (e.g., a CWL record with a length property)
+		if _, hasLength := v["length"]; hasLength {
+			return nil
+		}
+		return fmt.Errorf("cannot access .length on record without 'length' field in expression: %s", exprCode)
+	default:
+		return fmt.Errorf("cannot access .length on non-array value of type %T in expression: %s", exported, exprCode)
 	}
 }
 

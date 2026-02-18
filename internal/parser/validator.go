@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -190,7 +192,18 @@ func (v *Validator) validateToolRefs(graph *cwl.GraphDocument) []model.FieldErro
 		if len(ref) > 0 && ref[0] == '#' {
 			ref = ref[1:]
 		}
-		if _, ok := graph.Tools[ref]; !ok {
+
+		// For external file references, derive the tool ID from the filename.
+		if strings.HasSuffix(ref, ".cwl") {
+			// External file reference - tool ID is filename without extension.
+			base := filepath.Base(ref)
+			ref = strings.TrimSuffix(base, ".cwl")
+		}
+
+		// Check both CommandLineTools and ExpressionTools.
+		_, inTools := graph.Tools[ref]
+		_, inExprTools := graph.ExpressionTools[ref]
+		if !inTools && !inExprTools {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("steps.%s.run", stepID),
 				Message: fmt.Sprintf("run reference %q not found in $graph", step.Run),

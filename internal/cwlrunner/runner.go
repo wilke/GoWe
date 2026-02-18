@@ -267,6 +267,11 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	// Merge tool input defaults with provided inputs.
 	mergedInputs := mergeToolDefaults(tool, inputs, r.cwlDir)
 
+	// Validate inputs against tool schema.
+	if err := validateToolInputs(tool, mergedInputs); err != nil {
+		return nil, err
+	}
+
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph)
 
@@ -311,6 +316,32 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	return outputs, nil
 }
 
+// executeExpressionTool executes a CWL ExpressionTool by evaluating its JavaScript expression.
+func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[string]any, graph *cwl.GraphDocument) (map[string]any, error) {
+	r.logger.Info("executing expression tool", "id", tool.ID)
+
+	// Get expression library from requirements.
+	expressionLib := extractExpressionLib(graph)
+
+	// Create expression context with inputs.
+	ctx := cwlexpr.NewContext(inputs)
+	evaluator := cwlexpr.NewEvaluator(expressionLib)
+
+	// Evaluate the expression.
+	result, err := evaluator.Evaluate(tool.Expression, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate expression: %w", err)
+	}
+
+	// The expression should return an object with output field names.
+	outputs, ok := result.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("expression did not return an object, got %T", result)
+	}
+
+	return outputs, nil
+}
+
 // executeWorkflow executes a workflow.
 func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, inputs map[string]any, w io.Writer) error {
 	r.logger.Info("executing workflow", "id", graph.Workflow.ID)
@@ -330,13 +361,41 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 	// Execute steps in topological order.
 	for _, stepID := range dag.Order {
 		step := graph.Workflow.Steps[stepID]
-		tool := graph.Tools[stripHash(step.Run)]
+
+		// Resolve step inputs.
+		stepInputs := resolveStepInputs(step, mergedInputs, stepOutputs, r.cwlDir)
+
+		// Check if this is an ExpressionTool.
+		toolRef := stripHash(step.Run)
+		if exprTool, ok := graph.ExpressionTools[toolRef]; ok {
+			// Handle conditional execution.
+			if step.When != "" {
+				evalCtx := cwlexpr.NewContext(stepInputs)
+				evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph))
+				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+				if err != nil {
+					return fmt.Errorf("step %s when expression: %w", stepID, err)
+				}
+				if !shouldRun {
+					r.logger.Info("skipping step (when condition false)", "step", stepID)
+					stepOutputs[stepID] = make(map[string]any)
+					continue
+				}
+			}
+
+			outputs, err := r.executeExpressionTool(exprTool, stepInputs, graph)
+			if err != nil {
+				return fmt.Errorf("step %s: %w", stepID, err)
+			}
+			stepOutputs[stepID] = outputs
+			continue
+		}
+
+		// Otherwise it's a CommandLineTool.
+		tool := graph.Tools[toolRef]
 		if tool == nil {
 			return fmt.Errorf("step %s: tool %s not found", stepID, step.Run)
 		}
-
-		// Resolve step inputs.
-		stepInputs := resolveStepInputs(step, mergedInputs, stepOutputs)
 
 		// Handle scatter if present.
 		if len(step.Scatter) > 0 {
@@ -661,12 +720,14 @@ func isURI(s string) bool {
 }
 
 // resolveStepInputs resolves inputs for a workflow step.
-func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs map[string]map[string]any) map[string]any {
+// cwlDir is used to resolve relative paths in step input defaults.
+func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs map[string]map[string]any, cwlDir string) map[string]any {
 	resolved := make(map[string]any)
 	for inputID, stepInput := range step.In {
 		value := resolveSource(stepInput.Source, workflowInputs, stepOutputs)
 		if value == nil && stepInput.Default != nil {
-			value = stepInput.Default
+			// Resolve File/Directory objects in defaults relative to CWL directory.
+			value = resolveDefaultValue(stepInput.Default, cwlDir)
 		}
 		resolved[inputID] = value
 	}
@@ -830,10 +891,16 @@ func buildRuntimeContext(tool *cwl.CommandLineTool, outDir string) *cwlexpr.Runt
 	return runtime
 }
 
-// stripHash removes the leading "#" from a tool reference.
+// stripHash removes the leading "#" from a tool reference and converts
+// external file references to tool IDs.
 func stripHash(ref string) string {
 	if len(ref) > 0 && ref[0] == '#' {
 		return ref[1:]
+	}
+	// For external file references (*.cwl), extract the tool ID from filename.
+	if strings.HasSuffix(ref, ".cwl") {
+		base := filepath.Base(ref)
+		return strings.TrimSuffix(base, ".cwl")
 	}
 	return ref
 }
@@ -906,4 +973,46 @@ func mergeWorkflowInputDefaults(wf *cwl.Workflow, inputs map[string]any, cwlDir 
 	}
 
 	return merged
+}
+
+// validateToolInputs validates that inputs match the tool's input schema.
+// Returns an error if required inputs are missing or null is provided for non-optional types.
+func validateToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		value, exists := inputs[inputID]
+
+		// Check if input is optional (type ends with ? or is a union with null).
+		isOptional := isOptionalType(inputDef.Type)
+
+		// Check for missing required inputs.
+		if !exists {
+			if inputDef.Default == nil && !isOptional {
+				return fmt.Errorf("missing required input: %s", inputID)
+			}
+			continue
+		}
+
+		// Check for null values on non-optional inputs.
+		if value == nil && !isOptional {
+			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
+		}
+	}
+	return nil
+}
+
+// isOptionalType checks if a CWL type is optional (can be null).
+// Types ending with ? or types that are unions including null are optional.
+func isOptionalType(t string) bool {
+	if t == "" {
+		return false
+	}
+	// Type ending with ? is optional.
+	if strings.HasSuffix(t, "?") {
+		return true
+	}
+	// "null" type itself is optional.
+	if t == "null" {
+		return true
+	}
+	return false
 }

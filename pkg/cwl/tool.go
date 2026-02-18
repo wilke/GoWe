@@ -52,6 +52,10 @@ type ToolInputParam struct {
 	// This is parsed from the inputBinding inside the array type definition.
 	ItemInputBinding *InputBinding
 
+	// RecordFields contains field definitions for record types.
+	// Each field may have its own inputBinding for command line generation.
+	RecordFields []RecordField
+
 	// SecondaryFiles specifies additional files associated with this input.
 	SecondaryFiles []SecondaryFileSchema
 

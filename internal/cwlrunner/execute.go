@@ -46,6 +46,13 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 	}
 	cmd.Dir = workDir
 
+	// Set environment variables from EnvVarRequirement.
+	cmd.Env = os.Environ() // Start with current environment
+	envVars := extractEnvVars(tool, inputs)
+	for name, value := range envVars {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
+	}
+
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
 		stdinPath := cmdResult.Stdin
@@ -1021,4 +1028,68 @@ func (r *Runner) resolveNamespacePrefix(s string) string {
 	}
 
 	return s
+}
+
+// extractEnvVars extracts environment variables from EnvVarRequirement in hints/requirements.
+func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any) map[string]string {
+	envVars := make(map[string]string)
+
+	// Check requirements first (takes precedence)
+	if envReq := getEnvVarRequirement(tool.Requirements); envReq != nil {
+		processEnvDef(envReq, envVars, inputs)
+	}
+
+	// Check hints
+	if envReq := getEnvVarRequirement(tool.Hints); envReq != nil {
+		// Only add hints if not already in requirements
+		for k, v := range processEnvDef(envReq, make(map[string]string), inputs) {
+			if _, exists := envVars[k]; !exists {
+				envVars[k] = v
+			}
+		}
+	}
+
+	return envVars
+}
+
+// getEnvVarRequirement extracts EnvVarRequirement from hints or requirements map.
+func getEnvVarRequirement(reqMap map[string]any) map[string]any {
+	if reqMap == nil {
+		return nil
+	}
+	if req, ok := reqMap["EnvVarRequirement"].(map[string]any); ok {
+		return req
+	}
+	return nil
+}
+
+// processEnvDef processes envDef from EnvVarRequirement and adds to envVars map.
+func processEnvDef(envReq map[string]any, envVars map[string]string, inputs map[string]any) map[string]string {
+	envDef, ok := envReq["envDef"]
+	if !ok {
+		return envVars
+	}
+
+	// envDef can be an array or map
+	switch defs := envDef.(type) {
+	case []any:
+		for _, def := range defs {
+			if m, ok := def.(map[string]any); ok {
+				name, _ := m["envName"].(string)
+				value, _ := m["envValue"].(string)
+				if name != "" {
+					// TODO: Evaluate expressions in envValue if needed
+					envVars[name] = value
+				}
+			}
+		}
+	case map[string]any:
+		for name, val := range defs {
+			if value, ok := val.(string); ok {
+				envVars[name] = value
+			}
+		}
+	}
+
+	return envVars
 }

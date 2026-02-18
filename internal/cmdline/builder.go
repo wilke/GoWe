@@ -148,15 +148,17 @@ func (b *Builder) buildArgument(arg any, index int, inputs map[string]any, runti
 	switch a := arg.(type) {
 	case string:
 		// Simple string argument - may contain expressions.
-		value, err := b.evaluator.EvaluateString(a, ctx)
+		value, err := b.evaluator.Evaluate(a, ctx)
 		if err != nil {
 			return nil, err
 		}
+		// Use inputValueToString to properly handle File objects (extract path).
+		strValue := inputValueToString(value, "")
 		return &cmdPart{
 			position:   0, // default position for string arguments
 			isArgument: true,
 			name:       fmt.Sprintf("arg_%d", index),
-			args:       []string{value},
+			args:       []string{strValue},
 		}, nil
 
 	case cwl.Argument:
@@ -250,6 +252,13 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 		return b.buildArrayInputBinding(name, input, arrVal, pos, ctx)
 	}
 
+	// Handle record values with field inputBindings.
+	if recordVal, ok := value.(map[string]any); ok {
+		if len(input.RecordFields) > 0 {
+			return b.buildRecordInputBinding(name, input, recordVal, pos, ctx)
+		}
+	}
+
 	// Determine the value to use for non-array values.
 	strValue := inputValueToString(value, binding.ItemSeparator)
 
@@ -315,6 +324,90 @@ func (b *Builder) buildArrayInputBinding(name string, input *cwl.ToolInputParam,
 			// No item-level prefix.
 			args = append(args, s)
 		}
+	}
+
+	if len(args) == 0 {
+		return nil, nil
+	}
+
+	return &cmdPart{
+		position: pos,
+		name:     name,
+		args:     args,
+	}, nil
+}
+
+// buildRecordInputBinding handles record input bindings per CWL spec.
+// Each record field with an inputBinding generates its own command line arguments,
+// sorted by the field's inputBinding position.
+func (b *Builder) buildRecordInputBinding(name string, input *cwl.ToolInputParam, recordVal map[string]any, pos int, ctx *cwlexpr.Context) (*cmdPart, error) {
+	binding := input.InputBinding
+
+	// Collect field parts for sorting.
+	type fieldPart struct {
+		position int
+		name     string
+		args     []string
+	}
+	var fieldParts []fieldPart
+
+	for _, field := range input.RecordFields {
+		if field.InputBinding == nil {
+			continue
+		}
+
+		fieldValue, exists := recordVal[field.Name]
+		if !exists || fieldValue == nil {
+			continue
+		}
+
+		// Create context with field value as self.
+		fieldCtx := ctx.WithSelf(fieldValue)
+
+		fieldPos, err := b.evaluatePosition(field.InputBinding.Position, fieldCtx)
+		if err != nil {
+			return nil, fmt.Errorf("field %s position: %w", field.Name, err)
+		}
+
+		// Convert field value to string.
+		var strValue string
+		if field.InputBinding.ValueFrom != "" {
+			evaluated, err := b.evaluator.Evaluate(field.InputBinding.ValueFrom, fieldCtx)
+			if err != nil {
+				return nil, err
+			}
+			strValue = valueToString(evaluated)
+		} else {
+			strValue = inputValueToString(fieldValue, field.InputBinding.ItemSeparator)
+		}
+
+		if strValue == "" {
+			continue
+		}
+
+		args := buildPrefixedArgs(field.InputBinding.Prefix, strValue, field.InputBinding.Separate)
+		fieldParts = append(fieldParts, fieldPart{
+			position: fieldPos,
+			name:     field.Name,
+			args:     args,
+		})
+	}
+
+	// Sort field parts by position, then by name.
+	sort.Slice(fieldParts, func(i, j int) bool {
+		if fieldParts[i].position != fieldParts[j].position {
+			return fieldParts[i].position < fieldParts[j].position
+		}
+		return fieldParts[i].name < fieldParts[j].name
+	})
+
+	// Build the final args: record prefix followed by sorted field args.
+	var args []string
+	if binding.Prefix != "" {
+		args = append(args, binding.Prefix)
+	}
+	for _, fp := range fieldParts {
+		args = append(args, fp.args...)
 	}
 
 	if len(args) == 0 {
