@@ -267,6 +267,9 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, inputs map[string]any, w io.Writer) error {
 	r.logger.Info("executing workflow", "id", graph.Workflow.ID)
 
+	// Merge workflow input defaults with provided inputs.
+	mergedInputs := mergeWorkflowInputDefaults(graph.Workflow, inputs, r.cwlDir)
+
 	// Build execution order using DAG.
 	dag, err := parser.BuildDAG(graph.Workflow)
 	if err != nil {
@@ -285,7 +288,7 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 		}
 
 		// Resolve step inputs.
-		stepInputs := resolveStepInputs(step, inputs, stepOutputs)
+		stepInputs := resolveStepInputs(step, mergedInputs, stepOutputs)
 
 		// Handle scatter if present.
 		if len(step.Scatter) > 0 {
@@ -319,7 +322,7 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 	}
 
 	// Collect workflow outputs (pass inputs for passthrough workflows).
-	workflowOutputs := collectWorkflowOutputs(graph.Workflow, inputs, stepOutputs)
+	workflowOutputs := collectWorkflowOutputs(graph.Workflow, mergedInputs, stepOutputs)
 	return r.writeOutputs(workflowOutputs, w)
 }
 
@@ -800,4 +803,25 @@ func resolveDefaultValue(v any, cwlDir string) any {
 	default:
 		return v
 	}
+}
+
+// mergeWorkflowInputDefaults merges workflow input defaults with provided inputs.
+func mergeWorkflowInputDefaults(wf *cwl.Workflow, inputs map[string]any, cwlDir string) map[string]any {
+	merged := make(map[string]any)
+
+	// Copy provided inputs.
+	for k, v := range inputs {
+		merged[k] = v
+	}
+
+	// Add defaults for missing inputs.
+	for inputID, inputDef := range wf.Inputs {
+		if _, exists := merged[inputID]; !exists && inputDef.Default != nil {
+			// Resolve default value (especially File objects).
+			defaultVal := resolveDefaultValue(inputDef.Default, cwlDir)
+			merged[inputID] = defaultVal
+		}
+	}
+
+	return merged
 }

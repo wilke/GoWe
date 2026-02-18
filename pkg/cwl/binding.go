@@ -6,7 +6,8 @@ type InputBinding struct {
 	// Position determines the relative ordering of arguments on the command line.
 	// Arguments with lower position values appear before those with higher values.
 	// Position 0 follows baseCommand and arguments with no position.
-	Position *int `json:"position,omitempty"`
+	// Can be an integer or a CWL expression.
+	Position any `json:"position,omitempty"`
 
 	// Prefix is a string to prepend to the input value (e.g., "--input" or "-i").
 	Prefix string `json:"prefix,omitempty"`
@@ -56,7 +57,8 @@ type OutputBinding struct {
 // See https://www.commonwl.org/v1.2/CommandLineTool.html#CommandLineBinding
 type Argument struct {
 	// Position determines the ordering of this argument relative to other arguments and inputs.
-	Position *int `json:"position,omitempty"`
+	// Can be an integer or a CWL expression.
+	Position any `json:"position,omitempty"`
 
 	// Prefix is prepended to ValueFrom result if present.
 	Prefix string `json:"prefix,omitempty"`

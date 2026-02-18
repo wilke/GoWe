@@ -76,13 +76,24 @@ func TestValidate_MissingCWLVersion(t *testing.T) {
 func TestValidate_UnsupportedVersion(t *testing.T) {
 	v := testValidator()
 	g := validGraph()
-	g.CWLVersion = "v1.0"
+	g.CWLVersion = "v0.9" // truly unsupported version
 	apiErr := v.Validate(g)
 	if apiErr == nil {
 		t.Fatal("expected error")
 	}
 	if !hasFieldErrorMsg(apiErr.Details, "unsupported") {
 		t.Errorf("expected unsupported version error, got %v", apiErr.Details)
+	}
+}
+
+func TestValidate_SupportedVersions(t *testing.T) {
+	v := testValidator()
+	for _, ver := range []string{"v1.0", "v1.1", "v1.2", "draft-3"} {
+		g := validGraph()
+		g.CWLVersion = ver
+		if apiErr := v.Validate(g); apiErr != nil {
+			t.Errorf("version %s should be supported, got %v", ver, apiErr)
+		}
 	}
 }
 
@@ -134,16 +145,20 @@ func TestValidate_NoSteps_PassthroughWorkflow(t *testing.T) {
 	}
 }
 
-func TestValidate_NoOutputs(t *testing.T) {
+func TestValidate_NoOutputs_Allowed(t *testing.T) {
+	// CWL v1.2 allows workflows with no outputs (side-effect only).
 	v := testValidator()
 	g := validGraph()
 	g.Workflow.Outputs = map[string]cwl.OutputParam{}
-	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
+	// Also need to remove step output references from the workflow.
+	g.Workflow.Steps["step1"] = cwl.Step{
+		Run: "#tool1",
+		In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+		Out: []string{},
 	}
-	if !hasFieldError(apiErr.Details, "outputs") {
-		t.Errorf("expected outputs error, got %v", apiErr.Details)
+	apiErr := v.Validate(g)
+	if apiErr != nil {
+		t.Errorf("workflows with no outputs should be valid, got %v", apiErr)
 	}
 }
 

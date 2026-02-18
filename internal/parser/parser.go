@@ -596,10 +596,11 @@ func parseInputBinding(ib map[string]any) *cwl.InputBinding {
 	if pos, ok := ib["position"]; ok {
 		switch p := pos.(type) {
 		case int:
-			binding.Position = &p
+			binding.Position = p
 		case float64:
-			pi := int(p)
-			binding.Position = &pi
+			binding.Position = int(p)
+		case string:
+			binding.Position = p
 		}
 	}
 
@@ -643,14 +644,15 @@ func parseArgument(a map[string]any) cwl.Argument {
 		ValueFrom: stringField(a, "valueFrom"),
 	}
 
-	// Parse position.
+	// Parse position (can be int or expression string).
 	if pos, ok := a["position"]; ok {
 		switch p := pos.(type) {
 		case int:
-			arg.Position = &p
+			arg.Position = p
 		case float64:
-			pi := int(p)
-			arg.Position = &pi
+			arg.Position = int(p)
+		case string:
+			arg.Position = p
 		}
 	}
 

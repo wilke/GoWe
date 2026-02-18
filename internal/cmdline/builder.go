@@ -2,6 +2,7 @@
 package cmdline
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -153,9 +154,9 @@ func (b *Builder) buildArgument(arg any, index int, inputs map[string]any, runti
 
 	case cwl.Argument:
 		// Structured argument.
-		pos := 0
-		if a.Position != nil {
-			pos = *a.Position
+		pos, err := b.evaluatePosition(a.Position, ctx)
+		if err != nil {
+			return nil, err
 		}
 
 		// Evaluate valueFrom.
@@ -193,9 +194,9 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 	}
 	ctx = ctx.WithSelf(value)
 
-	pos := 0
-	if binding.Position != nil {
-		pos = *binding.Position
+	pos, err := b.evaluatePosition(binding.Position, ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Special handling for boolean values.
@@ -401,6 +402,7 @@ func inputValueToString(value any, itemSeparator string) string {
 }
 
 // valueToString converts any value to a string.
+// Maps and arrays are converted to JSON format.
 func valueToString(v any) string {
 	if v == nil {
 		return ""
@@ -413,6 +415,15 @@ func valueToString(v any) string {
 			return "true"
 		}
 		return "false"
+	case int, int64, float64:
+		return fmt.Sprintf("%v", val)
+	case map[string]any, []any:
+		// Convert maps and arrays to JSON.
+		jsonBytes, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(jsonBytes)
 	default:
 		return fmt.Sprintf("%v", v)
 	}
@@ -426,4 +437,42 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// evaluatePosition evaluates a position value that may be an expression.
+// Returns 0 for nil or null expression results.
+func (b *Builder) evaluatePosition(pos any, ctx *cwlexpr.Context) (int, error) {
+	if pos == nil {
+		return 0, nil
+	}
+
+	switch p := pos.(type) {
+	case int:
+		return p, nil
+	case int64:
+		return int(p), nil
+	case float64:
+		return int(p), nil
+	case string:
+		// Expression - evaluate it
+		val, err := b.evaluator.Evaluate(p, ctx)
+		if err != nil {
+			return 0, err
+		}
+		if val == nil {
+			return 0, nil
+		}
+		switch v := val.(type) {
+		case int:
+			return v, nil
+		case int64:
+			return int(v), nil
+		case float64:
+			return int(v), nil
+		default:
+			return 0, fmt.Errorf("position expression returned non-integer: %T", val)
+		}
+	default:
+		return 0, fmt.Errorf("unexpected position type: %T", pos)
+	}
 }

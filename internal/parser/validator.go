@@ -41,13 +41,16 @@ func (v *Validator) validateVersion(graph *cwl.GraphDocument) []model.FieldError
 	if graph.CWLVersion == "" {
 		return []model.FieldError{{Field: "cwlVersion", Message: "cwlVersion is required"}}
 	}
-	if graph.CWLVersion != "v1.2" {
+	// Accept CWL v1.0, v1.1, and v1.2 (they are mostly compatible).
+	switch graph.CWLVersion {
+	case "v1.0", "v1.1", "v1.2", "draft-3":
+		return nil
+	default:
 		return []model.FieldError{{
 			Field:   "cwlVersion",
-			Message: fmt.Sprintf("unsupported cwlVersion %q; expected v1.2", graph.CWLVersion),
+			Message: fmt.Sprintf("unsupported cwlVersion %q; expected v1.0, v1.1, or v1.2", graph.CWLVersion),
 		}}
 	}
-	return nil
 }
 
 func (v *Validator) validateWorkflow(graph *cwl.GraphDocument) []model.FieldError {
@@ -59,11 +62,8 @@ func (v *Validator) validateWorkflow(graph *cwl.GraphDocument) []model.FieldErro
 
 	// CWL v1.2 allows workflows with no inputs (they can have defaults or be passthrough).
 	// CWL v1.2 allows workflows with no steps (passthrough workflows that connect inputs to outputs).
-	// CWL allows CommandLineTools with no outputs (side-effect only).
-	// Only enforce the "at least one output" rule for Workflows.
-	if graph.OriginalClass == "Workflow" && len(wf.Outputs) == 0 {
-		errs = append(errs, model.FieldError{Field: "outputs", Message: "workflow must have at least one output"})
-	}
+	// CWL v1.2 allows workflows with no outputs (side-effect only workflows).
+	// No longer enforce "at least one output" rule - it's valid per CWL spec.
 
 	// All inputs must have a type.
 	for id, inp := range wf.Inputs {

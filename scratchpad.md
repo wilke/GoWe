@@ -25,7 +25,7 @@ Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
 15. **Boolean empty inputBinding** - Boolean with `inputBinding: {}` is omitted from command line
 16. **ItemInputBinding parsing** - Parse inputBinding from inside array type definitions
 
-### Current Status: 45/84 tests passing (54%)
+### Current Status: 54/84 tests passing (64%)
 
 ### Changes Made This Session (Continued)
 17. **File literal support** - Materialize Files with `contents` field as temp files with symlink resolution for Docker
@@ -34,15 +34,25 @@ Improved CWL conformance test pass rate from 26/84 to 30/84 (36%).
 20. **Directory input listing** - Recursively resolve File/Directory objects in Directory listing
 21. **Packed tool-only files** - Support `$graph` files containing only CommandLineTools (no Workflow), creating synthetic workflows
 22. **Tool ID hash handling** - Strip `#` prefix from tool IDs for consistent lookup in `$graph` files
+23. **Map/array JSON serialization** - Convert maps and arrays to JSON format in expressions (not Go's default format)
+24. **Position expressions** - Support expressions in inputBinding.position (e.g., `position: $(self)`)
+25. **OutputEval without glob** - Evaluate outputEval when glob is null
+26. **Runtime in glob** - Pass runtime context to glob expression evaluation (e.g., `glob: $(runtime.outdir)`)
+27. **Glob path handling** - Handle absolute paths and workDir-prefixed paths correctly
+28. **Workflow input defaults** - Merge workflow input defaults with provided inputs
+29. **CWL version validation** - Accept v1.0, v1.1, v1.2, and draft-3
+30. **Workflows without outputs** - Allow empty outputs array in workflows
+31. **Null in expressions** - Output "null" for nil values in string interpolation (for JSON)
+32. **Docker path resolution** - Always resolve to absolute paths for Docker mounts
 
 ### Key Remaining Issues
-- External tool file references (workflows referencing external .cwl files) - major category
+- External tool file references (workflows referencing external .cwl files) - major category (~10 tests)
 - $import feature not implemented (params_inc.yml etc.)
-- Record type handling
+- Record type with field-level inputBindings
 - Format checking tests (format field on outputs)
 - ShellCommandRequirement (for shell builtins like exit)
-- Position expressions in inputBinding
-- should_fail tests (null for Any type without default)
+- loadContents limit (64KB)
+- Capture type validation (files vs directories)
 
 ---
 

@@ -3,6 +3,7 @@
 package cwlexpr
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -243,9 +244,11 @@ func IsExpression(s string) bool {
 }
 
 // toString converts any value to a string representation.
+// Maps and arrays are converted to JSON format.
+// nil values become "null" (JSON representation).
 func toString(v any) string {
 	if v == nil {
-		return ""
+		return "null"
 	}
 	switch val := v.(type) {
 	case string:
@@ -257,6 +260,13 @@ func toString(v any) string {
 		return "false"
 	case int, int64, float64:
 		return fmt.Sprintf("%v", val)
+	case map[string]any, []any:
+		// Convert maps and arrays to JSON.
+		jsonBytes, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(jsonBytes)
 	default:
 		return fmt.Sprintf("%v", val)
 	}

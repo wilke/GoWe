@@ -15,7 +15,7 @@ func TestBuilder_SimpleCommand(t *testing.T) {
 			"message": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 				},
 			},
 		},
@@ -44,7 +44,7 @@ func TestBuilder_BaseCommandArray(t *testing.T) {
 			"threads": {
 				Type: "int",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 					Prefix:   "-t",
 				},
 			},
@@ -74,7 +74,7 @@ func TestBuilder_PrefixSeparate(t *testing.T) {
 			"pattern": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 					Prefix:   "-e",
 					Separate: boolPtr(false),
 				},
@@ -105,19 +105,19 @@ func TestBuilder_PositionSorting(t *testing.T) {
 			"last": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(10),
+					Position: 10,
 				},
 			},
 			"first": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 				},
 			},
 			"middle": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(5),
+					Position: 5,
 				},
 			},
 		},
@@ -147,7 +147,7 @@ func TestBuilder_Arguments(t *testing.T) {
 		Arguments: []any{
 			"--verbose",
 			cwl.Argument{
-				Position:  intPtr(1),
+				Position:  1,
 				Prefix:    "--output",
 				ValueFrom: "result.txt",
 			},
@@ -156,7 +156,7 @@ func TestBuilder_Arguments(t *testing.T) {
 			"input": {
 				Type: "File",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(2),
+					Position: 2,
 				},
 			},
 		},
@@ -188,7 +188,7 @@ func TestBuilder_ValueFrom(t *testing.T) {
 			"name": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position:  intPtr(1),
+					Position:  1,
 					ValueFrom: "Hello, $(inputs.name)!",
 				},
 			},
@@ -218,7 +218,7 @@ func TestBuilder_ArrayInput(t *testing.T) {
 			"files": {
 				Type: "File[]",
 				InputBinding: &cwl.InputBinding{
-					Position:      intPtr(1),
+					Position:      1,
 					ItemSeparator: ",",
 				},
 			},
@@ -257,7 +257,7 @@ func TestBuilder_StdoutStderr(t *testing.T) {
 			"input": {
 				Type: "File",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 				},
 			},
 		},
@@ -289,13 +289,13 @@ func TestBuilder_NullInput(t *testing.T) {
 			"required": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 				},
 			},
 			"optional": {
 				Type: "string?",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(2),
+					Position: 2,
 					Prefix:   "--opt",
 				},
 			},
@@ -325,7 +325,7 @@ func TestBuilder_RuntimeContext(t *testing.T) {
 		BaseCommand: "tool",
 		Arguments: []any{
 			cwl.Argument{
-				Position:  intPtr(1),
+				Position:  1,
 				Prefix:    "--threads",
 				ValueFrom: "$(runtime.cores)",
 			},
@@ -362,7 +362,7 @@ func TestBuilder_NoInputBinding(t *testing.T) {
 			"visible": {
 				Type: "string",
 				InputBinding: &cwl.InputBinding{
-					Position: intPtr(1),
+					Position: 1,
 				},
 			},
 		},
@@ -383,10 +383,6 @@ func TestBuilder_NoInputBinding(t *testing.T) {
 	if !reflect.DeepEqual(result.Command, want) {
 		t.Errorf("Command = %v, want %v", result.Command, want)
 	}
-}
-
-func intPtr(i int) *int {
-	return &i
 }
 
 func boolPtr(b bool) *bool {

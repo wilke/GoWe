@@ -308,12 +308,17 @@ func collectInputMounts(inputs map[string]any) map[string]string {
 
 // resolveSymlinks resolves symlinks in a path for Docker mounts.
 // On macOS, /tmp is a symlink to /private/tmp which can cause issues with Docker.
+// Always returns an absolute path.
 func resolveSymlinks(path string) string {
-	resolved, err := filepath.EvalSymlinks(path)
+	// First make absolute.
+	absPath, err := filepath.Abs(path)
 	if err != nil {
-		// If resolution fails (e.g., path doesn't exist yet), return absolute path.
-		abs, _ := filepath.Abs(path)
-		return abs
+		absPath = path
+	}
+	// Then resolve symlinks.
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return absPath
 	}
 	return resolved
 }
@@ -460,12 +465,23 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 
 // collectOutputBinding collects files matching an output binding.
 func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any, workDir string, inputs map[string]any, tool *cwl.CommandLineTool) (any, error) {
+	// If there's an outputEval but no glob, evaluate it directly with self=null.
 	if binding.Glob == nil {
+		if binding.OutputEval != "" {
+			ctx := cwlexpr.NewContext(inputs)
+			ctx = ctx.WithSelf(nil)
+			runtime := cwlexpr.DefaultRuntimeContext()
+			runtime.OutDir = r.OutDir
+			ctx = ctx.WithRuntime(runtime)
+
+			evaluator := cwlexpr.NewEvaluator(nil)
+			return evaluator.Evaluate(binding.OutputEval, ctx)
+		}
 		return nil, nil
 	}
 
 	// Evaluate glob patterns.
-	patterns := getGlobPatterns(binding.Glob, inputs, tool)
+	patterns := getGlobPatterns(binding.Glob, inputs, tool, workDir)
 	if len(patterns) == 0 {
 		return nil, nil
 	}
@@ -475,7 +491,17 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 
 	var collected []map[string]any
 	for _, pattern := range patterns {
-		matches, err := filepath.Glob(filepath.Join(workDir, pattern))
+		// Determine the glob path - use absolute path if pattern is already absolute
+		// or starts with workDir, otherwise join with workDir.
+		var globPath string
+		if filepath.IsAbs(pattern) {
+			globPath = pattern
+		} else if strings.HasPrefix(pattern, workDir) {
+			globPath = pattern
+		} else {
+			globPath = filepath.Join(workDir, pattern)
+		}
+		matches, err := filepath.Glob(globPath)
 		if err != nil {
 			return nil, fmt.Errorf("glob %s: %w", pattern, err)
 		}
@@ -520,18 +546,21 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 }
 
 // getGlobPatterns extracts glob patterns from the binding.
-func getGlobPatterns(glob any, inputs map[string]any, tool *cwl.CommandLineTool) []string {
+func getGlobPatterns(glob any, inputs map[string]any, tool *cwl.CommandLineTool, workDir string) []string {
 	switch g := glob.(type) {
 	case string:
 		// Check if it's an expression.
 		if cwlexpr.IsExpression(g) {
 			ctx := cwlexpr.NewContext(inputs)
+			runtime := cwlexpr.DefaultRuntimeContext()
+			runtime.OutDir = workDir
+			ctx = ctx.WithRuntime(runtime)
 			evaluator := cwlexpr.NewEvaluator(nil)
 			result, err := evaluator.Evaluate(g, ctx)
 			if err != nil {
 				return nil
 			}
-			return getGlobPatterns(result, inputs, tool)
+			return getGlobPatterns(result, inputs, tool, workDir)
 		}
 		return []string{g}
 	case []string:
