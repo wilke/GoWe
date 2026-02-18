@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/me/gowe/internal/cwlrunner"
@@ -93,6 +94,14 @@ func runExecute(cmd *cobra.Command, args []string) error {
 		jobPath = args[1]
 	}
 
+	// Parse the cwl path for #fragment (process ID selector).
+	processID := ""
+	if idx := strings.Index(cwlPath, "#"); idx != -1 {
+		processID = cwlPath[idx+1:]
+		cwlPath = cwlPath[:idx]
+	}
+	runner.ProcessID = processID
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -117,8 +126,14 @@ func validateCmd() *cobra.Command {
 			logger := newLogger()
 			runner := newRunner(logger)
 
+			cwlPath := args[0]
+			// Strip #fragment if present (not needed for validation).
+			if idx := strings.Index(cwlPath, "#"); idx != -1 {
+				cwlPath = cwlPath[:idx]
+			}
+
 			ctx := context.Background()
-			if err := runner.Validate(ctx, args[0]); err != nil {
+			if err := runner.Validate(ctx, cwlPath); err != nil {
 				return err
 			}
 			fmt.Println("Document is valid")
@@ -137,6 +152,12 @@ func dagCmd() *cobra.Command {
 			runner := newRunner(logger)
 
 			cwlPath := args[0]
+			// Parse #fragment for process ID selection.
+			if idx := strings.Index(cwlPath, "#"); idx != -1 {
+				runner.ProcessID = cwlPath[idx+1:]
+				cwlPath = cwlPath[:idx]
+			}
+
 			jobPath := ""
 			if len(args) > 1 {
 				jobPath = args[1]
@@ -158,6 +179,12 @@ func printCmdCmd() *cobra.Command {
 			runner := newRunner(logger)
 
 			cwlPath := args[0]
+			// Parse #fragment for process ID selection.
+			if idx := strings.Index(cwlPath, "#"); idx != -1 {
+				runner.ProcessID = cwlPath[idx+1:]
+				cwlPath = cwlPath[:idx]
+			}
+
 			jobPath := ""
 			if len(args) > 1 {
 				jobPath = args[1]

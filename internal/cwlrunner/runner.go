@@ -30,6 +30,7 @@ type Runner struct {
 	NoContainer  bool
 	ForceDocker  bool
 	OutputFormat string // "json" or "yaml"
+	ProcessID    string // specific process ID to run from $graph document
 
 	// Internal state.
 	cwlDir string // directory of CWL file, for resolving relative paths in defaults
@@ -204,6 +205,23 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 	// Create output directory.
 	if err := os.MkdirAll(r.OutDir, 0755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
+	}
+
+	// If ProcessID is specified, select that specific process.
+	if r.ProcessID != "" {
+		// Check if it's a tool.
+		if tool, ok := graph.Tools[r.ProcessID]; ok {
+			outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs)
+			if err != nil {
+				return err
+			}
+			return r.writeOutputs(outputs, w)
+		}
+		// Check if it matches the workflow ID.
+		if graph.Workflow != nil && (graph.Workflow.ID == r.ProcessID || graph.Workflow.ID == "main" && r.ProcessID == "main") {
+			return r.executeWorkflow(ctx, graph, resolvedInputs, w)
+		}
+		return fmt.Errorf("process %q not found in document", r.ProcessID)
 	}
 
 	// Execute based on document type.
