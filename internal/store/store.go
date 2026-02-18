@@ -36,6 +36,14 @@ type Store interface {
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteSessionsByUserID(ctx context.Context, userID string) (int64, error)
 
+	// Worker operations
+	CreateWorker(ctx context.Context, w *model.Worker) error
+	GetWorker(ctx context.Context, id string) (*model.Worker, error)
+	UpdateWorker(ctx context.Context, w *model.Worker) error
+	DeleteWorker(ctx context.Context, id string) error
+	ListWorkers(ctx context.Context) ([]*model.Worker, error)
+	CheckoutTask(ctx context.Context, workerID string, runtime model.ContainerRuntime) (*model.Task, error)
+
 	// Lifecycle
 	Close() error
 	Migrate(ctx context.Context) error

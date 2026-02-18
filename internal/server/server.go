@@ -184,6 +184,21 @@ func (s *Server) routes() {
 		// Workspace (BV-BRC proxy)
 		r.Get("/workspace", s.handleListWorkspace)
 
+		// Workers (remote task execution)
+		r.Route("/workers", func(r chi.Router) {
+			r.Get("/", s.handleListWorkers)
+			r.Post("/", s.handleRegisterWorker)
+			r.Route("/{id}", func(r chi.Router) {
+				r.Put("/heartbeat", s.handleWorkerHeartbeat)
+				r.Get("/work", s.handleWorkerCheckout)
+				r.Delete("/", s.handleDeregisterWorker)
+				r.Route("/tasks/{tid}", func(r chi.Router) {
+					r.Put("/status", s.handleWorkerTaskStatus)
+					r.Put("/complete", s.handleWorkerTaskComplete)
+				})
+			})
+		})
+
 		// SSE endpoints for real-time updates
 		r.Route("/sse", func(r chi.Router) {
 			r.Get("/submissions/{id}", s.handleSSESubmission)

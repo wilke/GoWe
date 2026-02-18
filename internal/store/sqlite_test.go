@@ -549,3 +549,237 @@ func TestGetSubmission_LoadsTasks(t *testing.T) {
 		t.Errorf("task id = %q, want %q", got.Tasks[0].ID, task.ID)
 	}
 }
+
+// --- Worker tests ---
+
+func sampleWorker() *model.Worker {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	return &model.Worker{
+		ID:           "wrk_test-1",
+		Name:         "test-worker",
+		Hostname:     "localhost",
+		State:        model.WorkerStateOnline,
+		Runtime:      model.RuntimeNone,
+		Labels:       map[string]string{"env": "test"},
+		LastSeen:     now,
+		RegisteredAt: now,
+	}
+}
+
+func TestCreateAndGetWorker(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	w := sampleWorker()
+
+	if err := st.CreateWorker(ctx, w); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := st.GetWorker(ctx, w.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil worker")
+	}
+	if got.ID != w.ID {
+		t.Errorf("id = %q, want %q", got.ID, w.ID)
+	}
+	if got.Name != w.Name {
+		t.Errorf("name = %q, want %q", got.Name, w.Name)
+	}
+	if got.State != model.WorkerStateOnline {
+		t.Errorf("state = %q, want online", got.State)
+	}
+	if got.Runtime != model.RuntimeNone {
+		t.Errorf("runtime = %q, want none", got.Runtime)
+	}
+	if got.Labels["env"] != "test" {
+		t.Errorf("labels = %v, want env=test", got.Labels)
+	}
+}
+
+func TestGetWorker_NotFound(t *testing.T) {
+	st := testStore(t)
+	got, err := st.GetWorker(context.Background(), "wrk_nonexistent")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got %+v", got)
+	}
+}
+
+func TestUpdateWorker(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	w := sampleWorker()
+	st.CreateWorker(ctx, w)
+
+	w.State = model.WorkerStateDraining
+	w.CurrentTask = "task_123"
+	if err := st.UpdateWorker(ctx, w); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, _ := st.GetWorker(ctx, w.ID)
+	if got.State != model.WorkerStateDraining {
+		t.Errorf("state = %q, want draining", got.State)
+	}
+	if got.CurrentTask != "task_123" {
+		t.Errorf("current_task = %q, want task_123", got.CurrentTask)
+	}
+}
+
+func TestDeleteWorker(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	w := sampleWorker()
+	st.CreateWorker(ctx, w)
+
+	if err := st.DeleteWorker(ctx, w.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, _ := st.GetWorker(ctx, w.ID)
+	if got != nil {
+		t.Error("expected nil after delete")
+	}
+}
+
+func TestDeleteWorker_NotFound(t *testing.T) {
+	st := testStore(t)
+	if err := st.DeleteWorker(context.Background(), "wrk_nonexistent"); err == nil {
+		t.Error("expected error for nonexistent worker")
+	}
+}
+
+func TestListWorkers(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	w1 := sampleWorker()
+	st.CreateWorker(ctx, w1)
+
+	w2 := sampleWorker()
+	w2.ID = "wrk_test-2"
+	w2.Name = "worker-2"
+	w2.Runtime = model.RuntimeDocker
+	w2.RegisteredAt = w1.RegisteredAt.Add(time.Second)
+	st.CreateWorker(ctx, w2)
+
+	workers, err := st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(workers) != 2 {
+		t.Errorf("len = %d, want 2", len(workers))
+	}
+}
+
+func TestCheckoutTask_BasicFlow(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	// Set up workflow + submission.
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	// Create a QUEUED worker task.
+	task := sampleTask(sub.ID)
+	task.State = model.TaskStateQueued
+	task.ExecutorType = model.ExecutorTypeWorker
+	st.CreateTask(ctx, task)
+
+	// Create a worker.
+	w := sampleWorker()
+	st.CreateWorker(ctx, w)
+
+	// Checkout should return the task.
+	got, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a task, got nil")
+	}
+	if got.ID != task.ID {
+		t.Errorf("task id = %q, want %q", got.ID, task.ID)
+	}
+	if got.State != model.TaskStateRunning {
+		t.Errorf("state = %q, want RUNNING", got.State)
+	}
+	if got.ExternalID != w.ID {
+		t.Errorf("external_id = %q, want %q", got.ExternalID, w.ID)
+	}
+
+	// Second checkout should return nil (no more tasks).
+	got2, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("second checkout: %v", err)
+	}
+	if got2 != nil {
+		t.Errorf("expected nil on second checkout, got task %s", got2.ID)
+	}
+}
+
+func TestCheckoutTask_RuntimeFiltering(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	// Create a QUEUED task that requires Docker (_docker_image present).
+	task := sampleTask(sub.ID)
+	task.State = model.TaskStateQueued
+	task.ExecutorType = model.ExecutorTypeWorker
+	task.Inputs = map[string]any{
+		"_base_command": []any{"echo", "hello"},
+		"_docker_image": "alpine:latest",
+	}
+	st.CreateTask(ctx, task)
+
+	w := sampleWorker()
+	st.CreateWorker(ctx, w)
+
+	// Worker with runtime=none should NOT get this task.
+	got, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if got != nil {
+		t.Errorf("bare worker should not get Docker task, got %s", got.ID)
+	}
+
+	// Worker with runtime=docker SHOULD get this task.
+	got2, err := st.CheckoutTask(ctx, w.ID, model.RuntimeDocker)
+	if err != nil {
+		t.Fatalf("checkout docker: %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("docker worker should get the task")
+	}
+	if got2.ID != task.ID {
+		t.Errorf("task id = %q, want %q", got2.ID, task.ID)
+	}
+}
+
+func TestCheckoutTask_NoQueuedTasks(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	w := sampleWorker()
+	st.CreateWorker(ctx, w)
+
+	got, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil when no tasks, got %s", got.ID)
+	}
+}

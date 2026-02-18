@@ -78,6 +78,20 @@ var schema = []string{
 
 	// Index for listing submissions by submitter
 	`CREATE INDEX IF NOT EXISTS idx_submissions_submitted_by ON submissions(submitted_by)`,
+
+	// Workers table for remote task execution
+	`CREATE TABLE IF NOT EXISTS workers (
+		id            TEXT PRIMARY KEY,
+		name          TEXT NOT NULL,
+		hostname      TEXT NOT NULL DEFAULT '',
+		state         TEXT NOT NULL DEFAULT 'online',
+		runtime       TEXT NOT NULL DEFAULT 'none',
+		labels        TEXT NOT NULL DEFAULT '{}',
+		last_seen     TEXT NOT NULL,
+		current_task  TEXT NOT NULL DEFAULT '',
+		registered_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_workers_state ON workers(state)`,
 }
 
 // alterStatements are column additions that need special handling since

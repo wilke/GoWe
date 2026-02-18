@@ -708,3 +708,234 @@ func (s *SQLiteStore) DeleteSessionsByUserID(ctx context.Context, userID string)
 	}
 	return result.RowsAffected()
 }
+
+// --- Worker operations ---
+
+func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
+	s.logger.Debug("sql", "op", "insert", "table", "workers", "id", w.ID)
+
+	labelsJSON, err := json.Marshal(w.Labels)
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO workers (id, name, hostname, state, runtime, labels, last_seen, current_task, registered_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Name, w.Hostname, string(w.State), string(w.Runtime),
+		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
+		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, error) {
+	s.logger.Debug("sql", "op", "select", "table", "workers", "id", id)
+
+	var w model.Worker
+	var state, runtime, labelsJSON, lastSeen, registeredAt string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, hostname, state, runtime, labels, last_seen, current_task, registered_at
+		 FROM workers WHERE id = ?`, id,
+	).Scan(&w.ID, &w.Name, &w.Hostname, &state, &runtime,
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	w.State = model.WorkerState(state)
+	w.Runtime = model.ContainerRuntime(runtime)
+	json.Unmarshal([]byte(labelsJSON), &w.Labels)
+	w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
+	w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+
+	return &w, nil
+}
+
+func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
+	s.logger.Debug("sql", "op", "update", "table", "workers", "id", w.ID)
+
+	labelsJSON, err := json.Marshal(w.Labels)
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET name=?, hostname=?, state=?, runtime=?, labels=?,
+		 last_seen=?, current_task=? WHERE id=?`,
+		w.Name, w.Hostname, string(w.State), string(w.Runtime),
+		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
+		w.CurrentTask, w.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("worker %s not found", w.ID)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
+	s.logger.Debug("sql", "op", "delete", "table", "workers", "id", id)
+
+	result, err := s.db.ExecContext(ctx, `DELETE FROM workers WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("worker %s not found", id)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
+	s.logger.Debug("sql", "op", "list", "table", "workers")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, hostname, state, runtime, labels, last_seen, current_task, registered_at
+		 FROM workers ORDER BY registered_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []*model.Worker
+	for rows.Next() {
+		var w model.Worker
+		var state, runtime, labelsJSON, lastSeen, registeredAt string
+
+		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &state, &runtime,
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt); err != nil {
+			return nil, err
+		}
+
+		w.State = model.WorkerState(state)
+		w.Runtime = model.ContainerRuntime(runtime)
+		json.Unmarshal([]byte(labelsJSON), &w.Labels)
+		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
+		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+
+		workers = append(workers, &w)
+	}
+	return workers, rows.Err()
+}
+
+// CheckoutTask atomically finds the oldest QUEUED worker task and transitions
+// it to RUNNING, assigning it to the given worker. Returns nil if no task is
+// available. Runtime capability matching: if runtime is "none", only tasks
+// without _docker_image are eligible; otherwise all QUEUED worker tasks match.
+func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime model.ContainerRuntime) (*model.Task, error) {
+	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "runtime", runtime)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Find oldest QUEUED task assigned to the worker executor.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, state, executor_type, external_id,
+		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 stdout, stderr, exit_code, created_at, started_at, completed_at
+		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
+		 ORDER BY created_at LIMIT 10`)
+	if err != nil {
+		return nil, err
+	}
+
+	var candidates []*model.Task
+	for rows.Next() {
+		var task model.Task
+		var inputsJSON, outputsJSON, dependsOnJSON string
+		var stateStr, executorType, createdAt string
+		var startedAt, completedAt *string
+
+		if err := rows.Scan(
+			&task.ID, &task.SubmissionID, &task.StepID, &stateStr,
+			&executorType, &task.ExternalID, &task.BVBRCAppID,
+			&inputsJSON, &outputsJSON, &dependsOnJSON,
+			&task.RetryCount, &task.MaxRetries,
+			&task.Stdout, &task.Stderr, &task.ExitCode,
+			&createdAt, &startedAt, &completedAt,
+		); err != nil {
+			rows.Close()
+			return nil, err
+		}
+
+		task.State = model.TaskState(stateStr)
+		task.ExecutorType = model.ExecutorType(executorType)
+		json.Unmarshal([]byte(inputsJSON), &task.Inputs)
+		json.Unmarshal([]byte(outputsJSON), &task.Outputs)
+		json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
+		task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if startedAt != nil {
+			t, _ := time.Parse(time.RFC3339Nano, *startedAt)
+			task.StartedAt = &t
+		}
+		if completedAt != nil {
+			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			task.CompletedAt = &t
+		}
+
+		candidates = append(candidates, &task)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Filter by runtime capability.
+	var selected *model.Task
+	for _, task := range candidates {
+		hasImage := false
+		if img, ok := task.Inputs["_docker_image"].(string); ok && img != "" {
+			hasImage = true
+		}
+		if runtime == model.RuntimeNone && hasImage {
+			continue // Worker can't run container tasks
+		}
+		selected = task
+		break
+	}
+
+	if selected == nil {
+		return nil, nil
+	}
+
+	// Transition to RUNNING and assign to worker.
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx,
+		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ? WHERE id = ? AND state = 'QUEUED'`,
+		workerID, nowStr, selected.ID)
+	if err != nil {
+		return nil, fmt.Errorf("update task state: %w", err)
+	}
+
+	// Update worker's current_task.
+	_, err = tx.ExecContext(ctx,
+		`UPDATE workers SET current_task = ?, last_seen = ? WHERE id = ?`,
+		selected.ID, nowStr, workerID)
+	if err != nil {
+		return nil, fmt.Errorf("update worker current_task: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+
+	selected.State = model.TaskStateRunning
+	selected.ExternalID = workerID
+	selected.StartedAt = &now
+
+	return selected, nil
+}

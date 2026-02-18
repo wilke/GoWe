@@ -96,4 +96,5 @@ const (
 	ExecutorTypeLocal     ExecutorType = "local"
 	ExecutorTypeBVBRC     ExecutorType = "bvbrc"
 	ExecutorTypeContainer ExecutorType = "container"
+	ExecutorTypeWorker    ExecutorType = "worker"
 )
