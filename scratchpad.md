@@ -2,9 +2,10 @@
 
 ## Session: 2026-02-18 Morning (CWL Conformance - 96.4%)
 
-### Status: 81/84 TESTS PASSING (96.4%)
+### Status: 81/84 TESTS PASSING (96.4%) on macOS | 84/84 ON LINUX
 
-Improved CWL conformance test pass rate from 79/84 to **81/84 (96.4%)**.
+Improved CWL conformance test pass rate from 79/84 to **81/84 (96.4%)** on macOS.
+**All 84 tests pass on Linux** (verified in Ubuntu container).
 
 ### Key Improvements (79/84 → 81/84)
 
@@ -13,6 +14,16 @@ Improved CWL conformance test pass rate from 79/84 to **81/84 (96.4%)**.
 55. **Tool input secondaryFiles** - Resolve secondaryFiles for direct tool execution
 56. **SecondaryFiles validation** - Validate required secondary files exist in File objects
 57. **Secondary file resolution context** - Distinguish between direct tool execution and workflow steps
+58. **Packed document validator fix** - Handle tool IDs with .cwl suffix in $graph documents
+
+### Platform Difference Verified
+
+Confirmed macOS vs Linux `rev`/`sort` output differs:
+```
+macOS:  sha1$c67d838c10ff86680366bf168d7bae7f11ba3b20
+Linux:  sha1$b9214658cc453331b62c2282b772a5c063dbd284 (expected)
+```
+Tests 10 and 27 pass on Linux but fail on macOS due to this difference.
 
 ### Files Modified
 - `pkg/cwl/binding.go` - Added SecondaryFiles to RecordField
@@ -20,16 +31,19 @@ Improved CWL conformance test pass rate from 79/84 to **81/84 (96.4%)**.
 - `internal/parser/parser.go` - Parse secondaryFiles for record fields and workflow inputs
 - `internal/cwlrunner/runner.go` - Added secondaryFiles validation and resolution
 - `internal/cwlrunner/scatter.go` - Updated executeTool call signature
+- `internal/parser/validator.go` - Fixed tool reference validation for packed documents
 
-### Current Status: 81/84 tests passing (96.4%)
+### Current Status
+- **macOS**: 81/84 tests passing (96.4%)
+- **Linux**: 84/84 tests passing (100%)
 
-### Remaining Failures (3 tests)
-- **Test 10, 27** - Platform difference: macOS `rev`/`sort` differ from Linux
-- **Test 69** - Docker mount issues with colons in paths (Docker uses : as volume separator)
+### Remaining macOS Failures (3 tests)
+- **Test 10, 27** - Platform difference: macOS `rev`/`sort` differ from Linux (not a bug)
+- **Test 69** - Docker limitation with colons in paths (Docker uses : as volume separator)
 
 ### Git Status
-- v0.8.7: `d20a787 feat: improve CWL conformance from 77/84 to 79/84 (94%)`
-- Current: 81/84 (uncommitted)
+- v0.8.8: `e435472 feat: improve CWL conformance from 79/84 to 81/84 (96.4%)`
+- Latest: `9073047 fix: validator now handles packed document tool IDs with .cwl suffix`
 
 ---
 
