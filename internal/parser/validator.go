@@ -193,16 +193,19 @@ func (v *Validator) validateToolRefs(graph *cwl.GraphDocument) []model.FieldErro
 			ref = ref[1:]
 		}
 
-		// For external file references, derive the tool ID from the filename.
-		if strings.HasSuffix(ref, ".cwl") {
-			// External file reference - tool ID is filename without extension.
-			base := filepath.Base(ref)
-			ref = strings.TrimSuffix(base, ".cwl")
-		}
-
-		// Check both CommandLineTools and ExpressionTools.
+		// Check if tool exists with the reference as-is (for packed documents with .cwl IDs).
 		_, inTools := graph.Tools[ref]
 		_, inExprTools := graph.ExpressionTools[ref]
+
+		// If not found, try stripping .cwl extension (for external file references).
+		if !inTools && !inExprTools && strings.HasSuffix(ref, ".cwl") {
+			// External file reference - tool ID is filename without extension.
+			base := filepath.Base(ref)
+			strippedRef := strings.TrimSuffix(base, ".cwl")
+			_, inTools = graph.Tools[strippedRef]
+			_, inExprTools = graph.ExpressionTools[strippedRef]
+		}
+
 		if !inTools && !inExprTools {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("steps.%s.run", stepID),
@@ -232,10 +235,6 @@ func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldEr
 		if len(ref) > 0 && ref[0] == '#' {
 			ref = ref[1:]
 		}
-		if strings.HasSuffix(ref, ".cwl") {
-			base := filepath.Base(ref)
-			ref = strings.TrimSuffix(base, ".cwl")
-		}
 
 		// Get the tool's declared inputs.
 		var toolInputs map[string]cwl.ToolInputParam
@@ -243,7 +242,18 @@ func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldEr
 			toolInputs = tool.Inputs
 		} else if exprTool, ok := graph.ExpressionTools[ref]; ok {
 			toolInputs = exprTool.Inputs
-		} else {
+		} else if strings.HasSuffix(ref, ".cwl") {
+			// Try stripping .cwl extension (for external file references).
+			base := filepath.Base(ref)
+			strippedRef := strings.TrimSuffix(base, ".cwl")
+			if tool, ok := graph.Tools[strippedRef]; ok {
+				toolInputs = tool.Inputs
+			} else if exprTool, ok := graph.ExpressionTools[strippedRef]; ok {
+				toolInputs = exprTool.Inputs
+			}
+		}
+
+		if toolInputs == nil {
 			// Tool not found - already reported by validateToolRefs.
 			continue
 		}
