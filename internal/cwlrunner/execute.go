@@ -153,18 +153,19 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 	dockerArgs := []string{"run", "--rm", "-i"}
 
 	// Mount working directory (resolve symlinks for macOS /tmp -> /private/tmp).
+	// Use --mount syntax to handle paths with colons (Docker -v uses : as separator).
 	absWorkDir := resolveSymlinks(workDir)
-	dockerArgs = append(dockerArgs, "-v", absWorkDir+":/var/spool/cwl:rw")
+	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/var/spool/cwl", absWorkDir))
 	dockerArgs = append(dockerArgs, "-w", "/var/spool/cwl")
 
 	// Mount tmp directory.
 	absTmpDir := resolveSymlinks(tmpDir)
-	dockerArgs = append(dockerArgs, "-v", absTmpDir+":/tmp:rw")
+	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/tmp", absTmpDir))
 
 	// Mount input files that are outside working directory.
 	mounts := collectInputMounts(inputs)
 	for hostPath, containerPath := range mounts {
-		dockerArgs = append(dockerArgs, "-v", hostPath+":"+containerPath+":ro")
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", hostPath, containerPath))
 	}
 
 	// Add image.
@@ -496,6 +497,16 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 			}
 		}
 
+		// Handle record type with field-level outputBindings.
+		if output.Type == "record" && len(output.OutputRecordFields) > 0 {
+			recordOutput, err := r.collectRecordOutput(output.OutputRecordFields, workDir, inputs, tool, exitCode)
+			if err != nil {
+				return nil, fmt.Errorf("output %s: %w", outputID, err)
+			}
+			outputs[outputID] = recordOutput
+			continue
+		}
+
 		// Handle standard outputBinding
 		if output.OutputBinding == nil {
 			outputs[outputID] = nil
@@ -513,6 +524,108 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 	}
 
 	return outputs, nil
+}
+
+// collectRecordOutput collects output for a record type with field-level outputBindings.
+func (r *Runner) collectRecordOutput(fields []cwl.OutputRecordField, workDir string, inputs map[string]any, tool *cwl.CommandLineTool, exitCode int) (map[string]any, error) {
+	record := make(map[string]any)
+
+	for _, field := range fields {
+		if field.OutputBinding == nil {
+			record[field.Name] = nil
+			continue
+		}
+
+		collected, err := r.collectOutputBinding(field.OutputBinding, field.Type, workDir, inputs, tool, exitCode)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", field.Name, err)
+		}
+
+		// Add secondaryFiles to collected File objects.
+		if len(field.SecondaryFiles) > 0 {
+			collected = r.addSecondaryFilesToOutput(collected, field.SecondaryFiles, workDir)
+		}
+
+		record[field.Name] = collected
+	}
+
+	return record, nil
+}
+
+// addSecondaryFilesToOutput adds secondary files to File objects in the output.
+func (r *Runner) addSecondaryFilesToOutput(output any, schemas []cwl.SecondaryFileSchema, workDir string) any {
+	switch v := output.(type) {
+	case map[string]any:
+		if class, ok := v["class"].(string); ok && class == "File" {
+			// Add secondary files to this File object.
+			r.addSecondaryFiles(v, schemas, workDir)
+		}
+		return v
+
+	case []map[string]any:
+		// Process each File object in the array.
+		for _, item := range v {
+			if class, ok := item["class"].(string); ok && class == "File" {
+				r.addSecondaryFiles(item, schemas, workDir)
+			}
+		}
+		return v
+
+	case []any:
+		// Process each item in the array.
+		for i, item := range v {
+			v[i] = r.addSecondaryFilesToOutput(item, schemas, workDir)
+		}
+		return v
+
+	default:
+		return output
+	}
+}
+
+// addSecondaryFiles adds secondary files to a File object.
+func (r *Runner) addSecondaryFiles(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, workDir string) {
+	path, ok := fileObj["path"].(string)
+	if !ok {
+		return
+	}
+
+	var secondaryFiles []any
+	for _, schema := range schemas {
+		pattern := schema.Pattern
+		if pattern == "" {
+			continue
+		}
+
+		// Apply pattern to derive secondary file path.
+		// Pattern starting with ^ means remove extension first.
+		secondaryPath := path
+		for strings.HasPrefix(pattern, "^") {
+			// Remove one extension.
+			ext := filepath.Ext(secondaryPath)
+			if ext != "" {
+				secondaryPath = strings.TrimSuffix(secondaryPath, ext)
+			}
+			pattern = strings.TrimPrefix(pattern, "^")
+		}
+		secondaryPath = secondaryPath + pattern
+
+		// Check if secondary file exists.
+		if _, err := os.Stat(secondaryPath); err != nil {
+			continue // Skip missing secondary files.
+		}
+
+		// Create File object for secondary file.
+		secFileObj, err := createFileObject(secondaryPath, false)
+		if err != nil {
+			continue
+		}
+		secondaryFiles = append(secondaryFiles, secFileObj)
+	}
+
+	if len(secondaryFiles) > 0 {
+		fileObj["secondaryFiles"] = secondaryFiles
+	}
 }
 
 // collectOutputBinding collects files matching an output binding.
