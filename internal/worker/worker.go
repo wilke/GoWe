@@ -2,12 +2,14 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/me/gowe/internal/execution"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -136,6 +138,83 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 		return w.reportFailure(ctx, task, fmt.Errorf("create task dir: %w", err))
 	}
 
+	// Check if task has Tool+Job (new format) or legacy _base_command.
+	if task.HasTool() {
+		return w.executeWithEngine(ctx, task, taskDir)
+	}
+
+	// Legacy path: use _base_command from task.Inputs.
+	return w.executeLegacy(ctx, task, taskDir)
+}
+
+// executeWithEngine executes a task using the execution.Engine with full CWL support.
+func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDir string) error {
+	w.logger.Debug("executing with engine", "task_id", task.ID, "has_tool", true)
+
+	// Convert task.Tool (map[string]any) to *cwl.CommandLineTool.
+	tool, err := parseToolFromMap(task.Tool)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
+	}
+
+	// Build engine configuration.
+	var expressionLib []string
+	var namespaces map[string]string
+	if task.RuntimeHints != nil {
+		expressionLib = task.RuntimeHints.ExpressionLib
+		namespaces = task.RuntimeHints.Namespaces
+	}
+
+	// Create the execution engine with the worker's stager.
+	engine := execution.NewEngine(execution.Config{
+		Logger:        w.logger,
+		Stager:        w.stager,
+		ExpressionLib: expressionLib,
+		Namespaces:    namespaces,
+	})
+
+	// Execute the tool.
+	result, err := engine.ExecuteTool(ctx, tool, task.Job, taskDir)
+
+	// Handle execution errors.
+	if err != nil {
+		// Check if it's an execution error with exit code.
+		var execErr *execution.ExecutionError
+		if result != nil {
+			return w.client.ReportComplete(ctx, task.ID, TaskResult{
+				State:    model.TaskStateFailed,
+				ExitCode: &result.ExitCode,
+				Stdout:   result.Stdout,
+				Stderr:   result.Stderr + "\n" + err.Error(),
+				Outputs:  result.Outputs,
+			})
+		}
+		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w (%v)", err, execErr))
+	}
+
+	// Stage out output files.
+	stagedOutputs := make(map[string]any)
+	for outputID, output := range result.Outputs {
+		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task.ID)
+	}
+
+	// Determine state from exit code.
+	state := model.TaskStateSuccess
+	if result.ExitCode != 0 {
+		state = model.TaskStateFailed
+	}
+
+	return w.client.ReportComplete(ctx, task.ID, TaskResult{
+		State:    state,
+		ExitCode: &result.ExitCode,
+		Stdout:   result.Stdout,
+		Stderr:   result.Stderr,
+		Outputs:  stagedOutputs,
+	})
+}
+
+// executeLegacy executes a task using the legacy _base_command approach.
+func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir string) error {
 	// Extract reserved keys from task inputs.
 	command := extractBaseCommand(task.Inputs)
 	image, _ := task.Inputs["_docker_image"].(string)
@@ -168,7 +247,7 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 		Volumes: volumes,
 	}
 
-	w.logger.Debug("executing task",
+	w.logger.Debug("executing task (legacy)",
 		"task_id", task.ID,
 		"image", image,
 		"command", command,
@@ -219,6 +298,204 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 		Stderr:   result.Stderr,
 		Outputs:  outputs,
 	})
+}
+
+// stageOutputValue recursively stages File objects in output values.
+func (w *Worker) stageOutputValue(ctx context.Context, v any, taskID string) any {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" {
+			// Stage the file and update location.
+			if path, ok := val["path"].(string); ok {
+				loc, err := w.stager.StageOut(ctx, path, taskID)
+				if err == nil {
+					val["location"] = loc
+				}
+			}
+			// Also stage secondary files.
+			if secFiles, ok := val["secondaryFiles"].([]any); ok {
+				for i, sf := range secFiles {
+					secFiles[i] = w.stageOutputValue(ctx, sf, taskID)
+				}
+			}
+			return val
+		}
+		// Recurse into other maps.
+		for k, v := range val {
+			val[k] = w.stageOutputValue(ctx, v, taskID)
+		}
+		return val
+	case []any:
+		for i, item := range val {
+			val[i] = w.stageOutputValue(ctx, item, taskID)
+		}
+		return val
+	case []map[string]any:
+		result := make([]any, len(val))
+		for i, item := range val {
+			result[i] = w.stageOutputValue(ctx, item, taskID)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+// parseToolFromMap converts a map[string]any to *cwl.CommandLineTool.
+func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
+	// Marshal to JSON then unmarshal to struct.
+	// This handles all the field conversions properly.
+	data, err := json.Marshal(toolMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshal tool: %w", err)
+	}
+
+	var tool cwl.CommandLineTool
+	if err := json.Unmarshal(data, &tool); err != nil {
+		return nil, fmt.Errorf("unmarshal tool: %w", err)
+	}
+
+	// Handle baseCommand which may be string or []string in YAML.
+	if bc, ok := toolMap["baseCommand"]; ok {
+		switch cmd := bc.(type) {
+		case string:
+			tool.BaseCommand = []string{cmd}
+		case []any:
+			var baseCmd []string
+			for _, c := range cmd {
+				if s, ok := c.(string); ok {
+					baseCmd = append(baseCmd, s)
+				}
+			}
+			tool.BaseCommand = baseCmd
+		}
+	}
+
+	// Handle inputs map conversion.
+	if inputs, ok := toolMap["inputs"].(map[string]any); ok {
+		tool.Inputs = make(map[string]cwl.ToolInputParam)
+		for id, inp := range inputs {
+			param, err := parseInputParam(id, inp)
+			if err != nil {
+				return nil, fmt.Errorf("input %s: %w", id, err)
+			}
+			tool.Inputs[id] = param
+		}
+	}
+
+	// Handle outputs map conversion.
+	if outputs, ok := toolMap["outputs"].(map[string]any); ok {
+		tool.Outputs = make(map[string]cwl.ToolOutputParam)
+		for id, out := range outputs {
+			param, err := parseOutputParam(id, out)
+			if err != nil {
+				return nil, fmt.Errorf("output %s: %w", id, err)
+			}
+			tool.Outputs[id] = param
+		}
+	}
+
+	// Copy requirements and hints as raw maps.
+	if reqs, ok := toolMap["requirements"].(map[string]any); ok {
+		tool.Requirements = reqs
+	}
+	if hints, ok := toolMap["hints"].(map[string]any); ok {
+		tool.Hints = hints
+	}
+
+	return &tool, nil
+}
+
+// parseInputParam parses a CWL input parameter from map.
+func parseInputParam(id string, v any) (cwl.ToolInputParam, error) {
+	param := cwl.ToolInputParam{}
+
+	switch val := v.(type) {
+	case string:
+		// Shorthand: just the type.
+		param.Type = val
+	case map[string]any:
+		if t, ok := val["type"]; ok {
+			switch tv := t.(type) {
+			case string:
+				param.Type = tv
+			case map[string]any:
+				// Array type like {type: array, items: string}
+				if typeStr, ok := tv["type"].(string); ok && typeStr == "array" {
+					if items, ok := tv["items"].(string); ok {
+						param.Type = items + "[]"
+					}
+				}
+			}
+		}
+
+		if ib, ok := val["inputBinding"].(map[string]any); ok {
+			binding := &cwl.InputBinding{}
+			if pos, ok := ib["position"]; ok {
+				binding.Position = pos
+			}
+			if prefix, ok := ib["prefix"].(string); ok {
+				binding.Prefix = prefix
+			}
+			if sep, ok := ib["separate"].(bool); ok {
+				binding.Separate = &sep
+			}
+			if vf, ok := ib["valueFrom"].(string); ok {
+				binding.ValueFrom = vf
+			}
+			if is, ok := ib["itemSeparator"].(string); ok {
+				binding.ItemSeparator = is
+			}
+			param.InputBinding = binding
+		}
+
+		if def, ok := val["default"]; ok {
+			param.Default = def
+		}
+	}
+
+	return param, nil
+}
+
+// parseOutputParam parses a CWL output parameter from map.
+func parseOutputParam(id string, v any) (cwl.ToolOutputParam, error) {
+	param := cwl.ToolOutputParam{}
+
+	switch val := v.(type) {
+	case string:
+		// Shorthand: just the type (e.g., "stdout").
+		param.Type = val
+	case map[string]any:
+		if t, ok := val["type"]; ok {
+			switch tv := t.(type) {
+			case string:
+				param.Type = tv
+			case map[string]any:
+				if typeStr, ok := tv["type"].(string); ok && typeStr == "array" {
+					if items, ok := tv["items"].(string); ok {
+						param.Type = items + "[]"
+					}
+				}
+			}
+		}
+
+		if ob, ok := val["outputBinding"].(map[string]any); ok {
+			binding := &cwl.OutputBinding{}
+			if glob, ok := ob["glob"]; ok {
+				binding.Glob = glob
+			}
+			if oe, ok := ob["outputEval"].(string); ok {
+				binding.OutputEval = oe
+			}
+			if lc, ok := ob["loadContents"].(bool); ok {
+				binding.LoadContents = lc
+			}
+			param.OutputBinding = binding
+		}
+	}
+
+	return param, nil
 }
 
 // reportFailure sends a FAILED completion with the given error as stderr.

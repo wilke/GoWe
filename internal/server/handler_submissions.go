@@ -87,6 +87,10 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 			}
 			bvbrcAppID = step.Hints.BVBRCAppID
 		}
+		// Apply server-wide default executor if no hint specified and default is set.
+		if (step.Hints == nil || step.Hints.ExecutorType == "") && s.config.DefaultExecutor != "" {
+			execType = model.ExecutorType(s.config.DefaultExecutor)
+		}
 
 		task := &model.Task{
 			ID:           "task_" + uuid.New().String(),
@@ -286,6 +290,10 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 		execType := model.ExecutorTypeLocal
 		if step.Hints != nil && step.Hints.ExecutorType != "" {
 			execType = step.Hints.ExecutorType
+		}
+		// Apply server-wide default executor if no hint specified and default is set.
+		if (step.Hints == nil || step.Hints.ExecutorType == "") && s.config.DefaultExecutor != "" {
+			execType = model.ExecutorType(s.config.DefaultExecutor)
 		}
 		executorSet[execType] = true
 

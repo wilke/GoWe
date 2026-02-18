@@ -2,12 +2,16 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/me/gowe/internal/executor"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -236,7 +240,16 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 	}
 	tasksByStep := BuildTasksByStepID(allTasks)
 
+	// For worker executor tasks, populate Tool and Job fields from the CWL.
+	if task.ExecutorType == model.ExecutorTypeWorker {
+		if err := l.populateToolAndJob(task, step, wf, sub.Inputs, tasksByStep); err != nil {
+			l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
+				"task_id", task.ID, "error", err)
+		}
+	}
+
 	// Resolve inputs (sets _base_command, _output_globs, and real inputs).
+	// This is still needed for backward compatibility and non-worker executors.
 	if err := ResolveTaskInputs(task, step, sub.Inputs, tasksByStep); err != nil {
 		now := time.Now().UTC()
 		task.State = model.TaskStateFailed
@@ -349,6 +362,16 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 
 // finalizeSubmissions updates submission state based on task states.
 func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool) error {
+	// Also check all RUNNING submissions in case tasks were completed via worker HTTP API.
+	runningSubs, _, err := l.store.ListSubmissions(ctx, model.ListOptions{State: "RUNNING", Limit: 100})
+	if err != nil {
+		l.logger.Error("list running submissions for finalize", "error", err)
+	} else {
+		for _, sub := range runningSubs {
+			affected[sub.ID] = true
+		}
+	}
+
 	for subID := range affected {
 		sub, err := l.store.GetSubmission(ctx, subID)
 		if err != nil {
@@ -442,4 +465,232 @@ func groupBySubmission(tasks []*model.Task) map[string][]*model.Task {
 		m[t.SubmissionID] = append(m[t.SubmissionID], t)
 	}
 	return m
+}
+
+// populateToolAndJob extracts the full CWL tool definition from the workflow's
+// RawCWL and resolves inputs for the task. This enables workers to build the
+// full command line with inputBindings, requirements, etc.
+func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.Workflow, submissionInputs map[string]any, tasksByStepID map[string]*model.Task) error {
+	if wf.RawCWL == "" {
+		return fmt.Errorf("workflow has no RawCWL")
+	}
+
+	// Use the parser to get proper CWL objects with inputBindings, etc.
+	p := parser.New(l.logger)
+	graphDoc, err := p.ParseGraph([]byte(wf.RawCWL))
+	if err != nil {
+		return fmt.Errorf("parse RawCWL: %w", err)
+	}
+
+	// Find the tool for this step.
+	var toolID string
+	if step.ToolRef != "" {
+		toolID = strings.TrimPrefix(step.ToolRef, "#")
+		toolID = strings.TrimSuffix(toolID, ".cwl")
+	} else if step.ToolInline != nil {
+		toolID = step.ToolInline.ID
+	}
+
+	// Look up tool in the parsed graph.
+	var tool map[string]any
+	var runtimeHints *model.RuntimeHints
+
+	// Check CommandLineTools
+	for id, clt := range graphDoc.Tools {
+		normalizedID := strings.TrimPrefix(id, "#")
+		if normalizedID == toolID || id == toolID {
+			// Convert cwl.CommandLineTool to map[string]any via JSON.
+			data, err := json.Marshal(clt)
+			if err != nil {
+				return fmt.Errorf("marshal tool: %w", err)
+			}
+			if err := json.Unmarshal(data, &tool); err != nil {
+				return fmt.Errorf("unmarshal tool: %w", err)
+			}
+			runtimeHints = extractRuntimeHintsFromCWLTool(clt)
+			break
+		}
+	}
+
+	// Check ExpressionTools if not found
+	if tool == nil {
+		for id, et := range graphDoc.ExpressionTools {
+			normalizedID := strings.TrimPrefix(id, "#")
+			if normalizedID == toolID || id == toolID {
+				data, err := json.Marshal(et)
+				if err != nil {
+					return fmt.Errorf("marshal expression tool: %w", err)
+				}
+				if err := json.Unmarshal(data, &tool); err != nil {
+					return fmt.Errorf("unmarshal expression tool: %w", err)
+				}
+				break
+			}
+		}
+	}
+
+	if tool == nil {
+		return fmt.Errorf("tool %q not found in parsed workflow", toolID)
+	}
+
+	// Resolve job inputs (same logic as ResolveTaskInputs but store in Job).
+	job := make(map[string]any)
+	for _, si := range step.In {
+		if si.Source == "" {
+			continue
+		}
+
+		if strings.Contains(si.Source, "/") {
+			// Upstream task output: "stepID/outputID"
+			parts := strings.SplitN(si.Source, "/", 2)
+			stepID, outputID := parts[0], parts[1]
+
+			depTask, exists := tasksByStepID[stepID]
+			if !exists {
+				return fmt.Errorf("upstream step %q not found", stepID)
+			}
+
+			val, exists := depTask.Outputs[outputID]
+			if !exists {
+				if depTask.State == model.TaskStateSuccess && len(depTask.Outputs) == 0 {
+					job[si.ID] = nil
+					continue
+				}
+				return fmt.Errorf("output %q not found on step %q", outputID, stepID)
+			}
+			job[si.ID] = val
+		} else {
+			// Workflow-level input.
+			val, exists := submissionInputs[si.Source]
+			if !exists {
+				return fmt.Errorf("workflow input %q not found", si.Source)
+			}
+			job[si.ID] = val
+		}
+	}
+
+	task.Tool = tool
+	task.Job = job
+	task.RuntimeHints = runtimeHints
+
+	return nil
+}
+
+// extractRuntimeHints extracts expression library and other hints from a tool (map form).
+func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
+	hints := &model.RuntimeHints{}
+
+	// Check requirements for InlineJavascriptRequirement.
+	if reqs, ok := tool["requirements"].(map[string]any); ok {
+		if ijsReq, ok := reqs["InlineJavascriptRequirement"].(map[string]any); ok {
+			if lib, ok := ijsReq["expressionLib"].([]any); ok {
+				for _, item := range lib {
+					if s, ok := item.(string); ok {
+						hints.ExpressionLib = append(hints.ExpressionLib, s)
+					}
+				}
+			}
+		}
+
+		// Extract DockerRequirement.
+		if dockerReq, ok := reqs["DockerRequirement"].(map[string]any); ok {
+			if pull, ok := dockerReq["dockerPull"].(string); ok {
+				hints.DockerImage = pull
+			}
+		}
+
+		// Extract ResourceRequirement.
+		if resReq, ok := reqs["ResourceRequirement"].(map[string]any); ok {
+			if cores, ok := resReq["coresMin"]; ok {
+				switch v := cores.(type) {
+				case int:
+					hints.Cores = v
+				case float64:
+					hints.Cores = int(v)
+				}
+			}
+			if ram, ok := resReq["ramMin"]; ok {
+				switch v := ram.(type) {
+				case int:
+					hints.RamMB = int64(v)
+				case int64:
+					hints.RamMB = v
+				case float64:
+					hints.RamMB = int64(v)
+				}
+			}
+		}
+	}
+
+	// Also check hints section.
+	if toolHints, ok := tool["hints"].(map[string]any); ok {
+		if dockerReq, ok := toolHints["DockerRequirement"].(map[string]any); ok {
+			if hints.DockerImage == "" {
+				if pull, ok := dockerReq["dockerPull"].(string); ok {
+					hints.DockerImage = pull
+				}
+			}
+		}
+	}
+
+	return hints
+}
+
+// extractRuntimeHintsFromCWLTool extracts runtime hints from a parsed CWL CommandLineTool.
+func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHints {
+	hints := &model.RuntimeHints{}
+
+	// Check requirements map.
+	if tool.Requirements != nil {
+		// InlineJavascriptRequirement
+		if ijsReq, ok := tool.Requirements["InlineJavascriptRequirement"].(map[string]any); ok {
+			if lib, ok := ijsReq["expressionLib"].([]any); ok {
+				for _, item := range lib {
+					if s, ok := item.(string); ok {
+						hints.ExpressionLib = append(hints.ExpressionLib, s)
+					}
+				}
+			}
+		}
+
+		// DockerRequirement
+		if dockerReq, ok := tool.Requirements["DockerRequirement"].(map[string]any); ok {
+			if pull, ok := dockerReq["dockerPull"].(string); ok {
+				hints.DockerImage = pull
+			}
+		}
+
+		// ResourceRequirement
+		if resReq, ok := tool.Requirements["ResourceRequirement"].(map[string]any); ok {
+			if cores, ok := resReq["coresMin"]; ok {
+				switch v := cores.(type) {
+				case int:
+					hints.Cores = v
+				case float64:
+					hints.Cores = int(v)
+				}
+			}
+			if ram, ok := resReq["ramMin"]; ok {
+				switch v := ram.(type) {
+				case int:
+					hints.RamMB = int64(v)
+				case float64:
+					hints.RamMB = int64(v)
+				}
+			}
+		}
+	}
+
+	// Check hints map.
+	if tool.Hints != nil {
+		if dockerReq, ok := tool.Hints["DockerRequirement"].(map[string]any); ok {
+			if hints.DockerImage == "" {
+				if pull, ok := dockerReq["dockerPull"].(string); ok {
+					hints.DockerImage = pull
+				}
+			}
+		}
+	}
+
+	return hints
 }

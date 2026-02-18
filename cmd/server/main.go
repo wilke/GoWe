@@ -27,6 +27,7 @@ func main() {
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log format (text, json)")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "Database path (default ~/.gowe/gowe.db)")
+	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor type: local, docker, worker (empty for hint-based)")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 	flag.Parse()
 

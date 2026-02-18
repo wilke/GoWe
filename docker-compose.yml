@@ -1,0 +1,114 @@
+version: "3.9"
+
+services:
+  gowe-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8080"
+    command:
+      - "-addr"
+      - ":8080"
+      - "-db"
+      - "/data/gowe.db"
+      - "-default-executor"
+      - "worker"
+      - "-debug"
+    volumes:
+      - gowe-data:/data
+      - ./tmp/workdir:/workdir
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - gowe-net
+
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      gowe-server:
+        condition: service_healthy
+    command:
+      - "-server"
+      - "http://gowe-server:8080"
+      - "-runtime"
+      - "none"
+      - "-name"
+      - "worker-1"
+      - "-workdir"
+      - "/workdir/scratch"
+      - "-stage-out"
+      - "file:///workdir/outputs"
+      - "-poll"
+      - "2s"
+      - "-debug"
+    volumes:
+      - ./tmp/workdir:/workdir
+    networks:
+      - gowe-net
+
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      gowe-server:
+        condition: service_healthy
+    command:
+      - "-server"
+      - "http://gowe-server:8080"
+      - "-runtime"
+      - "none"
+      - "-name"
+      - "worker-2"
+      - "-workdir"
+      - "/workdir/scratch"
+      - "-stage-out"
+      - "file:///workdir/outputs"
+      - "-poll"
+      - "2s"
+      - "-debug"
+    volumes:
+      - ./tmp/workdir:/workdir
+    networks:
+      - gowe-net
+
+  worker-docker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      gowe-server:
+        condition: service_healthy
+    command:
+      - "-server"
+      - "http://gowe-server:8080"
+      - "-runtime"
+      - "docker"
+      - "-name"
+      - "worker-docker"
+      - "-workdir"
+      - "/workdir/scratch"
+      - "-stage-out"
+      - "file:///workdir/outputs"
+      - "-poll"
+      - "2s"
+      - "-debug"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./tmp/workdir:/workdir
+    networks:
+      - gowe-net
+
+volumes:
+  gowe-data:
+  # gowe-workdir is a host bind mount for CLI access to outputs
+  # In production, use a named volume or NFS mount
+
+networks:
+  gowe-net:

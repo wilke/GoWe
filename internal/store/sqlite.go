@@ -451,6 +451,18 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal depends_on: %w", err)
 	}
+	toolJSON, err := json.Marshal(task.Tool)
+	if err != nil {
+		return fmt.Errorf("marshal tool: %w", err)
+	}
+	jobJSON, err := json.Marshal(task.Job)
+	if err != nil {
+		return fmt.Errorf("marshal job: %w", err)
+	}
+	runtimeHintsJSON, err := json.Marshal(task.RuntimeHints)
+	if err != nil {
+		return fmt.Errorf("marshal runtime_hints: %w", err)
+	}
 
 	var startedAt, completedAt *string
 	if task.StartedAt != nil {
@@ -465,14 +477,16 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, submission_id, step_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
 		task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
+		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 	)
 	return err
 }
@@ -482,7 +496,8 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, erro
 	return s.scanTask(s.db.QueryRowContext(ctx,
 		`SELECT id, submission_id, step_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints
 		 FROM tasks WHERE id = ?`, id))
 }
 
@@ -492,7 +507,8 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
 	if err != nil {
 		return nil, err
@@ -509,6 +525,18 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
 	}
+	toolJSON, err := json.Marshal(task.Tool)
+	if err != nil {
+		return fmt.Errorf("marshal tool: %w", err)
+	}
+	jobJSON, err := json.Marshal(task.Job)
+	if err != nil {
+		return fmt.Errorf("marshal job: %w", err)
+	}
+	runtimeHintsJSON, err := json.Marshal(task.RuntimeHints)
+	if err != nil {
+		return fmt.Errorf("marshal runtime_hints: %w", err)
+	}
 
 	var startedAt, completedAt *string
 	if task.StartedAt != nil {
@@ -523,11 +551,13 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
 		 outputs=?, retry_count=?, stdout=?, stderr=?, exit_code=?,
-		 started_at=?, completed_at=? WHERE id=?`,
+		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=? WHERE id=?`,
 		string(task.State), string(task.ExecutorType), task.ExternalID,
 		string(outputsJSON), task.RetryCount,
 		task.Stdout, task.Stderr, task.ExitCode,
-		startedAt, completedAt, task.ID,
+		startedAt, completedAt,
+		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
+		task.ID,
 	)
 	if err != nil {
 		return err
@@ -545,7 +575,8 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -564,6 +595,7 @@ type scanner interface {
 func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	var task model.Task
 	var inputsJSON, outputsJSON, dependsOnJSON string
+	var toolJSON, jobJSON, runtimeHintsJSON string
 	var state, executorType, createdAt string
 	var startedAt, completedAt *string
 
@@ -574,6 +606,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&task.RetryCount, &task.MaxRetries,
 		&task.Stdout, &task.Stderr, &task.ExitCode,
 		&createdAt, &startedAt, &completedAt,
+		&toolJSON, &jobJSON, &runtimeHintsJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -587,6 +620,9 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	json.Unmarshal([]byte(inputsJSON), &task.Inputs)
 	json.Unmarshal([]byte(outputsJSON), &task.Outputs)
 	json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
+	json.Unmarshal([]byte(toolJSON), &task.Tool)
+	json.Unmarshal([]byte(jobJSON), &task.Job)
+	json.Unmarshal([]byte(runtimeHintsJSON), &task.RuntimeHints)
 	task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	if startedAt != nil {
 		t, _ := time.Parse(time.RFC3339Nano, *startedAt)
@@ -605,6 +641,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 	for rows.Next() {
 		var task model.Task
 		var inputsJSON, outputsJSON, dependsOnJSON string
+		var toolJSON, jobJSON, runtimeHintsJSON string
 		var state, executorType, createdAt string
 		var startedAt, completedAt *string
 
@@ -615,6 +652,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
+			&toolJSON, &jobJSON, &runtimeHintsJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -624,6 +662,9 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		json.Unmarshal([]byte(inputsJSON), &task.Inputs)
 		json.Unmarshal([]byte(outputsJSON), &task.Outputs)
 		json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
+		json.Unmarshal([]byte(toolJSON), &task.Tool)
+		json.Unmarshal([]byte(jobJSON), &task.Job)
+		json.Unmarshal([]byte(runtimeHintsJSON), &task.RuntimeHints)
 		task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		if startedAt != nil {
 			t, _ := time.Parse(time.RFC3339Nano, *startedAt)
@@ -845,7 +886,8 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
 		 ORDER BY created_at LIMIT 10`)
 	if err != nil {
@@ -856,6 +898,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 	for rows.Next() {
 		var task model.Task
 		var inputsJSON, outputsJSON, dependsOnJSON string
+		var toolJSON, jobJSON, runtimeHintsJSON string
 		var stateStr, executorType, createdAt string
 		var startedAt, completedAt *string
 
@@ -866,6 +909,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 			&task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
+			&toolJSON, &jobJSON, &runtimeHintsJSON,
 		); err != nil {
 			rows.Close()
 			return nil, err
@@ -876,6 +920,9 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 		json.Unmarshal([]byte(inputsJSON), &task.Inputs)
 		json.Unmarshal([]byte(outputsJSON), &task.Outputs)
 		json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
+		json.Unmarshal([]byte(toolJSON), &task.Tool)
+		json.Unmarshal([]byte(jobJSON), &task.Job)
+		json.Unmarshal([]byte(runtimeHintsJSON), &task.RuntimeHints)
 		task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		if startedAt != nil {
 			t, _ := time.Parse(time.RFC3339Nano, *startedAt)

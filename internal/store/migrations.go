@@ -120,6 +120,22 @@ var alterStatements = []struct {
 		alterSQL: "ALTER TABLE workflows ADD COLUMN class TEXT NOT NULL DEFAULT 'Workflow'",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workflows_class ON workflows(class)",
 	},
+	// Tool, Job, and RuntimeHints for CWL worker execution
+	{
+		table:    "tasks",
+		column:   "tool",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN tool TEXT NOT NULL DEFAULT '{}'",
+	},
+	{
+		table:    "tasks",
+		column:   "job",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN job TEXT NOT NULL DEFAULT '{}'",
+	},
+	{
+		table:    "tasks",
+		column:   "runtime_hints",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN runtime_hints TEXT NOT NULL DEFAULT '{}'",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
