@@ -3,6 +3,8 @@ package parser
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -41,13 +43,16 @@ func (v *Validator) validateVersion(graph *cwl.GraphDocument) []model.FieldError
 	if graph.CWLVersion == "" {
 		return []model.FieldError{{Field: "cwlVersion", Message: "cwlVersion is required"}}
 	}
-	if graph.CWLVersion != "v1.2" {
+	// Accept CWL v1.0, v1.1, and v1.2 (they are mostly compatible).
+	switch graph.CWLVersion {
+	case "v1.0", "v1.1", "v1.2", "draft-3":
+		return nil
+	default:
 		return []model.FieldError{{
 			Field:   "cwlVersion",
-			Message: fmt.Sprintf("unsupported cwlVersion %q; expected v1.2", graph.CWLVersion),
+			Message: fmt.Sprintf("unsupported cwlVersion %q; expected v1.0, v1.1, or v1.2", graph.CWLVersion),
 		}}
 	}
-	return nil
 }
 
 func (v *Validator) validateWorkflow(graph *cwl.GraphDocument) []model.FieldError {
@@ -57,17 +62,10 @@ func (v *Validator) validateWorkflow(graph *cwl.GraphDocument) []model.FieldErro
 		return []model.FieldError{{Field: "$graph", Message: "no Workflow entry found in $graph"}}
 	}
 
-	if len(wf.Inputs) == 0 {
-		errs = append(errs, model.FieldError{Field: "inputs", Message: "workflow must have at least one input"})
-	}
-	if len(wf.Steps) == 0 {
-		errs = append(errs, model.FieldError{Field: "steps", Message: "workflow must have at least one step"})
-	}
-	// CWL allows CommandLineTools with no outputs (side-effect only).
-	// Only enforce the "at least one output" rule for Workflows.
-	if graph.OriginalClass == "Workflow" && len(wf.Outputs) == 0 {
-		errs = append(errs, model.FieldError{Field: "outputs", Message: "workflow must have at least one output"})
-	}
+	// CWL v1.2 allows workflows with no inputs (they can have defaults or be passthrough).
+	// CWL v1.2 allows workflows with no steps (passthrough workflows that connect inputs to outputs).
+	// CWL v1.2 allows workflows with no outputs (side-effect only workflows).
+	// No longer enforce "at least one output" rule - it's valid per CWL spec.
 
 	// All inputs must have a type.
 	for id, inp := range wf.Inputs {
@@ -149,12 +147,16 @@ func (v *Validator) validateOutputSources(graph *cwl.GraphDocument) []model.Fiel
 		return nil
 	}
 
-	// Build set of valid step/output pairs.
-	validOutputs := make(map[string]bool)
+	// Build set of valid sources: step outputs and workflow inputs (for passthrough).
+	validSources := make(map[string]bool)
 	for stepID, step := range wf.Steps {
 		for _, outID := range step.Out {
-			validOutputs[stepID+"/"+outID] = true
+			validSources[stepID+"/"+outID] = true
 		}
+	}
+	// CWL allows workflow outputs to directly reference workflow inputs (passthrough).
+	for inputID := range wf.Inputs {
+		validSources[inputID] = true
 	}
 
 	for id, out := range wf.Outputs {
@@ -165,10 +167,10 @@ func (v *Validator) validateOutputSources(graph *cwl.GraphDocument) []model.Fiel
 			})
 			continue
 		}
-		if !validOutputs[out.OutputSource] {
+		if !validSources[out.OutputSource] {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("outputs.%s.outputSource", id),
-				Message: fmt.Sprintf("outputSource %q does not match any step output", out.OutputSource),
+				Message: fmt.Sprintf("outputSource %q does not match any step output or workflow input", out.OutputSource),
 			})
 		}
 	}
@@ -190,11 +192,80 @@ func (v *Validator) validateToolRefs(graph *cwl.GraphDocument) []model.FieldErro
 		if len(ref) > 0 && ref[0] == '#' {
 			ref = ref[1:]
 		}
-		if _, ok := graph.Tools[ref]; !ok {
+
+		// Check if tool exists with the reference as-is (for packed documents with .cwl IDs).
+		_, inTools := graph.Tools[ref]
+		_, inExprTools := graph.ExpressionTools[ref]
+
+		// If not found, try stripping .cwl extension (for external file references).
+		if !inTools && !inExprTools && strings.HasSuffix(ref, ".cwl") {
+			// External file reference - tool ID is filename without extension.
+			base := filepath.Base(ref)
+			strippedRef := strings.TrimSuffix(base, ".cwl")
+			_, inTools = graph.Tools[strippedRef]
+			_, inExprTools = graph.ExpressionTools[strippedRef]
+		}
+
+		if !inTools && !inExprTools {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("steps.%s.run", stepID),
 				Message: fmt.Sprintf("run reference %q not found in $graph", step.Run),
 			})
+		}
+	}
+
+	return errs
+}
+
+// validateStepInputs checks that step inputs match the tool's declared inputs.
+// CWL spec requires that step inputs correspond to inputs declared by the tool.
+func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldError {
+	var errs []model.FieldError
+	if graph.Workflow == nil {
+		return nil
+	}
+
+	for stepID, step := range graph.Workflow.Steps {
+		if step.Run == "" {
+			continue // Already caught by validateSteps.
+		}
+
+		// Resolve the tool reference to get the tool's declared inputs.
+		ref := step.Run
+		if len(ref) > 0 && ref[0] == '#' {
+			ref = ref[1:]
+		}
+
+		// Get the tool's declared inputs.
+		var toolInputs map[string]cwl.ToolInputParam
+		if tool, ok := graph.Tools[ref]; ok {
+			toolInputs = tool.Inputs
+		} else if exprTool, ok := graph.ExpressionTools[ref]; ok {
+			toolInputs = exprTool.Inputs
+		} else if strings.HasSuffix(ref, ".cwl") {
+			// Try stripping .cwl extension (for external file references).
+			base := filepath.Base(ref)
+			strippedRef := strings.TrimSuffix(base, ".cwl")
+			if tool, ok := graph.Tools[strippedRef]; ok {
+				toolInputs = tool.Inputs
+			} else if exprTool, ok := graph.ExpressionTools[strippedRef]; ok {
+				toolInputs = exprTool.Inputs
+			}
+		}
+
+		if toolInputs == nil {
+			// Tool not found - already reported by validateToolRefs.
+			continue
+		}
+
+		// Check each step input against the tool's declared inputs.
+		for inID := range step.In {
+			if _, declared := toolInputs[inID]; !declared {
+				errs = append(errs, model.FieldError{
+					Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
+					Message: fmt.Sprintf("step %q input %q is not declared in the tool's inputs", stepID, inID),
+				})
+			}
 		}
 	}
 

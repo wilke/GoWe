@@ -1,0 +1,10 @@
+threads: 4
+reference:
+  class: File
+  path: reference.fa
+reads_r1:
+  class: File
+  path: reads_1.fastq
+reads_r2:
+  class: File
+  path: reads_2.fastq

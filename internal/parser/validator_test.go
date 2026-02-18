@@ -76,7 +76,7 @@ func TestValidate_MissingCWLVersion(t *testing.T) {
 func TestValidate_UnsupportedVersion(t *testing.T) {
 	v := testValidator()
 	g := validGraph()
-	g.CWLVersion = "v1.0"
+	g.CWLVersion = "v0.9" // truly unsupported version
 	apiErr := v.Validate(g)
 	if apiErr == nil {
 		t.Fatal("expected error")
@@ -86,42 +86,79 @@ func TestValidate_UnsupportedVersion(t *testing.T) {
 	}
 }
 
-func TestValidate_NoInputs(t *testing.T) {
+func TestValidate_SupportedVersions(t *testing.T) {
 	v := testValidator()
-	g := validGraph()
-	g.Workflow.Inputs = map[string]cwl.InputParam{}
-	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
-	}
-	if !hasFieldError(apiErr.Details, "inputs") {
-		t.Errorf("expected inputs error, got %v", apiErr.Details)
+	for _, ver := range []string{"v1.0", "v1.1", "v1.2", "draft-3"} {
+		g := validGraph()
+		g.CWLVersion = ver
+		if apiErr := v.Validate(g); apiErr != nil {
+			t.Errorf("version %s should be supported, got %v", ver, apiErr)
+		}
 	}
 }
 
-func TestValidate_NoSteps(t *testing.T) {
+func TestValidate_NoInputs_Allowed(t *testing.T) {
+	// CWL v1.2 allows workflows with no inputs (they can have defaults).
 	v := testValidator()
-	g := validGraph()
-	g.Workflow.Steps = map[string]cwl.Step{}
-	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
+	g := &cwl.GraphDocument{
+		CWLVersion:    "v1.2",
+		OriginalClass: "Workflow",
+		Workflow: &cwl.Workflow{
+			ID:      "main",
+			Class:   "Workflow",
+			Inputs:  map[string]cwl.InputParam{},
+			Outputs: map[string]cwl.OutputParam{"out": {Type: "File", OutputSource: "step1/out"}},
+			Steps: map[string]cwl.Step{
+				"step1": {
+					Run: "#tool1",
+					In:  map[string]cwl.StepInput{"x": {Default: "value"}}, // use default, not source
+					Out: []string{"out"},
+				},
+			},
+		},
+		Tools: map[string]*cwl.CommandLineTool{
+			"tool1": {ID: "tool1", Class: "CommandLineTool"},
+		},
 	}
-	if !hasFieldError(apiErr.Details, "steps") {
-		t.Errorf("expected steps error, got %v", apiErr.Details)
+	if apiErr := v.Validate(g); apiErr != nil {
+		t.Errorf("expected valid, got %v", apiErr)
 	}
 }
 
-func TestValidate_NoOutputs(t *testing.T) {
+func TestValidate_NoSteps_PassthroughWorkflow(t *testing.T) {
+	// CWL v1.2 allows passthrough workflows (outputs directly from inputs).
+	v := testValidator()
+	g := &cwl.GraphDocument{
+		CWLVersion:    "v1.2",
+		OriginalClass: "Workflow",
+		Workflow: &cwl.Workflow{
+			ID:      "main",
+			Class:   "Workflow",
+			Inputs:  map[string]cwl.InputParam{"in1": {Type: "File"}},
+			Outputs: map[string]cwl.OutputParam{"out": {Type: "File", OutputSource: "in1"}}, // passthrough
+			Steps:   map[string]cwl.Step{},
+		},
+		Tools: map[string]*cwl.CommandLineTool{},
+	}
+	if apiErr := v.Validate(g); apiErr != nil {
+		t.Errorf("expected valid, got %v", apiErr)
+	}
+}
+
+func TestValidate_NoOutputs_Allowed(t *testing.T) {
+	// CWL v1.2 allows workflows with no outputs (side-effect only).
 	v := testValidator()
 	g := validGraph()
 	g.Workflow.Outputs = map[string]cwl.OutputParam{}
-	apiErr := v.Validate(g)
-	if apiErr == nil {
-		t.Fatal("expected error")
+	// Also need to remove step output references from the workflow.
+	g.Workflow.Steps["step1"] = cwl.Step{
+		Run: "#tool1",
+		In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+		Out: []string{},
 	}
-	if !hasFieldError(apiErr.Details, "outputs") {
-		t.Errorf("expected outputs error, got %v", apiErr.Details)
+	apiErr := v.Validate(g)
+	if apiErr != nil {
+		t.Errorf("workflows with no outputs should be valid, got %v", apiErr)
 	}
 }
 

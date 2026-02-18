@@ -18,6 +18,13 @@ type InputParam struct {
 	Type    string
 	Doc     string
 	Default any
+
+	// RecordFields contains field definitions for record types.
+	// Used for resolving secondaryFiles on record fields.
+	RecordFields []RecordField
+
+	// SecondaryFiles specifies additional files associated with this input.
+	SecondaryFiles []SecondaryFileSchema
 }
 
 // OutputParam is a CWL workflow output.
@@ -29,12 +36,14 @@ type OutputParam struct {
 
 // Step is a CWL workflow step.
 type Step struct {
-	Run     string
-	In      map[string]StepInput
-	Out     []string
-	Scatter []string
-	When    string
-	Hints   map[string]any
+	Run           string
+	In            map[string]StepInput
+	Out           []string
+	Scatter       []string
+	ScatterMethod string // "dotproduct", "nested_crossproduct", or "flat_crossproduct"
+	When          string
+	Hints         map[string]any
+	Requirements  map[string]any
 }
 
 // StepInput is a normalized CWL step input.
