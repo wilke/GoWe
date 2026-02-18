@@ -198,13 +198,37 @@ steps:
 | `--db` | — | `~/.gowe/gowe.db` | SQLite database path |
 | `--debug` | — | `false` | Shorthand for `--log-level=debug` |
 
+## Tools
+
+GoWe includes several command-line tools in `cmd/`:
+
+| Tool | Description | Documentation |
+|------|-------------|---------------|
+| `server` | Main API server with scheduler and executors | [docs/tools/server.md](docs/tools/server.md) |
+| `cli` | CLI client for workflow submission and monitoring | [docs/tools/cli.md](docs/tools/cli.md) |
+| `worker` | Remote worker for distributed task execution | [docs/tools/worker.md](docs/tools/worker.md) |
+| `gen-cwl-tools` | Generates CWL tools from BV-BRC app definitions | [docs/tools/gen-cwl-tools.md](docs/tools/gen-cwl-tools.md) |
+| `smoke-test` | End-to-end API integration test | [docs/tools/smoke-test.md](docs/tools/smoke-test.md) |
+| `verify-bvbrc` | BV-BRC API connectivity verification | [docs/tools/verify-bvbrc.md](docs/tools/verify-bvbrc.md) |
+| `scheduler` | Standalone scheduler (placeholder) | — |
+
+Build all tools:
+
+```bash
+go build -o bin/ ./cmd/...
+```
+
 ## Project Structure
 
 ```
 cmd/
-  server/       Server entrypoint
-  cli/          CLI entrypoint
-  scheduler/    Standalone scheduler (future)
+  cli/          CLI client entrypoint
+  gen-cwl-tools/ CWL tool generator for BV-BRC apps
+  scheduler/    Standalone scheduler (placeholder)
+  server/       API server entrypoint
+  smoke-test/   End-to-end API smoke test
+  verify-bvbrc/ BV-BRC API verification tool
+  worker/       Remote worker for distributed execution
 internal/
   bvbrc/        BV-BRC auth + JSON-RPC 1.1 client
   bundle/       CWL file bundler

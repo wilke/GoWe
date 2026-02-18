@@ -47,6 +47,36 @@ Tests 10 and 27 pass on Linux but fail on macOS due to this difference.
 
 ---
 
+## Session: 2026-02-18 (Documentation Update)
+
+### Tool Documentation: COMPLETE
+
+Updated README.md and created comprehensive documentation for all cmd/ tools.
+
+**Files modified (1):**
+- `README.md` — Added Tools section with table linking to docs, updated Project Structure
+
+**Files created (6):**
+- `docs/tools/server.md` — Server documentation with examples, API reference, tutorial
+- `docs/tools/cli.md` — CLI documentation with all commands, flags, tutorial
+- `docs/tools/worker.md` — Worker documentation with runtime modes, clustering tutorial
+- `docs/tools/gen-cwl-tools.md` — CWL tool generator docs with type mapping, customization
+- `docs/tools/smoke-test.md` — Smoke test docs with CI/CD integration examples
+- `docs/tools/verify-bvbrc.md` — BV-BRC verification docs with troubleshooting guide
+
+**Tools documented (7):**
+| Tool | Description |
+|------|-------------|
+| server | Main API server with scheduler and executors |
+| cli | CLI client (login, submit, status, list, cancel, logs, apps) |
+| worker | Remote worker for distributed task execution |
+| gen-cwl-tools | CWL tool generator from BV-BRC app specs |
+| smoke-test | End-to-end API integration test |
+| verify-bvbrc | BV-BRC API connectivity verification |
+| scheduler | Placeholder (stub) |
+
+---
+
 ## Session: 2026-02-17 Late Night (CWL Conformance - 94%)
 
 ### Status: 79/84 TESTS PASSING (94%)
@@ -215,6 +245,117 @@ go test ./...  # All tests pass
 
 ---
 
+## Session: 2026-02-16 (Remote Worker Implementation)
+
+### Remote Worker Phase 1 + 2: COMPLETE
+
+Implemented remote worker support — workers are separate processes that pull tasks from the server via HTTP, execute locally (Docker/Apptainer/bare), and report results back.
+
+**New files created (8):**
+- `pkg/model/worker.go` — Worker, WorkerState, ContainerRuntime types
+- `internal/executor/worker.go` — WorkerExecutor (thin, reads state from store)
+- `internal/server/handler_workers.go` — 7 worker API endpoints
+- `internal/worker/runtime.go` — Runtime interface + Docker/Apptainer/Bare impls
+- `internal/worker/stager.go` — Stager interface + FileStager
+- `internal/worker/client.go` — HTTP client for server API
+- `internal/worker/worker.go` — Worker main loop + task execution
+- `cmd/worker/main.go` — Worker binary entry point
+
+**Files modified (5):**
+- `pkg/model/state.go` — Added `ExecutorTypeWorker`
+- `internal/store/migrations.go` — Added workers table
+- `internal/store/store.go` — Added Worker CRUD + CheckoutTask to interface
+- `internal/store/sqlite.go` — Implemented Worker CRUD + CheckoutTask
+- `internal/server/server.go` — Registered worker routes
+- `cmd/server/main.go` — Registered WorkerExecutor at bootstrap
+
+**Test files created (4):**
+- `internal/executor/worker_test.go`
+- `internal/worker/runtime_test.go`
+- `internal/worker/stager_test.go`
+- `internal/server/handler_workers_test.go`
+- `internal/store/sqlite_test.go` (modified — added Worker + CheckoutTask tests)
+
+**API endpoints (7):**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/workers` | GET | List workers |
+| `/api/v1/workers` | POST | Register worker |
+| `/api/v1/workers/{id}/heartbeat` | PUT | Heartbeat |
+| `/api/v1/workers/{id}/work` | GET | Checkout task (204 if none) |
+| `/api/v1/workers/{id}` | DELETE | Deregister worker |
+| `/api/v1/workers/{id}/tasks/{tid}/status` | PUT | Report task status |
+| `/api/v1/workers/{id}/tasks/{tid}/complete` | PUT | Report task completion |
+
+**Verification:** `go build ./...` and `go test ./...` — all pass, zero errors.
+
+### Next Steps
+- Not yet committed — awaiting user direction
+- E2E manual test: start server, submit worker-hinted workflow, start worker binary
+- Phase 3 (future): ShockStager, WorkspaceStager for remote data staging
+
+---
+
+## Session: 2026-02-16 (CWL Tool Fixes)
+
+### CWL Tool Audit & Fixes: COMPLETE
+
+Fixed all 39 existing CWL tools and created 6 new ones based on `docs/BVBRC-App-Specs-Summary.md`.
+
+**Files modified (26 CWL tools):**
+
+| Tool | Changes |
+|------|---------|
+| GenomeAssembly | srr_ids→string[]?, added insert_size_mean/stdev to PE libs |
+| GenomeAssembly2 | srr_ids→string[]?, expanded recipe enum, added normalize/filtlong/target_depth/max_bases, fixed genome_size to int |
+| SARS2Assembly | srr_ids→string[]?, added primers/primer_version |
+| ComprehensiveSARS2Analysis | srr_ids→string[]?, added primers/primer_version, fixed recipe enum |
+| ComprehensiveGenomeAnalysis | srr_ids→string[]?, code→int?, domain enum expanded, added normalize/filtlong/target_depth, genome_size→int, added insert_size_mean/stdev |
+| GenomeAnnotation | code→int?, domain enum expanded, added assembly_output |
+| GenomeAnnotationGenbank | added raw_import_only, skip_contigs |
+| GapfillModel | string→string[] for lists, added record arrays (uptake_limit, custom_bounds, objective) |
+| FluxBalanceAnalysis | same as GapfillModel |
+| FastqUtils | PE/SE libs→singular records (not arrays) |
+| MetagenomeBinning | PE/SE libs→singular records |
+| MetagenomicReadMapping | PE/SE libs→singular records |
+| Variation | removed platform/orientation from PE, added insert_size_mean/stdev, simplified SE, srr_ids→string[]?, expanded mapper/caller enums |
+| TaxonomicClassification | srr_ids→string[]?, added insert_size_mean/stdev to PE |
+| FunctionalClassification | srr_ids→string[]? |
+| RNASeq | experimental_conditions→string[]?, added sample_id/condition/insert_size to records |
+| RNASeq2 | same as RNASeq |
+| TnSeq | reference_genome_id→required, added gumbel to recipe enum |
+| GeneTree | sequences→string[], feature/genome_metadata_fields→string[]? |
+| CodonTree | genome_ids→optional, added genome_groups/genome_metadata_fields, fixed int defaults |
+| MSA | added input_status/input_type/select_genomegroup/feature_list/genome_list/ref_type/strategy/ref_string, feature_groups→File[]?, expanded aligner enum |
+| Homology | expanded input_source/db_source enums, added input_feature_group/input_genome_group/db_id_list/db_feature_group/db_genome_group/blast params |
+| SequenceSubmission | metadata→required, added 12 personal metadata fields |
+| MetaCATS | alignment_file/group_file→optional, added year_ranges/metadata_group/input_type/alphabet/groups/auto_groups |
+| GenomeComparison | genome_ids/user_genomes/user_feature_groups→arrays |
+| HASubtypeNumberingConversion | expanded input_source enum, added input_feature_list |
+| PrimerDesign | added input_type/sequence_input, removed SEQUENCE_TEMPLATE, added PRIMER_PICK_INTERNAL_OLIGO |
+| Sleep | removed output_path/output_file, outputs→empty |
+| RunProbModelSEEDJob | removed output_path/output_file, outputs→empty |
+
+**Files verified (no changes needed):**
+- DifferentialExpression.cwl
+- GenomeAlignment.cwl
+- ModelReconstruction.cwl
+
+**New CWL tools created (6):**
+- CEIRRDataSubmission.cwl
+- CoreGenomeMLST.cwl
+- SARS2Wastewater.cwl
+- TreeSort.cwl
+- ViralAssembly.cwl
+- WholeGenomeSNPAnalysis.cwl
+
+### Next Steps
+- Consider updating `cmd/gen-cwl-tools/main.go` to generate these corrected CWL patterns
+- Update concrete output patterns (currently using generic File[] glob)
+- Run tests to validate CWL tool parsing
+
+---
+
 ## Session: 2026-02-13 (BV-BRC App Specs Research)
 
 ### BV-BRC App Specs Summary: COMPLETE
@@ -231,11 +372,6 @@ Researched all 34 BV-BRC template-based repos (42 distinct apps):
 - Special behaviors documented: donot_create_result_folder (Sleep, GapfillModel, ModelReconstruction, RunProbModelSEEDJob), singular lib params (ViralAssembly, FastqUtils, MetagenomicReadMapping), wrapper apps (ComprehensiveGenomeAnalysis, ComprehensiveSARS2Analysis)
 - All inputs mapped to CWL types with correct group/record array handling
 - Concrete output files identified from service-script analysis (save_file_to_file, p3-cp, write_dir patterns)
-
-### Next Steps
-- Update gen-cwl-tools to use concrete output patterns instead of generic File[] glob
-- Create CWL tools for 6 missing apps
-- Resolve 4 unmatched existing CWL tools
 
 ---
 
@@ -269,18 +405,6 @@ Documented in `docs/BVBRC-App-Output-Convention.md`. Key points:
 - `write_results()` enumerates the hidden folder and creates the job_result manifest
 - The job_result JSON contains `output_files: [[path, uuid], ...]` — authoritative manifest
 
-**Impact on GoWe:**
-- Current CWL glob `$(inputs.output_path.location)/$(inputs.output_file)*` matches the job_result metadata, not the actual files
-- For real output resolution, GoWe should either:
-  1. Read the `job_result` object and parse `output_files` (preferred)
-  2. List `{output_path}/.{output_file}/` via Workspace.ls
-- The `test-pipeline/` visible folder was empty; actual output was in `.test-pipeline/now`
-
-### Created This Session
-
-- `docs/BVBRC-App-Output-Convention.md` — full documentation of the output convention
-- `scripts/test-e2e.sh` — shell script to run E2E test pipeline
-
 ### Previous Bug Fix (committed earlier)
 
 **Scientific notation job IDs** (`internal/executor/bvbrc.go:108`):
@@ -302,6 +426,7 @@ Documented in `docs/BVBRC-App-Output-Convention.md`. Key points:
 - **CWL Directory type**: DONE (8c57a81, #31)
 - **Auto-wrap bare CLTs**: DONE (43ca8f6, #28)
 - **CWL Tool Generation**: v0.8.0 (42df7cb) — 39 tools with File[] output type
+- **CWL Tool Fixes**: 2026-02-16 — all 45 tools corrected to match app specs
 
 ### Recent Commits (main)
 
@@ -342,15 +467,6 @@ Documented in `docs/BVBRC-App-Output-Convention.md`. Key points:
 | `cwl/jobs/test-pipeline.yml` | Job inputs for test pipeline |
 | `scripts/test-e2e.sh` | E2E test runner script |
 | `docs/BVBRC-App-Output-Convention.md` | BV-BRC output convention docs |
-
-### BV-BRC Source References
-
-| File | Purpose |
-|------|---------|
-| `bvbrc_standalone_apps/service-scripts/App-Date.pl` | Date app implementation |
-| `bvbrc_standalone_apps/app_specs/Date.json` | Date app spec |
-| `dev_container/modules/app_service/lib/Bio/KBase/AppService/AppScript.pm` | App framework |
-| `BV-BRC-Web/public/js/p3/widget/viewer/JobResult.js` | Web UI job result viewer |
 
 ### YAML Gotcha
 
