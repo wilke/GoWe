@@ -1,5 +1,40 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-17 Evening (CWL Conformance Continued)
+
+### Status: IMPROVED
+
+Improved CWL conformance test pass rate from 62/84 to 66/84 (79%).
+
+### Changes Made This Session
+
+37. **Format field for outputs** - Added format field support for File outputs, including:
+    - Namespace resolution (e.g., `edam:format_2330` -> `http://edamontology.org/format_2330`)
+    - Expression evaluation (e.g., `$(inputs.input.format)`)
+    - Added Namespaces field to GraphDocument
+38. **ShellCommandRequirement** - Run commands through shell when ShellCommandRequirement is present
+39. **runtime.exitCode** - Capture exit code and make available in outputEval expressions
+    - Added ExitCode to RuntimeContext
+    - Added InOutputEval flag to Context to conditionally include exitCode
+40. **Packed format ID normalization** - Handle fully-qualified IDs in packed JSON format:
+    - Normalize IDs like `#main/input` -> `input`
+    - Normalize source references like `#main/rev/output` -> `rev/output`
+    - Preserve local references like `echo_1/fileout`
+
+### Current Status: 66/84 tests passing (79%)
+
+### Remaining Failures (18 tests)
+- **External tool file references** (tests 8, 10, 27, 36, 40-43, 54) - workflows referencing external .cwl files
+- **Hints with $import** (test 25) - hints importing external files
+- **Any type validation** (tests 38-39) - should-fail tests for Any type
+- **SecondaryFiles handling** (tests 53, 54)
+- **loadContents limit** (tests 63, 64) - 64KB limit enforcement
+- **length on non-array** (test 66) - should fail when accessing .length on non-array
+- **Colon in paths** (test 69) - path handling with colons
+- **Record field inputBindings** (test 74) - record fields with individual inputBindings
+
+---
+
 ## Session: 2026-02-17 Continued (CWL Conformance Test Improvements)
 
 ### Status: IMPROVED
@@ -12,8 +47,6 @@ Improved CWL conformance test pass rate from 54/84 to 61/84 (73%).
 34. **Argument ordering** - Arguments come before inputs at the same position (fixed via isArgument flag)
 35. **Float formatting in JSON** - Output floats without scientific notation in both command line and JSON output
 36. **Float formatting in expressions** - Format floats without e-notation when converting to strings in expressions
-
-### Current Status: 61/84 tests passing (73%)
 
 ### Previous Changes This Session
 1. **Array-style parsing** - Added support for array-style inputs/outputs/hints/requirements

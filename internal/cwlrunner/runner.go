@@ -33,7 +33,9 @@ type Runner struct {
 	ProcessID    string // specific process ID to run from $graph document
 
 	// Internal state.
-	cwlDir string // directory of CWL file, for resolving relative paths in defaults
+	cwlDir     string            // directory of CWL file, for resolving relative paths in defaults
+	stepCount  int               // counter for unique step directories
+	namespaces map[string]string // namespace prefix -> URI mappings
 }
 
 // NewRunner creates a new CWL runner.
@@ -184,6 +186,9 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 		return err
 	}
 
+	// Store namespaces for format resolution.
+	r.namespaces = graph.Namespaces
+
 	// Validate first.
 	v := parser.NewValidator(r.logger)
 	if err := v.Validate(graph); err != nil {
@@ -209,17 +214,31 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 
 	// If ProcessID is specified, select that specific process.
 	if r.ProcessID != "" {
+		// Normalize processID for comparison (strip leading #)
+		processID := r.ProcessID
+		processIDWithHash := "#" + r.ProcessID
+
 		// Check if it's a tool.
-		if tool, ok := graph.Tools[r.ProcessID]; ok {
+		if tool, ok := graph.Tools[processID]; ok {
 			outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs)
 			if err != nil {
 				return err
 			}
 			return r.writeOutputs(outputs, w)
 		}
-		// Check if it matches the workflow ID.
-		if graph.Workflow != nil && (graph.Workflow.ID == r.ProcessID || graph.Workflow.ID == "main" && r.ProcessID == "main") {
-			return r.executeWorkflow(ctx, graph, resolvedInputs, w)
+		if tool, ok := graph.Tools[processIDWithHash]; ok {
+			outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs)
+			if err != nil {
+				return err
+			}
+			return r.writeOutputs(outputs, w)
+		}
+		// Check if it matches the workflow ID (with or without # prefix).
+		if graph.Workflow != nil {
+			wfID := graph.Workflow.ID
+			if wfID == processID || wfID == processIDWithHash || wfID == "#"+processID {
+				return r.executeWorkflow(ctx, graph, resolvedInputs, w)
+			}
 		}
 		return fmt.Errorf("process %q not found in document", r.ProcessID)
 	}
@@ -251,8 +270,19 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph)
 
-	// Build runtime context from tool requirements.
-	runtime := buildRuntimeContext(tool, r.OutDir)
+	// Determine execution mode (Docker or local).
+	useDocker := r.ForceDocker || (!r.NoContainer && hasDockerRequirement(tool))
+
+	// Get the work directory for this execution (increments stepCount).
+	r.stepCount++
+	workDir := filepath.Join(r.OutDir, fmt.Sprintf("work_%d", r.stepCount))
+	// Make workDir absolute for use in runtime.outdir expressions.
+	if absWorkDir, err := filepath.Abs(workDir); err == nil {
+		workDir = absWorkDir
+	}
+
+	// Build runtime context using the actual work directory.
+	runtime := buildRuntimeContext(tool, workDir)
 
 	// Build command line.
 	builder := cmdline.NewBuilder(expressionLib)
@@ -263,18 +293,15 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 
 	r.logger.Debug("built command", "cmd", cmdResult.Command)
 
-	// Determine execution mode (Docker or local).
-	useDocker := r.ForceDocker || (!r.NoContainer && hasDockerRequirement(tool))
-
 	var outputs map[string]any
 	if useDocker {
 		dockerImage := getDockerImage(tool)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
-		outputs, err = r.executeInDocker(ctx, tool, cmdResult, mergedInputs, dockerImage)
+		outputs, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
 	} else {
-		outputs, err = r.executeLocal(ctx, tool, cmdResult, mergedInputs)
+		outputs, err = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
 
 	if err != nil {

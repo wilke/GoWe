@@ -14,6 +14,10 @@ type Context struct {
 
 	// Runtime contains runtime information about the execution environment.
 	Runtime *RuntimeContext
+
+	// InOutputEval indicates if we're in an outputEval context.
+	// When true, runtime.exitCode is included in the runtime object.
+	InOutputEval bool
 }
 
 // RuntimeContext provides runtime information available to CWL expressions.
@@ -36,6 +40,10 @@ type RuntimeContext struct {
 
 	// TmpdirSize is the amount of storage in mebibytes in temp directory.
 	TmpdirSize int64 `json:"tmpdirSize"`
+
+	// ExitCode is the exit code from the command execution.
+	// Only available in outputEval context.
+	ExitCode int `json:"exitCode"`
 }
 
 // NewContext creates a new evaluation context with the given inputs.
@@ -49,18 +57,31 @@ func NewContext(inputs map[string]any) *Context {
 // WithSelf returns a new context with the self value set.
 func (c *Context) WithSelf(self any) *Context {
 	return &Context{
-		Inputs:  c.Inputs,
-		Self:    self,
-		Runtime: c.Runtime,
+		Inputs:       c.Inputs,
+		Self:         self,
+		Runtime:      c.Runtime,
+		InOutputEval: c.InOutputEval,
 	}
 }
 
 // WithRuntime returns a new context with the runtime context set.
 func (c *Context) WithRuntime(rt *RuntimeContext) *Context {
 	return &Context{
-		Inputs:  c.Inputs,
-		Self:    c.Self,
-		Runtime: rt,
+		Inputs:       c.Inputs,
+		Self:         c.Self,
+		Runtime:      rt,
+		InOutputEval: c.InOutputEval,
+	}
+}
+
+// WithOutputEval returns a new context marked as being in outputEval.
+// This enables access to runtime.exitCode.
+func (c *Context) WithOutputEval() *Context {
+	return &Context{
+		Inputs:       c.Inputs,
+		Self:         c.Self,
+		Runtime:      c.Runtime,
+		InOutputEval: true,
 	}
 }
 

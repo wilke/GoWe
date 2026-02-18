@@ -53,6 +53,10 @@ func (e *Evaluator) setupVM(ctx *Context) (*goja.Runtime, error) {
 		"outdirSize": ctx.Runtime.OutdirSize,
 		"tmpdirSize": ctx.Runtime.TmpdirSize,
 	}
+	// Only include exitCode in outputEval context per CWL spec.
+	if ctx.InOutputEval {
+		runtimeMap["exitCode"] = ctx.Runtime.ExitCode
+	}
 	if err := vm.Set("runtime", runtimeMap); err != nil {
 		return nil, fmt.Errorf("set runtime: %w", err)
 	}

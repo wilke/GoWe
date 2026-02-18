@@ -58,14 +58,27 @@ func (p *Parser) ParseGraph(data []byte) (*cwl.GraphDocument, error) {
 func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, error) {
 	version := stringField(raw, "cwlVersion")
 
+	// Parse $namespaces for prefix resolution.
+	namespaces := parseNamespaces(raw)
+
 	// Check if this is a bare document (no $graph).
 	if _, hasGraph := raw["$graph"]; !hasGraph {
 		class := stringField(raw, "class")
 		switch class {
 		case "CommandLineTool", "ExpressionTool":
-			return p.wrapToolAsWorkflow(raw, version)
+			graph, err := p.wrapToolAsWorkflow(raw, version)
+			if err != nil {
+				return nil, err
+			}
+			graph.Namespaces = namespaces
+			return graph, nil
 		case "Workflow":
-			return p.parseBareWorkflow(raw, version)
+			graph, err := p.parseBareWorkflow(raw, version)
+			if err != nil {
+				return nil, err
+			}
+			graph.Namespaces = namespaces
+			return graph, nil
 		default:
 			return nil, fmt.Errorf("missing $graph: document must be packed format or a bare CommandLineTool/ExpressionTool/Workflow")
 		}
@@ -81,6 +94,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		CWLVersion:    version,
 		OriginalClass: "Workflow",
 		Tools:         make(map[string]*cwl.CommandLineTool),
+		Namespaces:    namespaces,
 	}
 
 	for i, entry := range entries {
@@ -358,7 +372,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 		if m, ok := v.(map[string]any); ok {
 			wf.Outputs[id] = cwl.OutputParam{
 				Type:         stringField(m, "type"),
-				OutputSource: stringField(m, "outputSource"),
+				OutputSource: normalizeSourceRef(stringField(m, "outputSource")),
 				Doc:          stringField(m, "doc"),
 			}
 		}
@@ -387,6 +401,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 
 // normalizeToMap converts array-style CWL definitions to map-style.
 // CWL supports both: inputs: [{id: x, type: File}] and inputs: {x: {type: File}}.
+// Also handles packed format IDs like "#main/input" by extracting the last component.
 func normalizeToMap(v any) map[string]any {
 	switch val := v.(type) {
 	case map[string]any:
@@ -396,13 +411,31 @@ func normalizeToMap(v any) map[string]any {
 		for _, item := range val {
 			if m, ok := item.(map[string]any); ok {
 				if id, ok := m["id"].(string); ok {
-					result[id] = m
+					// Normalize packed format IDs: "#main/input" -> "input"
+					normalizedID := normalizePackedID(id)
+					result[normalizedID] = m
 				}
 			}
 		}
 		return result
 	}
 	return make(map[string]any)
+}
+
+// normalizePackedID converts a packed format ID to a simple ID.
+// "#main/input" -> "input"
+// "#main/rev/output" -> "output" (for step outputs)
+// "input" -> "input" (already simple)
+func normalizePackedID(id string) string {
+	// Strip leading #
+	id = strings.TrimPrefix(id, "#")
+
+	// Find the last / to get the local name
+	lastSlash := strings.LastIndex(id, "/")
+	if lastSlash >= 0 {
+		return id[lastSlash+1:]
+	}
+	return id
 }
 
 // normalizeHintsToMap converts array-style hints/requirements to map-style keyed by class.
@@ -434,9 +467,24 @@ type stepParseResult struct {
 // parseStep parses a single CWL workflow step from a raw map.
 func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, error) {
 	result := stepParseResult{}
+
+	// Normalize output IDs (packed format uses "#main/rev/output" -> "output")
+	outIDs := stringSlice(raw, "out")
+	normalizedOut := make([]string, len(outIDs))
+	for i, outID := range outIDs {
+		normalizedOut[i] = normalizePackedID(outID)
+	}
+
+	// Normalize scatter field (packed format uses "#main/rev/input" -> "input")
+	scatterIDs := stringSlice(raw, "scatter")
+	normalizedScatter := make([]string, len(scatterIDs))
+	for i, scatterID := range scatterIDs {
+		normalizedScatter[i] = normalizePackedID(scatterID)
+	}
+
 	step := cwl.Step{
-		Out:           stringSlice(raw, "out"),
-		Scatter:       stringSlice(raw, "scatter"),
+		Out:           normalizedOut,
+		Scatter:       normalizedScatter,
 		ScatterMethod: stringField(raw, "scatterMethod"),
 		When:          stringField(raw, "when"),
 		Hints:         mapField(raw, "hints"),
@@ -470,10 +518,10 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 	for id, v := range in {
 		switch val := v.(type) {
 		case string:
-			step.In[id] = cwl.StepInput{Source: val}
+			step.In[id] = cwl.StepInput{Source: normalizeSourceRef(val)}
 		case map[string]any:
 			step.In[id] = cwl.StepInput{
-				Source:  stringField(val, "source"),
+				Source:  normalizeSourceRef(stringField(val, "source")),
 				Default: val["default"],
 			}
 		}
@@ -481,6 +529,46 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 
 	result.Step = step
 	return result, nil
+}
+
+// normalizeSourceRef normalizes a packed format source reference.
+// "#main/input" -> "input" (workflow input)
+// "#main/rev/output" -> "rev/output" (step output)
+// "echo_1/fileout" -> "echo_1/fileout" (already local step/output reference)
+func normalizeSourceRef(source string) string {
+	if source == "" {
+		return ""
+	}
+
+	// Only normalize if it has a leading # (packed format)
+	if !strings.HasPrefix(source, "#") {
+		// Already a local reference like "input" or "echo_1/fileout"
+		return source
+	}
+
+	// Strip leading #
+	source = source[1:]
+
+	// Count slashes to determine type
+	parts := strings.Split(source, "/")
+	if len(parts) <= 1 {
+		// Simple ID like "#echo" -> "echo"
+		return source
+	}
+
+	// If format is "workflow/input" -> "input"
+	// If format is "workflow/step/output" -> "step/output"
+	if len(parts) == 2 {
+		// "main/input" means workflow input "input"
+		return parts[len(parts)-1]
+	}
+	if len(parts) == 3 {
+		// "main/rev/output" means step "rev" output "output"
+		return parts[1] + "/" + parts[2]
+	}
+
+	// Fallback - return last component
+	return parts[len(parts)-1]
 }
 
 // parseTool parses a single CWL CommandLineTool from a raw map.
@@ -1063,6 +1151,23 @@ func extractStepHints(hints map[string]any) *model.StepHints {
 		return nil
 	}
 	return &h
+}
+
+// parseNamespaces extracts $namespaces map from a CWL document.
+// Returns a map of prefix -> URI for namespace resolution.
+func parseNamespaces(raw map[string]any) map[string]string {
+	ns, ok := raw["$namespaces"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	result := make(map[string]string)
+	for prefix, uri := range ns {
+		if uriStr, ok := uri.(string); ok {
+			result[prefix] = uriStr
+		}
+	}
+	return result
 }
 
 // resolveImports recursively resolves $import directives in a CWL document.

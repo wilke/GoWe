@@ -178,8 +178,8 @@ message: "Hello, CWL!"
 		t.Errorf("Execute() output missing file reference: %s", output)
 	}
 
-	// Verify output file exists and has correct content
-	outputFile := filepath.Join(runner.OutDir, "work", "message.txt")
+	// Verify output file exists and has correct content (work_1 for first step)
+	outputFile := filepath.Join(runner.OutDir, "work_1", "message.txt")
 	content, err := os.ReadFile(outputFile)
 	if err != nil {
 		t.Errorf("Failed to read output file: %v", err)

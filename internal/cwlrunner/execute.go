@@ -16,12 +16,11 @@ import (
 	"github.com/me/gowe/pkg/cwl"
 )
 
-// executeLocal executes a tool locally without Docker.
-func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any) (map[string]any, error) {
+// executeLocalWithWorkDir executes a tool locally without Docker in the specified work directory.
+func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, workDir string) (map[string]any, error) {
 	r.logger.Info("executing locally", "command", cmdResult.Command)
 
-	// Create working directory.
-	workDir := filepath.Join(r.OutDir, "work")
+	// Create the working directory.
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return nil, fmt.Errorf("create work directory: %w", err)
 	}
@@ -36,7 +35,15 @@ func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cm
 		return nil, fmt.Errorf("empty command")
 	}
 
-	cmd := exec.CommandContext(ctx, cmdResult.Command[0], cmdResult.Command[1:]...)
+	// Check for ShellCommandRequirement - run through shell if present.
+	var cmd *exec.Cmd
+	if hasShellCommandRequirement(tool) {
+		// Join command parts and run through shell.
+		cmdStr := strings.Join(cmdResult.Command, " ")
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
+	} else {
+		cmd = exec.CommandContext(ctx, cmdResult.Command[0], cmdResult.Command[1:]...)
+	}
 	cmd.Dir = workDir
 
 	// Handle stdin.
@@ -95,18 +102,22 @@ func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cm
 		cmd.Stderr = io.Discard
 	}
 
-	// Run command.
+	// Run command and capture exit code.
+	var exitCode int
 	if err := cmd.Run(); err != nil {
 		exitErr, ok := err.(*exec.ExitError)
-		if ok && isSuccessCode(exitErr.ExitCode(), tool.SuccessCodes) {
-			// Exit code is in success codes list.
+		if ok {
+			exitCode = exitErr.ExitCode()
+			if !isSuccessCode(exitCode, tool.SuccessCodes) {
+				return nil, fmt.Errorf("command failed: %w", err)
+			}
 		} else {
 			return nil, fmt.Errorf("command failed: %w", err)
 		}
 	}
 
-	// Collect outputs.
-	outputs, err := r.collectOutputs(tool, workDir, inputs)
+	// Collect outputs (passing exit code for runtime.exitCode).
+	outputs, err := r.collectOutputs(tool, workDir, inputs, exitCode)
 	if err != nil {
 		return nil, fmt.Errorf("collect outputs: %w", err)
 	}
@@ -114,13 +125,12 @@ func (r *Runner) executeLocal(ctx context.Context, tool *cwl.CommandLineTool, cm
 	return outputs, nil
 }
 
-// executeInDocker executes a tool in a Docker container.
-func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string) (map[string]any, error) {
+// executeInDockerWithWorkDir executes a tool in a Docker container with the specified work directory.
+func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string) (map[string]any, error) {
 	r.logger.Info("executing in Docker", "image", dockerImage, "command", cmdResult.Command)
 
-	// Create directories.
-	workDir := filepath.Join(r.OutDir, "work")
-	tmpDir := filepath.Join(r.OutDir, "tmp")
+	// Create directories for this execution.
+	tmpDir := workDir + "_tmp"
 	for _, dir := range []string{workDir, tmpDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("create directory %s: %w", dir, err)
@@ -217,18 +227,22 @@ func (r *Runner) executeInDocker(ctx context.Context, tool *cwl.CommandLineTool,
 		cmd.Stderr = io.Discard
 	}
 
-	// Run Docker command.
+	// Run Docker command and capture exit code.
+	var exitCode int
 	if err := cmd.Run(); err != nil {
 		exitErr, ok := err.(*exec.ExitError)
-		if ok && isSuccessCode(exitErr.ExitCode(), tool.SuccessCodes) {
-			// Exit code is in success codes list.
+		if ok {
+			exitCode = exitErr.ExitCode()
+			if !isSuccessCode(exitCode, tool.SuccessCodes) {
+				return nil, fmt.Errorf("docker command failed: %w", err)
+			}
 		} else {
 			return nil, fmt.Errorf("docker command failed: %w", err)
 		}
 	}
 
-	// Collect outputs.
-	outputs, err := r.collectOutputs(tool, workDir, inputs)
+	// Collect outputs (passing exit code for runtime.exitCode).
+	outputs, err := r.collectOutputs(tool, workDir, inputs, exitCode)
 	if err != nil {
 		return nil, fmt.Errorf("collect outputs: %w", err)
 	}
@@ -266,6 +280,8 @@ func stageInputValue(v any, workDir string) error {
 }
 
 // stageFileOrDir stages a File or Directory in the working directory.
+// For local execution with absolute paths, staging is not needed since the
+// command line already uses the full path.
 func stageFileOrDir(obj map[string]any, workDir string) error {
 	path := ""
 	if p, ok := obj["path"].(string); ok {
@@ -278,6 +294,11 @@ func stageFileOrDir(obj map[string]any, workDir string) error {
 		return nil
 	}
 
+	// If path is absolute, no staging needed - command line uses full path.
+	if filepath.IsAbs(path) {
+		return nil
+	}
+
 	// If path is already in workDir, nothing to do.
 	absPath, _ := filepath.Abs(path)
 	absWorkDir, _ := filepath.Abs(workDir)
@@ -285,12 +306,13 @@ func stageFileOrDir(obj map[string]any, workDir string) error {
 		return nil
 	}
 
-	// Create symlink in workDir.
+	// Create symlink in workDir for relative paths.
 	basename := filepath.Base(path)
 	linkPath := filepath.Join(workDir, basename)
 
-	// Check if link already exists.
+	// Check if link already exists - use unique name if conflict.
 	if _, err := os.Lstat(linkPath); err == nil {
+		// Link already exists, skip - this can happen with same-named files.
 		return nil
 	}
 
@@ -358,6 +380,21 @@ func isSuccessCode(code int, successCodes []int) bool {
 	return false
 }
 
+// hasShellCommandRequirement checks if a tool has ShellCommandRequirement.
+func hasShellCommandRequirement(tool *cwl.CommandLineTool) bool {
+	if tool.Requirements != nil {
+		if _, ok := tool.Requirements["ShellCommandRequirement"]; ok {
+			return true
+		}
+	}
+	if tool.Hints != nil {
+		if _, ok := tool.Hints["ShellCommandRequirement"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // hasStdoutOutput checks if the tool has any output of type "stdout".
 func hasStdoutOutput(tool *cwl.CommandLineTool) bool {
 	for _, output := range tool.Outputs {
@@ -379,7 +416,8 @@ func hasStderrOutput(tool *cwl.CommandLineTool) bool {
 }
 
 // collectOutputs collects tool outputs from the working directory.
-func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, inputs map[string]any) (map[string]any, error) {
+// exitCode is passed for use in outputEval via runtime.exitCode.
+func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, inputs map[string]any, exitCode int) (map[string]any, error) {
 	outputs := make(map[string]any)
 
 	// Check for cwl.output.json first - per CWL spec, if this file exists,
@@ -417,6 +455,8 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 				if err != nil {
 					return nil, fmt.Errorf("output %s: %w", outputID, err)
 				}
+				// Apply format if specified.
+				r.applyOutputFormat(fileObj, output.Format, inputs)
 				outputs[outputID] = fileObj
 				continue
 			}
@@ -442,6 +482,8 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 				if err != nil {
 					return nil, fmt.Errorf("output %s: %w", outputID, err)
 				}
+				// Apply format if specified.
+				r.applyOutputFormat(fileObj, output.Format, inputs)
 				outputs[outputID] = fileObj
 				continue
 			}
@@ -453,10 +495,13 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 			continue
 		}
 
-		collected, err := r.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool)
+		collected, err := r.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool, exitCode)
 		if err != nil {
 			return nil, fmt.Errorf("output %s: %w", outputID, err)
 		}
+
+		// Apply format to collected File objects.
+		r.applyFormatToOutput(collected, output.Format, inputs)
 		outputs[outputID] = collected
 	}
 
@@ -464,7 +509,7 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 }
 
 // collectOutputBinding collects files matching an output binding.
-func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any, workDir string, inputs map[string]any, tool *cwl.CommandLineTool) (any, error) {
+func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any, workDir string, inputs map[string]any, tool *cwl.CommandLineTool, exitCode int) (any, error) {
 	// If there's an outputEval but no glob, evaluate it directly with self=null.
 	if binding.Glob == nil {
 		if binding.OutputEval != "" {
@@ -472,7 +517,9 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 			ctx = ctx.WithSelf(nil)
 			runtime := cwlexpr.DefaultRuntimeContext()
 			runtime.OutDir = r.OutDir
+			runtime.ExitCode = exitCode
 			ctx = ctx.WithRuntime(runtime)
+			ctx = ctx.WithOutputEval() // Enable exitCode access
 
 			evaluator := cwlexpr.NewEvaluator(nil)
 			return evaluator.Evaluate(binding.OutputEval, ctx)
@@ -541,7 +588,9 @@ func (r *Runner) collectOutputBinding(binding *cwl.OutputBinding, outputType any
 		ctx = ctx.WithSelf(collected)
 		runtime := cwlexpr.DefaultRuntimeContext()
 		runtime.OutDir = r.OutDir
+		runtime.ExitCode = exitCode
 		ctx = ctx.WithRuntime(runtime)
+		ctx = ctx.WithOutputEval() // Enable exitCode access
 
 		evaluator := cwlexpr.NewEvaluator(nil)
 		return evaluator.Evaluate(binding.OutputEval, ctx)
@@ -887,4 +936,89 @@ func createDirectoryObject(path string) (map[string]any, error) {
 	obj["listing"] = listing
 
 	return obj, nil
+}
+
+// applyOutputFormat adds the format field to a File object.
+// format can be a string (possibly with namespace prefix or expression) or nil.
+// inputs is the resolved inputs for evaluating expressions.
+func (r *Runner) applyOutputFormat(fileObj map[string]any, format any, inputs map[string]any) {
+	if format == nil {
+		return
+	}
+
+	formatStr, ok := format.(string)
+	if !ok {
+		return
+	}
+
+	// Check if format is an expression (e.g., $(inputs.input.format)).
+	if cwlexpr.IsExpression(formatStr) {
+		ctx := cwlexpr.NewContext(inputs)
+		evaluator := cwlexpr.NewEvaluator(nil)
+		result, err := evaluator.Evaluate(formatStr, ctx)
+		if err == nil {
+			if resultStr, ok := result.(string); ok {
+				formatStr = resultStr
+			}
+		}
+	}
+
+	// Resolve namespace prefix if present (e.g., "edam:format_2330").
+	resolvedFormat := r.resolveNamespacePrefix(formatStr)
+	fileObj["format"] = resolvedFormat
+}
+
+// applyFormatToOutput applies format to collected output objects (single or array).
+func (r *Runner) applyFormatToOutput(output any, format any, inputs map[string]any) {
+	if format == nil || output == nil {
+		return
+	}
+
+	switch val := output.(type) {
+	case map[string]any:
+		if class, ok := val["class"].(string); ok && class == "File" {
+			r.applyOutputFormat(val, format, inputs)
+		}
+	case []map[string]any:
+		for _, item := range val {
+			if class, ok := item["class"].(string); ok && class == "File" {
+				r.applyOutputFormat(item, format, inputs)
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if itemMap, ok := item.(map[string]any); ok {
+				if class, ok := itemMap["class"].(string); ok && class == "File" {
+					r.applyOutputFormat(itemMap, format, inputs)
+				}
+			}
+		}
+	}
+}
+
+// resolveNamespacePrefix resolves a namespace prefix to a full URI.
+// e.g., "edam:format_2330" -> "http://edamontology.org/format_2330"
+func (r *Runner) resolveNamespacePrefix(s string) string {
+	if r.namespaces == nil {
+		return s
+	}
+
+	// Look for colon separator (but not http://, https://, file://).
+	idx := strings.Index(s, ":")
+	if idx <= 0 {
+		return s
+	}
+
+	// Skip if it looks like a full URI.
+	prefix := s[:idx]
+	if prefix == "http" || prefix == "https" || prefix == "file" {
+		return s
+	}
+
+	// Look up the prefix in namespaces.
+	if uri, ok := r.namespaces[prefix]; ok {
+		return uri + s[idx+1:]
+	}
+
+	return s
 }
