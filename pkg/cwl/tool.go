@@ -84,6 +84,10 @@ type ToolOutputParam struct {
 	// SecondaryFiles specifies additional files associated with this output.
 	SecondaryFiles []SecondaryFileSchema
 
+	// OutputRecordFields contains field definitions for record output types.
+	// Each field may have its own outputBinding and secondaryFiles.
+	OutputRecordFields []OutputRecordField
+
 	// Format specifies the file format (for File types).
 	Format any // string or []string
 
