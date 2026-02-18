@@ -51,7 +51,7 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 	var results []map[string]any
 	for i, combo := range combinations {
 		r.logger.Debug("scatter iteration", "index", i, "inputs", combo)
-		output, err := r.executeTool(ctx, graph, tool, combo)
+		output, err := r.executeTool(ctx, graph, tool, combo, false)
 		if err != nil {
 			return nil, fmt.Errorf("scatter iteration %d: %w", i, err)
 		}

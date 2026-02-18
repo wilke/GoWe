@@ -18,6 +18,13 @@ type InputParam struct {
 	Type    string
 	Doc     string
 	Default any
+
+	// RecordFields contains field definitions for record types.
+	// Used for resolving secondaryFiles on record fields.
+	RecordFields []RecordField
+
+	// SecondaryFiles specifies additional files associated with this input.
+	SecondaryFiles []SecondaryFileSchema
 }
 
 // OutputParam is a CWL workflow output.

@@ -1,5 +1,38 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-18 Morning (CWL Conformance - 96.4%)
+
+### Status: 81/84 TESTS PASSING (96.4%)
+
+Improved CWL conformance test pass rate from 79/84 to **81/84 (96.4%)**.
+
+### Key Improvements (79/84 → 81/84)
+
+53. **SecondaryFiles for record fields** - Added `SecondaryFiles` field to `RecordField` type
+54. **Workflow input secondaryFiles** - Parse and resolve secondaryFiles from workflow input declarations
+55. **Tool input secondaryFiles** - Resolve secondaryFiles for direct tool execution
+56. **SecondaryFiles validation** - Validate required secondary files exist in File objects
+57. **Secondary file resolution context** - Distinguish between direct tool execution and workflow steps
+
+### Files Modified
+- `pkg/cwl/binding.go` - Added SecondaryFiles to RecordField
+- `pkg/cwl/workflow.go` - Added RecordFields and SecondaryFiles to InputParam
+- `internal/parser/parser.go` - Parse secondaryFiles for record fields and workflow inputs
+- `internal/cwlrunner/runner.go` - Added secondaryFiles validation and resolution
+- `internal/cwlrunner/scatter.go` - Updated executeTool call signature
+
+### Current Status: 81/84 tests passing (96.4%)
+
+### Remaining Failures (3 tests)
+- **Test 10, 27** - Platform difference: macOS `rev`/`sort` differ from Linux
+- **Test 69** - Docker mount issues with colons in paths (Docker uses : as volume separator)
+
+### Git Status
+- v0.8.7: `d20a787 feat: improve CWL conformance from 77/84 to 79/84 (94%)`
+- Current: 81/84 (uncommitted)
+
+---
+
 ## Session: 2026-02-17 Late Night (CWL Conformance - 94%)
 
 ### Status: 79/84 TESTS PASSING (94%)
@@ -21,16 +54,9 @@ Improved CWL conformance test pass rate from 66/84 to **79/84 (94%)**.
 51. **Step input filtering** - Only declared tool inputs passed per CWL v1.2 spec
 52. **loadContents 64KB limit** - Input files >64KB now correctly fail loadContents
 
-### Current Status: 79/84 tests passing (94%)
-
-### Remaining Failures (5 tests)
-- **Test 10, 27** - Platform difference: macOS `rev`/`sort` differ from Linux
-- **Tests 53, 54** - SecondaryFiles handling in records
-- **Test 69** - Docker mount issues with colons in paths (Docker uses : as volume separator)
-
 ### Git Status
 - v0.8.6: `74addc5 feat: improve CWL conformance from 66/84 to 77/84 (92%)`
-- Latest: `d20a787 feat: improve CWL conformance from 77/84 to 79/84 (94%)`
+- v0.8.7: `d20a787 feat: improve CWL conformance from 77/84 to 79/84 (94%)`
 
 ---
 

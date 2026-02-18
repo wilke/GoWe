@@ -122,6 +122,31 @@ type RecordField struct {
 	// InputBinding controls how this field appears on the command line.
 	InputBinding *InputBinding `json:"inputBinding,omitempty"`
 
+	// SecondaryFiles specifies additional files associated with this field (for File types).
+	SecondaryFiles []SecondaryFileSchema `json:"secondaryFiles,omitempty"`
+
+	// Doc is documentation for this field.
+	Doc string `json:"doc,omitempty"`
+
+	// Label is a human-readable label.
+	Label string `json:"label,omitempty"`
+}
+
+// OutputRecordField represents a field in a CWL output record type.
+// See https://www.commonwl.org/v1.2/CommandLineTool.html#CommandOutputRecordField
+type OutputRecordField struct {
+	// Name is the field name.
+	Name string `json:"name"`
+
+	// Type is the field type (e.g., "File", "File[]", "Directory").
+	Type string `json:"type"`
+
+	// OutputBinding specifies how to collect this field's output.
+	OutputBinding *OutputBinding `json:"outputBinding,omitempty"`
+
+	// SecondaryFiles specifies additional files associated with this field.
+	SecondaryFiles []SecondaryFileSchema `json:"secondaryFiles,omitempty"`
+
 	// Doc is documentation for this field.
 	Doc string `json:"doc,omitempty"`
 

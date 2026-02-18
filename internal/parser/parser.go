@@ -452,11 +452,27 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 		case string:
 			wf.Inputs[id] = cwl.InputParam{Type: val}
 		case map[string]any:
-			wf.Inputs[id] = cwl.InputParam{
-				Type:    stringField(val, "type"),
+			// Type can be a string or complex type (record, array, etc.)
+			typeVal := stringField(val, "type")
+			if typeVal == "" {
+				// Complex type - serialize it.
+				typeVal = serializeCWLType(val["type"])
+			}
+			inp := cwl.InputParam{
+				Type:    typeVal,
 				Doc:     stringField(val, "doc"),
 				Default: val["default"],
 			}
+			// Parse secondaryFiles if present at the input level.
+			inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
+
+			// Parse record fields if this is a record type.
+			if typeMap, ok := val["type"].(map[string]any); ok {
+				if typeMap["type"] == "record" {
+					inp.RecordFields = parseRecordFields(typeMap["fields"])
+				}
+			}
+			wf.Inputs[id] = inp
 		default:
 			return result, fmt.Errorf("input %q: unexpected type %T", id, v)
 		}
@@ -838,7 +854,71 @@ func parseToolOutput(m map[string]any) cwl.ToolOutputParam {
 	// Parse secondaryFiles.
 	out.SecondaryFiles = parseSecondaryFiles(m["secondaryFiles"])
 
+	// Check for record type with fields.
+	if typeMap, ok := m["type"].(map[string]any); ok {
+		if typeStr, ok := typeMap["type"].(string); ok && typeStr == "record" {
+			out.Type = "record"
+			out.OutputRecordFields = parseOutputRecordFields(typeMap["fields"])
+		}
+	}
+
 	return out
+}
+
+// parseOutputRecordFields parses output record fields from a raw value.
+func parseOutputRecordFields(v any) []cwl.OutputRecordField {
+	if v == nil {
+		return nil
+	}
+
+	var fields []cwl.OutputRecordField
+
+	switch val := v.(type) {
+	case []any:
+		// Array-style fields: [{name: f1, type: File, ...}, ...]
+		for _, item := range val {
+			if fm, ok := item.(map[string]any); ok {
+				fields = append(fields, parseOutputRecordField(fm))
+			}
+		}
+	case map[string]any:
+		// Map-style fields: {f1: {type: File, ...}, ...}
+		for name, field := range val {
+			if fm, ok := field.(map[string]any); ok {
+				f := parseOutputRecordField(fm)
+				f.Name = name
+				fields = append(fields, f)
+			}
+		}
+	}
+
+	return fields
+}
+
+// parseOutputRecordField parses a single output record field.
+func parseOutputRecordField(m map[string]any) cwl.OutputRecordField {
+	field := cwl.OutputRecordField{
+		Name:  stringField(m, "name"),
+		Doc:   stringField(m, "doc"),
+		Label: stringField(m, "label"),
+	}
+
+	// Parse type - can be string or complex type.
+	if typeStr, ok := m["type"].(string); ok {
+		field.Type = typeStr
+	} else {
+		field.Type = serializeCWLType(m["type"])
+	}
+
+	// Parse outputBinding.
+	if ob, ok := m["outputBinding"].(map[string]any); ok {
+		field.OutputBinding = parseOutputBinding(ob)
+	}
+
+	// Parse secondaryFiles.
+	field.SecondaryFiles = parseSecondaryFiles(m["secondaryFiles"])
+
+	return field
 }
 
 // parseInputBinding parses a CWL inputBinding from a raw map.
@@ -923,6 +1003,9 @@ func parseRecordField(m map[string]any) cwl.RecordField {
 	if ib, ok := m["inputBinding"].(map[string]any); ok {
 		field.InputBinding = parseInputBinding(ib)
 	}
+
+	// Parse secondaryFiles for this field.
+	field.SecondaryFiles = parseSecondaryFiles(m["secondaryFiles"])
 
 	return field
 }
