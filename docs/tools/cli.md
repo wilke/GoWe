@@ -117,6 +117,61 @@ No submission created. Use without --dry-run to execute.
 
 ---
 
+### run
+
+Execute a CWL workflow with cwltest-compatible output.
+
+```bash
+gowe run <cwl-file> [job-file] [flags]
+```
+
+**Flags:**
+- `--outdir` - Output directory for result files (default: temporary directory)
+- `-q, --quiet` - Suppress progress messages (required for cwltest)
+- `--timeout` - Execution timeout (default: 5m)
+
+**Examples:**
+
+```bash
+# Run a workflow with inputs
+gowe run pipeline.cwl inputs.yaml
+
+# Run with quiet mode for cwltest compatibility
+gowe run --quiet pipeline.cwl inputs.yaml
+
+# Run against a remote server
+gowe run --server http://gowe-server:8080 pipeline.cwl inputs.yaml
+
+# Custom output directory
+gowe run --outdir ./results pipeline.cwl inputs.yaml
+```
+
+**Output format (CWL-compatible JSON):**
+
+```json
+{
+  "output": {
+    "class": "File",
+    "location": "file:///tmp/cwl-output-123/output.txt",
+    "basename": "output.txt",
+    "checksum": "sha1$a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
+    "size": 42
+  }
+}
+```
+
+This command is designed to work with [cwltest](https://github.com/common-workflow-language/cwltest), the CWL conformance testing tool. It follows the same interface as `cwl-runner`:
+
+1. Bundles the CWL file (resolving external references)
+2. Creates a workflow on the server
+3. Submits a run with the provided inputs
+4. Polls until completion
+5. Outputs results as CWL-formatted JSON to stdout
+
+**Note:** Progress messages go to stderr, results go to stdout. Use `--quiet` to suppress progress messages entirely.
+
+---
+
 ### status
 
 Check workflow or submission status.

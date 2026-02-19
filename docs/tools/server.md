@@ -24,6 +24,7 @@ gowe-server [flags]
 |------|---------|-------------|
 | `--addr` | `:8080` | Listen address (host:port) |
 | `--db` | `~/.gowe/gowe.db` | SQLite database path |
+| `--default-executor` | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
@@ -48,7 +49,27 @@ gowe-server --db /var/lib/gowe/production.db
 
 # JSON logging for production
 gowe-server --log-format json --log-level info
+
+# Force all tasks to use the worker executor (distributed mode)
+gowe-server --default-executor worker --debug
 ```
+
+### Distributed execution mode
+
+When `--default-executor=worker` is set, all tasks are dispatched to registered worker nodes instead of being executed locally:
+
+```bash
+# Start server in distributed mode
+gowe-server --default-executor worker --addr 0.0.0.0:8080
+
+# Workers connect and register (see docs/tools/worker.md)
+# Tasks are distributed across available workers
+```
+
+This is useful for:
+- Scaling execution across multiple machines
+- Isolating task execution from the API server
+- Running tasks on specialized hardware (GPU nodes, high-memory nodes, etc.)
 
 ### Running in Docker
 

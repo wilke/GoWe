@@ -509,6 +509,85 @@ curl -s -X POST http://localhost:8080/api/v1/submissions/ \
 
 BV-BRC jobs are asynchronous — poll the submission until all tasks reach `SUCCESS` or `FAILED`.
 
+## 10. Distributed Execution with Workers
+
+GoWe supports distributed task execution across multiple worker nodes. This is useful for:
+- Scaling execution across a cluster
+- Running tasks on specialized hardware
+- Isolating task execution from the API server
+
+### Using Docker Compose
+
+The quickest way to try distributed execution is with Docker Compose:
+
+```bash
+# Build and start the cluster
+docker-compose up -d --build
+
+# Verify the cluster is running
+curl -s http://localhost:8090/api/v1/health | jq .
+curl -s http://localhost:8090/api/v1/workers | jq '.data | length'
+```
+
+The default `docker-compose.yml` starts:
+- 1 server with `--default-executor=worker`
+- 2 workers with `--runtime=none` (execute on host)
+- 1 worker with `--runtime=docker` (execute in containers)
+
+### Running Workflows
+
+Use the `gowe run` command for cwltest-compatible execution:
+
+```bash
+# Build the CLI
+go build -o bin/gowe ./cmd/cli
+
+# Run a workflow against the distributed cluster
+./bin/gowe run --server http://localhost:8090 testdata/worker-test/simple-echo.cwl testdata/worker-test/simple-echo-job.yml
+```
+
+Output:
+
+```json
+{
+  "output": {
+    "class": "File",
+    "location": "file:///workdir/outputs/task_abc123/output.txt",
+    "basename": "output.txt",
+    "checksum": "sha1$...",
+    "size": 19
+  }
+}
+```
+
+### Using goweHint for Worker Selection
+
+You can explicitly request the worker executor using CWL hints:
+
+```yaml
+steps:
+  heavy_computation:
+    run: tools/compute.cwl
+    hints:
+      goweHint:
+        executor: worker
+    in:
+      data: input_data
+    out: [result]
+```
+
+Or set `--default-executor=worker` on the server to route all tasks to workers.
+
+### Test Scripts
+
+```bash
+# Run the distributed integration test
+./scripts/test-distributed.sh
+
+# Clean up
+docker-compose down -v
+```
+
 ## Executor Selection Reference
 
 GoWe picks the executor for each step based on CWL hints:
@@ -516,9 +595,12 @@ GoWe picks the executor for each step based on CWL hints:
 | Hint | Executor | Use Case |
 |------|----------|----------|
 | *(none)* | `local` | Run as OS process |
-| `DockerRequirement` | `container` | Run in Docker container |
+| `DockerRequirement` | `docker` | Run in Docker container |
+| `goweHint.executor: worker` | `worker` | Dispatch to remote workers |
 | `goweHint.executor: bvbrc` | `bvbrc` | Submit to BV-BRC |
-| `goweHint.docker_image` | `container` | Run in Docker container |
+| `goweHint.docker_image` | `docker` | Run in Docker container |
+
+When `--default-executor=worker` is set on the server, all tasks (regardless of hints) are routed to workers.
 
 ## API Response Envelope
 

@@ -93,6 +93,7 @@ gowe — CWL workflow engine for BV-BRC
 Commands:
   login     Authenticate with BV-BRC
   submit    Submit a CWL workflow
+  run       Execute a CWL workflow (cwltest-compatible)
   status    Check workflow/submission status
   list      List workflows or submissions
   cancel    Cancel a submission
@@ -105,6 +106,16 @@ Flags:
   --log-level   Log level: debug, info, warn, error
   --log-format  Log format: text, json
 ```
+
+### cwltest-Compatible Runner
+
+The `gowe run` command provides a cwl-runner compatible interface:
+
+```bash
+gowe run workflow.cwl job.yml
+```
+
+This bundles the CWL, submits to the server, waits for completion, and outputs CWL-formatted JSON to stdout.
 
 ## API
 
@@ -144,12 +155,13 @@ All responses use a standard envelope:
 
 ## Executors
 
-GoWe supports three execution backends, selected per-step via CWL hints:
+GoWe supports four execution backends, selected per-step via CWL hints:
 
 | Type | Key | Description |
 |------|-----|-------------|
 | `local` | Default | Runs commands as local OS processes |
-| `container` | `DockerRequirement` or `goweHint.docker_image` | Runs commands inside Docker containers |
+| `docker` | `DockerRequirement` or `goweHint.docker_image` | Runs commands inside Docker containers |
+| `worker` | `goweHint.executor: worker` or `--default-executor=worker` | Delegates to remote workers for distributed execution |
 | `bvbrc` | `goweHint.executor: bvbrc` | Submits jobs to BV-BRC via JSON-RPC 1.1 |
 
 ### BV-BRC Authentication
@@ -196,6 +208,7 @@ steps:
 | `--log-level` | — | `info` | Log level |
 | `--log-format` | — | `text` | Log format (`text` or `json`) |
 | `--db` | — | `~/.gowe/gowe.db` | SQLite database path |
+| `--default-executor` | — | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
 | `--debug` | — | `false` | Shorthand for `--log-level=debug` |
 
 ## Tools
@@ -247,6 +260,31 @@ testdata/       CWL workflow examples
 docs/           Implementation plan + API reference
 ```
 
+## Distributed Execution
+
+GoWe supports distributed task execution across multiple worker nodes using Docker Compose:
+
+```bash
+# Start server and workers
+docker-compose up -d --build
+
+# Run a workflow against the distributed setup
+./bin/gowe run --server http://localhost:8090 workflow.cwl job.yml
+
+# Run the distributed test script
+./scripts/test-distributed.sh
+
+# Stop the cluster
+docker-compose down -v
+```
+
+The `docker-compose.yml` starts:
+- 1 server with `--default-executor=worker`
+- 2 workers with `--runtime=none` (host execution)
+- 1 worker with `--runtime=docker` (container execution)
+
+See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration details.
+
 ## Testing
 
 ```bash
@@ -258,6 +296,9 @@ go test ./internal/executor/ -tags=integration
 
 # With BV-BRC integration tests (requires valid token)
 BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
+
+# Distributed worker tests
+./scripts/test-distributed.sh
 ```
 
 ## License
