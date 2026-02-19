@@ -41,3 +41,16 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Claude Code
+.claude/
+
+# Test outputs
+cwl-output/
+
+# Scratch/notes
+scratchpad*.md
+
+# Root-level binaries
+/server
+/worker
