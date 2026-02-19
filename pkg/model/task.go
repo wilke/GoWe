@@ -1,6 +1,8 @@
 package model
 
-import "time"
+import (
+	"time"
+)
 
 // Task is a concrete, schedulable unit of work created from a Step.
 type Task struct {
@@ -58,6 +60,42 @@ type RuntimeHints struct {
 
 	// Namespaces contains namespace prefix mappings for format resolution.
 	Namespaces map[string]string `json:"namespaces,omitempty"`
+
+	// StagerOverrides allows per-task stager customization.
+	StagerOverrides *StagerOverrides `json:"stager_overrides,omitempty"`
+}
+
+// StagerOverrides allows per-task stager customization.
+type StagerOverrides struct {
+	// HTTPHeaders are additional headers for this task's HTTP requests.
+	HTTPHeaders map[string]string `json:"http_headers,omitempty"`
+
+	// HTTPTimeoutSeconds overrides the default HTTP timeout in seconds.
+	HTTPTimeoutSeconds *int `json:"http_timeout_seconds,omitempty"`
+
+	// HTTPCredential overrides credentials for this task.
+	HTTPCredential *HTTPCredential `json:"http_credential,omitempty"`
+}
+
+// HTTPCredential holds authentication for HTTP requests.
+type HTTPCredential struct {
+	// Type specifies the authentication type: "bearer", "basic", or "header".
+	Type string `json:"type"`
+
+	// Token is the bearer token (for type="bearer").
+	Token string `json:"token,omitempty"`
+
+	// Username is the username for basic auth (for type="basic").
+	Username string `json:"username,omitempty"`
+
+	// Password is the password for basic auth (for type="basic").
+	Password string `json:"password,omitempty"`
+
+	// HeaderName is the custom header name (for type="header").
+	HeaderName string `json:"header_name,omitempty"`
+
+	// HeaderValue is the custom header value (for type="header").
+	HeaderValue string `json:"header_value,omitempty"`
 }
 
 // HasTool returns true if this task has a Tool definition for worker execution.

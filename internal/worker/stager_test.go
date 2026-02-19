@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/me/gowe/internal/execution"
 )
 
 func TestFileStager_StageIn_FileScheme(t *testing.T) {
@@ -18,7 +20,7 @@ func TestFileStager_StageIn_FileScheme(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stager := NewFileStager("local")
+	stager := execution.NewFileStager("local")
 	dstFile := filepath.Join(dstDir, "input.txt")
 
 	err := stager.StageIn(context.Background(), "file://"+srcFile, dstFile)
@@ -44,7 +46,7 @@ func TestFileStager_StageIn_BarePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stager := NewFileStager("local")
+	stager := execution.NewFileStager("local")
 	dstFile := filepath.Join(dstDir, "input.txt")
 
 	err := stager.StageIn(context.Background(), srcFile, dstFile)
@@ -59,7 +61,7 @@ func TestFileStager_StageIn_BarePath(t *testing.T) {
 }
 
 func TestFileStager_StageIn_UnsupportedScheme(t *testing.T) {
-	stager := NewFileStager("local")
+	stager := execution.NewFileStager("local")
 	err := stager.StageIn(context.Background(), "ws:///user@bvbrc/path", "/tmp/dest")
 	if err == nil {
 		t.Fatal("expected error for unsupported scheme")
@@ -76,7 +78,7 @@ func TestFileStager_StageOut_Local(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stager := NewFileStager("local")
+	stager := execution.NewFileStager("local")
 	loc, err := stager.StageOut(context.Background(), srcFile, "task_123")
 	if err != nil {
 		t.Fatalf("StageOut error: %v", err)
@@ -99,7 +101,7 @@ func TestFileStager_StageOut_SharedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stager := NewFileStager("file://" + sharedDir)
+	stager := execution.NewFileStager("file://" + sharedDir)
 	loc, err := stager.StageOut(context.Background(), srcFile, "task_456")
 	if err != nil {
 		t.Fatalf("StageOut error: %v", err)

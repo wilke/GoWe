@@ -20,14 +20,39 @@ gowe-worker [flags]
 
 ### Flags
 
+#### Connection & Identity
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--server` | `http://localhost:8080` | GoWe server URL |
 | `--name` | hostname | Worker name for identification |
 | `--runtime` | `none` | Container runtime: docker, apptainer, none |
 | `--workdir` | `$TMPDIR/gowe-worker` | Local working directory for task execution |
-| `--stage-out` | `local` | Output staging mode |
+| `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
 | `--poll` | `5s` | Poll interval for checking new tasks |
+
+#### TLS Configuration
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ca-cert` | (system) | Path to CA certificate PEM file for internal PKI |
+| `--insecure` | `false` | Skip TLS verification (testing only) |
+
+#### HTTP Stager
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--http-timeout` | `5m` | HTTP request timeout |
+| `--http-retries` | `3` | Number of retry attempts |
+| `--http-retry-delay` | `1s` | Initial retry delay (exponential backoff) |
+| `--http-credentials` | | Path to credentials JSON file |
+| `--http-upload-url` | | URL template for StageOut uploads |
+| `--http-upload-method` | `PUT` | HTTP method for uploads (PUT or POST) |
+
+#### Logging
+
+| Flag | Default | Description |
+|------|---------|-------------|
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
@@ -99,6 +124,18 @@ gowe-worker \
   --poll 5s \
   --log-format json \
   --log-level info
+```
+
+### HTTP staging with custom CA
+
+```bash
+# Internal infrastructure with private CA
+gowe-worker \
+  --server https://internal-gowe:8080 \
+  --ca-cert /etc/pki/internal-ca.pem \
+  --http-credentials /etc/gowe/creds.json \
+  --http-upload-url "https://minio.internal:9000/outputs/{taskID}/{filename}" \
+  --runtime docker
 ```
 
 ## Architecture
@@ -212,6 +249,76 @@ This is useful when:
 - Workers share a network filesystem (NFS, Lustre, etc.)
 - Results need to be accessible from multiple nodes
 
+### http:// / https:// (HTTP Stager)
+
+Stage inputs from HTTP/HTTPS URLs and upload outputs to an HTTP endpoint:
+
+```bash
+gowe-worker \
+  --stage-out local \
+  --http-upload-url "https://data.example.com/outputs/{taskID}/{filename}" \
+  --http-credentials /etc/gowe/credentials.json
+```
+
+This enables:
+- Downloading input files from HTTP/HTTPS URLs
+- Uploading outputs to object storage or data servers
+- Custom authentication per host
+
+#### URL Templates
+
+The `--http-upload-url` supports these placeholders:
+- `{taskID}` - The task ID
+- `{filename}` - Full filename with extension
+- `{basename}` - Filename without extension
+
+Example: `https://s3.example.com/bucket/{taskID}/{filename}`
+
+#### Credentials File
+
+Create a JSON file with per-host credentials:
+
+```json
+{
+  "data.example.com": {
+    "type": "bearer",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  },
+  "*.internal.org": {
+    "type": "basic",
+    "username": "service-account",
+    "password": "secret"
+  },
+  "upload.example.com": {
+    "type": "header",
+    "header_name": "X-API-Key",
+    "header_value": "abc123"
+  }
+}
+```
+
+Supported authentication types:
+- `bearer` - Authorization: Bearer {token}
+- `basic` - HTTP Basic authentication
+- `header` - Custom header name/value
+
+Wildcard matching (e.g., `*.example.com`) is supported for host patterns.
+
+#### Custom CA Certificate
+
+For internal PKI with self-signed certificates:
+
+```bash
+gowe-worker \
+  --server https://internal-server:8080 \
+  --ca-cert /etc/gowe/internal-ca.pem \
+  --http-upload-url "https://internal-data:9000/outputs/{taskID}/{filename}"
+```
+
+The CA certificate applies to both:
+- Worker ↔ Server API communication
+- HTTP stager HTTPS connections
+
 ## Tutorial: Setting Up a Worker Cluster
 
 ### 1. Start the server
@@ -283,10 +390,13 @@ Type=simple
 User=gowe
 Group=gowe
 ExecStart=/usr/local/bin/gowe-worker \
-  --server http://gowe-server:8080 \
+  --server https://gowe-server:8080 \
   --name %H \
   --runtime docker \
   --workdir /var/lib/gowe/work \
+  --ca-cert /etc/gowe/ca.pem \
+  --http-credentials /etc/gowe/credentials.json \
+  --http-upload-url https://storage:9000/outputs/%H/{taskID}/{filename} \
   --log-format json
 Restart=always
 RestartSec=5

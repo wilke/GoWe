@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,13 +13,6 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
-// Default HTTP transport settings for connection pooling.
-var defaultTransport = &http.Transport{
-	MaxIdleConns:        100,
-	MaxIdleConnsPerHost: 10,
-	IdleConnTimeout:     90 * time.Second,
-}
-
 // Client communicates with the GoWe server API on behalf of a worker.
 type Client struct {
 	baseURL    string
@@ -27,12 +21,20 @@ type Client struct {
 }
 
 // NewClient creates a new worker API client with connection pooling.
-func NewClient(baseURL string) *Client {
+// If tlsCfg is nil, the default system TLS configuration is used.
+func NewClient(baseURL string, tlsCfg *tls.Config) *Client {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		TLSClientConfig:     tlsCfg,
+	}
+
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: defaultTransport,
+			Transport: transport,
 		},
 	}
 }

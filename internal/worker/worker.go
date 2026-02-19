@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/me/gowe/internal/execution"
@@ -17,13 +18,15 @@ import (
 // Worker is the core work loop that polls the server for tasks, executes
 // them using the configured runtime, and reports results back.
 type Worker struct {
-	client   *Client
-	runtime  Runtime
-	stager   Stager
-	workDir  string
-	stageOut string
-	poll     time.Duration
-	logger   *slog.Logger
+	client      *Client
+	runtime     Runtime
+	stager      execution.Stager
+	httpStager  *execution.HTTPStager // Base HTTP stager for creating per-task overrides
+	workDir     string
+	stageOut    string
+	stagerCfg   StagerConfig
+	poll        time.Duration
+	logger      *slog.Logger
 }
 
 // Config holds worker configuration.
@@ -35,6 +38,7 @@ type Config struct {
 	WorkDir   string
 	StageOut  string
 	Poll      time.Duration
+	Stager    StagerConfig
 }
 
 // New creates a Worker from configuration.
@@ -54,14 +58,68 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		cfg.Poll = 5 * time.Second
 	}
 
+	// Build TLS config.
+	tlsCfg, err := cfg.Stager.TLS.BuildTLSConfig()
+	if err != nil {
+		return nil, fmt.Errorf("build TLS config: %w", err)
+	}
+
+	// Create the HTTP stager.
+	httpCfg := execution.HTTPStagerConfig{
+		Timeout:        cfg.Stager.HTTP.Timeout,
+		MaxRetries:     cfg.Stager.HTTP.MaxRetries,
+		RetryDelay:     cfg.Stager.HTTP.RetryDelay,
+		DefaultHeaders: cfg.Stager.HTTP.DefaultHeaders,
+		UploadMethod:   cfg.Stager.HTTP.UploadMethod,
+		UploadPath:     cfg.Stager.HTTP.UploadPath,
+	}
+
+	// Convert credentials.
+	if cfg.Stager.HTTP.Credentials != nil {
+		httpCfg.Credentials = make(map[string]execution.CredentialSet)
+		for host, cred := range cfg.Stager.HTTP.Credentials {
+			httpCfg.Credentials[host] = execution.CredentialSet{
+				Type:        cred.Type,
+				Token:       cred.Token,
+				Username:    cred.Username,
+				Password:    cred.Password,
+				HeaderName:  cred.HeaderName,
+				HeaderValue: cred.HeaderValue,
+			}
+		}
+	}
+
+	httpStager := execution.NewHTTPStager(httpCfg, tlsCfg)
+
+	// Create composite stager with scheme handlers.
+	fileStager := execution.NewFileStager(cfg.StageOut)
+	handlers := map[string]execution.Stager{
+		"file":  fileStager,
+		"":      fileStager, // Default for bare paths
+		"http":  httpStager,
+		"https": httpStager,
+	}
+
+	// Determine fallback stager for stage-out based on StageOutMode.
+	var stageOutStager execution.Stager
+	if strings.HasPrefix(cfg.StageOut, "http://") || strings.HasPrefix(cfg.StageOut, "https://") {
+		stageOutStager = httpStager
+	} else {
+		stageOutStager = fileStager
+	}
+
+	stager := execution.NewCompositeStager(handlers, stageOutStager)
+
 	return &Worker{
-		client:   NewClient(cfg.ServerURL),
-		runtime:  rt,
-		stager:   NewFileStager(cfg.StageOut),
-		workDir:  cfg.WorkDir,
-		stageOut: cfg.StageOut,
-		poll:     cfg.Poll,
-		logger:   logger.With("component", "worker"),
+		client:     NewClient(cfg.ServerURL, tlsCfg),
+		runtime:    rt,
+		stager:     stager,
+		httpStager: httpStager,
+		workDir:    cfg.WorkDir,
+		stageOut:   cfg.StageOut,
+		stagerCfg:  cfg.Stager,
+		poll:       cfg.Poll,
+		logger:     logger.With("component", "worker"),
 	}, nil
 }
 
@@ -189,10 +247,16 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		namespaces = task.RuntimeHints.Namespaces
 	}
 
-	// Create the execution engine with the worker's stager.
+	// Apply per-task stager overrides if present.
+	stager := w.stager
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
+	}
+
+	// Create the execution engine with the (possibly overridden) stager.
 	engine := execution.NewEngine(execution.Config{
 		Logger:        w.logger,
-		Stager:        w.stager,
+		Stager:        stager,
 		ExpressionLib: expressionLib,
 		Namespaces:    namespaces,
 	})
@@ -581,4 +645,54 @@ func isReservedKey(key string) bool {
 		return true
 	}
 	return false
+}
+
+// stagerWithOverrides creates a stager with per-task overrides applied.
+func (w *Worker) stagerWithOverrides(overrides *model.StagerOverrides) execution.Stager {
+	if overrides == nil {
+		return w.stager
+	}
+
+	// Convert model.StagerOverrides to execution.StagerOverrides.
+	execOverrides := &execution.StagerOverrides{
+		HTTPHeaders: overrides.HTTPHeaders,
+	}
+
+	if overrides.HTTPTimeoutSeconds != nil {
+		timeout := time.Duration(*overrides.HTTPTimeoutSeconds) * time.Second
+		execOverrides.HTTPTimeout = &timeout
+	}
+
+	if overrides.HTTPCredential != nil {
+		execOverrides.HTTPCredential = &execution.CredentialSet{
+			Type:        overrides.HTTPCredential.Type,
+			Token:       overrides.HTTPCredential.Token,
+			Username:    overrides.HTTPCredential.Username,
+			Password:    overrides.HTTPCredential.Password,
+			HeaderName:  overrides.HTTPCredential.HeaderName,
+			HeaderValue: overrides.HTTPCredential.HeaderValue,
+		}
+	}
+
+	// Create overridden HTTP stager.
+	overriddenHTTP := w.httpStager.WithOverrides(execOverrides)
+
+	// Create new composite stager with overridden HTTP handler.
+	fileStager := execution.NewFileStager(w.stageOut)
+	handlers := map[string]execution.Stager{
+		"file":  fileStager,
+		"":      fileStager,
+		"http":  overriddenHTTP,
+		"https": overriddenHTTP,
+	}
+
+	// Determine fallback stager for stage-out.
+	var stageOutStager execution.Stager
+	if strings.HasPrefix(w.stageOut, "http://") || strings.HasPrefix(w.stageOut, "https://") {
+		stageOutStager = overriddenHTTP
+	} else {
+		stageOutStager = fileStager
+	}
+
+	return execution.NewCompositeStager(handlers, stageOutStager)
 }
