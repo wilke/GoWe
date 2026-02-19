@@ -57,3 +57,4 @@ scratchpad*.md
 testdata/cwl-v1.2
 conformance-results.txt
 badges/
+docker-compose.override.yml
