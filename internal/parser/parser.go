@@ -436,13 +436,15 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 	}
 
 	wf := &cwl.Workflow{
-		ID:         stringField(raw, "id"),
-		Class:      stringField(raw, "class"),
-		CWLVersion: stringField(raw, "cwlVersion"),
-		Doc:        stringField(raw, "doc"),
-		Inputs:     make(map[string]cwl.InputParam),
-		Outputs:    make(map[string]cwl.OutputParam),
-		Steps:      make(map[string]cwl.Step),
+		ID:           stringField(raw, "id"),
+		Class:        stringField(raw, "class"),
+		CWLVersion:   stringField(raw, "cwlVersion"),
+		Doc:          stringField(raw, "doc"),
+		Inputs:       make(map[string]cwl.InputParam),
+		Outputs:      make(map[string]cwl.OutputParam),
+		Steps:        make(map[string]cwl.Step),
+		Hints:        normalizeHintsToMap(raw["hints"]),
+		Requirements: normalizeHintsToMap(raw["requirements"]),
 	}
 
 	// Parse inputs: supports both array-style and map-style.

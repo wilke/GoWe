@@ -54,3 +54,5 @@ scratchpad*.md
 # Root-level binaries
 /server
 /worker
+testdata/cwl-v1.2
+conformance-results.txt

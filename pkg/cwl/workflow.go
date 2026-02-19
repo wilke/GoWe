@@ -3,13 +3,15 @@ package cwl
 // Workflow is a typed representation of a CWL Workflow document.
 // It is the intermediate form between raw YAML and model.Workflow.
 type Workflow struct {
-	ID         string
-	Class      string
-	CWLVersion string
-	Doc        string
-	Inputs     map[string]InputParam
-	Outputs    map[string]OutputParam
-	Steps      map[string]Step
+	ID           string
+	Class        string
+	CWLVersion   string
+	Doc          string
+	Inputs       map[string]InputParam
+	Outputs      map[string]OutputParam
+	Steps        map[string]Step
+	Hints        map[string]any
+	Requirements map[string]any
 }
 
 // InputParam is a normalized CWL workflow input.

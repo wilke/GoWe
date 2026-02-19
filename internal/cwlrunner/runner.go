@@ -290,7 +290,8 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	expressionLib := extractExpressionLib(graph)
 
 	// Determine execution mode (Docker or local).
-	useDocker := r.ForceDocker || (!r.NoContainer && hasDockerRequirement(tool))
+	// Check both tool-level and workflow-level DockerRequirement.
+	useDocker := r.ForceDocker || (!r.NoContainer && hasDockerRequirement(tool, graph.Workflow))
 
 	// Get the work directory for this execution (increments stepCount).
 	r.stepCount++
@@ -314,7 +315,7 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 
 	var outputs map[string]any
 	if useDocker {
-		dockerImage := getDockerImage(tool)
+		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
@@ -806,15 +807,30 @@ func extractExpressionLib(graph *cwl.GraphDocument) []string {
 	return nil
 }
 
-// hasDockerRequirement checks if a tool has a DockerRequirement.
-func hasDockerRequirement(tool *cwl.CommandLineTool) bool {
+// hasDockerRequirement checks if a tool or workflow has a DockerRequirement.
+// It checks tool requirements, tool hints, workflow requirements, and workflow hints.
+func hasDockerRequirement(tool *cwl.CommandLineTool, wf *cwl.Workflow) bool {
+	// Check tool requirements first.
 	if tool.Requirements != nil {
 		if _, ok := tool.Requirements["DockerRequirement"]; ok {
 			return true
 		}
 	}
+	// Then tool hints.
 	if tool.Hints != nil {
 		if _, ok := tool.Hints["DockerRequirement"]; ok {
+			return true
+		}
+	}
+	// Then workflow requirements (inherited by steps).
+	if wf != nil && wf.Requirements != nil {
+		if _, ok := wf.Requirements["DockerRequirement"]; ok {
+			return true
+		}
+	}
+	// Then workflow hints (inherited by steps).
+	if wf != nil && wf.Hints != nil {
+		if _, ok := wf.Hints["DockerRequirement"]; ok {
 			return true
 		}
 	}
@@ -822,8 +838,9 @@ func hasDockerRequirement(tool *cwl.CommandLineTool) bool {
 }
 
 // getDockerImage extracts the Docker image from requirements or hints.
-func getDockerImage(tool *cwl.CommandLineTool) string {
-	// Check requirements first.
+// It checks tool first, then workflow-level hints if present.
+func getDockerImage(tool *cwl.CommandLineTool, wf *cwl.Workflow) string {
+	// Check tool requirements first.
 	if tool.Requirements != nil {
 		if dr, ok := tool.Requirements["DockerRequirement"].(map[string]any); ok {
 			if pull, ok := dr["dockerPull"].(string); ok {
@@ -831,9 +848,25 @@ func getDockerImage(tool *cwl.CommandLineTool) string {
 			}
 		}
 	}
-	// Then hints.
+	// Then tool hints.
 	if tool.Hints != nil {
 		if dr, ok := tool.Hints["DockerRequirement"].(map[string]any); ok {
+			if pull, ok := dr["dockerPull"].(string); ok {
+				return pull
+			}
+		}
+	}
+	// Then workflow requirements.
+	if wf != nil && wf.Requirements != nil {
+		if dr, ok := wf.Requirements["DockerRequirement"].(map[string]any); ok {
+			if pull, ok := dr["dockerPull"].(string); ok {
+				return pull
+			}
+		}
+	}
+	// Then workflow hints.
+	if wf != nil && wf.Hints != nil {
+		if dr, ok := wf.Hints["DockerRequirement"].(map[string]any); ok {
 			if pull, ok := dr["dockerPull"].(string); ok {
 				return pull
 			}

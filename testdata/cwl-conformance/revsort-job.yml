@@ -1,0 +1,4 @@
+input:
+  class: File
+  path: ../cwl-v1.2/tests/whale.txt
+reverse_sort: true

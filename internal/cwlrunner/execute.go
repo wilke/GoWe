@@ -354,6 +354,9 @@ func resolveSymlinks(path string) string {
 }
 
 // collectInputMountsValue collects mount points from a value.
+// It returns a map of hostPath → containerPath.
+// The host path is resolved (symlinks evaluated) for Docker mounting,
+// but the container path uses the original path so commands work as expected.
 func collectInputMountsValue(v any, mounts map[string]string) {
 	switch val := v.(type) {
 	case map[string]any:
@@ -361,9 +364,10 @@ func collectInputMountsValue(v any, mounts map[string]string) {
 			if class == "File" || class == "Directory" {
 				if path, ok := val["path"].(string); ok {
 					if filepath.IsAbs(path) {
-						// Resolve symlinks for Docker mount compatibility.
+						// Resolve symlinks for Docker mount source,
+						// but use original path as container target.
 						resolved := resolveSymlinks(path)
-						mounts[resolved] = resolved
+						mounts[resolved] = path
 					}
 				}
 			}

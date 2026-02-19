@@ -247,14 +247,19 @@ func collectInputMounts(inputs map[string]any) map[string]string {
 }
 
 // collectInputMountsValue recursively collects mount points from a value.
+// It returns a map of hostPath → containerPath.
+// The host path is resolved (symlinks evaluated) for Docker mounting,
+// but the container path uses the original path so commands work as expected.
 func collectInputMountsValue(v any, mounts map[string]string) {
 	switch val := v.(type) {
 	case map[string]any:
 		if class, ok := val["class"].(string); ok {
 			if class == "File" || class == "Directory" {
 				if path, ok := val["path"].(string); ok && filepath.IsAbs(path) {
+					// Resolve symlinks for the host mount source,
+					// but use original path as container target so commands work.
 					resolved := resolveSymlinks(path)
-					mounts[resolved] = resolved
+					mounts[resolved] = path
 				}
 				// Also collect secondary files.
 				if secFiles, ok := val["secondaryFiles"].([]any); ok {
