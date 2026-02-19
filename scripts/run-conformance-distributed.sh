@@ -86,7 +86,7 @@ log_info "Waiting for server health..."
 max_attempts=30
 attempt=0
 while [ $attempt -lt $max_attempts ]; do
-    if curl -s http://localhost:8080/api/v1/health > /dev/null 2>&1; then
+    if curl -s http://localhost:8090/api/v1/health > /dev/null 2>&1; then
         log_info "Server is healthy"
         break
     fi
@@ -105,18 +105,18 @@ log_info "Waiting for workers to register..."
 sleep 5
 
 # Check worker registration
-workers=$(curl -s http://localhost:8080/api/v1/workers | jq -r '.data | length')
+workers=$(curl -s http://localhost:8090/api/v1/workers | jq -r '.data | length')
 log_info "Registered workers: $workers"
 
 # Print configuration
-log_info "Server: http://localhost:8080 (default-executor: worker)"
+log_info "Server: http://localhost:8090 (default-executor: worker)"
 log_info "Workers: $workers registered"
 
 # Create a wrapper script for cwltest
 WRAPPER_SCRIPT=$(mktemp)
 cat > "$WRAPPER_SCRIPT" << 'EOF'
 #!/bin/bash
-exec "$(dirname "$0")/../bin/gowe" run --server http://localhost:8080 --quiet "$@"
+exec "$(dirname "$0")/../bin/gowe" run --server http://localhost:8090 --quiet "$@"
 EOF
 chmod +x "$WRAPPER_SCRIPT"
 
@@ -148,7 +148,7 @@ else
 
             if [ -f "$job_file" ]; then
                 log_info "Test [$total]: $base"
-                if ./bin/gowe run --server http://localhost:8080 --quiet "$cwl_file" "$job_file" > /dev/null 2>&1; then
+                if ./bin/gowe run --server http://localhost:8090 --quiet "$cwl_file" "$job_file" > /dev/null 2>&1; then
                     echo -e "  ${GREEN}PASSED${NC}"
                     passed=$((passed + 1))
                 else
@@ -157,7 +157,7 @@ else
                 fi
             else
                 log_info "Test [$total]: $base (no job file)"
-                if ./bin/gowe run --server http://localhost:8080 --quiet "$cwl_file" > /dev/null 2>&1; then
+                if ./bin/gowe run --server http://localhost:8090 --quiet "$cwl_file" > /dev/null 2>&1; then
                     echo -e "  ${GREEN}PASSED${NC}"
                     passed=$((passed + 1))
                 else
@@ -184,7 +184,7 @@ if [ -n "$TAGS" ]; then
     CWLTEST_CMD="$CWLTEST_CMD --tags $TAGS"
 fi
 
-CWLTEST_CMD="$CWLTEST_CMD --tool '$SCRIPT_DIR/../bin/gowe run --server http://localhost:8080 --quiet'"
+CWLTEST_CMD="$CWLTEST_CMD --tool '$SCRIPT_DIR/../bin/gowe run --server http://localhost:8090 --quiet'"
 
 log_info "Running: $CWLTEST_CMD"
 eval "$CWLTEST_CMD" || {
