@@ -151,23 +151,81 @@ outputs: {}
 	}
 }
 
-func TestBundle_NotWorkflow(t *testing.T) {
+func TestBundle_BareTool(t *testing.T) {
 	dir := t.TempDir()
 	tool := `cwlVersion: v1.2
 class: CommandLineTool
 baseCommand: ["echo"]
-inputs: {}
-outputs: {}
+inputs:
+  message:
+    type: string
+outputs:
+  output:
+    type: stdout
 `
 	toolPath := filepath.Join(dir, "tool.cwl")
 	os.WriteFile(toolPath, []byte(tool), 0644)
 
-	_, err := Bundle(toolPath)
-	if err == nil {
-		t.Fatal("expected error for non-Workflow")
+	result, err := Bundle(toolPath)
+	if err != nil {
+		t.Fatalf("Bundle() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "expected class: Workflow") {
-		t.Errorf("error = %q, want 'expected class: Workflow'", err.Error())
+
+	if result.Name != "tool" {
+		t.Errorf("Name = %q, want tool", result.Name)
+	}
+
+	// Parse the packed output
+	var doc map[string]any
+	if err := yaml.Unmarshal(result.Packed, &doc); err != nil {
+		t.Fatalf("unmarshal packed: %v", err)
+	}
+
+	// Should have $graph with tool and synthetic workflow
+	graph, ok := doc["$graph"].([]any)
+	if !ok {
+		t.Fatal("expected $graph array")
+	}
+
+	if len(graph) != 2 {
+		t.Errorf("$graph length = %d, want 2 (tool + workflow)", len(graph))
+	}
+
+	// Check IDs
+	ids := map[string]bool{}
+	for _, entry := range graph {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		ids[id] = true
+	}
+
+	if !ids["tool"] {
+		t.Error("missing tool in $graph")
+	}
+	if !ids["main"] {
+		t.Error("missing main workflow in $graph")
+	}
+}
+
+func TestBundle_UnknownClass(t *testing.T) {
+	dir := t.TempDir()
+	doc := `cwlVersion: v1.2
+class: UnknownClass
+inputs: {}
+outputs: {}
+`
+	path := filepath.Join(dir, "unknown.cwl")
+	os.WriteFile(path, []byte(doc), 0644)
+
+	_, err := Bundle(path)
+	if err == nil {
+		t.Fatal("expected error for unknown class")
+	}
+	if !strings.Contains(err.Error(), "expected class") {
+		t.Errorf("error = %q, want 'expected class' in message", err.Error())
 	}
 }
 
