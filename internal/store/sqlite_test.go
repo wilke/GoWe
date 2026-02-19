@@ -697,7 +697,7 @@ func TestCheckoutTask_BasicFlow(t *testing.T) {
 	st.CreateWorker(ctx, w)
 
 	// Checkout should return the task.
-	got, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	got, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeNone)
 	if err != nil {
 		t.Fatalf("checkout: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestCheckoutTask_BasicFlow(t *testing.T) {
 	}
 
 	// Second checkout should return nil (no more tasks).
-	got2, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	got2, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeNone)
 	if err != nil {
 		t.Fatalf("second checkout: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestCheckoutTask_RuntimeFiltering(t *testing.T) {
 	st.CreateWorker(ctx, w)
 
 	// Worker with runtime=none should NOT get this task.
-	got, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	got, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeNone)
 	if err != nil {
 		t.Fatalf("checkout: %v", err)
 	}
@@ -756,7 +756,7 @@ func TestCheckoutTask_RuntimeFiltering(t *testing.T) {
 	}
 
 	// Worker with runtime=docker SHOULD get this task.
-	got2, err := st.CheckoutTask(ctx, w.ID, model.RuntimeDocker)
+	got2, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeDocker)
 	if err != nil {
 		t.Fatalf("checkout docker: %v", err)
 	}
@@ -775,7 +775,7 @@ func TestCheckoutTask_NoQueuedTasks(t *testing.T) {
 	w := sampleWorker()
 	st.CreateWorker(ctx, w)
 
-	got, err := st.CheckoutTask(ctx, w.ID, model.RuntimeNone)
+	got, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeNone)
 	if err != nil {
 		t.Fatalf("checkout: %v", err)
 	}

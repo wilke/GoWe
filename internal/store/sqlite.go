@@ -282,12 +282,19 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 		completedAt = &s
 	}
 
+	// Store token expiry as Unix timestamp (0 if not set).
+	tokenExpiry := int64(0)
+	if !sub.TokenExpiry.IsZero() {
+		tokenExpiry = sub.TokenExpiry.Unix()
+	}
+
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
+		sub.UserToken, tokenExpiry, sub.AuthProvider,
 	)
 	return err
 }
@@ -299,13 +306,15 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var inputsJSON, outputsJSON, labelsJSON string
 	var state, createdAt string
 	var completedAt *string
+	var tokenExpiry int64
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
-		&sub.SubmittedBy, &createdAt, &completedAt)
+		&sub.SubmittedBy, &createdAt, &completedAt,
+		&sub.UserToken, &tokenExpiry, &sub.AuthProvider)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -322,6 +331,9 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	if completedAt != nil {
 		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
 		sub.CompletedAt = &t
+	}
+	if tokenExpiry > 0 {
+		sub.TokenExpiry = time.Unix(tokenExpiry, 0)
 	}
 
 	// Load associated tasks.
@@ -766,10 +778,16 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	// Default group to "default" if not set.
+	group := w.Group
+	if group == "" {
+		group = "default"
+	}
+
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, state, runtime, labels, last_seen, current_task, registered_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, w.Name, w.Hostname, string(w.State), string(w.Runtime),
+		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
 	)
@@ -783,9 +801,9 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	var state, runtime, labelsJSON, lastSeen, registeredAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, state, runtime, labels, last_seen, current_task, registered_at
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at
 		 FROM workers WHERE id = ?`, id,
-	).Scan(&w.ID, &w.Name, &w.Hostname, &state, &runtime,
+	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
 		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt)
 
 	if err == sql.ErrNoRows {
@@ -813,9 +831,9 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE workers SET name=?, hostname=?, state=?, runtime=?, labels=?,
+		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
 		 last_seen=?, current_task=? WHERE id=?`,
-		w.Name, w.Hostname, string(w.State), string(w.Runtime),
+		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.ID,
 	)
@@ -847,7 +865,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, state, runtime, labels, last_seen, current_task, registered_at
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at
 		 FROM workers ORDER BY registered_at`)
 	if err != nil {
 		return nil, err
@@ -859,7 +877,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		var w model.Worker
 		var state, runtime, labelsJSON, lastSeen, registeredAt string
 
-		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &state, &runtime,
+		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
 			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt); err != nil {
 			return nil, err
 		}
@@ -879,8 +897,9 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 // it to RUNNING, assigning it to the given worker. Returns nil if no task is
 // available. Runtime capability matching: if runtime is "none", only tasks
 // without _docker_image are eligible; otherwise all QUEUED worker tasks match.
-func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime model.ContainerRuntime) (*model.Task, error) {
-	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "runtime", runtime)
+// If workerGroup is non-empty, only tasks with matching or empty WorkerGroup are eligible.
+func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error) {
+	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "group", workerGroup, "runtime", runtime)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -946,9 +965,10 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 		return nil, err
 	}
 
-	// Filter by runtime capability.
+	// Filter by runtime capability and worker group.
 	var selected *model.Task
 	for _, task := range candidates {
+		// Check runtime capability.
 		hasImage := false
 		if img, ok := task.Inputs["_docker_image"].(string); ok && img != "" {
 			hasImage = true
@@ -956,6 +976,14 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 		if runtime == model.RuntimeNone && hasImage {
 			continue // Worker can't run container tasks
 		}
+
+		// Check worker group matching.
+		if workerGroup != "" && task.RuntimeHints != nil && task.RuntimeHints.WorkerGroup != "" {
+			if task.RuntimeHints.WorkerGroup != workerGroup {
+				continue // Task requires a different worker group
+			}
+		}
+
 		selected = task
 		break
 	}
@@ -991,4 +1019,144 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, runtime
 	selected.StartedAt = &now
 
 	return selected, nil
+}
+
+// --- User operations ---
+
+func (s *SQLiteStore) GetUser(ctx context.Context, username string) (*model.User, error) {
+	s.logger.Debug("sql", "op", "select", "table", "users", "username", username)
+
+	var user model.User
+	var createdAt, lastLogin int64
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, provider, role, created_at, last_login
+		 FROM users WHERE username = ?`, username,
+	).Scan(&user.ID, &user.Username, &user.Provider, &user.Role, &createdAt, &lastLogin)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	user.CreatedAt = time.Unix(createdAt, 0)
+	user.LastLoginAt = time.Unix(lastLogin, 0)
+
+	// Load linked providers.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT provider, username FROM linked_providers WHERE user_id = ?`, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load linked providers: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var lp model.LinkedProvider
+		if err := rows.Scan(&lp.Provider, &lp.Username); err != nil {
+			return nil, err
+		}
+		user.LinkedProviders = append(user.LinkedProviders, lp)
+	}
+
+	return &user, rows.Err()
+}
+
+func (s *SQLiteStore) GetOrCreateUser(ctx context.Context, username string, provider model.AuthProvider) (*model.User, error) {
+	s.logger.Debug("sql", "op", "get_or_create", "table", "users", "username", username)
+
+	// Try to get existing user.
+	user, err := s.GetUser(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	if user != nil {
+		// Update last login time.
+		user.LastLoginAt = time.Now().UTC()
+		if err := s.UpdateUser(ctx, user); err != nil {
+			s.logger.Warn("update last_login failed", "username", username, "error", err)
+		}
+		return user, nil
+	}
+
+	// Create new user.
+	now := time.Now().UTC()
+	user = &model.User{
+		ID:          "user_" + fmt.Sprintf("%d", now.UnixNano()),
+		Username:    username,
+		Provider:    provider,
+		Role:        model.RoleUser,
+		CreatedAt:   now,
+		LastLoginAt: now,
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO users (id, username, provider, role, created_at, last_login)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Username, user.Provider, user.Role,
+		user.CreatedAt.Unix(), user.LastLoginAt.Unix(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+
+	s.logger.Info("user created", "id", user.ID, "username", username, "provider", provider)
+	return user, nil
+}
+
+func (s *SQLiteStore) UpdateUser(ctx context.Context, user *model.User) error {
+	s.logger.Debug("sql", "op", "update", "table", "users", "id", user.ID)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE users SET role=?, last_login=? WHERE id=?`,
+		user.Role, user.LastLoginAt.Unix(), user.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("user %s not found", user.ID)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListUsers(ctx context.Context) ([]*model.User, error) {
+	s.logger.Debug("sql", "op", "list", "table", "users")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, username, provider, role, created_at, last_login
+		 FROM users ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*model.User
+	for rows.Next() {
+		var user model.User
+		var createdAt, lastLogin int64
+
+		if err := rows.Scan(&user.ID, &user.Username, &user.Provider, &user.Role,
+			&createdAt, &lastLogin); err != nil {
+			return nil, err
+		}
+
+		user.CreatedAt = time.Unix(createdAt, 0)
+		user.LastLoginAt = time.Unix(lastLogin, 0)
+		users = append(users, &user)
+	}
+	return users, rows.Err()
+}
+
+func (s *SQLiteStore) LinkProvider(ctx context.Context, userID string, provider model.AuthProvider, username string) error {
+	s.logger.Debug("sql", "op", "insert", "table", "linked_providers", "user_id", userID, "provider", provider)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO linked_providers (user_id, provider, username)
+		 VALUES (?, ?, ?)`,
+		userID, provider, username,
+	)
+	return err
 }

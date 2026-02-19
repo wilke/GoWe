@@ -42,7 +42,14 @@ type Store interface {
 	UpdateWorker(ctx context.Context, w *model.Worker) error
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
-	CheckoutTask(ctx context.Context, workerID string, runtime model.ContainerRuntime) (*model.Task, error)
+	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
+
+	// User operations
+	GetUser(ctx context.Context, username string) (*model.User, error)
+	GetOrCreateUser(ctx context.Context, username string, provider model.AuthProvider) (*model.User, error)
+	UpdateUser(ctx context.Context, user *model.User) error
+	ListUsers(ctx context.Context) ([]*model.User, error)
+	LinkProvider(ctx context.Context, userID string, provider model.AuthProvider, username string) error
 
 	// Lifecycle
 	Close() error

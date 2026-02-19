@@ -63,6 +63,10 @@ type RuntimeHints struct {
 
 	// StagerOverrides allows per-task stager customization.
 	StagerOverrides *StagerOverrides `json:"stager_overrides,omitempty"`
+
+	// WorkerGroup specifies which worker group should execute this task.
+	// If empty, any worker can execute the task.
+	WorkerGroup string `json:"worker_group,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

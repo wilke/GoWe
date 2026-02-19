@@ -14,6 +14,7 @@ services:
       - "/data/gowe.db"
       - "-default-executor"
       - "worker"
+      - "-allow-anonymous"
       - "-debug"
     volumes:
       - gowe-data:/data

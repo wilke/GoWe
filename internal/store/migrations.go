@@ -94,6 +94,27 @@ var schema = []string{
 		registered_at TEXT NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_workers_state ON workers(state)`,
+
+	// Users table for GoWe user accounts
+	`CREATE TABLE IF NOT EXISTS users (
+		id           TEXT PRIMARY KEY,
+		username     TEXT NOT NULL UNIQUE,
+		provider     TEXT NOT NULL,
+		role         TEXT NOT NULL DEFAULT 'user',
+		created_at   INTEGER NOT NULL,
+		last_login   INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
+	`CREATE INDEX IF NOT EXISTS idx_users_provider ON users(provider)`,
+
+	// Linked providers for multi-provider authentication
+	`CREATE TABLE IF NOT EXISTS linked_providers (
+		user_id   TEXT NOT NULL,
+		provider  TEXT NOT NULL,
+		username  TEXT NOT NULL,
+		PRIMARY KEY (user_id, provider),
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	)`,
 }
 
 // alterStatements are column additions that need special handling since
@@ -137,6 +158,29 @@ var alterStatements = []struct {
 		table:    "tasks",
 		column:   "runtime_hints",
 		alterSQL: "ALTER TABLE tasks ADD COLUMN runtime_hints TEXT NOT NULL DEFAULT '{}'",
+	},
+	// Submission token columns for per-user authentication
+	{
+		table:    "submissions",
+		column:   "user_token",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN user_token TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		table:    "submissions",
+		column:   "token_expiry",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN token_expiry INTEGER NOT NULL DEFAULT 0",
+	},
+	{
+		table:    "submissions",
+		column:   "auth_provider",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN auth_provider TEXT NOT NULL DEFAULT ''",
+	},
+	// Worker group column for worker scheduling
+	{
+		table:    "workers",
+		column:   "worker_group",
+		alterSQL: "ALTER TABLE workers ADD COLUMN worker_group TEXT NOT NULL DEFAULT 'default'",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workers_group ON workers(worker_group)",
 	},
 }
 

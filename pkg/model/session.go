@@ -14,12 +14,6 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// UserRole constants for authorization.
-const (
-	RoleUser  = "user"
-	RoleAdmin = "admin"
-)
-
 // IsExpired reports whether the session has expired.
 func (s *Session) IsExpired() bool {
 	return time.Now().After(s.ExpiresAt)
@@ -32,5 +26,5 @@ func (s *Session) IsTokenExpired() bool {
 
 // IsAdmin reports whether the session has admin role.
 func (s *Session) IsAdmin() bool {
-	return s.Role == RoleAdmin
+	return s.Role == string(RoleAdmin)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/pkg/model"
 )
 
 func main() {
@@ -29,6 +31,13 @@ func main() {
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "Database path (default ~/.gowe/gowe.db)")
 	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor type: local, docker, worker (empty for hint-based)")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
+
+	// Authentication options
+	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
+	anonymousExecutors := flag.String("anonymous-executors", "local,docker,worker", "Comma-separated list of executors allowed for anonymous users")
+	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
+	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
+
 	flag.Parse()
 
 	if *debug {
@@ -77,28 +86,67 @@ func main() {
 	const workspaceURL = "https://p3.theseed.org/services/Workspace"
 
 	serverOpts := []server.Option{server.WithExecutorRegistry(reg)}
+
+	// Configure admin role assignment.
+	adminConfig := server.NewAdminConfig(st, "GOWE_ADMINS", *configFile)
+	serverOpts = append(serverOpts, server.WithAdminConfig(adminConfig))
+	if len(adminConfig.EnvAdmins()) > 0 {
+		logger.Info("admin users from env", "admins", adminConfig.EnvAdmins())
+	}
+	if len(adminConfig.FileAdmins()) > 0 {
+		logger.Info("admin users from config", "admins", adminConfig.FileAdmins())
+	}
+
+	// Configure anonymous access.
+	if *allowAnonymous {
+		var allowedExecutors []model.ExecutorType
+		for _, exec := range strings.Split(*anonymousExecutors, ",") {
+			exec = strings.TrimSpace(exec)
+			if exec != "" {
+				allowedExecutors = append(allowedExecutors, model.ExecutorType(exec))
+			}
+		}
+		anonConfig := &server.AnonymousConfig{
+			Enabled:          true,
+			AllowedExecutors: allowedExecutors,
+		}
+		serverOpts = append(serverOpts, server.WithAnonymousConfig(anonConfig))
+		logger.Info("anonymous access enabled", "allowed_executors", allowedExecutors)
+	}
+
+	// Configure worker key authentication.
+	workerKeyConfig := server.LoadWorkerKeyConfig(*workerKeyFile)
+	if workerKeyConfig.IsEnabled() {
+		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
+		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
+	}
+
+	// Set up BV-BRC callers.
+	var defaultBVBRCCaller bvbrc.RPCCaller
 	if tok, err := bvbrc.ResolveToken(); err == nil {
 		tokenInfo := bvbrc.ParseToken(tok)
 		if tokenInfo.IsExpired() {
-			logger.Warn("BV-BRC token expired; bvbrc executor not registered")
+			logger.Warn("BV-BRC token expired; server token not available")
 		} else {
-			// AppService caller for /apps and job submission.
+			// AppService caller for /apps listing (read-only, service account).
 			bvbrcCfg := bvbrc.DefaultClientConfig()
 			bvbrcCfg.Token = tok
-			appCaller := bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
-			reg.Register(executor.NewBVBRCExecutor(appCaller, tokenInfo.Username, logger))
-			serverOpts = append(serverOpts, server.WithBVBRCCaller(appCaller))
+			defaultBVBRCCaller = bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
+			serverOpts = append(serverOpts, server.WithBVBRCCaller(defaultBVBRCCaller))
 
 			// Workspace caller for workspace browsing.
 			wsCfg := bvbrc.ClientConfig{AppServiceURL: workspaceURL, Token: tok}
 			wsCaller := bvbrc.NewHTTPRPCCaller(wsCfg, logger)
 			serverOpts = append(serverOpts, server.WithWorkspaceCaller(wsCaller))
 
-			logger.Info("bvbrc executor registered", "username", tokenInfo.Username)
+			logger.Info("bvbrc service account ready", "username", tokenInfo.Username)
 		}
 	} else {
-		logger.Info("bvbrc executor not registered (no token)", "hint", "set BVBRC_TOKEN or run gowe login")
+		logger.Info("bvbrc service account not available (no token)", "hint", "set BVBRC_TOKEN or run gowe login")
 	}
+
+	// Register BVBRCExecutor (uses per-task tokens for job submission).
+	reg.Register(executor.NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, defaultBVBRCCaller, logger))
 
 	// Create scheduler.
 	sched := scheduler.NewLoop(st, reg, scheduler.DefaultConfig(), logger)

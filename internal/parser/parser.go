@@ -704,15 +704,23 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	}
 
 	// Parse arguments array.
+	// CWL spec: array<string | Expression | CommandLineBinding>
 	if args, ok := raw["arguments"].([]any); ok {
 		for _, arg := range args {
 			switch a := arg.(type) {
 			case string:
-				tool.Arguments = append(tool.Arguments, a)
+				// String literal or expression.
+				tool.Arguments = append(tool.Arguments, cwl.ArgumentEntry{
+					StringValue: a,
+					IsString:    true,
+				})
 			case map[string]any:
-				// Structured argument with position, prefix, valueFrom, etc.
+				// Structured argument (CommandLineBinding).
 				parsedArg := parseArgument(a)
-				tool.Arguments = append(tool.Arguments, parsedArg)
+				tool.Arguments = append(tool.Arguments, cwl.ArgumentEntry{
+					Binding:  &parsedArg,
+					IsString: false,
+				})
 			}
 		}
 	}

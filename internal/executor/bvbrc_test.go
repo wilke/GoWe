@@ -35,7 +35,7 @@ func bvbrcLogger() *slog.Logger {
 }
 
 func newTestBVBRCExecutor(caller bvbrc.RPCCaller) *BVBRCExecutor {
-	return NewBVBRCExecutor(caller, "testuser", bvbrcLogger())
+	return NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, caller, bvbrcLogger())
 }
 
 func TestBVBRCExecutor_Type(t *testing.T) {

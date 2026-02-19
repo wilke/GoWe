@@ -34,6 +34,8 @@ type Config struct {
 	ServerURL string
 	Name      string
 	Hostname  string
+	Group     string // Worker group for task scheduling
+	WorkerKey string // Shared secret for worker authentication
 	Runtime   string
 	WorkDir   string
 	StageOut  string
@@ -110,8 +112,13 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 
 	stager := execution.NewCompositeStager(handlers, stageOutStager)
 
+	client := NewClient(cfg.ServerURL, tlsCfg)
+	if cfg.WorkerKey != "" {
+		client.SetWorkerKey(cfg.WorkerKey)
+	}
+
 	return &Worker{
-		client:     NewClient(cfg.ServerURL, tlsCfg),
+		client:     client,
 		runtime:    rt,
 		stager:     stager,
 		httpStager: httpStager,
@@ -131,13 +138,14 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("create workdir %s: %w", w.workDir, err)
 	}
 
-	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Runtime)
+	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
 	w.logger.Info("registered with server",
 		"worker_id", worker.ID,
 		"name", worker.Name,
+		"group", worker.Group,
 		"runtime", worker.Runtime,
 	)
 

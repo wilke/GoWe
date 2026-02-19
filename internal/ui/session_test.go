@@ -21,7 +21,7 @@ func TestSessionManager_CreateAndGet(t *testing.T) {
 
 	// Create a session.
 	tokenExp := time.Now().Add(24 * time.Hour)
-	sess, err := sm.CreateSession(ctx, "user1", "testuser", model.RoleUser, "test-token", tokenExp)
+	sess, err := sm.CreateSession(ctx, "user1", "testuser", string(model.RoleUser), "test-token", tokenExp)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestSessionManager_CreateAndGet(t *testing.T) {
 	if sess.Username != "testuser" {
 		t.Errorf("expected Username 'testuser', got %q", sess.Username)
 	}
-	if sess.Role != model.RoleUser {
+	if sess.Role != string(model.RoleUser) {
 		t.Errorf("expected Role 'user', got %q", sess.Role)
 	}
 	if sess.Token != "test-token" {
@@ -84,7 +84,7 @@ func TestSessionManager_GetSession_Expired(t *testing.T) {
 		ID:        "sess_expired",
 		UserID:    "user1",
 		Username:  "testuser",
-		Role:      model.RoleUser,
+		Role:      string(model.RoleUser),
 		Token:     "test-token",
 		TokenExp:  time.Now().Add(24 * time.Hour),
 		CreatedAt: time.Now().Add(-2 * time.Hour),
@@ -113,7 +113,7 @@ func TestSessionManager_DeleteSession(t *testing.T) {
 
 	// Create a session.
 	tokenExp := time.Now().Add(24 * time.Hour)
-	sess, err := sm.CreateSession(ctx, "user1", "testuser", model.RoleUser, "test-token", tokenExp)
+	sess, err := sm.CreateSession(ctx, "user1", "testuser", string(model.RoleUser), "test-token", tokenExp)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSessionManager_GetSessionFromRequest(t *testing.T) {
 
 	// Create a session.
 	tokenExp := time.Now().Add(24 * time.Hour)
-	sess, err := sm.CreateSession(ctx, "user1", "testuser", model.RoleUser, "test-token", tokenExp)
+	sess, err := sm.CreateSession(ctx, "user1", "testuser", string(model.RoleUser), "test-token", tokenExp)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -255,8 +255,8 @@ func TestSession_IsAdmin(t *testing.T) {
 		role     string
 		expected bool
 	}{
-		{model.RoleAdmin, true},
-		{model.RoleUser, false},
+		{string(model.RoleAdmin), true},
+		{string(model.RoleUser), false},
 		{"", false},
 	}
 

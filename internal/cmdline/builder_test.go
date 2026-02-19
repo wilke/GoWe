@@ -144,12 +144,15 @@ func TestBuilder_PositionSorting(t *testing.T) {
 func TestBuilder_Arguments(t *testing.T) {
 	tool := &cwl.CommandLineTool{
 		BaseCommand: "tool",
-		Arguments: []any{
-			"--verbose",
-			cwl.Argument{
-				Position:  1,
-				Prefix:    "--output",
-				ValueFrom: "result.txt",
+		Arguments: []cwl.ArgumentEntry{
+			{StringValue: "--verbose", IsString: true},
+			{
+				Binding: &cwl.Argument{
+					Position:  1,
+					Prefix:    "--output",
+					ValueFrom: "result.txt",
+				},
+				IsString: false,
 			},
 		},
 		Inputs: map[string]cwl.ToolInputParam{
@@ -323,11 +326,14 @@ func TestBuilder_NullInput(t *testing.T) {
 func TestBuilder_RuntimeContext(t *testing.T) {
 	tool := &cwl.CommandLineTool{
 		BaseCommand: "tool",
-		Arguments: []any{
-			cwl.Argument{
-				Position:  1,
-				Prefix:    "--threads",
-				ValueFrom: "$(runtime.cores)",
+		Arguments: []cwl.ArgumentEntry{
+			{
+				Binding: &cwl.Argument{
+					Position:  1,
+					Prefix:    "--threads",
+					ValueFrom: "$(runtime.cores)",
+				},
+				IsString: false,
 			},
 		},
 	}

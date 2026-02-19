@@ -14,6 +14,7 @@ import (
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/pkg/model"
 )
 
 // startTestServer starts a server with an in-memory SQLite store and returns the URL.
@@ -29,11 +30,17 @@ func startTestServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	srv := server.New(config.DefaultServerConfig(), st, nil, srvLogger, server.WithTestApps([]map[string]any{
-		{"id": "GenomeAssembly2", "label": "Genome Assembly", "description": "Assemble reads"},
-		{"id": "GenomeAnnotation", "label": "Genome Annotation", "description": "Annotate a genome"},
-		{"id": "ComprehensiveGenomeAnalysis", "label": "CGA", "description": "Assembly + Annotation + Analysis"},
-	}))
+	srv := server.New(config.DefaultServerConfig(), st, nil, srvLogger,
+		server.WithAnonymousConfig(&server.AnonymousConfig{
+			Enabled:          true,
+			AllowedExecutors: []model.ExecutorType{model.ExecutorTypeLocal, model.ExecutorTypeContainer, model.ExecutorTypeWorker, model.ExecutorTypeBVBRC},
+		}),
+		server.WithTestApps([]map[string]any{
+			{"id": "GenomeAssembly2", "label": "Genome Assembly", "description": "Assemble reads"},
+			{"id": "GenomeAnnotation", "label": "Genome Annotation", "description": "Annotate a genome"},
+			{"id": "ComprehensiveGenomeAnalysis", "label": "CGA", "description": "Assembly + Annotation + Analysis"},
+		}),
+	)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts.URL

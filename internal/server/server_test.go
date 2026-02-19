@@ -27,7 +27,15 @@ func testServer(opts ...Option) *Server {
 	if err := st.Migrate(context.Background()); err != nil {
 		panic("migrate test store: " + err.Error())
 	}
-	return New(config.DefaultServerConfig(), st, nil, logger, opts...)
+	// Enable anonymous access for all executors by default in tests.
+	defaultOpts := []Option{
+		WithAnonymousConfig(&AnonymousConfig{
+			Enabled:          true,
+			AllowedExecutors: []model.ExecutorType{model.ExecutorTypeLocal, model.ExecutorTypeContainer, model.ExecutorTypeWorker, model.ExecutorTypeBVBRC},
+		}),
+	}
+	defaultOpts = append(defaultOpts, opts...)
+	return New(config.DefaultServerConfig(), st, nil, logger, defaultOpts...)
 }
 
 // testApps returns a static app list for tests that exercise the /apps endpoints.

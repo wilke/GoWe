@@ -17,6 +17,11 @@ type Submission struct {
 	QueuePosition int               `json:"queue_position,omitempty"` // Computed field for pending submissions
 	CreatedAt     time.Time         `json:"created_at"`
 	CompletedAt   *time.Time        `json:"completed_at"`
+
+	// Authentication token fields (not serialized to JSON responses).
+	UserToken    string    `json:"-"` // Provider token for downstream calls
+	TokenExpiry  time.Time `json:"-"` // Token expiration time
+	AuthProvider string    `json:"-"` // Provider name (bvbrc, mgrast)
 }
 
 // TaskSummary provides an aggregate count of task states within a Submission.

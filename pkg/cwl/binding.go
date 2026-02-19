@@ -1,5 +1,10 @@
 package cwl
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // InputBinding controls how an input parameter is converted to command-line argument(s).
 // See https://www.commonwl.org/v1.2/CommandLineTool.html#CommandLineBinding
 type InputBinding struct {
@@ -52,8 +57,7 @@ type OutputBinding struct {
 	OutputEval string `json:"outputEval,omitempty"`
 }
 
-// Argument represents a command-line argument that is not tied to an input parameter.
-// Can be a literal string or a structured binding.
+// Argument represents a structured command-line argument (CommandLineBinding).
 // See https://www.commonwl.org/v1.2/CommandLineTool.html#CommandLineBinding
 type Argument struct {
 	// Position determines the ordering of this argument relative to other arguments and inputs.
@@ -72,6 +76,56 @@ type Argument struct {
 
 	// ShellQuote controls whether the value is shell-quoted.
 	ShellQuote *bool `json:"shellQuote,omitempty"`
+}
+
+// ArgumentEntry represents a CWL argument entry, which can be:
+// - A string literal (used directly as command-line argument)
+// - A CWL expression (evaluated at runtime)
+// - A CommandLineBinding object (structured argument with position, prefix, etc.)
+//
+// This type enforces the CWL v1.2 spec: array<string | Expression | CommandLineBinding>
+// See https://www.commonwl.org/v1.2/CommandLineTool.html
+type ArgumentEntry struct {
+	// StringValue holds the value if this is a string literal or expression.
+	// Non-empty when IsString is true.
+	StringValue string
+
+	// Binding holds the value if this is a structured CommandLineBinding.
+	// Non-nil when IsString is false.
+	Binding *Argument
+
+	// IsString indicates whether this entry is a string/expression (true) or binding (false).
+	IsString bool
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for ArgumentEntry.
+// It handles the CWL polymorphic type: string | Expression | CommandLineBinding.
+func (a *ArgumentEntry) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as string first.
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		a.StringValue = s
+		a.IsString = true
+		return nil
+	}
+
+	// Try to unmarshal as CommandLineBinding object.
+	var binding Argument
+	if err := json.Unmarshal(data, &binding); err == nil {
+		a.Binding = &binding
+		a.IsString = false
+		return nil
+	}
+
+	return fmt.Errorf("argument must be string, expression, or CommandLineBinding object")
+}
+
+// MarshalJSON implements custom JSON marshaling for ArgumentEntry.
+func (a ArgumentEntry) MarshalJSON() ([]byte, error) {
+	if a.IsString {
+		return json.Marshal(a.StringValue)
+	}
+	return json.Marshal(a.Binding)
 }
 
 // SecondaryFileSchema specifies secondary files associated with a File input/output.

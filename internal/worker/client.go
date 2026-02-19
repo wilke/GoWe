@@ -18,6 +18,7 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	workerID   string
+	workerKey  string // Optional: shared secret for worker authentication
 }
 
 // NewClient creates a new worker API client with connection pooling.
@@ -39,16 +40,22 @@ func NewClient(baseURL string, tlsCfg *tls.Config) *Client {
 	}
 }
 
+// SetWorkerKey sets the shared secret for worker authentication.
+func (c *Client) SetWorkerKey(key string) {
+	c.workerKey = key
+}
+
 // WorkerID returns the registered worker ID.
 func (c *Client) WorkerID() string {
 	return c.workerID
 }
 
 // Register registers the worker with the server and stores the worker ID.
-func (c *Client) Register(ctx context.Context, name, hostname, runtime string) (*model.Worker, error) {
+func (c *Client) Register(ctx context.Context, name, hostname, group, runtime string) (*model.Worker, error) {
 	body, err := json.Marshal(map[string]string{
 		"name":     name,
 		"hostname": hostname,
+		"group":    group,
 		"runtime":  runtime,
 	})
 	if err != nil {
@@ -85,6 +92,10 @@ func (c *Client) Checkout(ctx context.Context) (*model.Task, error) {
 		c.baseURL+fmt.Sprintf("/api/v1/workers/%s/work", c.workerID), nil)
 	if err != nil {
 		return nil, err
+	}
+	// Add worker authentication header if set.
+	if c.workerKey != "" {
+		req.Header.Set("X-Worker-Key", c.workerKey)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -172,6 +183,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Add worker authentication header if set.
+	if c.workerKey != "" {
+		req.Header.Set("X-Worker-Key", c.workerKey)
 	}
 
 	resp, err := c.httpClient.Do(req)

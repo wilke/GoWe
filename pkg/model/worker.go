@@ -7,6 +7,7 @@ type Worker struct {
 	ID           string            `json:"id"`
 	Name         string            `json:"name"`
 	Hostname     string            `json:"hostname"`
+	Group        string            `json:"group"`  // Worker group for task scheduling
 	State        WorkerState       `json:"state"`
 	Runtime      ContainerRuntime  `json:"runtime"`
 	Labels       map[string]string `json:"labels,omitempty"`

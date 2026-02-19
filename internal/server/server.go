@@ -32,6 +32,9 @@ type Server struct {
 	workspaceCaller bvbrc.RPCCaller    // optional; Workspace service caller
 	testApps        []map[string]any   // optional; static app list for testing without BV-BRC
 	ui              *ui.UI             // UI handler for web interface
+	adminConfig     *AdminConfig       // optional; admin role configuration
+	anonConfig      *AnonymousConfig   // optional; anonymous access configuration
+	workerKeyConfig *WorkerKeyConfig   // optional; worker key authentication
 }
 
 // Option configures optional Server dependencies.
@@ -62,6 +65,27 @@ func WithWorkspaceCaller(caller bvbrc.RPCCaller) Option {
 func WithTestApps(apps []map[string]any) Option {
 	return func(s *Server) {
 		s.testApps = apps
+	}
+}
+
+// WithAdminConfig sets the admin role configuration.
+func WithAdminConfig(cfg *AdminConfig) Option {
+	return func(s *Server) {
+		s.adminConfig = cfg
+	}
+}
+
+// WithAnonymousConfig sets the anonymous access configuration.
+func WithAnonymousConfig(cfg *AnonymousConfig) Option {
+	return func(s *Server) {
+		s.anonConfig = cfg
+	}
+}
+
+// WithWorkerKeyConfig sets the worker key authentication configuration.
+func WithWorkerKeyConfig(cfg *WorkerKeyConfig) Option {
+	return func(s *Server) {
+		s.workerKeyConfig = cfg
 	}
 }
 
@@ -136,56 +160,13 @@ func (s *Server) routes() {
 
 	// API routes (JSON)
 	r.Route("/api/v1", func(r chi.Router) {
-		// Discovery
+		// Public endpoints (no auth required)
 		r.Get("/", s.handleDiscovery)
-
-		// Health
 		r.Get("/health", s.handleHealth)
 
-		// Workflows
-		r.Route("/workflows", func(r chi.Router) {
-			r.Get("/", s.handleListWorkflows)
-			r.Post("/", s.handleCreateWorkflow)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", s.handleGetWorkflow)
-				r.Put("/", s.handleUpdateWorkflow)
-				r.Delete("/", s.handleDeleteWorkflow)
-				r.Post("/validate", s.handleValidateWorkflow)
-			})
-		})
-
-		// Submissions
-		r.Route("/submissions", func(r chi.Router) {
-			r.Get("/", s.handleListSubmissions)
-			r.Post("/", s.handleCreateSubmission)
-			r.Route("/{id}", func(r chi.Router) {
-				r.Get("/", s.handleGetSubmission)
-				r.Put("/cancel", s.handleCancelSubmission)
-				// Tasks nested under submissions
-				r.Route("/tasks", func(r chi.Router) {
-					r.Get("/", s.handleListTasks)
-					r.Route("/{tid}", func(r chi.Router) {
-						r.Get("/", s.handleGetTask)
-						r.Get("/logs", s.handleGetTaskLogs)
-					})
-				})
-			})
-		})
-
-		// Apps (BV-BRC proxy)
-		r.Route("/apps", func(r chi.Router) {
-			r.Get("/", s.handleListApps)
-			r.Route("/{appID}", func(r chi.Router) {
-				r.Get("/", s.handleGetApp)
-				r.Get("/cwl-tool", s.handleGetAppCWLTool)
-			})
-		})
-
-		// Workspace (BV-BRC proxy)
-		r.Get("/workspace", s.handleListWorkspace)
-
-		// Workers (remote task execution)
+		// Worker endpoints (separate auth model using X-Worker-Key)
 		r.Route("/workers", func(r chi.Router) {
+			r.Use(workerAuthMiddleware(s.workerKeyConfig, s.logger))
 			r.Get("/", s.handleListWorkers)
 			r.Post("/", s.handleRegisterWorker)
 			r.Route("/{id}", func(r chi.Router) {
@@ -199,9 +180,65 @@ func (s *Server) routes() {
 			})
 		})
 
-		// SSE endpoints for real-time updates
-		r.Route("/sse", func(r chi.Router) {
-			r.Get("/submissions/{id}", s.handleSSESubmission)
+		// Protected endpoints (user auth required)
+		r.Group(func(r chi.Router) {
+			r.Use(apiAuthMiddleware(s.store, s.adminConfig, s.anonConfig, s.logger))
+
+			// Workflows
+			r.Route("/workflows", func(r chi.Router) {
+				r.Get("/", s.handleListWorkflows)
+				r.Post("/", s.handleCreateWorkflow)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", s.handleGetWorkflow)
+					r.Put("/", s.handleUpdateWorkflow)
+					r.Delete("/", s.handleDeleteWorkflow)
+					r.Post("/validate", s.handleValidateWorkflow)
+				})
+			})
+
+			// Submissions
+			r.Route("/submissions", func(r chi.Router) {
+				r.Get("/", s.handleListSubmissions)
+				r.Post("/", s.handleCreateSubmission)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", s.handleGetSubmission)
+					r.Put("/cancel", s.handleCancelSubmission)
+					// Tasks nested under submissions
+					r.Route("/tasks", func(r chi.Router) {
+						r.Get("/", s.handleListTasks)
+						r.Route("/{tid}", func(r chi.Router) {
+							r.Get("/", s.handleGetTask)
+							r.Get("/logs", s.handleGetTaskLogs)
+						})
+					})
+				})
+			})
+
+			// Apps (BV-BRC proxy)
+			r.Route("/apps", func(r chi.Router) {
+				r.Get("/", s.handleListApps)
+				r.Route("/{appID}", func(r chi.Router) {
+					r.Get("/", s.handleGetApp)
+					r.Get("/cwl-tool", s.handleGetAppCWLTool)
+				})
+			})
+
+			// Workspace (BV-BRC proxy)
+			r.Get("/workspace", s.handleListWorkspace)
+
+			// SSE endpoints for real-time updates
+			r.Route("/sse", func(r chi.Router) {
+				r.Get("/submissions/{id}", s.handleSSESubmission)
+			})
+
+			// Admin endpoints (require admin role)
+			r.Route("/admin", func(r chi.Router) {
+				r.Use(requireAdmin(s.logger))
+				r.Get("/users", s.handleListUsers)
+				r.Route("/users/{username}", func(r chi.Router) {
+					r.Put("/role", s.handleSetUserRole)
+				})
+			})
 		})
 	})
 }

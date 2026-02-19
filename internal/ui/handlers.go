@@ -111,7 +111,7 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create session.
-	sess, err := ui.sessions.CreateSession(r.Context(), sessionUsername, sessionUsername, role, token, tokenInfo.Expiry)
+	sess, err := ui.sessions.CreateSession(r.Context(), sessionUsername, sessionUsername, string(role), token, tokenInfo.Expiry)
 	if err != nil {
 		ui.logger.Error("create session failed", "error", err)
 		http.Redirect(w, r, "/login?error=Session+creation+failed", http.StatusSeeOther)

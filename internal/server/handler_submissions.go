@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,16 @@ import (
 
 func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+
+	// Get authenticated user context.
+	userCtx := UserFromContext(r.Context())
+	if userCtx == nil {
+		respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+			Code:    model.ErrUnauthorized,
+			Message: "authentication required",
+		})
+		return
+	}
 
 	var req struct {
 		WorkflowID string            `json:"workflow_id"`
@@ -46,6 +57,17 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Check anonymous restrictions.
+	if userCtx.User.IsAnonymous() && s.anonConfig != nil {
+		if err := s.validateAnonymousSubmission(wf); err != nil {
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code:    model.ErrForbidden,
+				Message: err.Error(),
+			})
+			return
+		}
+	}
+
 	// Dry-run: validate without creating a submission.
 	if r.URL.Query().Get("dry_run") == "true" {
 		respondOK(w, reqID, s.buildDryRunReport(wf, req.Inputs))
@@ -61,7 +83,10 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		Inputs:       req.Inputs,
 		Outputs:      map[string]any{},
 		Labels:       req.Labels,
-		SubmittedBy:  "", // TODO: populate from auth context in Phase 7
+		SubmittedBy:  userCtx.User.Username,
+		UserToken:    userCtx.Token,
+		TokenExpiry:  userCtx.Expiry,
+		AuthProvider: string(userCtx.Provider),
 		CreatedAt:    now,
 	}
 	if sub.Inputs == nil {
@@ -397,4 +422,29 @@ func topoSort(steps []model.Step) []string {
 	}
 
 	return order
+}
+
+// validateAnonymousSubmission checks if an anonymous user can submit this workflow.
+// Returns an error if the workflow uses executors not allowed for anonymous users.
+func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
+	if s.anonConfig == nil {
+		return nil
+	}
+
+	for _, step := range wf.Steps {
+		execType := model.ExecutorTypeLocal
+		if step.Hints != nil && step.Hints.ExecutorType != "" {
+			execType = step.Hints.ExecutorType
+		}
+		// Apply server-wide default executor if no hint specified.
+		if (step.Hints == nil || step.Hints.ExecutorType == "") && s.config.DefaultExecutor != "" {
+			execType = model.ExecutorType(s.config.DefaultExecutor)
+		}
+
+		if !s.anonConfig.IsExecutorAllowed(execType) {
+			return fmt.Errorf("anonymous users cannot use executor type %q; authentication required", execType)
+		}
+	}
+
+	return nil
 }

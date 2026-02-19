@@ -15,8 +15,9 @@ type CommandLineTool struct {
 	Requirements map[string]any
 
 	// Arguments are command-line arguments not tied to input parameters.
-	// Can be strings or structured Argument objects.
-	Arguments []any
+	// Each entry can be a string, expression, or CommandLineBinding.
+	// See https://www.commonwl.org/v1.2/CommandLineTool.html
+	Arguments []ArgumentEntry
 
 	// Stdin specifies the file path or expression for standard input.
 	Stdin string

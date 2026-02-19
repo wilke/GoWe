@@ -138,17 +138,18 @@ type cmdPart struct {
 	args       []string // the actual command-line arguments
 }
 
-// buildArgument builds a command-line part from a CWL argument.
-func (b *Builder) buildArgument(arg any, index int, inputs map[string]any, runtime *cwlexpr.RuntimeContext) (*cmdPart, error) {
+// buildArgument builds a command-line part from a CWL ArgumentEntry.
+// ArgumentEntry is a typed union of string | Expression | CommandLineBinding,
+// per CWL v1.2 spec: https://www.commonwl.org/v1.2/CommandLineTool.html
+func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[string]any, runtime *cwlexpr.RuntimeContext) (*cmdPart, error) {
 	ctx := cwlexpr.NewContext(inputs)
 	if runtime != nil {
 		ctx = ctx.WithRuntime(runtime)
 	}
 
-	switch a := arg.(type) {
-	case string:
+	if arg.IsString {
 		// Simple string argument - may contain expressions.
-		value, err := b.evaluator.Evaluate(a, ctx)
+		value, err := b.evaluator.Evaluate(arg.StringValue, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -160,30 +161,32 @@ func (b *Builder) buildArgument(arg any, index int, inputs map[string]any, runti
 			name:       fmt.Sprintf("arg_%d", index),
 			args:       []string{strValue},
 		}, nil
-
-	case cwl.Argument:
-		// Structured argument.
-		pos, err := b.evaluatePosition(a.Position, ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		// Evaluate valueFrom.
-		value, err := b.evaluator.EvaluateString(a.ValueFrom, ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		args := buildPrefixedArgs(a.Prefix, value, a.Separate)
-		return &cmdPart{
-			position:   pos,
-			isArgument: true,
-			name:       fmt.Sprintf("arg_%d", index),
-			args:       args,
-		}, nil
 	}
 
-	return nil, fmt.Errorf("unexpected argument type: %T", arg)
+	// Structured argument (CommandLineBinding).
+	a := arg.Binding
+	if a == nil {
+		return nil, fmt.Errorf("argument entry has neither string nor binding")
+	}
+
+	pos, err := b.evaluatePosition(a.Position, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Evaluate valueFrom.
+	value, err := b.evaluator.EvaluateString(a.ValueFrom, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	args := buildPrefixedArgs(a.Prefix, value, a.Separate)
+	return &cmdPart{
+		position:   pos,
+		isArgument: true,
+		name:       fmt.Sprintf("arg_%d", index),
+		args:       args,
+	}, nil
 }
 
 // buildInputBinding builds a command-line part from an input binding.

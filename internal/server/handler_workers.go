@@ -15,9 +15,20 @@ import (
 func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
+	// Get worker auth context.
+	workerAuth := WorkerAuthFromContext(r.Context())
+	if workerAuth == nil && s.workerKeyConfig != nil && s.workerKeyConfig.IsEnabled() {
+		respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+			Code:    model.ErrUnauthorized,
+			Message: "worker authentication required",
+		})
+		return
+	}
+
 	var req struct {
 		Name     string            `json:"name"`
 		Hostname string            `json:"hostname"`
+		Group    string            `json:"group"`
 		Runtime  string            `json:"runtime"`
 		Labels   map[string]string `json:"labels"`
 	}
@@ -36,6 +47,21 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default group to "default".
+	group := req.Group
+	if group == "" {
+		group = "default"
+	}
+
+	// Validate the worker can join the requested group.
+	if workerAuth != nil && !workerAuth.CanJoinGroup(group) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    model.ErrForbidden,
+			Message: "worker key does not allow joining group: " + group,
+		})
+		return
+	}
+
 	runtime := model.ContainerRuntime(req.Runtime)
 	if runtime == "" {
 		runtime = model.RuntimeNone
@@ -46,6 +72,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		ID:           "wrk_" + uuid.New().String(),
 		Name:         req.Name,
 		Hostname:     req.Hostname,
+		Group:        group,
 		State:        model.WorkerStateOnline,
 		Runtime:      runtime,
 		Labels:       req.Labels,
@@ -62,7 +89,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "runtime", worker.Runtime)
+	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime)
 	respondCreated(w, reqID, worker)
 }
 
@@ -114,7 +141,7 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := s.store.CheckoutTask(r.Context(), id, worker.Runtime)
+	task, err := s.store.CheckoutTask(r.Context(), id, worker.Group, worker.Runtime)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
@@ -126,7 +153,7 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Debug("task checked out", "worker_id", id, "task_id", task.ID)
+	s.logger.Debug("task checked out", "worker_id", id, "task_id", task.ID, "group", worker.Group)
 	respondOK(w, reqID, task)
 }
 

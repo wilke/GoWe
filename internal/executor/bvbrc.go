@@ -23,20 +23,61 @@ var reservedKeys = map[string]bool{
 // BVBRCExecutor submits and monitors bioinformatics jobs on BV-BRC
 // via JSON-RPC 1.1. Submit is async — it returns a job UUID immediately
 // and the scheduler polls Status until terminal.
+//
+// The executor supports two modes:
+//  1. Default caller mode: Uses a preconfigured RPC caller for all operations.
+//     This is used for status checks and log retrieval.
+//  2. Per-task token mode: Creates a per-task caller using the user's token
+//     from RuntimeHints.StagerOverrides.HTTPCredential. This is used for
+//     job submission to run under the user's identity.
 type BVBRCExecutor struct {
-	caller   bvbrc.RPCCaller
-	username string
-	logger   *slog.Logger
+	appServiceURL string          // BV-BRC App Service endpoint
+	defaultCaller bvbrc.RPCCaller // Optional: default caller for status/logs
+	logger        *slog.Logger
 }
 
-// NewBVBRCExecutor creates a BVBRCExecutor using the given RPC caller.
-// username is extracted from the token and used for default workspace paths.
-func NewBVBRCExecutor(caller bvbrc.RPCCaller, username string, logger *slog.Logger) *BVBRCExecutor {
-	return &BVBRCExecutor{
-		caller:   caller,
-		username: username,
-		logger:   logger.With("component", "bvbrc-executor"),
+// NewBVBRCExecutor creates a BVBRCExecutor.
+// The defaultCaller is optional and used for status checks and log retrieval.
+// If nil, per-task tokens will be required for all operations.
+func NewBVBRCExecutor(appServiceURL string, defaultCaller bvbrc.RPCCaller, logger *slog.Logger) *BVBRCExecutor {
+	if appServiceURL == "" {
+		appServiceURL = bvbrc.DefaultAppServiceURL
 	}
+	return &BVBRCExecutor{
+		appServiceURL: appServiceURL,
+		defaultCaller: defaultCaller,
+		logger:        logger.With("component", "bvbrc-executor"),
+	}
+}
+
+// getTaskCaller creates an RPC caller for the given task.
+// It uses the token from RuntimeHints.StagerOverrides.HTTPCredential if available,
+// otherwise falls back to the default caller.
+func (e *BVBRCExecutor) getTaskCaller(task *model.Task) (bvbrc.RPCCaller, string, error) {
+	// Try to get token from RuntimeHints.
+	var token string
+	if task.RuntimeHints != nil &&
+		task.RuntimeHints.StagerOverrides != nil &&
+		task.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+		token = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
+	}
+
+	if token != "" {
+		// Create per-task caller with user's token.
+		cfg := bvbrc.ClientConfig{
+			AppServiceURL: e.appServiceURL,
+			Token:         token,
+		}
+		tokenInfo := bvbrc.ParseToken(token)
+		return bvbrc.NewHTTPRPCCaller(cfg, e.logger), tokenInfo.Username, nil
+	}
+
+	// Fall back to default caller.
+	if e.defaultCaller != nil {
+		return e.defaultCaller, "", nil
+	}
+
+	return nil, "", fmt.Errorf("task %s: no user token for BV-BRC submission", task.ID)
 }
 
 // Type returns model.ExecutorTypeBVBRC.
@@ -46,6 +87,7 @@ func (e *BVBRCExecutor) Type() model.ExecutorType {
 
 // Submit calls AppService.start_app and returns the BV-BRC job UUID.
 // The call returns immediately; the job runs asynchronously on BV-BRC.
+// The job is submitted using the user's token from RuntimeHints.
 func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, error) {
 	appID := task.BVBRCAppID
 	if appID == "" {
@@ -55,6 +97,12 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 	}
 	if appID == "" {
 		return "", fmt.Errorf("task %s: bvbrc_app_id is missing", task.ID)
+	}
+
+	// Get caller for this task (per-task token or default).
+	caller, username, err := e.getTaskCaller(task)
+	if err != nil {
+		return "", err
 	}
 
 	// Build params: copy task inputs, stripping reserved keys and
@@ -82,17 +130,18 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 
 	// Determine workspace path from params or default.
 	workspacePath, _ := params["output_path"].(string)
-	if workspacePath == "" {
-		workspacePath = fmt.Sprintf("/%s@patricbrc.org/home/", e.username)
+	if workspacePath == "" && username != "" {
+		workspacePath = fmt.Sprintf("/%s@patricbrc.org/home/", username)
 	}
 
 	e.logger.Debug("submitting job",
 		"task_id", task.ID,
 		"app_id", appID,
 		"workspace", workspacePath,
+		"username", username,
 	)
 
-	result, err := e.caller.Call(ctx, "AppService.start_app", []any{appID, params, workspacePath})
+	result, err := caller.Call(ctx, "AppService.start_app", []any{appID, params, workspacePath})
 	if err != nil {
 		return "", fmt.Errorf("task %s: start_app: %w", task.ID, err)
 	}
@@ -132,7 +181,15 @@ func (e *BVBRCExecutor) Status(ctx context.Context, task *model.Task) (model.Tas
 		return model.TaskStateQueued, nil
 	}
 
-	result, err := e.caller.Call(ctx, "AppService.query_tasks", []any{[]string{task.ExternalID}})
+	// Get caller for this task.
+	caller, _, err := e.getTaskCaller(task)
+	if err != nil {
+		// If no caller available, report as queued.
+		e.logger.Debug("no caller for status check", "task_id", task.ID, "error", err)
+		return model.TaskStateQueued, nil
+	}
+
+	result, err := caller.Call(ctx, "AppService.query_tasks", []any{[]string{task.ExternalID}})
 	if err != nil {
 		return "", fmt.Errorf("task %s: query_tasks: %w", task.ID, err)
 	}
@@ -161,7 +218,14 @@ func (e *BVBRCExecutor) Cancel(ctx context.Context, task *model.Task) error {
 	if task.ExternalID == "" {
 		return nil
 	}
-	_, err := e.caller.Call(ctx, "AppService.kill_task", []any{task.ExternalID})
+
+	// Get caller for this task.
+	caller, _, err := e.getTaskCaller(task)
+	if err != nil {
+		return fmt.Errorf("task %s: no caller for cancel: %w", task.ID, err)
+	}
+
+	_, err = caller.Call(ctx, "AppService.kill_task", []any{task.ExternalID})
 	if err != nil {
 		return fmt.Errorf("task %s: kill_task: %w", task.ID, err)
 	}
@@ -174,7 +238,14 @@ func (e *BVBRCExecutor) Logs(ctx context.Context, task *model.Task) (string, str
 		return task.Stdout, task.Stderr, nil
 	}
 
-	result, err := e.caller.Call(ctx, "AppService.query_app_log", []any{task.ExternalID})
+	// Get caller for this task.
+	caller, _, err := e.getTaskCaller(task)
+	if err != nil {
+		e.logger.Debug("no caller for logs, using stored logs", "task_id", task.ID, "error", err)
+		return task.Stdout, task.Stderr, nil
+	}
+
+	result, err := caller.Call(ctx, "AppService.query_app_log", []any{task.ExternalID})
 	if err != nil {
 		e.logger.Debug("query_app_log failed, using stored logs", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil

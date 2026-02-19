@@ -223,6 +223,16 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 		return fmt.Errorf("submission %s not found", task.SubmissionID)
 	}
 
+	// Check token expiry before task execution.
+	if !sub.TokenExpiry.IsZero() && time.Now().After(sub.TokenExpiry) {
+		now := time.Now().UTC()
+		task.State = model.TaskStateFailed
+		task.Stderr = "user token expired before task execution"
+		task.CompletedAt = &now
+		l.logger.Warn("task failed due to token expiry", "task_id", task.ID, "submission_id", sub.ID)
+		return l.store.UpdateTask(ctx, task)
+	}
+
 	// Load workflow for step definitions.
 	wf, err := l.store.GetWorkflow(ctx, sub.WorkflowID)
 	if err != nil {
@@ -264,6 +274,21 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 			l.logger.Error("update failed task", "task_id", task.ID, "error", updateErr)
 		}
 		return fmt.Errorf("resolve inputs for task %s: %w", task.ID, err)
+	}
+
+	// Add user token to RuntimeHints for executor/worker.
+	// This allows BVBRCExecutor and workers to authenticate with the user's credentials.
+	if sub.UserToken != "" {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
+		}
+		if task.RuntimeHints.StagerOverrides == nil {
+			task.RuntimeHints.StagerOverrides = &model.StagerOverrides{}
+		}
+		task.RuntimeHints.StagerOverrides.HTTPCredential = &model.HTTPCredential{
+			Type:  "bearer",
+			Token: sub.UserToken,
+		}
 	}
 
 	// Get the executor.
