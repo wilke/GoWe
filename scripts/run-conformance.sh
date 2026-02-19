@@ -46,8 +46,8 @@ if [ ! -d "$CONFORMANCE_DIR" ]; then
     git clone --depth 1 https://github.com/common-workflow-language/cwl-v1.2.git "$CONFORMANCE_DIR"
 fi
 
-# Create badge directory
-mkdir -p "$BADGE_DIR"
+# Remove badge directory (cwltest creates it and fails if it exists)
+rm -rf "$BADGE_DIR"
 
 # Run conformance tests
 echo ""
