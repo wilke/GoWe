@@ -38,6 +38,12 @@ func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("pragma fk: %w", err)
 	}
 
+	// Configure connection pool for SQLite.
+	// SQLite handles one writer at a time, so limit connections to avoid "database is locked" errors.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(time.Hour)
+
 	return &SQLiteStore{
 		db:     db,
 		logger: logger.With("component", "store"),

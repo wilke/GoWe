@@ -1,53 +1,91 @@
 # GoWe Scratchpad
 
-## Session: 2026-02-18 Morning (CWL Conformance - 96.4%)
+## Session: 2026-02-18 Evening (Distributed Execution & 100% Conformance)
 
-### Status: 81/84 TESTS PASSING (96.4%) on macOS | 84/84 ON LINUX
+### Status: 84/84 TESTS PASSING (100%) + DISTRIBUTED WORKERS WORKING
 
-Improved CWL conformance test pass rate from 79/84 to **81/84 (96.4%)** on macOS.
-**All 84 tests pass on Linux** (verified in Ubuntu container).
+**Major accomplishments:**
+1. Fixed Docker executor file path handling for macOS symlinks
+2. Implemented workflow-level hint inheritance (DockerRequirement)
+3. All 84 CWL conformance tests now pass on macOS
+4. Distributed worker execution verified working
 
-### Key Improvements (79/84 → 81/84)
+### CWL Conformance: 84/84 (100%)
 
-53. **SecondaryFiles for record fields** - Added `SecondaryFiles` field to `RecordField` type
-54. **Workflow input secondaryFiles** - Parse and resolve secondaryFiles from workflow input declarations
-55. **Tool input secondaryFiles** - Resolve secondaryFiles for direct tool execution
-56. **SecondaryFiles validation** - Validate required secondary files exist in File objects
-57. **Secondary file resolution context** - Distinguish between direct tool execution and workflow steps
-58. **Packed document validator fix** - Handle tool IDs with .cwl suffix in $graph documents
+Fixed the remaining 2 failing tests (10 and 27) by:
+1. **Docker file path fix** - Mount files with resolved host path but original container target
+   - On macOS, `/tmp` resolves to `/private/tmp`, but commands use `/tmp` paths
+   - Fixed in both `internal/cwlrunner` and `internal/execution` packages
 
-### Platform Difference Verified
+2. **Workflow-level hints** - Inherit DockerRequirement from workflow to steps
+   - Added `Hints` and `Requirements` fields to `cwl.Workflow` struct
+   - Parser now extracts workflow-level hints
+   - `hasDockerRequirement` and `getDockerImage` check both tool and workflow hints
 
-Confirmed macOS vs Linux `rev`/`sort` output differs:
+### Distributed Worker Testing: VERIFIED
+
+```bash
+./scripts/test-distributed.sh  # All tests pass
 ```
-macOS:  sha1$c67d838c10ff86680366bf168d7bae7f11ba3b20
-Linux:  sha1$b9214658cc453331b62c2282b772a5c063dbd284 (expected)
-```
-Tests 10 and 27 pass on Linux but fail on macOS due to this difference.
+
+- 3 workers registered (worker-1, worker-2, worker-docker)
+- Simple echo test: ✅ Passed
+- Echo pipeline test: ✅ Passed
 
 ### Files Modified
-- `pkg/cwl/binding.go` - Added SecondaryFiles to RecordField
-- `pkg/cwl/workflow.go` - Added RecordFields and SecondaryFiles to InputParam
-- `internal/parser/parser.go` - Parse secondaryFiles for record fields and workflow inputs
-- `internal/cwlrunner/runner.go` - Added secondaryFiles validation and resolution
-- `internal/cwlrunner/scatter.go` - Updated executeTool call signature
-- `internal/parser/validator.go` - Fixed tool reference validation for packed documents
 
-### Current Status
-- **macOS**: 81/84 tests passing (96.4%)
-- **Linux**: 84/84 tests passing (100%)
+| File | Changes |
+|------|---------|
+| `pkg/cwl/workflow.go` | Added Hints, Requirements fields |
+| `internal/parser/parser.go` | Parse workflow-level hints |
+| `internal/cwlrunner/runner.go` | Check workflow hints in hasDockerRequirement/getDockerImage |
+| `internal/cwlrunner/execute.go` | Fixed mount path: resolved→original target |
+| `internal/execution/stager.go` | Fixed mount path: resolved→original target |
 
-### Remaining macOS Failures (3 tests)
-- **Test 10, 27** - Platform difference: macOS `rev`/`sort` differ from Linux (not a bug)
-- **Test 69** - Docker limitation with colons in paths (Docker uses : as volume separator)
+### Recent Commits
 
-### Git Status
-- v0.8.8: `e435472 feat: improve CWL conformance from 79/84 to 81/84 (96.4%)`
-- Latest: `9073047 fix: validator now handles packed document tool IDs with .cwl suffix`
+```
+914a8ae fix: Docker executor file path handling and workflow hint inheritance
+8660bb3 docs: add remote worker architecture analysis
+8d02899 feat: support bundling bare CommandLineTools
+6eeca67 docs: add distributed execution and gowe run command documentation
+f7cdfab feat: add shared execution package and distributed worker testing
+```
+
+### Documentation Updates
+
+Updated README and docs for:
+- `gowe run` command (cwltest-compatible runner)
+- `--default-executor` server flag
+- Worker executor type
+- Docker Compose distributed execution setup
+- Tutorial section on distributed execution
 
 ---
 
-## Session: 2026-02-18 (Documentation Update)
+## Session: 2026-02-18 Afternoon (Distributed Worker Implementation)
+
+### Distributed Worker Testing Infrastructure: COMPLETE
+
+Implemented complete distributed worker execution testing:
+
+**New files created:**
+- `internal/execution/` - Shared execution package (engine, docker, local, stager)
+- `internal/cli/run.go` - `gowe run` cwltest-compatible command
+- `Dockerfile.worker` - Worker container image
+- `docker-compose.yml` - Multi-container test setup
+- `testdata/worker-test/` - Test workflows
+- `scripts/test-distributed.sh` - Distributed test script
+
+**Key features:**
+- `--default-executor=worker` flag for server
+- `gowe run` command for cwltest compatibility
+- Docker Compose with 1 server + 3 workers
+- Shared execution engine for cwl-runner and worker
+
+---
+
+## Session: 2026-02-18 Morning (CWL Conformance - 96.4%)
 
 ### Tool Documentation: COMPLETE
 

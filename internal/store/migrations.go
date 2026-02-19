@@ -61,6 +61,8 @@ var schema = []string{
 	`CREATE INDEX IF NOT EXISTS idx_submissions_state ON submissions(state)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_submission_id ON tasks(submission_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state)`,
+	// Compound index for worker task checkout query (state + executor_type)
+	`CREATE INDEX IF NOT EXISTS idx_tasks_state_executor ON tasks(state, executor_type)`,
 
 	// Sessions table for UI authentication
 	`CREATE TABLE IF NOT EXISTS sessions (

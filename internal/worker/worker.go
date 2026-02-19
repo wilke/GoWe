@@ -67,6 +67,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 
 // Run starts the main work loop. It registers with the server, then
 // loops polling for tasks until the context is cancelled.
+// Heartbeat runs in a separate goroutine to keep the worker alive during long tasks.
 func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(w.workDir, 0o755); err != nil {
 		return fmt.Errorf("create workdir %s: %w", w.workDir, err)
@@ -82,6 +83,32 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		"runtime", worker.Runtime,
 	)
 
+	// Start heartbeat in a separate goroutine so it continues during task execution.
+	go w.heartbeatLoop(ctx)
+
+	// Run task polling loop.
+	return w.taskLoop(ctx)
+}
+
+// heartbeatLoop sends heartbeats at regular intervals until context is cancelled.
+func (w *Worker) heartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.poll)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.client.Heartbeat(ctx); err != nil {
+				w.logger.Warn("heartbeat failed", "error", err)
+			}
+		}
+	}
+}
+
+// taskLoop polls for tasks and executes them until context is cancelled.
+func (w *Worker) taskLoop(ctx context.Context) error {
 	ticker := time.NewTicker(w.poll)
 	defer ticker.Stop()
 
@@ -91,27 +118,24 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 			w.logger.Info("shutting down, deregistering...")
 			// Use a fresh context for deregistration.
 			deregCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := w.client.Deregister(deregCtx); err != nil {
+			err := w.client.Deregister(deregCtx)
+			cancel() // Call cancel explicitly, not via defer
+			if err != nil {
 				w.logger.Error("deregister failed", "error", err)
 			}
 			return nil
 
 		case <-ticker.C:
-			if err := w.tick(ctx); err != nil {
-				w.logger.Error("tick error", "error", err)
+			if err := w.pollAndExecute(ctx); err != nil {
+				w.logger.Error("poll error", "error", err)
 			}
 		}
 	}
 }
 
-// tick performs one iteration: heartbeat, check for work, execute if available.
-func (w *Worker) tick(ctx context.Context) error {
-	// Heartbeat first.
-	if err := w.client.Heartbeat(ctx); err != nil {
-		w.logger.Warn("heartbeat failed", "error", err)
-	}
-
+// pollAndExecute checks for work and executes if available.
+// Heartbeat is handled by a separate goroutine, so this can block on task execution.
+func (w *Worker) pollAndExecute(ctx context.Context) error {
 	// Check for work.
 	task, err := w.client.Checkout(ctx)
 	if err != nil {
@@ -123,7 +147,7 @@ func (w *Worker) tick(ctx context.Context) error {
 
 	w.logger.Info("task received", "task_id", task.ID, "step_id", task.StepID)
 
-	// Execute the task (blocking).
+	// Execute the task (blocking). Heartbeat continues in background goroutine.
 	if err := w.executeTask(ctx, task); err != nil {
 		w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
 	}

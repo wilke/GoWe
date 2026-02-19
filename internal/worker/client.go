@@ -12,6 +12,13 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// Default HTTP transport settings for connection pooling.
+var defaultTransport = &http.Transport{
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 10,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // Client communicates with the GoWe server API on behalf of a worker.
 type Client struct {
 	baseURL    string
@@ -19,12 +26,13 @@ type Client struct {
 	workerID   string
 }
 
-// NewClient creates a new worker API client.
+// NewClient creates a new worker API client with connection pooling.
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: defaultTransport,
 		},
 	}
 }

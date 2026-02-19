@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/me/gowe/internal/executor"
@@ -33,6 +34,7 @@ type Loop struct {
 	logger   *slog.Logger
 	stopCh   chan struct{}
 	doneCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewLoop creates a new scheduler loop.
@@ -72,8 +74,11 @@ func (l *Loop) Start(ctx context.Context) error {
 }
 
 // Stop gracefully shuts down the scheduler and waits for the current tick to finish.
+// Safe to call multiple times.
 func (l *Loop) Stop() error {
-	close(l.stopCh)
+	l.stopOnce.Do(func() {
+		close(l.stopCh)
+	})
 	<-l.doneCh
 	return nil
 }
