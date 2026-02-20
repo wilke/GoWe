@@ -1,5 +1,330 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-20 (Work Summary Generation)
+
+### Status: COMPLETE
+
+Generated work summary report for the GPU support and ProteinFoldingApp integration work.
+
+**Report Created:**
+- `reports/work-260220.gowe.md` - Comprehensive work summary
+
+**Session Context (from compacted conversation):**
+- GPU support implementation (Apptainer `--nv`, Docker `--gpus`)
+- CUDA_VISIBLE_DEVICES for GPU isolation in multi-GPU deployments
+- ProteinFoldingApp feasibility analysis
+- 8-GPU deployment guide for running AlphaFold2, Boltz, Chai, ESMFold experiments
+- Tagged as v0.10.1
+
+**Key Commits:**
+- `37b6281` - feat: add GPU support for Apptainer and Docker runtimes
+- `ab7882e` - feat: set CUDA_VISIBLE_DEVICES for GPU isolation
+- `ee693aa` - docs: add ProteinFoldingApp setup guide for 8-GPU deployment
+
+---
+
+## Session: 2026-02-19 (Distributed Pipeline Test with Shared Volume)
+
+### Status: COMPLETE
+
+Created and verified a 3-step distributed pipeline test demonstrating shared volume access:
+
+**Pipeline Steps:**
+1. `generate-numbers.cwl` - Creates file with numbers 1-100
+2. `count-lines.cwl` - Runs `wc -l` on the file
+3. `check-exists.cwl` - Checks if file exists, returns boolean
+
+**Test Files Created:**
+- `testdata/distributed-test/pipeline.cwl`
+- `testdata/distributed-test/generate-numbers.cwl`
+- `testdata/distributed-test/count-lines.cwl`
+- `testdata/distributed-test/check-exists.cwl`
+- `testdata/distributed-test/job.yml`
+- `scripts/test-distributed-pipeline.sh`
+
+**Shared Volume Configuration:**
+- Host path: `./tmp/workdir/`
+- Container path: `/workdir/`
+- Outputs stored in: `./tmp/workdir/outputs/task_<id>/`
+
+**Result Files (visible on host):**
+```
+tmp/workdir/outputs/task_9defa6c7.../numbers.txt      # 100 lines (1-100)
+tmp/workdir/outputs/task_781508ba.../line_count.txt   # "100"
+tmp/workdir/outputs/task_3cd32444.../exists_result.txt # "true"
+```
+
+---
+
+## Session: 2026-02-19 (Multi-Provider Auth + ArgumentEntry Fix)
+
+### Status: COMPLETE
+
+---
+
+### Bug Fix: CWL ArgumentEntry Deserialization (Issue #45)
+
+**Problem:** When CWL tools with structured `arguments` were sent to distributed workers, the arguments failed to deserialize. Go's `encoding/json` deserialized `[]any` elements as `map[string]interface{}` instead of `cwl.Argument` structs.
+
+**Solution:** Implemented CWL-compliant typed `ArgumentEntry` with custom JSON unmarshaling:
+
+```go
+type ArgumentEntry struct {
+    StringValue string     // For string literals or expressions
+    Binding     *Argument  // For CommandLineBinding objects
+    IsString    bool       // Discriminator
+}
+```
+
+**Files Changed:**
+- `pkg/cwl/binding.go` - Added `ArgumentEntry` type with `UnmarshalJSON`/`MarshalJSON`
+- `pkg/cwl/tool.go` - Changed `Arguments []any` to `Arguments []ArgumentEntry`
+- `internal/cmdline/builder.go` - Updated `buildArgument()` for typed entry
+- `internal/parser/parser.go` - Create `ArgumentEntry` objects during parsing
+- `internal/cmdline/builder_test.go` - Updated tests
+
+**Verification:**
+- ✅ 84/84 CWL conformance tests pass
+- ✅ All unit tests pass
+- ✅ Distributed `bwa-mem` test now passes (was failing)
+
+**GitHub:** Issue #45 created and closed
+
+---
+
+## Multi-Provider Authentication Implementation
+
+### Status: COMPLETE
+
+**Implementation of multi-provider authentication with role separation:**
+
+### Features Implemented
+
+1. **User Model** (`pkg/model/user.go`)
+   - UserRole: user, admin, anonymous
+   - AuthProvider: bvbrc, mgrast, local
+   - User struct with linked providers support
+
+2. **Auth Infrastructure**
+   - `internal/server/auth.go` - Multi-provider auth middleware
+   - `internal/server/admin_config.go` - Admin role from env/cli/config
+   - `internal/server/worker_auth.go` - Worker key authentication
+
+3. **Database Changes** (`internal/store/migrations.go`)
+   - Users table with id, username, provider, role, created_at, last_login
+   - Linked providers table for multi-provider linking
+   - Submission token columns: user_token, token_expiry, auth_provider
+   - Workers table: worker_group column
+
+4. **Per-Task Token Delegation**
+   - BVBRCExecutor refactored for per-task callers
+   - Scheduler populates RuntimeHints.StagerOverrides.HTTPCredential
+   - Token expiry check before task dispatch
+
+5. **Worker Groups**
+   - Workers register with a group membership
+   - X-Worker-Key header authentication
+   - CheckoutTask filters by worker group
+
+6. **Server Configuration**
+   - `--allow-anonymous` flag for unauthenticated access
+   - `--anonymous-executors` to restrict executors for anonymous users
+   - `--worker-keys` for worker key configuration
+   - `--config` for config file loading
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `pkg/model/user.go` | User, UserRole, AuthProvider types |
+| `internal/server/auth.go` | Multi-provider auth middleware |
+| `internal/server/admin_config.go` | Admin role management |
+| `internal/server/worker_auth.go` | Worker key authentication |
+| `internal/server/handler_admin.go` | Admin API endpoints |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `pkg/model/submission.go` | Added UserToken, TokenExpiry, AuthProvider |
+| `pkg/model/worker.go` | Added Group field |
+| `pkg/model/task.go` | Added WorkerGroup to RuntimeHints |
+| `pkg/model/errors.go` | Added ErrForbidden |
+| `pkg/model/session.go` | Updated to use UserRole from user.go |
+| `internal/store/migrations.go` | Users, linked_providers tables; submission/worker columns |
+| `internal/store/store.go` | User CRUD ops; CheckoutTask with workerGroup |
+| `internal/store/sqlite.go` | Implemented all new operations |
+| `internal/executor/bvbrc.go` | Per-task caller with user token |
+| `internal/scheduler/loop.go` | Token expiry check; HTTPCredential population |
+| `internal/server/server.go` | Auth config fields; middleware application |
+| `internal/server/handler_submissions.go` | UserContext usage |
+| `internal/server/handler_workers.go` | Worker auth; group support |
+| `internal/worker/worker.go` | Group, WorkerKey config |
+| `internal/worker/client.go` | X-Worker-Key header; group param |
+| `cmd/worker/main.go` | --group, --worker-key flags |
+| `cmd/server/main.go` | Auth config loading |
+
+### Test Updates
+
+- Store tests: CheckoutTask now takes workerGroup parameter
+- UI tests: Use string(model.RoleUser) casts
+- Server/CLI tests: Enable anonymous access by default for testing
+
+### All Tests Pass
+
+```
+go test ./...  # 19 packages, all pass
+```
+
+---
+
+## Session: 2026-02-19 (HTTP Stager + Test Script Improvements)
+
+### Status: COMPLETE
+
+**Commits this session:**
+1. `deec4ad` - feat: add HTTP/HTTPS staging support for workers
+2. `f72a98a` - fix: use correct port 8090 in distributed conformance script
+3. `d931331` - feat: add port config and conflict detection to distributed test scripts
+
+### HTTP/HTTPS Stager Implementation
+
+Added multi-scheme stager with full HTTP/HTTPS support:
+- HTTPStager for downloading (GET) and uploading (PUT/POST) files
+- Per-host credentials (bearer, basic, custom header) with wildcard matching
+- Per-task stager overrides via `RuntimeHints.StagerOverrides`
+- Custom CA certificate support for internal PKI
+- Unified TLS config for worker↔server and data staging
+- Retry logic with exponential backoff
+
+**New CLI flags for worker:**
+```
+--ca-cert           CA certificate PEM file
+--insecure          Skip TLS verification
+--http-timeout      Request timeout (default: 5m)
+--http-retries      Retry attempts (default: 3)
+--http-credentials  Credentials JSON file
+--http-upload-url   URL template with {taskID}, {filename}
+--http-upload-method PUT or POST
+```
+
+### Test Script Improvements
+
+Updated `scripts/test-distributed.sh` and `scripts/run-conformance-distributed.sh`:
+- `-p, --port PORT` - Configure server port (default: 8090)
+- `-k, --keep` - Keep containers running after tests
+- Detects running containers and offers to reuse
+- Checks for port conflicts before starting
+- Dynamic port mapping via `docker-compose.override.yml`
+
+### Test Results
+
+- **Unit tests**: 19 packages pass
+- **CWL conformance (standalone)**: 84/84 pass
+- **Distributed worker tests**: All pass
+- **HTTPStager tests**: 14/14 pass
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `internal/worker/stager_config.go` | NEW - Config types |
+| `internal/execution/http_stager.go` | NEW - HTTPStager impl |
+| `internal/execution/http_stager_test.go` | NEW - Tests |
+| `internal/worker/client.go` | TLS config support |
+| `internal/worker/worker.go` | CompositeStager wiring |
+| `pkg/model/task.go` | StagerOverrides types |
+| `cmd/worker/main.go` | New CLI flags |
+| `docs/tools/worker.md` | Documentation |
+| `scripts/test-distributed.sh` | Port config, conflict detection |
+| `scripts/run-conformance-distributed.sh` | Port config, conflict detection |
+
+---
+
+## Session: 2026-02-18 Night (Multi-Scheme Stager with HTTP/HTTPS)
+
+### Status: COMPLETE - HTTP/HTTPS staging support added
+
+**Major accomplishments:**
+1. Added HTTPStager for HTTP/HTTPS file staging (downloads and uploads)
+2. Configurable credentials with per-host authentication (bearer, basic, custom header)
+3. Per-task stager overrides via RuntimeHints.StagerOverrides
+4. Custom CA certificate support for internal PKI
+5. Unified TLS config shared between worker↔server API and data staging
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `internal/worker/stager_config.go` | StagerConfig, TLSConfig, HTTPStagerConfig, CredentialSet types |
+| `internal/execution/http_stager.go` | HTTPStager with StageIn (GET) and StageOut (PUT/POST), retries, credentials |
+| `internal/execution/http_stager_test.go` | Comprehensive tests for HTTPStager |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/worker/client.go` | Accept TLS config for server communication |
+| `internal/worker/worker.go` | CompositeStager wiring, HTTPStager integration, per-task overrides |
+| `pkg/model/task.go` | Added StagerOverrides and HTTPCredential to RuntimeHints |
+| `cmd/worker/main.go` | CLI flags: --ca-cert, --http-timeout, --http-credentials, etc. |
+
+### Files Removed
+
+| File | Reason |
+|------|--------|
+| `internal/worker/stager.go` | Duplicate of execution.FileStager, consolidated |
+
+### New CLI Flags
+
+```
+# TLS (applies to server API + all HTTPS staging)
+--ca-cert          Path to CA certificate PEM file for internal PKI
+--insecure         Skip TLS verification (testing only)
+
+# HTTP Stager
+--http-timeout      HTTP request timeout (default: 5m)
+--http-retries      Retry attempts (default: 3)
+--http-retry-delay  Initial retry delay (default: 1s)
+--http-credentials  Path to credentials JSON file
+--http-upload-url   URL template for StageOut uploads
+--http-upload-method PUT or POST (default: PUT)
+```
+
+### Credentials File Format
+
+```json
+{
+  "data.example.com": {"type": "bearer", "token": "eyJhbGc..."},
+  "*.internal.org": {"type": "basic", "username": "svc", "password": "secret"},
+  "upload.example.com": {"type": "header", "header_name": "X-Upload-Token", "header_value": "abc123"}
+}
+```
+
+### Architecture
+
+```
+CompositeStager
+├─ file:// → FileStager
+├─ http:// → HTTPStager (StageIn: GET, StageOut: PUT/POST)
+└─ https://→ HTTPStager
+```
+
+### Tests
+
+All 14 HTTPStager tests pass:
+- StageIn: download, retry, 4xx no-retry
+- StageOut: PUT, POST, URL template expansion
+- Credentials: bearer, basic, header, wildcard
+- Overrides: per-task headers and credentials
+
+### Next Steps
+
+- Future schemes: `s3://`, `shock://`, `ws://` (BV-BRC Workspace)
+- Integration test with real HTTP server
+
+---
+
 ## Session: 2026-02-18 Evening (Distributed Execution & 100% Conformance)
 
 ### Status: 84/84 TESTS PASSING (100%) + DISTRIBUTED WORKERS WORKING
