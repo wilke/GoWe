@@ -18,6 +18,14 @@ type RunSpec struct {
 	Command []string          // Command and arguments
 	WorkDir string            // Working directory on the host
 	Volumes map[string]string // host:container mount pairs
+	GPU     GPUConfig         // GPU configuration
+	Env     map[string]string // Environment variables
+}
+
+// GPUConfig specifies GPU requirements for container execution.
+type GPUConfig struct {
+	Enabled bool   // Whether to enable GPU access
+	DeviceID string // Specific GPU device (e.g., "0", "1", "0,1") - empty means all
 }
 
 // RunResult captures the output of an execution.
@@ -121,14 +129,30 @@ func (r *DockerRuntime) Run(ctx context.Context, spec RunSpec) (RunResult, error
 		return RunResult{}, fmt.Errorf("docker runtime: empty command")
 	}
 
-	args := []string{
-		"run", "--rm",
-		"-v", spec.WorkDir + ":/work",
-		"-w", "/work",
+	args := []string{"run", "--rm"}
+
+	// GPU support: use --gpus for NVIDIA GPU passthrough.
+	if spec.GPU.Enabled {
+		if spec.GPU.DeviceID != "" {
+			// Specific GPU(s): --gpus '"device=0"' or --gpus '"device=0,1"'
+			args = append(args, "--gpus", fmt.Sprintf(`"device=%s"`, spec.GPU.DeviceID))
+		} else {
+			// All GPUs
+			args = append(args, "--gpus", "all")
+		}
 	}
+
+	// Environment variables.
+	for k, v := range spec.Env {
+		args = append(args, "-e", k+"="+v)
+	}
+
+	// Volume mounts.
+	args = append(args, "-v", spec.WorkDir+":/work", "-w", "/work")
 	for hostPath, containerPath := range spec.Volumes {
 		args = append(args, "-v", hostPath+":"+containerPath)
 	}
+
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)
 
@@ -167,14 +191,25 @@ func (r *ApptainerRuntime) Run(ctx context.Context, spec RunSpec) (RunResult, er
 		return RunResult{}, fmt.Errorf("apptainer runtime: empty command")
 	}
 
-	args := []string{
-		"exec",
-		"--bind", spec.WorkDir + ":/work",
-		"--pwd", "/work",
+	args := []string{"exec"}
+
+	// GPU support: use --nv for NVIDIA GPU passthrough.
+	if spec.GPU.Enabled {
+		args = append(args, "--nv")
 	}
+
+	// Environment variables.
+	for k, v := range spec.Env {
+		args = append(args, "--env", k+"="+v)
+	}
+
+	// Bind mounts.
+	args = append(args, "--bind", spec.WorkDir+":/work", "--pwd", "/work")
 	for hostPath, containerPath := range spec.Volumes {
 		args = append(args, "--bind", hostPath+":"+containerPath)
 	}
+
+	// Image (convert Docker reference to Apptainer format).
 	args = append(args, "docker://"+spec.Image)
 	args = append(args, spec.Command...)
 

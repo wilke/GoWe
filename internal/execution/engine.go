@@ -16,6 +16,7 @@ type Engine struct {
 	logger  *slog.Logger
 	stager  Stager
 	runtime Runtime
+	gpu     GPUConfig // GPU configuration for container execution
 
 	// ExpressionLib contains JavaScript library code from InlineJavascriptRequirement.
 	ExpressionLib []string
@@ -31,6 +32,7 @@ type Config struct {
 	Runtime       Runtime
 	ExpressionLib []string
 	Namespaces    map[string]string
+	GPU           GPUConfig // GPU configuration for container execution
 }
 
 // NewEngine creates a new execution engine.
@@ -54,6 +56,7 @@ func NewEngine(cfg Config) *Engine {
 		logger:        logger,
 		stager:        stager,
 		runtime:       runtime,
+		gpu:           cfg.GPU,
 		ExpressionLib: cfg.ExpressionLib,
 		Namespaces:    cfg.Namespaces,
 	}

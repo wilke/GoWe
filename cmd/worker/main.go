@@ -26,6 +26,10 @@ func main() {
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://upload.example.com)")
 	flag.DurationVar(&cfg.Poll, "poll", 5*time.Second, "Poll interval")
 
+	// GPU flags.
+	flag.BoolVar(&cfg.GPU.Enabled, "gpu", false, "Enable GPU support (passes --nv to Apptainer, --gpus to Docker)")
+	flag.StringVar(&cfg.GPU.DeviceID, "gpu-id", "", "Specific GPU device ID (e.g., '0', '1', '0,1') - empty means all/auto")
+
 	// TLS flags (applies to server API + HTTPS staging).
 	var caCert string
 	var insecure bool
@@ -107,6 +111,8 @@ func main() {
 		"runtime", cfg.Runtime,
 		"workdir", cfg.WorkDir,
 		"poll", cfg.Poll,
+		"gpu", cfg.GPU.Enabled,
+		"gpu_id", cfg.GPU.DeviceID,
 	)
 
 	if err := w.Run(ctx, cfg); err != nil {

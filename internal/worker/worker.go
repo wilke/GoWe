@@ -26,6 +26,7 @@ type Worker struct {
 	stageOut    string
 	stagerCfg   StagerConfig
 	poll        time.Duration
+	gpu         GPUWorkerConfig // GPU configuration
 	logger      *slog.Logger
 }
 
@@ -41,6 +42,13 @@ type Config struct {
 	StageOut  string
 	Poll      time.Duration
 	Stager    StagerConfig
+	GPU       GPUWorkerConfig // GPU configuration
+}
+
+// GPUWorkerConfig holds GPU settings for the worker.
+type GPUWorkerConfig struct {
+	Enabled  bool   // Enable GPU support for this worker
+	DeviceID string // Specific GPU device ID (e.g., "0", "1") - empty means use all/auto
 }
 
 // New creates a Worker from configuration.
@@ -126,6 +134,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		stageOut:   cfg.StageOut,
 		stagerCfg:  cfg.Stager,
 		poll:       cfg.Poll,
+		gpu:        cfg.GPU,
 		logger:     logger.With("component", "worker"),
 	}, nil
 }
@@ -261,12 +270,16 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
 	}
 
-	// Create the execution engine with the (possibly overridden) stager.
+	// Create the execution engine with the (possibly overridden) stager and GPU config.
 	engine := execution.NewEngine(execution.Config{
 		Logger:        w.logger,
 		Stager:        stager,
 		ExpressionLib: expressionLib,
 		Namespaces:    namespaces,
+		GPU: execution.GPUConfig{
+			Enabled:  w.gpu.Enabled,
+			DeviceID: w.gpu.DeviceID,
+		},
 	})
 
 	// Execute the tool.
@@ -341,6 +354,10 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		Command: command,
 		WorkDir: taskDir,
 		Volumes: volumes,
+		GPU: GPUConfig{
+			Enabled:  w.gpu.Enabled,
+			DeviceID: w.gpu.DeviceID,
+		},
 	}
 
 	w.logger.Debug("executing task (legacy)",

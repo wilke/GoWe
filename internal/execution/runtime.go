@@ -20,6 +20,13 @@ type RunSpec struct {
 	Stderr  string            // Path to capture stderr (optional)
 	Image   string            // Docker image (for Docker runtime)
 	Volumes map[string]string // Host path -> container path mappings
+	GPU     GPUConfig         // GPU configuration
+}
+
+// GPUConfig specifies GPU requirements for container execution.
+type GPUConfig struct {
+	Enabled  bool   // Whether to enable GPU access
+	DeviceID string // Specific GPU device (e.g., "0", "1", "0,1") - empty means all
 }
 
 // RunResult holds the result of a command execution.

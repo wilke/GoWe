@@ -161,6 +161,115 @@ func TestApptainerRuntime_Run(t *testing.T) {
 	}
 }
 
+func TestDockerRuntime_GPU(t *testing.T) {
+	runner := &mockCommandRunner{
+		results: []mockResult{
+			{stdout: "gpu output\n", exitCode: 0},
+		},
+	}
+	rt := newDockerRuntimeWithRunner(runner)
+
+	_, err := rt.Run(context.Background(), RunSpec{
+		Image:   "nvidia/cuda:12.0-base",
+		Command: []string{"nvidia-smi"},
+		WorkDir: "/tmp/work",
+		GPU: GPUConfig{
+			Enabled:  true,
+			DeviceID: "0",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	call := runner.calls[0]
+	// Should contain --gpus with device specification.
+	foundGPUs := false
+	foundDevice := false
+	for i, a := range call.args {
+		if a == "--gpus" {
+			foundGPUs = true
+			if i+1 < len(call.args) && call.args[i+1] == `"device=0"` {
+				foundDevice = true
+			}
+		}
+	}
+	if !foundGPUs {
+		t.Errorf("args %v missing --gpus", call.args)
+	}
+	if !foundDevice {
+		t.Errorf("args %v missing device=0", call.args)
+	}
+}
+
+func TestDockerRuntime_GPU_All(t *testing.T) {
+	runner := &mockCommandRunner{
+		results: []mockResult{
+			{stdout: "gpu output\n", exitCode: 0},
+		},
+	}
+	rt := newDockerRuntimeWithRunner(runner)
+
+	_, err := rt.Run(context.Background(), RunSpec{
+		Image:   "nvidia/cuda:12.0-base",
+		Command: []string{"nvidia-smi"},
+		WorkDir: "/tmp/work",
+		GPU: GPUConfig{
+			Enabled: true,
+			// Empty DeviceID means all GPUs
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	call := runner.calls[0]
+	// Should contain --gpus all.
+	foundAll := false
+	for i, a := range call.args {
+		if a == "--gpus" && i+1 < len(call.args) && call.args[i+1] == "all" {
+			foundAll = true
+		}
+	}
+	if !foundAll {
+		t.Errorf("args %v missing --gpus all", call.args)
+	}
+}
+
+func TestApptainerRuntime_GPU(t *testing.T) {
+	runner := &mockCommandRunner{
+		results: []mockResult{
+			{stdout: "gpu output\n", exitCode: 0},
+		},
+	}
+	rt := newApptainerRuntimeWithRunner(runner)
+
+	_, err := rt.Run(context.Background(), RunSpec{
+		Image:   "nvidia/cuda:12.0-base",
+		Command: []string{"nvidia-smi"},
+		WorkDir: "/tmp/work",
+		GPU: GPUConfig{
+			Enabled: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+
+	call := runner.calls[0]
+	// Should contain --nv for NVIDIA GPU support.
+	foundNV := false
+	for _, a := range call.args {
+		if a == "--nv" {
+			foundNV = true
+			break
+		}
+	}
+	if !foundNV {
+		t.Errorf("args %v missing --nv", call.args)
+	}
+}
+
 func TestNewRuntime(t *testing.T) {
 	tests := []struct {
 		name    string

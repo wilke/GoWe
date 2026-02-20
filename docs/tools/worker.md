@@ -33,6 +33,13 @@ gowe-worker [flags]
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
 | `--poll` | `5s` | Poll interval for checking new tasks |
 
+#### GPU Configuration
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--gpu` | `false` | Enable GPU support (passes `--nv` to Apptainer, `--gpus` to Docker) |
+| `--gpu-id` | `""` | Specific GPU device ID (e.g., "0", "1", "0,1") - empty means all |
+
 #### TLS Configuration
 
 | Flag | Default | Description |
@@ -100,6 +107,87 @@ gowe-worker \
 ```
 
 The server validates worker keys against its configuration (see server.md). Tasks can target specific groups, and workers only receive tasks matching their group.
+
+### GPU-enabled workers
+
+Enable GPU support for containerized workloads:
+
+```bash
+# Single GPU worker (uses all available GPUs)
+gowe-worker \
+  --server http://gowe-server:8080 \
+  --runtime apptainer \
+  --gpu
+
+# Worker bound to specific GPU (for multi-GPU machines)
+gowe-worker \
+  --server http://gowe-server:8080 \
+  --runtime apptainer \
+  --gpu \
+  --gpu-id 0 \
+  --name "gpu-worker-0" \
+  --group "gpu-0"
+```
+
+For Apptainer, `--gpu` passes the `--nv` flag for NVIDIA GPU passthrough.
+For Docker, `--gpu` passes `--gpus all` or `--gpus "device=N"`.
+
+### Multi-GPU deployment (8 GPUs example)
+
+For a machine with 8 GPUs, start 8 workers each bound to one GPU:
+
+```bash
+#!/bin/bash
+# start-gpu-workers.sh - Start 8 workers, one per GPU
+
+SERVER="http://localhost:8080"
+WORKDIR="/scratch/gowe"
+
+for GPU_ID in {0..7}; do
+  gowe-worker \
+    --server "$SERVER" \
+    --runtime apptainer \
+    --gpu \
+    --gpu-id "$GPU_ID" \
+    --name "gpu-worker-$GPU_ID" \
+    --group "gpu-$GPU_ID" \
+    --workdir "$WORKDIR/worker-$GPU_ID" \
+    --poll 2s \
+    --log-format json \
+    > /var/log/gowe/worker-$GPU_ID.log 2>&1 &
+
+  echo "Started worker gpu-worker-$GPU_ID on GPU $GPU_ID (PID $!)"
+done
+
+echo "All workers started. Check status with: curl $SERVER/api/v1/workers | jq"
+```
+
+**Key considerations for multi-GPU setups:**
+
+1. **Separate work directories** - Each worker needs its own `--workdir` to avoid conflicts
+2. **GPU isolation** - Use `--gpu-id` to bind each worker to exactly one GPU
+3. **Worker groups** - Use distinct groups (gpu-0, gpu-1, ...) for targeted scheduling
+4. **Memory** - Ensure sufficient RAM per worker (protein folding needs 16-32GB per GPU)
+5. **Logging** - Direct logs to separate files for easier debugging
+
+**Alternative: Round-robin scheduling**
+
+If all GPUs are equivalent and you don't need targeted scheduling, use a single worker group:
+
+```bash
+for GPU_ID in {0..7}; do
+  gowe-worker \
+    --server "$SERVER" \
+    --runtime apptainer \
+    --gpu \
+    --gpu-id "$GPU_ID" \
+    --name "gpu-worker-$GPU_ID" \
+    --group "gpu-workers" \  # Same group for all
+    --workdir "$WORKDIR/worker-$GPU_ID" &
+done
+```
+
+Tasks targeting the "gpu-workers" group will be distributed across all 8 workers.
 
 ### Container runtime
 

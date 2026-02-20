@@ -36,6 +36,17 @@ func (r *DockerRuntime) Run(ctx context.Context, spec RunSpec) (*RunResult, erro
 	// Build Docker command.
 	args := []string{"run", "--rm", "-i"}
 
+	// GPU support: use --gpus for NVIDIA GPU passthrough.
+	if spec.GPU.Enabled {
+		if spec.GPU.DeviceID != "" {
+			// Specific GPU(s): --gpus '"device=0"' or --gpus '"device=0,1"'
+			args = append(args, "--gpus", fmt.Sprintf(`"device=%s"`, spec.GPU.DeviceID))
+		} else {
+			// All GPUs
+			args = append(args, "--gpus", "all")
+		}
+	}
+
 	// Mount working directory.
 	absWorkDir := resolveSymlinks(spec.WorkDir)
 	args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=/var/spool/cwl", absWorkDir))
@@ -132,6 +143,17 @@ func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, c
 
 	// Build Docker command.
 	dockerArgs := []string{"run", "--rm", "-i"}
+
+	// GPU support: use --gpus for NVIDIA GPU passthrough.
+	if e.gpu.Enabled {
+		if e.gpu.DeviceID != "" {
+			// Specific GPU(s): --gpus '"device=0"'
+			dockerArgs = append(dockerArgs, "--gpus", fmt.Sprintf(`"device=%s"`, e.gpu.DeviceID))
+		} else {
+			// All GPUs
+			dockerArgs = append(dockerArgs, "--gpus", "all")
+		}
+	}
 
 	// Mount working directory.
 	absWorkDir := resolveSymlinks(workDir)
