@@ -20,14 +20,28 @@ gowe-server [flags]
 
 ### Flags
 
+#### Core
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr` | `:8080` | Listen address (host:port) |
 | `--db` | `~/.gowe/gowe.db` | SQLite database path |
 | `--default-executor` | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
+| `--config` | `~/.gowe/config.yaml` | Server configuration file |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
+
+#### Authentication
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--allow-anonymous` | `false` | Allow unauthenticated API requests |
+| `--anonymous-executors` | `local,docker,worker` | Executors allowed for anonymous users |
+| `--worker-keys` | `""` | Path to worker keys JSON file |
+
+Environment variables:
+- `GOWE_ADMINS` — Comma-separated list of admin usernames (e.g., `alice@bvbrc,bob@mgrast`)
 
 ## Examples
 
@@ -53,6 +67,45 @@ gowe-server --log-format json --log-level info
 # Force all tasks to use the worker executor (distributed mode)
 gowe-server --default-executor worker --debug
 ```
+
+### Multi-provider authentication
+
+GoWe supports authentication via BV-BRC and MG-RAST tokens:
+
+```bash
+# Submit with BV-BRC token
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Authorization: $(cat ~/.bvbrc_token)" \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "wf_xxx", "inputs": {}}'
+
+# Submit with MG-RAST token
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "X-MG-RAST-Token: $(cat ~/.mgrast_token)" \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "wf_xxx", "inputs": {}}'
+
+# Anonymous submission (requires --allow-anonymous)
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "wf_xxx", "inputs": {}}'
+```
+
+User tokens are stored with submissions and delegated per-task to executors, enabling jobs to run under the submitting user's identity.
+
+### Anonymous access
+
+Enable anonymous access for local/demo use:
+
+```bash
+# Allow unauthenticated requests (limited to local, docker, worker executors)
+gowe-server --allow-anonymous
+
+# Restrict anonymous to specific executors
+gowe-server --allow-anonymous --anonymous-executors local,docker
+```
+
+Anonymous users cannot submit jobs to BV-BRC or MG-RAST executors (require credentials).
 
 ### Distributed execution mode
 
@@ -116,12 +169,39 @@ Token sources (checked in order):
 4. `~/.patric_token`
 5. `~/.p3_token`
 
+### Worker Authentication
+
+Workers authenticate using shared secrets and can belong to groups:
+
+```json
+// ~/.gowe/worker-keys.json
+{
+  "keys": {
+    "secret-key-1": {
+      "groups": ["default", "gpu-workers"],
+      "description": "Production GPU cluster"
+    },
+    "secret-key-2": {
+      "groups": ["cpu-workers"],
+      "description": "CPU-only workers"
+    }
+  }
+}
+```
+
+```bash
+gowe-server --worker-keys ~/.gowe/worker-keys.json
+```
+
+Workers send `X-Worker-Key` header on registration. Tasks can target specific groups via `RuntimeHints.WorkerGroup`.
+
 ### Scheduler
 
 A tick-based scheduler loop that:
 - Polls for pending tasks
 - Resolves dependencies
-- Dispatches tasks to appropriate executors
+- Checks token expiry before dispatch
+- Dispatches tasks to appropriate executors (with user credentials)
 - Handles state transitions and retries
 
 ## API Endpoints

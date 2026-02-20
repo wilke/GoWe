@@ -26,6 +26,8 @@ gowe-worker [flags]
 |------|---------|-------------|
 | `--server` | `http://localhost:8080` | GoWe server URL |
 | `--name` | hostname | Worker name for identification |
+| `--group` | `default` | Worker group for targeted scheduling |
+| `--worker-key` | `""` | Shared secret for authentication |
 | `--runtime` | `none` | Container runtime: docker, apptainer, none |
 | `--workdir` | `$TMPDIR/gowe-worker` | Local working directory for task execution |
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
@@ -78,6 +80,26 @@ gowe-worker --name "compute-node-01"
 # Useful for identifying workers in logs and monitoring
 gowe-worker --name "gpu-worker-a100"
 ```
+
+### Worker groups and authentication
+
+Workers can be organized into groups for targeted task scheduling:
+
+```bash
+# Join a specific worker group with authentication
+gowe-worker \
+  --server http://gowe-server:8080 \
+  --name "gpu-node-01" \
+  --group "gpu-workers" \
+  --worker-key "secret-key-1"
+
+# Join the default group
+gowe-worker \
+  --server http://gowe-server:8080 \
+  --worker-key "secret-key-1"
+```
+
+The server validates worker keys against its configuration (see server.md). Tasks can target specific groups, and workers only receive tasks matching their group.
 
 ### Container runtime
 
@@ -144,9 +166,12 @@ gowe-worker \
 
 When the worker starts, it registers with the server:
 
-1. Sends registration request with name, hostname, and capabilities
-2. Receives a worker ID from the server
-3. Begins polling for tasks
+1. Sends registration request with name, hostname, group, and capabilities
+2. Server validates worker key against allowed groups
+3. Receives a worker ID from the server
+4. Begins polling for tasks
+
+If `--worker-key` is provided, the worker sends it in the `X-Worker-Key` header.
 
 ### Task Lifecycle
 
@@ -170,6 +195,16 @@ When the worker starts, it registers with the server:
      │<──────────────│               │
      └───────────────┴───────────────┘
 ```
+
+### Per-Task Credentials
+
+Tasks include the submitting user's token in `RuntimeHints.StagerOverrides.HTTPCredential`. This enables:
+
+- Downloading inputs from authenticated data services (BV-BRC Workspace, MG-RAST, etc.)
+- Uploading outputs using the user's identity
+- Running external jobs under the user's account
+
+The worker automatically applies these credentials during file staging.
 
 ### Working Directory Structure
 

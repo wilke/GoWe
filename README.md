@@ -5,7 +5,9 @@ A CWL v1.2 workflow engine for [BV-BRC](https://www.bv-brc.org/) bioinformatics 
 ## Features
 
 - **CWL v1.2 support** — parse, validate, and execute packed or modular CWL workflows
-- **Multiple executor backends** — local processes, Docker containers, and BV-BRC remote jobs
+- **Multiple executor backends** — local processes, Docker containers, distributed workers, and BV-BRC remote jobs
+- **Multi-provider authentication** — BV-BRC and MG-RAST tokens with per-task delegation
+- **Distributed execution** — worker pools with group-based scheduling and shared secrets
 - **Async scheduling** — tick-based scheduler with dependency resolution, retry logic, and state machine transitions
 - **SQLite persistence** — lightweight embedded database with automatic migrations
 - **REST API** — JSON endpoints for workflow CRUD, submission management, task monitoring, and BV-BRC app/workspace proxying
@@ -164,9 +166,19 @@ GoWe supports four execution backends, selected per-step via CWL hints:
 | `worker` | `goweHint.executor: worker` or `--default-executor=worker` | Delegates to remote workers for distributed execution |
 | `bvbrc` | `goweHint.executor: bvbrc` | Submits jobs to BV-BRC via JSON-RPC 1.1 |
 
-### BV-BRC Authentication
+### Authentication
 
-The BV-BRC executor requires a token. Sources checked in order:
+GoWe supports multi-provider authentication for API requests:
+
+| Provider | Header | Token Format |
+|----------|--------|--------------|
+| BV-BRC | `Authorization` | `un=user@bvbrc\|tokenid=...\|expiry=...\|sig=...` |
+| MG-RAST | `X-MG-RAST-Token` | Similar pipe-delimited format |
+| Anonymous | (none) | Requires `--allow-anonymous` flag |
+
+User tokens are delegated per-task to executors and workers, enabling jobs to run under the submitting user's identity.
+
+**Server-side BV-BRC token** (for `/apps` and `/workspace` endpoints):
 
 1. `BVBRC_TOKEN` environment variable
 2. `~/.gowe/credentials.json` (via `gowe login`)
@@ -174,7 +186,7 @@ The BV-BRC executor requires a token. Sources checked in order:
 4. `~/.patric_token`
 5. `~/.p3_token`
 
-If no token is found, the server starts without the BV-BRC executor.
+If no server token is found, BV-BRC proxy endpoints are disabled.
 
 ### CWL Hints Example
 
@@ -210,6 +222,17 @@ steps:
 | `--db` | — | `~/.gowe/gowe.db` | SQLite database path |
 | `--default-executor` | — | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
 | `--debug` | — | `false` | Shorthand for `--log-level=debug` |
+| `--allow-anonymous` | — | `false` | Allow unauthenticated requests |
+| `--anonymous-executors` | — | `local,docker,worker` | Executors allowed for anonymous users |
+| `--worker-keys` | — | `""` | Path to worker keys JSON file |
+| `--config` | — | `~/.gowe/config.yaml` | Server configuration file |
+
+### Admin Configuration
+
+Admins can be designated via (checked in order):
+1. **Database** — `gowe-server grant-admin alice@bvbrc`
+2. **Environment** — `GOWE_ADMINS=alice@bvbrc,bob@mgrast`
+3. **Config file** — `admins:` list in `~/.gowe/config.yaml`
 
 ## Tools
 
@@ -271,17 +294,48 @@ docker-compose up -d --build
 # Run a workflow against the distributed setup
 ./bin/gowe run --server http://localhost:8090 workflow.cwl job.yml
 
-# Run the distributed test script
-./scripts/test-distributed.sh
+# Run the distributed test scripts
+./scripts/test-distributed.sh           # Basic tests
+./scripts/test-distributed-pipeline.sh  # 3-step pipeline with shared volume
 
 # Stop the cluster
 docker-compose down -v
 ```
 
 The `docker-compose.yml` starts:
-- 1 server with `--default-executor=worker`
+- 1 server with `--default-executor=worker` and `--allow-anonymous`
 - 2 workers with `--runtime=none` (host execution)
 - 1 worker with `--runtime=docker` (container execution)
+
+### Worker Groups
+
+Workers can be organized into groups for targeted scheduling:
+
+```bash
+# Start a worker in a specific group
+gowe-worker --server http://localhost:8080 --group gpu-workers --worker-key $SECRET
+
+# Configure worker keys in server (maps keys to allowed groups)
+cat > ~/.gowe/worker-keys.json << 'EOF'
+{
+  "keys": {
+    "secret-key-1": {"groups": ["default", "gpu-workers"]},
+    "secret-key-2": {"groups": ["cpu-workers"]}
+  }
+}
+EOF
+```
+
+Tasks can target specific worker groups via `RuntimeHints.WorkerGroup`.
+
+### Shared Volume
+
+Output files are accessible on the host via bind mount:
+
+```
+Host:       ./tmp/workdir/outputs/task_<id>/
+Container:  /workdir/outputs/task_<id>/
+```
 
 See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration details.
 
