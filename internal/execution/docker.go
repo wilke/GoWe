@@ -41,6 +41,8 @@ func (r *DockerRuntime) Run(ctx context.Context, spec RunSpec) (*RunResult, erro
 		if spec.GPU.DeviceID != "" {
 			// Specific GPU(s): --gpus '"device=0"' or --gpus '"device=0,1"'
 			args = append(args, "--gpus", fmt.Sprintf(`"device=%s"`, spec.GPU.DeviceID))
+			// Also set CUDA_VISIBLE_DEVICES for applications that check it.
+			args = append(args, "-e", "CUDA_VISIBLE_DEVICES="+spec.GPU.DeviceID)
 		} else {
 			// All GPUs
 			args = append(args, "--gpus", "all")
@@ -149,6 +151,8 @@ func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, c
 		if e.gpu.DeviceID != "" {
 			// Specific GPU(s): --gpus '"device=0"'
 			dockerArgs = append(dockerArgs, "--gpus", fmt.Sprintf(`"device=%s"`, e.gpu.DeviceID))
+			// Also set CUDA_VISIBLE_DEVICES for applications that check it.
+			dockerArgs = append(dockerArgs, "-e", "CUDA_VISIBLE_DEVICES="+e.gpu.DeviceID)
 		} else {
 			// All GPUs
 			dockerArgs = append(dockerArgs, "--gpus", "all")

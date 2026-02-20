@@ -183,9 +183,10 @@ func TestDockerRuntime_GPU(t *testing.T) {
 	}
 
 	call := runner.calls[0]
-	// Should contain --gpus with device specification.
+	// Should contain --gpus with device specification and CUDA_VISIBLE_DEVICES.
 	foundGPUs := false
 	foundDevice := false
+	foundCudaEnv := false
 	for i, a := range call.args {
 		if a == "--gpus" {
 			foundGPUs = true
@@ -193,12 +194,18 @@ func TestDockerRuntime_GPU(t *testing.T) {
 				foundDevice = true
 			}
 		}
+		if a == "-e" && i+1 < len(call.args) && call.args[i+1] == "CUDA_VISIBLE_DEVICES=0" {
+			foundCudaEnv = true
+		}
 	}
 	if !foundGPUs {
 		t.Errorf("args %v missing --gpus", call.args)
 	}
 	if !foundDevice {
 		t.Errorf("args %v missing device=0", call.args)
+	}
+	if !foundCudaEnv {
+		t.Errorf("args %v missing CUDA_VISIBLE_DEVICES=0", call.args)
 	}
 }
 
@@ -249,7 +256,8 @@ func TestApptainerRuntime_GPU(t *testing.T) {
 		Command: []string{"nvidia-smi"},
 		WorkDir: "/tmp/work",
 		GPU: GPUConfig{
-			Enabled: true,
+			Enabled:  true,
+			DeviceID: "2",
 		},
 	})
 	if err != nil {
@@ -257,16 +265,22 @@ func TestApptainerRuntime_GPU(t *testing.T) {
 	}
 
 	call := runner.calls[0]
-	// Should contain --nv for NVIDIA GPU support.
+	// Should contain --nv for NVIDIA GPU support and CUDA_VISIBLE_DEVICES.
 	foundNV := false
-	for _, a := range call.args {
+	foundCudaEnv := false
+	for i, a := range call.args {
 		if a == "--nv" {
 			foundNV = true
-			break
+		}
+		if a == "--env" && i+1 < len(call.args) && call.args[i+1] == "CUDA_VISIBLE_DEVICES=2" {
+			foundCudaEnv = true
 		}
 	}
 	if !foundNV {
 		t.Errorf("args %v missing --nv", call.args)
+	}
+	if !foundCudaEnv {
+		t.Errorf("args %v missing CUDA_VISIBLE_DEVICES=2", call.args)
 	}
 }
 

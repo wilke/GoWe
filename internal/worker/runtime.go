@@ -136,6 +136,8 @@ func (r *DockerRuntime) Run(ctx context.Context, spec RunSpec) (RunResult, error
 		if spec.GPU.DeviceID != "" {
 			// Specific GPU(s): --gpus '"device=0"' or --gpus '"device=0,1"'
 			args = append(args, "--gpus", fmt.Sprintf(`"device=%s"`, spec.GPU.DeviceID))
+			// Also set CUDA_VISIBLE_DEVICES for applications that check it.
+			args = append(args, "-e", "CUDA_VISIBLE_DEVICES="+spec.GPU.DeviceID)
 		} else {
 			// All GPUs
 			args = append(args, "--gpus", "all")
@@ -196,6 +198,10 @@ func (r *ApptainerRuntime) Run(ctx context.Context, spec RunSpec) (RunResult, er
 	// GPU support: use --nv for NVIDIA GPU passthrough.
 	if spec.GPU.Enabled {
 		args = append(args, "--nv")
+		// Use CUDA_VISIBLE_DEVICES to restrict to specific GPU(s).
+		if spec.GPU.DeviceID != "" {
+			args = append(args, "--env", "CUDA_VISIBLE_DEVICES="+spec.GPU.DeviceID)
+		}
 	}
 
 	// Environment variables.
