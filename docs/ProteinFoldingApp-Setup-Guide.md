@@ -70,9 +70,13 @@ apptainer pull hmmer.sif docker://staphb/hmmer:latest
 # Utility
 apptainer pull python.sif docker://python:3.11-slim
 
-# Build protein-compare (if not available)
-# cd ~/ProteinFoldingApp/docker/protein-compare
-# apptainer build protein-compare.sif Singularity.def
+# Build protein-compare from Dockerfile
+apptainer build protein-compare.sif \
+  docker-daemon://dxkb/protein-compare:latest
+# (requires building the Docker image first:
+#  cd ~/ProteinFoldingApp/docker/protein-compare
+#  docker build -t dxkb/protein-compare:latest .
+#  then run the apptainer build above)
 ```
 
 ## Step 4: Stage Genetic Databases
@@ -84,14 +88,18 @@ AlphaFold2 requires large genetic databases (~2.5TB):
 sudo mkdir -p /data/alphafold-databases
 sudo chown $USER:$USER /data/alphafold-databases
 
-# Download databases (this takes hours)
-# Option 1: Use AlphaFold's download script
+# Option 1: Use the ProteinFoldingApp download script (recommended)
+cd ~/ProteinFoldingApp
+python scripts/download_databases.py --outdir /data/alphafold-databases
+
+# Download only UniRef90 (for JackHMMER, ~120GB uncompressed)
+python scripts/download_databases.py --db uniref90 --outdir /data/alphafold-databases
+
+# Download only ColabFold DB (for MMseqs2, ~500GB)
+python scripts/download_databases.py --db colabfold --outdir /data/colabfold-db
+
 # Option 2: Rsync from existing installation
 rsync -av --progress source:/path/to/alphafold-db/ /data/alphafold-databases/
-
-# ColabFold database for Boltz/Chai (~500GB)
-sudo mkdir -p /data/colabfold-db
-# Download from https://colabfold.mmseqs.com/
 ```
 
 Verify database structure:
@@ -242,14 +250,19 @@ curl http://localhost:8080/api/v1/workers | jq '.data[] | {name, state, runtime}
 ```bash
 cd ~/ProteinFoldingApp
 
+# Install Python dependencies
+pip install -e ".[dev]"
+pip install pyyaml matplotlib seaborn pandas numpy scipy
+
 # Download target sequences and experimental structures
 python scripts/prepare_targets.py --config configs/targets_pilot.yaml
 
 # Generate MSAs (optional, can be done on-demand)
 python scripts/generate_msas.py \
-  --sequences data/sequences/ \
-  --output data/alignments/ \
-  --database /data/colabfold-db
+  --config configs/targets_pilot.yaml \
+  --mmseqs2-db /data/colabfold-db \
+  --jackhmmer-db /data/alphafold-databases/uniref90/uniref90.fasta \
+  --threads 8
 ```
 
 ## Step 9: Run Experiments
@@ -263,7 +276,7 @@ cd ~/ProteinFoldingApp
 gowe run \
   --server http://localhost:8080 \
   cwl/tools/alphafold-predict.cwl \
-  testdata/single-target-job.yml
+  -i testdata/single-target-job.yml
 ```
 
 ### Run Experiment 1 (Within-Tool Quality)
@@ -273,7 +286,7 @@ gowe run \
 gowe submit \
   --server http://localhost:8080 \
   cwl/workflows/experiment1-within-tool.cwl \
-  inputs/experiment1-inputs.yml
+  -i inputs/experiment1-inputs.yml
 
 # Check status
 gowe list --server http://localhost:8080
@@ -286,16 +299,16 @@ gowe status --server http://localhost:8080 sub_XXXXX
 
 ```bash
 # Experiment 1: Within-tool quality assessment
-gowe submit cwl/workflows/experiment1-within-tool.cwl inputs/exp1.yml
+gowe submit cwl/workflows/experiment1-within-tool.cwl -i inputs/experiment1-inputs.yml
 
 # Experiment 2: Cross-tool comparison
-gowe submit cwl/workflows/experiment2-across-tools.cwl inputs/exp2.yml
+gowe submit cwl/workflows/experiment2-across-tools.cwl -i inputs/experiment2-inputs.yml
 
 # Experiment 3: MSA impact analysis
-gowe submit cwl/workflows/experiment3-msa-impact.cwl inputs/exp3.yml
+gowe submit cwl/workflows/experiment3-msa-impact.cwl -i inputs/experiment3-inputs.yml
 
 # Experiment 4: MSA depth sensitivity
-gowe submit cwl/workflows/experiment4-msa-depth.cwl inputs/exp4.yml
+gowe submit cwl/workflows/experiment4-msa-depth.cwl -i inputs/experiment4-inputs.yml
 ```
 
 ## Step 10: Monitor Progress
@@ -324,13 +337,13 @@ ls /results/protein-folding/
 
 # Aggregate metrics
 python scripts/collect_metrics.py \
-  --results /results/protein-folding \
-  --output results/metrics.csv
+  --results-dir /results/protein-folding \
+  --output results/all_metrics.csv
 
 # Generate plots
 python scripts/plot_results.py \
-  --metrics results/metrics.csv \
-  --output results/figures/
+  --metrics results/all_metrics.csv \
+  --output-dir results/plots/
 ```
 
 ## Troubleshooting
@@ -402,7 +415,7 @@ pkill -9 -f gowe-server
 | `~/start-gowe-cluster.sh` | Start server + 8 workers |
 | `curl localhost:8080/api/v1/health` | Check server health |
 | `curl localhost:8080/api/v1/workers \| jq` | List workers |
-| `gowe submit workflow.cwl job.yml` | Submit workflow |
+| `gowe submit workflow.cwl -i job.yml` | Submit workflow |
 | `gowe status sub_XXX` | Check submission status |
 | `gowe list` | List all submissions |
 | `tail -f /var/log/gowe/server.log` | Watch server logs |
