@@ -38,9 +38,12 @@ type WorkflowInput struct {
 
 // WorkflowOutput describes a typed output of a Workflow.
 type WorkflowOutput struct {
-	ID           string `json:"id"`
-	Type         string `json:"type"`
-	OutputSource string `json:"output_source"`
+	ID            string   `json:"id"`
+	Type          string   `json:"type"`
+	OutputSource  string   `json:"output_source"`            // Single source (for backwards compatibility)
+	OutputSources []string `json:"output_sources,omitempty"` // Multiple sources (for MultipleInputFeatureRequirement)
+	PickValue     string   `json:"pick_value,omitempty"`     // "first_non_null", "the_only_non_null", or "all_non_null"
+	LinkMerge     string   `json:"link_merge,omitempty"`     // "merge_nested" (default) or "merge_flattened"
 }
 
 // Step is a single node in a Workflow's DAG.

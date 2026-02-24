@@ -3,6 +3,7 @@ package cwlrunner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/me/gowe/internal/cwlexpr"
@@ -19,10 +20,51 @@ func hasValueFrom(step cwl.Step) bool {
 	return false
 }
 
+// whenReferencesScatterVars checks if the when expression references any scattered variables.
+// This is a simple heuristic that looks for "inputs.<varname>" patterns.
+func whenReferencesScatterVars(when string, scatterVars []string) bool {
+	for _, v := range scatterVars {
+		// Check for common patterns: inputs.varname or inputs["varname"]
+		if strings.Contains(when, "inputs."+v) ||
+			strings.Contains(when, "inputs[\""+v+"\"]") ||
+			strings.Contains(when, "inputs['"+v+"']") {
+			return true
+		}
+	}
+	return false
+}
+
 // executeScatter executes a step with scatter over input arrays.
 func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, evaluator ...*cwlexpr.Evaluator) (map[string]any, error) {
 	if len(step.Scatter) == 0 {
 		return nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if len(evaluator) > 0 {
+		eval = evaluator[0]
+	}
+
+	// Check 'when' condition early (before scatter validation).
+	// This handles cases where the condition depends on non-scattered variables
+	// and allows skipping the step even if scatter inputs are invalid.
+	// Skip early check if the expression references scattered variables.
+	if step.When != "" && eval != nil && !whenReferencesScatterVars(step.When, step.Scatter) {
+		evalCtx := cwlexpr.NewContext(inputs)
+		shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+		if err != nil {
+			// If evaluation fails (e.g., depends on scattered vars), continue to per-iteration eval.
+			r.logger.Debug("when condition pre-check failed, will evaluate per-iteration", "error", err)
+		} else if !shouldRun {
+			r.logger.Info("skipping scatter step (when condition false)", "step", step.Run)
+			// Return empty outputs for skipped scatter step.
+			outputs := make(map[string]any)
+			for _, outID := range step.Out {
+				outputs[outID] = nil
+			}
+			return outputs, nil
+		}
 	}
 
 	// Determine scatter method (default: dotproduct for single input, nested_crossproduct for multiple).
@@ -60,10 +102,6 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 	}
 
 	// Evaluate valueFrom expressions per scatter iteration (after scatter expansion).
-	var eval *cwlexpr.Evaluator
-	if len(evaluator) > 0 {
-		eval = evaluator[0]
-	}
 	if eval != nil && hasValueFrom(step) {
 		for _, combo := range combinations {
 			if err := evaluateValueFrom(step, combo, eval); err != nil {
@@ -72,10 +110,29 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 		}
 	}
 
-	// Execute tool for each combination.
+	// Execute tool for each combination, evaluating 'when' condition per iteration.
 	var results []map[string]any
 	for i, combo := range combinations {
 		r.logger.Debug("scatter iteration", "index", i, "inputs", combo)
+
+		// Evaluate 'when' condition if present.
+		if step.When != "" && eval != nil {
+			evalCtx := cwlexpr.NewContext(combo)
+			shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+			if err != nil {
+				return nil, fmt.Errorf("scatter iteration %d when: %w", i, err)
+			}
+			if !shouldRun {
+				// Condition is false for this iteration - output null for all outputs.
+				nullOutputs := make(map[string]any)
+				for _, outID := range step.Out {
+					nullOutputs[outID] = nil
+				}
+				results = append(results, nullOutputs)
+				continue
+			}
+		}
+
 		output, err := r.executeTool(ctx, graph, tool, combo, false)
 		if err != nil {
 			return nil, fmt.Errorf("scatter iteration %d: %w", i, err)
@@ -312,6 +369,12 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		scatterArrays[scatterInput] = arr
 	}
 
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if len(evaluator) > 0 {
+		eval = evaluator[0]
+	}
+
 	// Generate input combinations
 	var combinations []map[string]any
 	switch method {
@@ -326,10 +389,6 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 	}
 
 	// Evaluate valueFrom expressions per scatter iteration (after scatter expansion).
-	var eval *cwlexpr.Evaluator
-	if len(evaluator) > 0 {
-		eval = evaluator[0]
-	}
 	if eval != nil && hasValueFrom(step) {
 		for _, combo := range combinations {
 			if err := evaluateValueFrom(step, combo, eval); err != nil {

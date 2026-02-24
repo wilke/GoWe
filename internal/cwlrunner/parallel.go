@@ -165,7 +165,7 @@ func (pe *parallelExecutor) getStepOutputs() map[string]map[string]any {
 func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error) {
 	totalSteps := len(pe.dag.Order)
 	if totalSteps == 0 {
-		return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.stepOutputs), nil
+		return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.stepOutputs)
 	}
 
 	// Create cancellable context for fail-fast
@@ -299,7 +299,7 @@ func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error)
 	wg.Wait()
 
 	// Collect workflow outputs
-	return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.getStepOutputs()), nil
+	return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.getStepOutputs())
 }
 
 // createStepJob creates a job for the given step.

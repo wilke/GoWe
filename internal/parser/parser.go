@@ -494,11 +494,26 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 	outputs := normalizeToMap(raw["outputs"])
 	for id, v := range outputs {
 		if m, ok := v.(map[string]any); ok {
-			wf.Outputs[id] = cwl.OutputParam{
-				Type:         stringField(m, "type"),
-				OutputSource: normalizeSourceRef(stringField(m, "outputSource")),
-				Doc:          stringField(m, "doc"),
+			// Use serializeCWLType for type to handle complex array types.
+			typeVal := stringField(m, "type")
+			if typeVal == "" {
+				typeVal = serializeCWLType(m["type"])
 			}
+			outParam := cwl.OutputParam{
+				Type:      typeVal,
+				Doc:       stringField(m, "doc"),
+				PickValue: stringField(m, "pickValue"),
+				LinkMerge: stringField(m, "linkMerge"),
+			}
+			// outputSource can be a string or array of strings.
+			if sources := normalizeSourceRefs(m["outputSource"]); len(sources) > 0 {
+				if len(sources) == 1 {
+					outParam.OutputSource = sources[0]
+				} else {
+					outParam.OutputSources = sources
+				}
+			}
+			wf.Outputs[id] = outParam
 		}
 	}
 
@@ -665,6 +680,9 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 		switch val := v.(type) {
 		case string:
 			step.In[id] = cwl.StepInput{Sources: []string{normalizeSourceRef(val)}}
+		case []any:
+			// List of sources directly (MultipleInputFeatureRequirement shorthand)
+			step.In[id] = cwl.StepInput{Sources: normalizeSourceRefs(val)}
 		case map[string]any:
 			step.In[id] = cwl.StepInput{
 				Sources:      normalizeSourceRefs(val["source"]),
@@ -1202,9 +1220,12 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 	// Convert outputs.
 	for id, out := range wf.Outputs {
 		mw.Outputs = append(mw.Outputs, model.WorkflowOutput{
-			ID:           id,
-			Type:         out.Type,
-			OutputSource: out.OutputSource,
+			ID:            id,
+			Type:          out.Type,
+			OutputSource:  out.OutputSource,
+			OutputSources: out.OutputSources,
+			PickValue:     out.PickValue,
+			LinkMerge:     out.LinkMerge,
 		})
 	}
 	sort.Slice(mw.Outputs, func(i, j int) bool {

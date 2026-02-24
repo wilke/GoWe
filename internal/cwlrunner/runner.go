@@ -17,6 +17,7 @@ import (
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
 	"gopkg.in/yaml.v3"
@@ -483,6 +484,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 		}
 
 		// Handle scatter if present.
+		// Note: 'when' condition is evaluated per-iteration inside executeScatter.
 		if len(step.Scatter) > 0 {
 			outputs, err := r.executeScatter(ctx, graph, tool, step, stepInputs, evaluator)
 			if err != nil {
@@ -490,7 +492,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 			}
 			stepOutputs[stepID] = outputs
 		} else {
-			// Handle conditional execution.
+			// Handle conditional execution for non-scattered steps.
 			if step.When != "" {
 				evalCtx := cwlexpr.NewContext(stepInputs)
 				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
@@ -513,7 +515,10 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	}
 
 	// Collect workflow outputs (pass inputs for passthrough workflows).
-	workflowOutputs := collectWorkflowOutputs(graph.Workflow, mergedInputs, stepOutputs)
+	workflowOutputs, err := collectWorkflowOutputs(graph.Workflow, mergedInputs, stepOutputs)
+	if err != nil {
+		return fmt.Errorf("collect outputs: %w", err)
+	}
 	return r.writeOutputs(workflowOutputs, w)
 }
 
@@ -970,12 +975,46 @@ func applyLoadContents(value any, cwlDir string) any {
 }
 
 // collectWorkflowOutputs collects outputs from completed steps or passthrough from inputs.
-func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, stepOutputs map[string]map[string]any) map[string]any {
+// Supports multiple sources with linkMerge and pickValue for conditional workflows.
+// Uses shared cwloutput package for linkMerge and pickValue logic.
+func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, stepOutputs map[string]map[string]any) (map[string]any, error) {
 	outputs := make(map[string]any)
 	for outputID, output := range wf.Outputs {
-		outputs[outputID] = resolveSource(output.OutputSource, workflowInputs, stepOutputs)
+		// Collect all sources.
+		var sources []string
+		if output.OutputSource != "" {
+			sources = []string{output.OutputSource}
+		} else {
+			sources = output.OutputSources
+		}
+
+		// Resolve all source values.
+		var values []any
+		for _, src := range sources {
+			values = append(values, resolveSource(src, workflowInputs, stepOutputs))
+		}
+
+		// Apply linkMerge if multiple sources.
+		if len(sources) > 1 {
+			values = cwloutput.ApplyLinkMerge(values, output.LinkMerge)
+		}
+
+		// Handle scatter outputs with pickValue.
+		// If single source is an array (from scatter), apply pickValue to array elements.
+		if len(sources) == 1 && output.PickValue != "" {
+			if arr, ok := values[0].([]any); ok {
+				values = arr
+			}
+		}
+
+		// Apply pickValue using shared package.
+		result, err := cwloutput.ApplyPickValue(values, output.PickValue)
+		if err != nil {
+			return nil, fmt.Errorf("output %s: %w", outputID, err)
+		}
+		outputs[outputID] = result
 	}
-	return outputs
+	return outputs, nil
 }
 
 // extractExpressionLib extracts the expression library from requirements.

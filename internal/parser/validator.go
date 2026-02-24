@@ -151,6 +151,12 @@ func (v *Validator) validateSources(graph *cwl.GraphDocument) []model.FieldError
 	return errs
 }
 
+// isArrayType checks if a CWL type string represents an array type.
+// Matches patterns like "File[]", "string[]", "int[]", etc.
+func isArrayType(typ string) bool {
+	return strings.HasSuffix(typ, "[]")
+}
+
 func (v *Validator) validateOutputSources(graph *cwl.GraphDocument) []model.FieldError {
 	var errs []model.FieldError
 	wf := graph.Workflow
@@ -171,17 +177,33 @@ func (v *Validator) validateOutputSources(graph *cwl.GraphDocument) []model.Fiel
 	}
 
 	for id, out := range wf.Outputs {
-		if out.OutputSource == "" {
+		// Collect all sources to validate (single or multiple).
+		var sources []string
+		if out.OutputSource != "" {
+			sources = []string{out.OutputSource}
+		} else if len(out.OutputSources) > 0 {
+			sources = out.OutputSources
+		} else {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("outputs.%s.outputSource", id),
 				Message: fmt.Sprintf("output %q is missing outputSource", id),
 			})
 			continue
 		}
-		if !validSources[out.OutputSource] {
+		// Validate each source.
+		for _, source := range sources {
+			if !validSources[source] {
+				errs = append(errs, model.FieldError{
+					Field:   fmt.Sprintf("outputs.%s.outputSource", id),
+					Message: fmt.Sprintf("outputSource %q does not match any step output or workflow input", source),
+				})
+			}
+		}
+		// Validate pickValue: all_non_null requires array output type.
+		if out.PickValue == "all_non_null" && !isArrayType(out.Type) {
 			errs = append(errs, model.FieldError{
-				Field:   fmt.Sprintf("outputs.%s.outputSource", id),
-				Message: fmt.Sprintf("outputSource %q does not match any step output or workflow input", out.OutputSource),
+				Field:   fmt.Sprintf("outputs.%s.pickValue", id),
+				Message: fmt.Sprintf("pickValue 'all_non_null' requires array output type, got %q", out.Type),
 			})
 		}
 	}
