@@ -322,6 +322,16 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 		workDir = absWorkDir
 	}
 
+	// Ensure work directory exists for staging.
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return nil, fmt.Errorf("create work dir: %w", err)
+	}
+
+	// Stage files from InitialWorkDirRequirement.
+	if err := stageInitialWorkDir(tool, mergedInputs, workDir, expressionLib); err != nil {
+		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
+	}
+
 	// Build runtime context using the actual work directory.
 	runtime := buildRuntimeContext(tool, workDir)
 
@@ -841,6 +851,83 @@ func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexp
 		// Update inputsCtx so later expressions see updated values.
 		inputsCtx[inputID] = evaluated
 	}
+	return nil
+}
+
+// stageInitialWorkDir stages files from InitialWorkDirRequirement into the work directory.
+// Supports Dirent entries with entryname and entry (inline content or expressions).
+func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workDir string, expressionLib []string) error {
+	reqRaw, ok := tool.Requirements["InitialWorkDirRequirement"]
+	if !ok {
+		return nil
+	}
+
+	reqMap, ok := reqRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	listingRaw, ok := reqMap["listing"]
+	if !ok {
+		return nil
+	}
+
+	listing, ok := listingRaw.([]any)
+	if !ok {
+		return nil
+	}
+
+	evaluator := cwlexpr.NewEvaluator(expressionLib)
+
+	for _, item := range listing {
+		dirent, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		entryname, _ := dirent["entryname"].(string)
+		entryRaw := dirent["entry"]
+
+		if entryname == "" || entryRaw == nil {
+			continue
+		}
+
+		// Evaluate entryname if it's an expression.
+		if strings.Contains(entryname, "$(") || strings.Contains(entryname, "${") {
+			ctx := cwlexpr.NewContext(inputs)
+			evaluated, err := evaluator.Evaluate(entryname, ctx)
+			if err != nil {
+				return fmt.Errorf("evaluate entryname %q: %w", entryname, err)
+			}
+			entryname = fmt.Sprintf("%v", evaluated)
+		}
+
+		// Get entry content as string.
+		var content string
+		switch v := entryRaw.(type) {
+		case string:
+			// Evaluate if it contains expressions.
+			if strings.Contains(v, "$(") || strings.Contains(v, "${") {
+				ctx := cwlexpr.NewContext(inputs)
+				evaluated, err := evaluator.Evaluate(v, ctx)
+				if err != nil {
+					return fmt.Errorf("evaluate entry for %q: %w", entryname, err)
+				}
+				content = fmt.Sprintf("%v", evaluated)
+			} else {
+				content = v
+			}
+		default:
+			continue // Skip non-string entries (File/Directory literals not yet supported).
+		}
+
+		// Write to work directory.
+		outPath := filepath.Join(workDir, entryname)
+		if err := os.WriteFile(outPath, []byte(content), 0755); err != nil {
+			return fmt.Errorf("write %q: %w", entryname, err)
+		}
+	}
+
 	return nil
 }
 
