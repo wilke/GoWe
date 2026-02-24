@@ -380,6 +380,14 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 			}
 			if !shouldRun {
 				pe.runner.logger.Info("skipping step (when condition false)", "step", job.stepID)
+				// Record skipped step metrics
+				if pe.runner.metrics != nil && pe.runner.metrics.Enabled() {
+					pe.runner.metrics.RecordStep(StepMetrics{
+						StepID: job.stepID,
+						ToolID: exprTool.ID,
+						Status: "skipped",
+					})
+				}
 				return make(map[string]any), nil
 			}
 		}
@@ -396,9 +404,9 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 	// Handle scatter if present
 	if len(job.step.Scatter) > 0 {
 		if pe.config.Enabled && pe.config.MaxWorkers > 1 {
-			return pe.runner.executeScatterParallel(ctx, pe.graph, tool, job.step, job.inputs, pe.config, pe.evaluator)
+			return pe.runner.executeScatterParallelWithMetrics(ctx, pe.graph, tool, job.step, job.inputs, job.stepID, pe.config, pe.evaluator)
 		}
-		return pe.runner.executeScatter(ctx, pe.graph, tool, job.step, job.inputs, pe.evaluator)
+		return pe.runner.executeScatterWithMetrics(ctx, pe.graph, tool, job.step, job.inputs, job.stepID, pe.evaluator)
 	}
 
 	// Handle conditional execution
@@ -410,6 +418,14 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 		}
 		if !shouldRun {
 			pe.runner.logger.Info("skipping step (when condition false)", "step", job.stepID)
+			// Record skipped step metrics
+			if pe.runner.metrics != nil && pe.runner.metrics.Enabled() {
+				pe.runner.metrics.RecordStep(StepMetrics{
+					StepID: job.stepID,
+					ToolID: tool.ID,
+					Status: "skipped",
+				})
+			}
 			return make(map[string]any), nil
 		}
 	}
@@ -420,7 +436,7 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 	}
 	defer pe.config.Semaphore.Release()
 
-	return pe.runner.executeTool(ctx, pe.graph, tool, job.inputs, false)
+	return pe.runner.executeToolWithStepID(ctx, pe.graph, tool, job.inputs, false, job.stepID)
 }
 
 // newCWLExprEvaluator creates a new expression evaluator with the given library.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/pkg/cwl"
@@ -492,4 +493,47 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		return mergeScatterOutputsNested(outputMaps, tool, dims), nil
 	}
 	return mergeScatterOutputs(outputMaps, tool), nil
+}
+
+// executeScatterParallelWithMetrics executes scatter iterations in parallel and records aggregated metrics.
+func (r *Runner) executeScatterParallelWithMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, stepID string,
+	config ParallelConfig, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
+
+	startTime := time.Now()
+
+	// Count the number of scatter iterations
+	iterations := 0
+	for _, scatterInput := range step.Scatter {
+		if val := inputs[scatterInput]; val != nil {
+			if arr, ok := toAnySlice(val); ok {
+				if iterations == 0 || len(arr) < iterations {
+					iterations = len(arr)
+				}
+			}
+		}
+	}
+
+	// Execute the parallel scatter
+	outputs, err := r.executeScatterParallel(ctx, graph, tool, step, inputs, config, evaluator)
+
+	duration := time.Since(startTime)
+
+	// Record metrics for the scatter step
+	if r.metrics != nil && r.metrics.Enabled() {
+		status := "success"
+		if err != nil {
+			status = "failed"
+		}
+		r.metrics.RecordStep(StepMetrics{
+			StepID:     stepID,
+			ToolID:     tool.ID,
+			StartTime:  startTime,
+			Duration:   duration,
+			Iterations: iterations,
+			Status:     status,
+		})
+	}
+
+	return outputs, err
 }
