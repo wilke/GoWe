@@ -803,8 +803,11 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 // The `inputs` context contains the step's resolved inputs (post-scatter for scattered steps).
 // workflowInputs are merged in as well so expressions can reference any workflow input.
 // `self` is set to the pre-valueFrom value of the current input.
+// Per CWL spec, `inputs` provides the source-resolved values (before valueFrom transformation),
+// so all valueFrom expressions see the same snapshot of input values.
 func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexpr.Evaluator, workflowInputs ...map[string]any) error {
 	// Build the inputs context: workflow inputs as base, step inputs override.
+	// This snapshot is used for ALL valueFrom evaluations (not updated between them).
 	inputsCtx := make(map[string]any)
 	if len(workflowInputs) > 0 && workflowInputs[0] != nil {
 		for k, v := range workflowInputs[0] {
@@ -826,8 +829,9 @@ func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexp
 			return fmt.Errorf("input %s valueFrom: %w", inputID, err)
 		}
 		resolved[inputID] = evaluated
-		// Update inputsCtx so later expressions see updated values.
-		inputsCtx[inputID] = evaluated
+		// Note: We intentionally do NOT update inputsCtx here.
+		// Per CWL spec, `inputs` in valueFrom expressions should contain the
+		// source-resolved values (before valueFrom), not transformed values.
 	}
 	return nil
 }
