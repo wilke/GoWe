@@ -1,5 +1,150 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-24 (Conditional Conformance - 46/46 COMPLETE)
+
+### Status: COMPLETE - All 46 conditional tests passing
+
+Improved CWL conditional conformance tests from **0/46 to 46/46 (100%)**.
+
+### Branch: `conditional`
+
+### Key Fixes
+
+| Issue | Tests | Fix |
+|-------|-------|-----|
+| Early `when` check with scatter vars | 19, 20, 22 | Skip early `when` check if expression references scattered variables |
+| Step input array sources | 45, 46 | Handle `[]any` case in step input parsing (multiple sources shorthand) |
+| `all_non_null` validation | 11, 33 | Validate that `pickValue: all_non_null` requires array output type |
+| Complex output types | 20, 42 | Use `serializeCWLType` for workflow output types to handle nested array types |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwlrunner/scatter.go` | Added `whenReferencesScatterVars()` helper, skip early `when` check when condition references scatter variables |
+| `internal/parser/parser.go` | Handle `[]any` step input sources, use `serializeCWLType` for output types |
+| `internal/parser/validator.go` | Added `isArrayType()` helper, validate `all_non_null` requires array output type |
+
+### Verification
+
+```bash
+./scripts/run-conformance.sh conditional
+# All tests passed
+# === All conditional tests passed! ===
+```
+
+---
+
+## Session: 2026-02-24 (step_input Conformance - 20/20 COMPLETE)
+
+### Status: COMPLETE - All 20 step_input tests passing
+
+Improved CWL step_input conformance tests from 10/20 to **20/20 (100%)**.
+
+### Branch: `step_input`
+
+### Commits This Session
+
+1. `9a1b9fb` - fix: handle NaN and Inf values in JSON output serialization
+2. `4736e97` - fix: preserve source-resolved values in valueFrom inputs context
+3. `dcaa31c` - feat: support MultipleInputFeatureRequirement and inline ExpressionTools
+4. `e64b4d6` - chore: remove debug test
+5. `e1f3006` - feat: implement loadContents and fix nested_crossproduct scatter
+
+### Key Fixes
+
+| Issue | Tests | Fix |
+|-------|-------|-----|
+| NaN serialization | Test 1 | `math.IsNaN(val) || math.IsInf(val, 0)` → return nil |
+| valueFrom inputs context | Multiple | Don't update inputsCtx during valueFrom (preserves source values) |
+| Multiple sources | Tests 11,15 | StepInput.Source → Sources []string |
+| Inline ExpressionTools | Tests 11,15 | Parse `run: {class: ExpressionTool, ...}` inline |
+| YAML literal whitespace | Multiple | `strings.TrimSpace(expr)` before checking `${...}` |
+| loadContents | Tests 1,16-19 | Apply loadContents for workflow inputs, step inputs, ExpressionTool inputs |
+| nested_crossproduct | Test 5 | `mergeScatterOutputsNested` with proper nesting structure |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `pkg/cwl/workflow.go` | Added LoadContents to InputParam and StepInput; Source → Sources |
+| `internal/parser/parser.go` | Parse loadContents field, multiple sources, inline ExpressionTools |
+| `internal/parser/validator.go` | Updated for Sources []string |
+| `internal/parser/dag.go` | Updated for Sources []string dependency tracking |
+| `internal/cwlrunner/runner.go` | NaN fix, applyLoadContents, loadContents for workflow/step/ExpressionTool inputs |
+| `internal/cwlrunner/scatter.go` | mergeScatterOutputsNested, nestResults for nested_crossproduct |
+| `internal/cwlexpr/evaluator.go` | TrimSpace for YAML literal blocks |
+
+### Verification
+
+```bash
+./scripts/run-conformance.sh step_input
+# All tests passed
+# === All step_input tests passed! ===
+```
+
+---
+
+## Session: 2026-02-24 (StepInputExpressionRequirement)
+
+### Status: COMPLETE
+
+Implemented StepInputExpressionRequirement support for both cwl-runner and gowe server.
+
+**StepInputExpressionRequirement** allows workflow step inputs to use `valueFrom` expressions that transform the source value before passing it to the tool.
+
+**Files Modified:**
+
+| File | Changes |
+|------|---------|
+| `pkg/cwl/workflow.go` | Added `ValueFrom` field to `StepInput` struct |
+| `pkg/model/workflow.go` | Added `ValueFrom` field to `StepInput` struct |
+| `internal/parser/parser.go` | Parse `valueFrom` from step inputs (lines 636-641), convert to model.StepInput with ValueFrom (line 1169) |
+| `internal/cwlrunner/runner.go` | Updated `resolveStepInputs` to evaluate valueFrom expressions using cwlexpr |
+| `internal/cwlrunner/parallel.go` | Added evaluator to parallelExecutor, use shared evaluator for valueFrom and when expressions |
+| `internal/scheduler/resolve.go` | Added expressionLib parameter, evaluate valueFrom expressions in ResolveTaskInputs |
+| `internal/scheduler/loop.go` | Updated call to ResolveTaskInputs with nil expressionLib |
+| `internal/cwlrunner/runner_test.go` | Added `TestRunner_Execute_ValueFrom` test |
+| `internal/scheduler/resolve_test.go` | Added `TestResolveTaskInputs_ValueFrom` and `TestResolveTaskInputs_ValueFrom_NoSource` tests |
+
+**Example Usage:**
+```yaml
+cwlVersion: v1.2
+class: Workflow
+requirements:
+  StepInputExpressionRequirement: {}
+inputs:
+  prefix: string
+  name: string
+outputs:
+  result:
+    type: File
+    outputSource: greet/output
+steps:
+  greet:
+    run: echo.cwl
+    in:
+      message:
+        source: name
+        valueFrom: $(inputs.prefix + " " + self)  # "Hello World"
+    out: [output]
+```
+
+**Key Implementation Details:**
+- In cwl-runner: `resolveStepInputs` now takes an evaluator and evaluates valueFrom with `inputs` = workflow inputs, `self` = resolved source value
+- In gowe server: `ResolveTaskInputs` takes expressionLib parameter, creates evaluator, evaluates valueFrom similarly
+- Shared evaluators for efficiency (one per workflow execution instead of per-expression)
+- Works with or without source (valueFrom can generate value from scratch if source is empty)
+
+**Tests:**
+- `TestRunner_Execute_ValueFrom` - cwl-runner workflow with valueFrom expression
+- `TestResolveTaskInputs_ValueFrom` - scheduler with source + valueFrom
+- `TestResolveTaskInputs_ValueFrom_NoSource` - scheduler with no source, only valueFrom
+
+All tests pass (77 unit test packages).
+
+---
+
 ## Session: 2026-02-24 (Parallel Execution for cwl-runner)
 
 ### Status: COMPLETE
