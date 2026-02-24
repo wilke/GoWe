@@ -323,7 +323,7 @@ func TestValidate_StepInputNoSourceNoDefault(t *testing.T) {
 	if apiErr == nil {
 		t.Fatal("expected error")
 	}
-	if !hasFieldErrorMsg(apiErr.Details, "no source and no default") {
+	if !hasFieldErrorMsg(apiErr.Details, "no source, no default, and no valueFrom") {
 		t.Errorf("expected no source error, got %v", apiErr.Details)
 	}
 }

@@ -121,10 +121,10 @@ func (v *Validator) validateSources(graph *cwl.GraphDocument) []model.FieldError
 	// Check each step input source.
 	for stepID, step := range wf.Steps {
 		for inID, si := range step.In {
-			if si.Source == "" && si.Default == nil {
+			if si.Source == "" && si.Default == nil && si.ValueFrom == "" {
 				errs = append(errs, model.FieldError{
 					Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
-					Message: fmt.Sprintf("step %q input %q has no source and no default", stepID, inID),
+					Message: fmt.Sprintf("step %q input %q has no source, no default, and no valueFrom", stepID, inID),
 				})
 				continue
 			}

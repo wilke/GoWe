@@ -408,8 +408,13 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	for _, stepID := range dag.Order {
 		step := graph.Workflow.Steps[stepID]
 
-		// Resolve step inputs (including valueFrom expressions).
-		stepInputs, err := resolveStepInputs(step, mergedInputs, stepOutputs, r.cwlDir, evaluator)
+		// For scattered steps, defer valueFrom evaluation to after scatter expansion.
+		// For non-scattered steps, evaluate valueFrom now.
+		var stepEvaluator *cwlexpr.Evaluator
+		if len(step.Scatter) == 0 {
+			stepEvaluator = evaluator
+		}
+		stepInputs, err := resolveStepInputs(step, mergedInputs, stepOutputs, r.cwlDir, stepEvaluator)
 		if err != nil {
 			return fmt.Errorf("step %s: %w", stepID, err)
 		}
@@ -447,7 +452,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 
 		// Handle scatter if present.
 		if len(step.Scatter) > 0 {
-			outputs, err := r.executeScatter(ctx, graph, tool, step, stepInputs)
+			outputs, err := r.executeScatter(ctx, graph, tool, step, stepInputs, evaluator)
 			if err != nil {
 				return fmt.Errorf("step %s: %w", stepID, err)
 			}
@@ -769,28 +774,64 @@ func isURI(s string) bool {
 // resolveStepInputs resolves inputs for a workflow step.
 // cwlDir is used to resolve relative paths in step input defaults.
 // evaluator is optional; if provided, valueFrom expressions will be evaluated.
+// For scattered steps, pass evaluator=nil to defer valueFrom to after scatter expansion,
+// then call evaluateValueFrom on each scattered combination.
 func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs map[string]map[string]any, cwlDir string, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
 	resolved := make(map[string]any)
+
+	// First pass: resolve sources and defaults.
 	for inputID, stepInput := range step.In {
 		value := resolveSource(stepInput.Source, workflowInputs, stepOutputs)
 		if value == nil && stepInput.Default != nil {
 			// Resolve File/Directory objects in defaults relative to CWL directory.
 			value = resolveDefaultValue(stepInput.Default, cwlDir)
 		}
-
-		// Evaluate valueFrom expression if present (StepInputExpressionRequirement).
-		if stepInput.ValueFrom != "" && evaluator != nil {
-			ctx := cwlexpr.NewContext(workflowInputs).WithSelf(value)
-			evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, ctx)
-			if err != nil {
-				return nil, fmt.Errorf("input %s valueFrom: %w", inputID, err)
-			}
-			value = evaluated
-		}
-
 		resolved[inputID] = value
 	}
+
+	// Second pass: evaluate valueFrom expressions with the step's resolved inputs as context.
+	// Per CWL spec, valueFrom has access to `inputs` (the step's own inputs) and `self`
+	// (the resolved source value before transformation).
+	if evaluator != nil {
+		if err := evaluateValueFrom(step, resolved, evaluator, workflowInputs); err != nil {
+			return nil, err
+		}
+	}
+
 	return resolved, nil
+}
+
+// evaluateValueFrom evaluates valueFrom expressions on step inputs.
+// The `inputs` context contains the step's resolved inputs (post-scatter for scattered steps).
+// workflowInputs are merged in as well so expressions can reference any workflow input.
+// `self` is set to the pre-valueFrom value of the current input.
+func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexpr.Evaluator, workflowInputs ...map[string]any) error {
+	// Build the inputs context: workflow inputs as base, step inputs override.
+	inputsCtx := make(map[string]any)
+	if len(workflowInputs) > 0 && workflowInputs[0] != nil {
+		for k, v := range workflowInputs[0] {
+			inputsCtx[k] = v
+		}
+	}
+	for k, v := range resolved {
+		inputsCtx[k] = v
+	}
+
+	for inputID, stepInput := range step.In {
+		if stepInput.ValueFrom == "" {
+			continue
+		}
+		self := resolved[inputID]
+		ctx := cwlexpr.NewContext(inputsCtx).WithSelf(self)
+		evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, ctx)
+		if err != nil {
+			return fmt.Errorf("input %s valueFrom: %w", inputID, err)
+		}
+		resolved[inputID] = evaluated
+		// Update inputsCtx so later expressions see updated values.
+		inputsCtx[inputID] = evaluated
+	}
+	return nil
 }
 
 // resolveSource resolves a source reference to its value.

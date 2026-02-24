@@ -313,7 +313,12 @@ func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error)
 func (pe *parallelExecutor) createStepJob(stepID string) (stepJob, error) {
 	step := pe.graph.Workflow.Steps[stepID]
 	stepOutputs := pe.getStepOutputs()
-	stepInputs, err := resolveStepInputs(step, pe.workflowInputs, stepOutputs, pe.runner.cwlDir, pe.evaluator)
+	// For scattered steps, defer valueFrom evaluation to after scatter expansion.
+	var stepEvaluator *cwlexpr.Evaluator
+	if len(step.Scatter) == 0 {
+		stepEvaluator = pe.evaluator
+	}
+	stepInputs, err := resolveStepInputs(step, pe.workflowInputs, stepOutputs, pe.runner.cwlDir, stepEvaluator)
 	if err != nil {
 		return stepJob{}, fmt.Errorf("step %s: %w", stepID, err)
 	}
@@ -387,9 +392,9 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 	// Handle scatter if present
 	if len(job.step.Scatter) > 0 {
 		if pe.config.Enabled && pe.config.MaxWorkers > 1 {
-			return pe.runner.executeScatterParallel(ctx, pe.graph, tool, job.step, job.inputs, pe.config)
+			return pe.runner.executeScatterParallel(ctx, pe.graph, tool, job.step, job.inputs, pe.config, pe.evaluator)
 		}
-		return pe.runner.executeScatter(ctx, pe.graph, tool, job.step, job.inputs)
+		return pe.runner.executeScatter(ctx, pe.graph, tool, job.step, job.inputs, pe.evaluator)
 	}
 
 	// Handle conditional execution

@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/pkg/cwl"
 )
 
+// hasValueFrom returns true if any step input has a valueFrom expression.
+func hasValueFrom(step cwl.Step) bool {
+	for _, si := range step.In {
+		if si.ValueFrom != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // executeScatter executes a step with scatter over input arrays.
-func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any) (map[string]any, error) {
+func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, evaluator ...*cwlexpr.Evaluator) (map[string]any, error) {
 	if len(step.Scatter) == 0 {
 		return nil, fmt.Errorf("no scatter inputs specified")
 	}
@@ -46,6 +57,19 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
 	default:
 		return nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	// Evaluate valueFrom expressions per scatter iteration (after scatter expansion).
+	var eval *cwlexpr.Evaluator
+	if len(evaluator) > 0 {
+		eval = evaluator[0]
+	}
+	if eval != nil && hasValueFrom(step) {
+		for _, combo := range combinations {
+			if err := evaluateValueFrom(step, combo, eval); err != nil {
+				return nil, fmt.Errorf("scatter valueFrom: %w", err)
+			}
+		}
 	}
 
 	// Execute tool for each combination.
@@ -198,7 +222,7 @@ type scatterResult struct {
 // executeScatterParallel executes scatter iterations in parallel.
 func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDocument,
 	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any,
-	config ParallelConfig) (map[string]any, error) {
+	config ParallelConfig, evaluator ...*cwlexpr.Evaluator) (map[string]any, error) {
 
 	if len(step.Scatter) == 0 {
 		return nil, fmt.Errorf("no scatter inputs specified")
@@ -236,6 +260,19 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
 	default:
 		return nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	// Evaluate valueFrom expressions per scatter iteration (after scatter expansion).
+	var eval *cwlexpr.Evaluator
+	if len(evaluator) > 0 {
+		eval = evaluator[0]
+	}
+	if eval != nil && hasValueFrom(step) {
+		for _, combo := range combinations {
+			if err := evaluateValueFrom(step, combo, eval); err != nil {
+				return nil, fmt.Errorf("scatter valueFrom: %w", err)
+			}
+		}
 	}
 
 	n := len(combinations)
