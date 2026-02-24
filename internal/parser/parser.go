@@ -470,9 +470,10 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 				typeVal = serializeCWLType(val["type"])
 			}
 			inp := cwl.InputParam{
-				Type:    typeVal,
-				Doc:     stringField(val, "doc"),
-				Default: val["default"],
+				Type:         typeVal,
+				Doc:          stringField(val, "doc"),
+				Default:      val["default"],
+				LoadContents: boolField(val, "loadContents"),
 			}
 			// Parse secondaryFiles if present at the input level.
 			inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
@@ -666,9 +667,10 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 			step.In[id] = cwl.StepInput{Sources: []string{normalizeSourceRef(val)}}
 		case map[string]any:
 			step.In[id] = cwl.StepInput{
-				Sources:   normalizeSourceRefs(val["source"]),
-				Default:   val["default"],
-				ValueFrom: stringField(val, "valueFrom"),
+				Sources:      normalizeSourceRefs(val["source"]),
+				Default:      val["default"],
+				ValueFrom:    stringField(val, "valueFrom"),
+				LoadContents: boolField(val, "loadContents"),
 			}
 		}
 	}

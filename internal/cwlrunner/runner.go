@@ -346,11 +346,24 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[string]any, graph *cwl.GraphDocument) (map[string]any, error) {
 	r.logger.Info("executing expression tool", "id", tool.ID)
 
+	// Apply loadContents for inputs that have it enabled.
+	processedInputs := make(map[string]any)
+	for inputID, val := range inputs {
+		processedInputs[inputID] = val
+	}
+	for inputID, inputDef := range tool.Inputs {
+		if inputDef.LoadContents {
+			if val, exists := processedInputs[inputID]; exists && val != nil {
+				processedInputs[inputID] = applyLoadContents(val, r.cwlDir)
+			}
+		}
+	}
+
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph)
 
-	// Create expression context with inputs.
-	ctx := cwlexpr.NewContext(inputs)
+	// Create expression context with processed inputs (with contents loaded).
+	ctx := cwlexpr.NewContext(processedInputs)
 	evaluator := cwlexpr.NewEvaluator(expressionLib)
 
 	// Evaluate the expression.
@@ -798,7 +811,17 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 		resolved[inputID] = value
 	}
 
-	// Second pass: evaluate valueFrom expressions with the step's resolved inputs as context.
+	// Apply loadContents for step inputs that have it enabled.
+	// This happens before valueFrom so expressions can access self.contents.
+	for inputID, stepInput := range step.In {
+		if stepInput.LoadContents {
+			if val := resolved[inputID]; val != nil {
+				resolved[inputID] = applyLoadContents(val, cwlDir)
+			}
+		}
+	}
+
+	// Third pass: evaluate valueFrom expressions with the step's resolved inputs as context.
 	// Per CWL spec, valueFrom has access to `inputs` (the step's own inputs) and `self`
 	// (the resolved source value before transformation).
 	if evaluator != nil {
@@ -867,6 +890,65 @@ func resolveSource(source string, workflowInputs map[string]any, stepOutputs map
 
 	// Otherwise it's a workflow input reference.
 	return workflowInputs[source]
+}
+
+// applyLoadContents reads the first 64 KiB of a file and adds it to the contents field.
+// This implements CWL's loadContents feature for File objects.
+func applyLoadContents(value any, cwlDir string) any {
+	switch v := value.(type) {
+	case map[string]any:
+		// Check if this is a File object.
+		if class, ok := v["class"].(string); ok && class == "File" {
+			// Get the file path.
+			path := ""
+			if p, ok := v["path"].(string); ok {
+				path = p
+			} else if p, ok := v["location"].(string); ok {
+				path = p
+			}
+			if path == "" {
+				return value
+			}
+
+			// Handle file:// URLs.
+			if strings.HasPrefix(path, "file://") {
+				path = strings.TrimPrefix(path, "file://")
+			}
+
+			// Make path absolute if needed.
+			if !filepath.IsAbs(path) && cwlDir != "" {
+				path = filepath.Join(cwlDir, path)
+			}
+
+			// Read up to 64 KiB of the file.
+			const maxSize = 64 * 1024
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return value // Return unchanged if we can't read.
+			}
+			if len(data) > maxSize {
+				data = data[:maxSize]
+			}
+
+			// Create a new map with contents field.
+			result := make(map[string]any, len(v)+1)
+			for k, val := range v {
+				result[k] = val
+			}
+			result["contents"] = string(data)
+			return result
+		}
+		return value
+	case []any:
+		// Handle arrays of files.
+		result := make([]any, len(v))
+		for i, item := range v {
+			result[i] = applyLoadContents(item, cwlDir)
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 // collectWorkflowOutputs collects outputs from completed steps or passthrough from inputs.
@@ -1337,6 +1419,15 @@ func mergeWorkflowInputDefaults(wf *cwl.Workflow, inputs map[string]any, cwlDir 
 	for inputID, inputDef := range wf.Inputs {
 		if val, exists := merged[inputID]; exists && val != nil {
 			merged[inputID] = resolveInputSecondaryFiles(val, inputDef, cwlDir)
+		}
+	}
+
+	// Apply loadContents for workflow inputs that have it enabled.
+	for inputID, inputDef := range wf.Inputs {
+		if inputDef.LoadContents {
+			if val, exists := merged[inputID]; exists && val != nil {
+				merged[inputID] = applyLoadContents(val, cwlDir)
+			}
 		}
 	}
 
