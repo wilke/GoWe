@@ -855,7 +855,8 @@ func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexp
 }
 
 // stageInitialWorkDir stages files from InitialWorkDirRequirement into the work directory.
-// Supports Dirent entries with entryname and entry (inline content or expressions).
+// Supports the full CWL v1.2 spec: Dirent entries with entryname/entry/writable,
+// File/Directory objects in listing, expression entries, arrays, and null handling.
 func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workDir string, expressionLib []string) error {
 	reqRaw, ok := tool.Requirements["InitialWorkDirRequirement"]
 	if !ok {
@@ -872,75 +873,442 @@ func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workD
 		return nil
 	}
 
-	listing, ok := listingRaw.([]any)
-	if !ok {
+	evaluator := cwlexpr.NewEvaluator(expressionLib)
+
+	// The listing can itself be an expression (e.g., "$(inputs.indir.listing)").
+	listing, err := resolveIWDListing(listingRaw, inputs, evaluator)
+	if err != nil {
+		return err
+	}
+
+	for _, item := range listing {
+		if item == nil {
+			continue
+		}
+		if err := stageIWDItem(item, inputs, workDir, evaluator); err != nil {
+			return err
+		}
+	}
+
+	// Update input File paths to reflect staged locations.
+	updateInputPathsForIWD(inputs, workDir)
+
+	return nil
+}
+
+// resolveIWDListing resolves the listing field which can be an array or an expression.
+func resolveIWDListing(listingRaw any, inputs map[string]any, evaluator *cwlexpr.Evaluator) ([]any, error) {
+	switch v := listingRaw.(type) {
+	case []any:
+		return v, nil
+	case string:
+		// listing itself is an expression.
+		if cwlexpr.IsExpression(v) {
+			ctx := cwlexpr.NewContext(inputs)
+			result, err := evaluator.Evaluate(v, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("evaluate listing expression: %w", err)
+			}
+			if arr, ok := result.([]any); ok {
+				return arr, nil
+			}
+			if result == nil {
+				return nil, nil
+			}
+			// Single item.
+			return []any{result}, nil
+		}
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+
+// stageIWDItem stages a single item from the InitialWorkDirRequirement listing.
+// An item can be: a Dirent (map with entry/entryname), a File/Directory object,
+// a string expression that evaluates to File/Directory/array, or null.
+func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator) error {
+	switch v := item.(type) {
+	case map[string]any:
+		// Check if this is a File or Directory object (has "class" field).
+		if class, ok := v["class"].(string); ok {
+			switch class {
+			case "File":
+				return stageIWDFile(v, "", false, workDir)
+			case "Directory":
+				return stageIWDDirectory(v, "", false, workDir)
+			}
+		}
+		// Otherwise treat as Dirent.
+		return stageIWDDirent(v, inputs, workDir, evaluator)
+
+	case string:
+		// A bare expression in listing (e.g., "$(inputs.input_file)").
+		if cwlexpr.IsExpression(v) {
+			ctx := cwlexpr.NewContext(inputs)
+			result, err := evaluator.Evaluate(v, ctx)
+			if err != nil {
+				return fmt.Errorf("evaluate listing item: %w", err)
+			}
+			return stageIWDEvaluatedResult(result, "", false, workDir, inputs, evaluator)
+		}
+		return nil
+
+	default:
+		return nil
+	}
+}
+
+// stageIWDDirent stages a Dirent entry (map with entry, optional entryname and writable).
+func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator) error {
+	entryname, _ := dirent["entryname"].(string)
+	entryRaw := dirent["entry"]
+	writable, _ := dirent["writable"].(bool)
+
+	// entry can be nil (e.g., $(null)).
+	if entryRaw == nil {
 		return nil
 	}
 
-	evaluator := cwlexpr.NewEvaluator(expressionLib)
-
-	for _, item := range listing {
-		dirent, ok := item.(map[string]any)
-		if !ok {
-			continue
+	// Evaluate entryname if it's an expression.
+	if entryname != "" && cwlexpr.IsExpression(entryname) {
+		ctx := cwlexpr.NewContext(inputs)
+		evaluated, err := evaluator.Evaluate(entryname, ctx)
+		if err != nil {
+			return fmt.Errorf("evaluate entryname %q: %w", entryname, err)
 		}
+		entryname = fmt.Sprintf("%v", evaluated)
+	}
 
-		entryname, _ := dirent["entryname"].(string)
-		entryRaw := dirent["entry"]
-
-		if entryname == "" || entryRaw == nil {
-			continue
-		}
-
-		// Evaluate entryname if it's an expression.
-		if strings.Contains(entryname, "$(") || strings.Contains(entryname, "${") {
-			ctx := cwlexpr.NewContext(inputs)
-			evaluated, err := evaluator.Evaluate(entryname, ctx)
-			if err != nil {
-				return fmt.Errorf("evaluate entryname %q: %w", entryname, err)
+	// Evaluate entry.
+	switch v := entryRaw.(type) {
+	case string:
+		return stageIWDStringEntry(v, entryname, writable, inputs, workDir, evaluator)
+	case map[string]any:
+		// File/Directory object literal.
+		if class, ok := v["class"].(string); ok {
+			switch class {
+			case "File":
+				return stageIWDFile(v, entryname, writable, workDir)
+			case "Directory":
+				return stageIWDDirectory(v, entryname, writable, workDir)
 			}
-			entryname = fmt.Sprintf("%v", evaluated)
 		}
+		return nil
+	default:
+		return nil
+	}
+}
 
-		// Get entry content as string.
-		var content string
-		switch v := entryRaw.(type) {
-		case string:
-			// Check for unescaped CWL expressions (not preceded by backslash).
-			// \$( is an escaped literal, $( without backslash is an expression.
-			hasExpr := false
-			for i := 0; i < len(v)-1; i++ {
-				if v[i] == '$' && (v[i+1] == '(' || v[i+1] == '{') {
-					if i == 0 || v[i-1] != '\\' {
-						hasExpr = true
-						break
+// stageIWDStringEntry handles a Dirent entry that is a string (literal or expression).
+func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator) error {
+	if !cwlexpr.IsExpression(entry) {
+		// Pure literal string content — unescape \$( to $(.
+		content := strings.ReplaceAll(entry, "\\$(", "$(")
+		content = strings.ReplaceAll(content, "\\${", "${")
+		if entryname == "" {
+			return nil
+		}
+		return writeIWDFile(workDir, entryname, content)
+	}
+
+	// Check if the entire string is a single expression (no surrounding text).
+	// If so, the result type determines behavior (File object vs string content).
+	trimmed := strings.TrimSpace(entry)
+	isSoleExpr := cwlexpr.IsSoleExpression(trimmed)
+
+	ctx := cwlexpr.NewContext(inputs)
+	evaluated, err := evaluator.Evaluate(entry, ctx)
+	if err != nil {
+		return fmt.Errorf("evaluate entry for %q: %w", entryname, err)
+	}
+
+	if isSoleExpr {
+		// Single expression — result could be File, Directory, array, string, number, etc.
+		return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator)
+	}
+
+	// String interpolation — result is always string content.
+	content := iwdResultToString(evaluated)
+	if entryname == "" {
+		return nil
+	}
+	return writeIWDFile(workDir, entryname, content)
+}
+
+// stageIWDEvaluatedResult stages the result of evaluating an expression.
+// The result can be a File, Directory, array, string, number, null, etc.
+func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDir string, inputs map[string]any, evaluator *cwlexpr.Evaluator) error {
+	if result == nil {
+		return nil
+	}
+
+	switch v := result.(type) {
+	case map[string]any:
+		if class, ok := v["class"].(string); ok {
+			switch class {
+			case "File":
+				return stageIWDFile(v, entryname, writable, workDir)
+			case "Directory":
+				return stageIWDDirectory(v, entryname, writable, workDir)
+			}
+		}
+		// Object that isn't File/Directory — serialize to JSON.
+		if entryname != "" {
+			return writeIWDFile(workDir, entryname, iwdResultToString(v))
+		}
+		return nil
+
+	case []any:
+		// Could be an array of File/Directory objects or a JSON array to serialize.
+		if len(v) > 0 {
+			if first, ok := v[0].(map[string]any); ok {
+				if class, ok := first["class"].(string); ok && (class == "File" || class == "Directory") {
+					// Array of File/Directory objects — stage each.
+					for _, item := range v {
+						if err := stageIWDEvaluatedResult(item, "", writable, workDir, inputs, evaluator); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+			}
+		}
+		// JSON array — serialize.
+		if entryname != "" {
+			return writeIWDFile(workDir, entryname, iwdResultToString(v))
+		}
+		return nil
+
+	case string:
+		if entryname != "" {
+			return writeIWDFile(workDir, entryname, v)
+		}
+		return nil
+
+	default:
+		// Number, bool, etc.
+		if entryname != "" {
+			return writeIWDFile(workDir, entryname, iwdResultToString(v))
+		}
+		return nil
+	}
+}
+
+// stageIWDFile stages a CWL File object into the work directory.
+func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string) error {
+	// Get source path.
+	srcPath := ""
+	if p, ok := fileObj["path"].(string); ok {
+		srcPath = p
+	} else if loc, ok := fileObj["location"].(string); ok {
+		srcPath = strings.TrimPrefix(loc, "file://")
+	}
+
+	if srcPath == "" {
+		return nil
+	}
+
+	// Determine destination name.
+	destName := entryname
+	if destName == "" {
+		if bn, ok := fileObj["basename"].(string); ok {
+			destName = bn
+		} else {
+			destName = filepath.Base(srcPath)
+		}
+	}
+
+	destPath := filepath.Join(workDir, destName)
+
+	// Create parent directory if needed (for nested paths).
+	if dir := filepath.Dir(destPath); dir != workDir {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create parent dir for %q: %w", destName, err)
+		}
+	}
+
+	if writable {
+		return copyFile(srcPath, destPath)
+	}
+	// Non-writable: symlink.
+	absSrc, err := filepath.Abs(srcPath)
+	if err != nil {
+		absSrc = srcPath
+	}
+	return os.Symlink(absSrc, destPath)
+}
+
+// stageIWDDirectory stages a CWL Directory object into the work directory.
+func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, workDir string) error {
+	// Get source path.
+	srcPath := ""
+	if p, ok := dirObj["path"].(string); ok {
+		srcPath = p
+	} else if loc, ok := dirObj["location"].(string); ok {
+		srcPath = strings.TrimPrefix(loc, "file://")
+	}
+
+	// Determine destination name.
+	destName := entryname
+	if destName == "" {
+		if bn, ok := dirObj["basename"].(string); ok {
+			destName = bn
+		} else if srcPath != "" {
+			destName = filepath.Base(srcPath)
+		}
+	}
+
+	destPath := filepath.Join(workDir, destName)
+
+	// Handle Directory with listing but no source path (synthetic directory).
+	if srcPath == "" {
+		if err := os.MkdirAll(destPath, 0755); err != nil {
+			return fmt.Errorf("create directory %q: %w", destName, err)
+		}
+		// Stage listing contents if present.
+		if listing, ok := dirObj["listing"].([]any); ok {
+			for _, item := range listing {
+				if fileObj, ok := item.(map[string]any); ok {
+					if class, _ := fileObj["class"].(string); class == "File" {
+						if err := stageIWDFile(fileObj, "", writable, destPath); err != nil {
+							return err
+						}
+					} else if class == "Directory" {
+						if err := stageIWDDirectory(fileObj, "", writable, destPath); err != nil {
+							return err
+						}
 					}
 				}
 			}
-			if hasExpr {
-				ctx := cwlexpr.NewContext(inputs)
-				evaluated, err := evaluator.Evaluate(v, ctx)
-				if err != nil {
-					return fmt.Errorf("evaluate entry for %q: %w", entryname, err)
-				}
-				content = fmt.Sprintf("%v", evaluated)
-			} else {
-				// Replace escaped \$( with literal $(
-				content = strings.ReplaceAll(v, "\\$(", "$(")
-				content = strings.ReplaceAll(content, "\\${", "${")
-			}
-		default:
-			continue // Skip non-string entries (File/Directory literals not yet supported).
 		}
+		return nil
+	}
 
-		// Write to work directory.
-		outPath := filepath.Join(workDir, entryname)
-		if err := os.WriteFile(outPath, []byte(content), 0755); err != nil {
-			return fmt.Errorf("write %q: %w", entryname, err)
+	if writable {
+		return copyDir(srcPath, destPath)
+	}
+
+	// Non-writable: symlink.
+	absSrc, err := filepath.Abs(srcPath)
+	if err != nil {
+		absSrc = srcPath
+	}
+	return os.Symlink(absSrc, destPath)
+}
+
+// writeIWDFile writes content to a file in the work directory.
+func writeIWDFile(workDir, name, content string) error {
+	outPath := filepath.Join(workDir, name)
+	// Create parent directory if needed.
+	if dir := filepath.Dir(outPath); dir != workDir {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create parent dir for %q: %w", name, err)
+		}
+	}
+	return os.WriteFile(outPath, []byte(content), 0644)
+}
+
+// iwdResultToString converts a value to its string representation for file content.
+// Per CWL spec: objects and arrays are JSON-serialized, numbers/booleans are stringified.
+func iwdResultToString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case nil:
+		return "null"
+	case float64:
+		// Avoid trailing zeros for integers.
+		if val == float64(int64(val)) {
+			return fmt.Sprintf("%g", val)
+		}
+		return fmt.Sprintf("%v", val)
+	case int64:
+		return fmt.Sprintf("%d", val)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	default:
+		// Arrays and objects: JSON-serialize.
+		data, err := json.Marshal(val)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		return string(data)
+	}
+}
+
+// copyFile copies a file from src to dst with write permissions.
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+	return os.WriteFile(dst, data, 0644)
+}
+
+// copyDir recursively copies a directory tree with write permissions.
+func copyDir(src, dst string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dst, srcInfo.Mode()|0755); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
+}
+
+// updateInputPathsForIWD updates input File objects' paths to reflect staged locations.
+// Per CWL spec, when a File is staged with entryname, inputs.file.path should
+// point to the new location in the working directory.
+func updateInputPathsForIWD(inputs map[string]any, workDir string) {
+	for _, v := range inputs {
+		updateInputPathValue(v, workDir)
+	}
+}
+
+// updateInputPathValue recursively updates paths for staged files.
+func updateInputPathValue(v any, workDir string) {
+	switch val := v.(type) {
+	case map[string]any:
+		if class, ok := val["class"].(string); ok && class == "File" {
+			if bn, ok := val["basename"].(string); ok {
+				stagedPath := filepath.Join(workDir, bn)
+				if _, err := os.Lstat(stagedPath); err == nil {
+					val["path"] = stagedPath
+				}
+			}
+		}
+	case []any:
+		for _, item := range val {
+			updateInputPathValue(item, workDir)
+		}
+	}
 }
 
 // resolveSource resolves a source reference to its value.

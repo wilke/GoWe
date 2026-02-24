@@ -76,9 +76,12 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 		return "", nil
 	}
 
-	// Check if this is a pure literal (no expressions)
+	// Check if this is a pure literal (no unescaped expressions)
 	if !containsExpression(expr) {
-		return expr, nil
+		// Unescape \$( to $( per CWL spec.
+		result := strings.ReplaceAll(expr, "\\$(", "$(")
+		result = strings.ReplaceAll(result, "\\${", "${")
+		return result, nil
 	}
 
 	vm, err := e.setupVM(ctx)
@@ -118,7 +121,10 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 	matches := findExpressions(expr)
 
 	if len(matches) == 0 {
-		return expr, nil
+		// No unescaped expressions found — unescape \$( to $( per CWL spec.
+		result := strings.ReplaceAll(expr, "\\$(", "$(")
+		result = strings.ReplaceAll(result, "\\${", "${")
+		return result, nil
 	}
 
 	// If the entire string is a single expression, return the evaluated value directly
@@ -174,7 +180,10 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 	// Append remaining text
 	result.WriteString(expr[lastEnd:])
 
-	return result.String(), nil
+	// Unescape \$( to $( per CWL spec.
+	out := strings.ReplaceAll(result.String(), "\\$(", "$(")
+	out = strings.ReplaceAll(out, "\\${", "${")
+	return out, nil
 }
 
 // exprMatch represents a matched CWL expression.
@@ -189,7 +198,7 @@ func findExpressions(s string) []exprMatch {
 	var matches []exprMatch
 	i := 0
 	for i < len(s)-1 {
-		if s[i] == '$' && s[i+1] == '(' {
+		if s[i] == '$' && s[i+1] == '(' && (i == 0 || s[i-1] != '\\') {
 			start := i
 			// Find matching closing paren
 			depth := 1
@@ -307,12 +316,63 @@ func validateLengthAccess(vm *goja.Runtime, exprCode string) error {
 
 // containsExpression checks if a string contains CWL expression syntax.
 func containsExpression(s string) bool {
-	return strings.Contains(s, "$(") || strings.HasPrefix(s, "${")
+	if strings.HasPrefix(s, "${") {
+		return true
+	}
+	// Check for unescaped $( — CWL spec says \$( is a literal $(, not an expression.
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == '$' && s[i+1] == '(' {
+			if i == 0 || s[i-1] != '\\' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsExpression returns true if the string is a CWL expression.
 func IsExpression(s string) bool {
 	return containsExpression(s)
+}
+
+// IsSoleExpression returns true if the string is a single CWL expression
+// with no surrounding literal text. For example:
+//   - "$(inputs.x)" → true
+//   - "${return inputs.x}" → true
+//   - "hello $(inputs.x)" → false (has prefix text)
+//   - "$(inputs.x)\n" → false (has trailing text)
+func IsSoleExpression(s string) bool {
+	if strings.HasPrefix(s, "${") {
+		// JS block expression — sole if it ends with } and is balanced.
+		depth := 0
+		for i, c := range s {
+			if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+				if depth == 0 {
+					return i == len(s)-1
+				}
+			}
+		}
+		return false
+	}
+	if strings.HasPrefix(s, "$(") {
+		// Parameter reference — sole if balanced parens close at end.
+		depth := 0
+		for i, c := range s {
+			if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+				if depth == 0 {
+					return i == len(s)-1
+				}
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // toString converts any value to a string representation.
