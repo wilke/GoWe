@@ -265,7 +265,8 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 
 	// Resolve inputs (sets _base_command, _output_globs, and real inputs).
 	// This is still needed for backward compatibility and non-worker executors.
-	if err := ResolveTaskInputs(task, step, sub.Inputs, tasksByStep); err != nil {
+	// Note: expressionLib is nil here; workflow's InlineJavascriptRequirement could be passed for advanced expressions.
+	if err := ResolveTaskInputs(task, step, sub.Inputs, tasksByStep, nil); err != nil {
 		now := time.Now().UTC()
 		task.State = model.TaskStateFailed
 		task.Stderr = err.Error()

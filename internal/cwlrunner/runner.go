@@ -401,12 +401,18 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	// Track outputs from completed steps.
 	stepOutputs := make(map[string]map[string]any)
 
+	// Create evaluator for expressions (valueFrom, when).
+	evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph))
+
 	// Execute steps in topological order.
 	for _, stepID := range dag.Order {
 		step := graph.Workflow.Steps[stepID]
 
-		// Resolve step inputs.
-		stepInputs := resolveStepInputs(step, mergedInputs, stepOutputs, r.cwlDir)
+		// Resolve step inputs (including valueFrom expressions).
+		stepInputs, err := resolveStepInputs(step, mergedInputs, stepOutputs, r.cwlDir, evaluator)
+		if err != nil {
+			return fmt.Errorf("step %s: %w", stepID, err)
+		}
 
 		// Check if this is an ExpressionTool.
 		toolRef := stripHash(step.Run)
@@ -414,7 +420,6 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 			// Handle conditional execution.
 			if step.When != "" {
 				evalCtx := cwlexpr.NewContext(stepInputs)
-				evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph))
 				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
 				if err != nil {
 					return fmt.Errorf("step %s when expression: %w", stepID, err)
@@ -451,7 +456,6 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 			// Handle conditional execution.
 			if step.When != "" {
 				evalCtx := cwlexpr.NewContext(stepInputs)
-				evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph))
 				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
 				if err != nil {
 					return fmt.Errorf("step %s when expression: %w", stepID, err)
@@ -764,7 +768,8 @@ func isURI(s string) bool {
 
 // resolveStepInputs resolves inputs for a workflow step.
 // cwlDir is used to resolve relative paths in step input defaults.
-func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs map[string]map[string]any, cwlDir string) map[string]any {
+// evaluator is optional; if provided, valueFrom expressions will be evaluated.
+func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs map[string]map[string]any, cwlDir string, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
 	resolved := make(map[string]any)
 	for inputID, stepInput := range step.In {
 		value := resolveSource(stepInput.Source, workflowInputs, stepOutputs)
@@ -772,9 +777,20 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 			// Resolve File/Directory objects in defaults relative to CWL directory.
 			value = resolveDefaultValue(stepInput.Default, cwlDir)
 		}
+
+		// Evaluate valueFrom expression if present (StepInputExpressionRequirement).
+		if stepInput.ValueFrom != "" && evaluator != nil {
+			ctx := cwlexpr.NewContext(workflowInputs).WithSelf(value)
+			evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("input %s valueFrom: %w", inputID, err)
+			}
+			value = evaluated
+		}
+
 		resolved[inputID] = value
 	}
-	return resolved
+	return resolved, nil
 }
 
 // resolveSource resolves a source reference to its value.

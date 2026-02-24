@@ -58,8 +58,9 @@ type Step struct {
 
 // StepInput maps a step input to its source.
 type StepInput struct {
-	ID     string `json:"id"`
-	Source string `json:"source"`
+	ID        string `json:"id"`
+	Source    string `json:"source"`
+	ValueFrom string `json:"value_from,omitempty"` // Expression to transform input
 }
 
 // StepHints holds GoWe-specific hints extracted from a CWL step.

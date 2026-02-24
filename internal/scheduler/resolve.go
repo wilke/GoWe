@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -12,20 +13,35 @@ import (
 // against either the submission-level workflow inputs or the outputs of upstream
 // tasks. It also injects reserved keys (_base_command, _output_globs) from the
 // step's inline tool definition when present.
+//
+// If expressionLib is provided and a step input has a valueFrom expression
+// (StepInputExpressionRequirement), it will be evaluated with `self` set to
+// the resolved source value and `inputs` set to the workflow inputs.
 func ResolveTaskInputs(
 	task *model.Task,
 	step *model.Step,
 	submissionInputs map[string]any,
 	tasksByStepID map[string]*model.Task,
+	expressionLib []string,
 ) error {
 	resolved := make(map[string]any, len(step.In))
 
-	for _, si := range step.In {
-		if si.Source == "" {
-			continue
-		}
+	// Create evaluator for valueFrom expressions if we have an expression library.
+	var evaluator *cwlexpr.Evaluator
+	if len(expressionLib) > 0 {
+		evaluator = cwlexpr.NewEvaluator(expressionLib)
+	} else {
+		// Create evaluator without library for basic expression support.
+		evaluator = cwlexpr.NewEvaluator(nil)
+	}
 
-		if strings.Contains(si.Source, "/") {
+	for _, si := range step.In {
+		var val any
+		var hasSource bool
+
+		if si.Source == "" {
+			hasSource = false
+		} else if strings.Contains(si.Source, "/") {
 			// Upstream task output: "stepID/outputID"
 			parts := strings.SplitN(si.Source, "/", 2)
 			stepID, outputID := parts[0], parts[1]
@@ -35,7 +51,7 @@ func ResolveTaskInputs(
 				return fmt.Errorf("resolve: upstream step %q not found for input %q", stepID, si.ID)
 			}
 
-			val, ok := depTask.Outputs[outputID]
+			val, ok = depTask.Outputs[outputID]
 			if !ok {
 				// Tolerate missing outputs on SUCCESS tasks with no output
 				// mapping (e.g. BV-BRC tasks that write to workspace, not
@@ -47,17 +63,35 @@ func ResolveTaskInputs(
 				}
 				return fmt.Errorf("resolve: output %q not found on step %q for input %q", outputID, stepID, si.ID)
 			}
-
-			resolved[si.ID] = val
+			hasSource = true
 		} else {
 			// Workflow-level input
-			val, ok := submissionInputs[si.Source]
+			var ok bool
+			val, ok = submissionInputs[si.Source]
 			if !ok {
 				return fmt.Errorf("resolve: workflow input %q not found for input %q", si.Source, si.ID)
 			}
-
-			resolved[si.ID] = val
+			hasSource = true
 		}
+
+		// Evaluate valueFrom expression if present (StepInputExpressionRequirement).
+		if si.ValueFrom != "" {
+			// Per CWL spec: `inputs` contains workflow inputs, `self` is the resolved source value.
+			ctx := cwlexpr.NewContext(submissionInputs)
+			if hasSource {
+				ctx = ctx.WithSelf(val)
+			}
+			evaluated, err := evaluator.Evaluate(si.ValueFrom, ctx)
+			if err != nil {
+				return fmt.Errorf("resolve: step %q input %q valueFrom: %w", step.ID, si.ID, err)
+			}
+			val = evaluated
+		} else if !hasSource {
+			// No source and no valueFrom - skip this input.
+			continue
+		}
+
+		resolved[si.ID] = val
 	}
 
 	// Inject reserved keys from the inline tool definition.

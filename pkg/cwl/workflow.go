@@ -51,8 +51,9 @@ type Step struct {
 // StepInput is a normalized CWL step input.
 // Handles both shorthand ("read1: reads_r1") and expanded form.
 type StepInput struct {
-	Source  string
-	Default any
+	Source    string
+	Default   any
+	ValueFrom string // Expression to transform input (requires StepInputExpressionRequirement)
 }
 
 // GoWeHint holds GoWe-specific hints extracted from CWL hints.

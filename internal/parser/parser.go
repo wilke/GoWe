@@ -635,8 +635,9 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 			step.In[id] = cwl.StepInput{Source: normalizeSourceRef(val)}
 		case map[string]any:
 			step.In[id] = cwl.StepInput{
-				Source:  normalizeSourceRef(stringField(val, "source")),
-				Default: val["default"],
+				Source:    normalizeSourceRef(stringField(val, "source")),
+				Default:   val["default"],
+				ValueFrom: stringField(val, "valueFrom"),
 			}
 		}
 	}
@@ -1166,8 +1167,9 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 		// Convert step inputs.
 		for inID, si := range step.In {
 			ms.In = append(ms.In, model.StepInput{
-				ID:     inID,
-				Source: si.Source,
+				ID:        inID,
+				Source:    si.Source,
+				ValueFrom: si.ValueFrom,
 			})
 		}
 		sort.Slice(ms.In, func(i, j int) bool {

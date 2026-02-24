@@ -16,7 +16,7 @@ func TestResolveTaskInputs_WorkflowInput(t *testing.T) {
 	}
 	subInputs := map[string]any{"msg": "hello"}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := task.Inputs["message"]; got != "hello" {
@@ -43,7 +43,7 @@ func TestResolveTaskInputs_UpstreamOutput(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, tasksByStepID); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, tasksByStepID, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := task.Inputs["input_file"]; got != "/path/to/file" {
@@ -67,7 +67,7 @@ func TestResolveTaskInputs_BaseCommandAndGlobs(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func TestResolveTaskInputs_DockerImage(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestResolveTaskInputs_NoDockerImageWithoutHints(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestResolveTaskInputs_MissingWorkflowInput(t *testing.T) {
 		},
 	}
 
-	err := ResolveTaskInputs(task, step, map[string]any{}, nil)
+	err := ResolveTaskInputs(task, step, map[string]any{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing workflow input, got nil")
 	}
@@ -189,7 +189,7 @@ func TestResolveTaskInputs_MissingUpstreamOutput(t *testing.T) {
 		},
 	}
 
-	err := ResolveTaskInputs(task, step, nil, tasksByStepID)
+	err := ResolveTaskInputs(task, step, nil, tasksByStepID, nil)
 	if err == nil {
 		t.Fatal("expected error for missing upstream output, got nil")
 	}
@@ -204,7 +204,7 @@ func TestResolveTaskInputs_EmptySource(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, map[string]any{}, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, map[string]any{}, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, exists := task.Inputs["optional_param"]; exists {
@@ -279,7 +279,7 @@ func TestResolveTaskInputs_BVBRCAppID(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -303,7 +303,7 @@ func TestResolveTaskInputs_NoBVBRCAppIDWithoutHints(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -333,7 +333,7 @@ func TestResolveTaskInputs_MissingUpstreamOutput_SuccessEmptyOutputs(t *testing.
 	}
 	subInputs := map[string]any{"sleep_seconds": 5}
 
-	if err := ResolveTaskInputs(task, step, subInputs, tasksByStepID); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, tasksByStepID, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// trigger should be nil (tolerated missing output)
@@ -366,7 +366,7 @@ func TestResolveTaskInputs_MissingUpstreamOutput_NilOutputs(t *testing.T) {
 		},
 	}
 
-	if err := ResolveTaskInputs(task, step, nil, tasksByStepID); err != nil {
+	if err := ResolveTaskInputs(task, step, nil, tasksByStepID, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if val, exists := task.Inputs["trigger"]; !exists {
@@ -397,7 +397,7 @@ func TestResolveTaskInputs_NormalizeDirectory_BareStringBVBRC(t *testing.T) {
 	}
 	subInputs := map[string]any{"out_dir": "/awilke@bvbrc/home/gowe-test"}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -435,7 +435,7 @@ func TestResolveTaskInputs_NormalizeDirectory_BareStringDocker(t *testing.T) {
 	}
 	subInputs := map[string]any{"out_dir": "/tmp/output"}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -472,7 +472,7 @@ func TestResolveTaskInputs_NormalizeDirectory_ExplicitScheme(t *testing.T) {
 	}
 	subInputs := map[string]any{"out_dir": "ws:///awilke@bvbrc/home/gowe-test"}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -504,7 +504,7 @@ func TestResolveTaskInputs_NormalizeDirectory_MapPassthrough(t *testing.T) {
 	}
 	subInputs := map[string]any{"out_dir": dirObj}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -535,7 +535,7 @@ func TestResolveTaskInputs_NormalizeDirectory_NilPassthrough(t *testing.T) {
 	}
 	subInputs := map[string]any{"out_dir": nil}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -562,7 +562,7 @@ func TestResolveTaskInputs_NormalizeDirectory_NonDirectoryUnchanged(t *testing.T
 	}
 	subInputs := map[string]any{"user_name": "alice"}
 
-	if err := ResolveTaskInputs(task, step, subInputs, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -592,5 +592,65 @@ func TestBuildTasksByStepID(t *testing.T) {
 		if got.ID != task.ID {
 			t.Errorf("m[%q].ID = %q, want %q", task.StepID, got.ID, task.ID)
 		}
+	}
+}
+
+func TestResolveTaskInputs_ValueFrom(t *testing.T) {
+	task := &model.Task{ID: "task_1", StepID: "greet"}
+	step := &model.Step{
+		ID: "greet",
+		In: []model.StepInput{
+			{
+				ID:        "message",
+				Source:    "name",
+				ValueFrom: "$(inputs.prefix + ' ' + self)",
+			},
+		},
+	}
+	subInputs := map[string]any{
+		"prefix": "Hello",
+		"name":   "World",
+	}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := task.Inputs["message"]; got != "Hello World" {
+		t.Errorf("Inputs[\"message\"] = %v, want \"Hello World\"", got)
+	}
+}
+
+func TestResolveTaskInputs_ValueFrom_NoSource(t *testing.T) {
+	// Test valueFrom without source (generates value purely from expression)
+	task := &model.Task{ID: "task_1", StepID: "compute"}
+	step := &model.Step{
+		ID: "compute",
+		In: []model.StepInput{
+			{
+				ID:        "computed_value",
+				Source:    "",
+				ValueFrom: "$(inputs.x * 2)",
+			},
+		},
+	}
+	subInputs := map[string]any{
+		"x": 21,
+	}
+
+	if err := ResolveTaskInputs(task, step, subInputs, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expression evaluates to 42 (may be int64 or float64 depending on JS engine)
+	var gotValue int64
+	switch v := task.Inputs["computed_value"].(type) {
+	case int64:
+		gotValue = v
+	case float64:
+		gotValue = int64(v)
+	default:
+		t.Fatalf("Inputs[\"computed_value\"] = %T (%v), want numeric type", task.Inputs["computed_value"], task.Inputs["computed_value"])
+	}
+	if gotValue != 42 {
+		t.Errorf("Inputs[\"computed_value\"] = %v, want 42", gotValue)
 	}
 }

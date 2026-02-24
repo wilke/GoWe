@@ -55,6 +55,7 @@ type parallelExecutor struct {
 	dag        *parser.DAGResult
 	config     ParallelConfig
 	workflowInputs map[string]any
+	evaluator  *cwlexpr.Evaluator // For valueFrom and when expressions
 
 	// Step state tracking
 	mu          sync.RWMutex
@@ -73,6 +74,7 @@ func newParallelExecutor(r *Runner, graph *cwl.GraphDocument, dag *parser.DAGRes
 		dag:            dag,
 		config:         config,
 		workflowInputs: workflowInputs,
+		evaluator:      cwlexpr.NewEvaluator(extractExpressionLib(graph)),
 		stepOutputs:    make(map[string]map[string]any),
 		pending:        make(map[string][]string),
 		dependents:     make(map[string][]string),
@@ -311,7 +313,10 @@ func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error)
 func (pe *parallelExecutor) createStepJob(stepID string) (stepJob, error) {
 	step := pe.graph.Workflow.Steps[stepID]
 	stepOutputs := pe.getStepOutputs()
-	stepInputs := resolveStepInputs(step, pe.workflowInputs, stepOutputs, pe.runner.cwlDir)
+	stepInputs, err := resolveStepInputs(step, pe.workflowInputs, stepOutputs, pe.runner.cwlDir, pe.evaluator)
+	if err != nil {
+		return stepJob{}, fmt.Errorf("step %s: %w", stepID, err)
+	}
 
 	return stepJob{
 		stepID: stepID,
@@ -359,10 +364,8 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 	if exprTool, ok := pe.graph.ExpressionTools[toolRef]; ok {
 		// Handle conditional execution
 		if job.step.When != "" {
-			lib := extractExpressionLib(pe.graph)
 			evalCtx := cwlexpr.NewContext(job.inputs)
-			evaluator := cwlexpr.NewEvaluator(lib)
-			shouldRun, err := evaluator.EvaluateBool(job.step.When, evalCtx)
+			shouldRun, err := pe.evaluator.EvaluateBool(job.step.When, evalCtx)
 			if err != nil {
 				return nil, fmt.Errorf("when expression: %w", err)
 			}
@@ -391,10 +394,8 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 
 	// Handle conditional execution
 	if job.step.When != "" {
-		lib := extractExpressionLib(pe.graph)
 		evalCtx := cwlexpr.NewContext(job.inputs)
-		evaluator := cwlexpr.NewEvaluator(lib)
-		shouldRun, err := evaluator.EvaluateBool(job.step.When, evalCtx)
+		shouldRun, err := pe.evaluator.EvaluateBool(job.step.When, evalCtx)
 		if err != nil {
 			return nil, fmt.Errorf("when expression: %w", err)
 		}

@@ -522,3 +522,85 @@ messages:
 		}
 	}
 }
+
+func TestRunner_Execute_ValueFrom(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := NewRunner(logger)
+	runner.NoContainer = true
+
+	tmpDir := t.TempDir()
+	runner.OutDir = filepath.Join(tmpDir, "output")
+
+	// Create echo tool
+	echoToolContent := `
+cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: echo
+inputs:
+  message:
+    type: string
+    inputBinding:
+      position: 1
+outputs:
+  output:
+    type: stdout
+stdout: message.txt
+`
+
+	// Create a workflow with valueFrom expression (StepInputExpressionRequirement)
+	cwlContent := `
+cwlVersion: v1.2
+class: Workflow
+requirements:
+  StepInputExpressionRequirement: {}
+inputs:
+  prefix:
+    type: string
+  name:
+    type: string
+outputs:
+  result:
+    type: File
+    outputSource: greet/output
+steps:
+  greet:
+    run: echo.cwl
+    in:
+      message:
+        source: name
+        valueFrom: $(inputs.prefix + " " + self)
+    out: [output]
+`
+	jobContent := `
+prefix: "Hello"
+name: "World"
+`
+	echoPath := filepath.Join(tmpDir, "echo.cwl")
+	cwlPath := filepath.Join(tmpDir, "workflow.cwl")
+	jobPath := filepath.Join(tmpDir, "job.yml")
+	if err := os.WriteFile(echoPath, []byte(echoToolContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cwlPath, []byte(cwlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jobPath, []byte(jobContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := context.Background()
+	if err := runner.Execute(ctx, cwlPath, jobPath, &buf); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	// Verify output file exists and has the combined message
+	outputFile := filepath.Join(runner.OutDir, "work_1", "message.txt")
+	content, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+	if !strings.Contains(string(content), "Hello World") {
+		t.Errorf("Output file has wrong content: got %q, want to contain 'Hello World'", string(content))
+	}
+}
