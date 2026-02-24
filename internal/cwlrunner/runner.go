@@ -572,16 +572,8 @@ func buildDAGOutput(graph *cwl.GraphDocument, inputs map[string]any) *DAGOutput 
 			When:    step.When,
 		}
 
-		// Get dependencies from DAG edges.
-		for depID := range dag.Edges {
-			if targets, ok := dag.Edges[depID]; ok {
-				for _, target := range targets {
-					if target == stepID {
-						info.DependsOn = append(info.DependsOn, depID)
-					}
-				}
-			}
-		}
+		// Get dependencies from DAG edges (Edges[stepID] = [deps...]).
+		info.DependsOn = dag.Edges[stepID]
 
 		output.Steps[stepID] = info
 	}

@@ -88,20 +88,13 @@ func newParallelExecutor(r *Runner, graph *cwl.GraphDocument, dag *parser.DAGRes
 
 // initDependencies builds the dependency tracking maps from the DAG.
 func (pe *parallelExecutor) initDependencies() {
-	// For each step, find its dependencies by checking DAG edges
+	// dag.Edges maps stepID -> [steps it depends on].
+	// pending tracks unresolved dependencies; dependents is the reverse map.
 	for _, stepID := range pe.dag.Order {
-		var deps []string
-		// Check all edges to find dependencies (steps that must complete before this one)
-		for sourceID, targets := range pe.dag.Edges {
-			for _, target := range targets {
-				if target == stepID {
-					deps = append(deps, sourceID)
-				}
-			}
-		}
-		pe.pending[stepID] = deps
+		deps := pe.dag.Edges[stepID] // steps that must complete before stepID
+		pe.pending[stepID] = append([]string{}, deps...)
 
-		// Build reverse map (dependents)
+		// Build reverse map: for each dependency, record stepID as a dependent.
 		for _, dep := range deps {
 			pe.dependents[dep] = append(pe.dependents[dep], stepID)
 		}
