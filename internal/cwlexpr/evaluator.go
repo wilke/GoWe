@@ -87,8 +87,10 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 	}
 
 	// Check for JavaScript code block: ${ ... }
-	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
-		return e.evaluateCodeBlock(vm, expr)
+	// Trim whitespace to handle YAML literal blocks (|) which include trailing newlines.
+	trimmed := strings.TrimSpace(expr)
+	if strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}") {
+		return e.evaluateCodeBlock(vm, trimmed)
 	}
 
 	// Handle string with embedded expressions: "prefix_$(inputs.id)_suffix"

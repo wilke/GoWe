@@ -43,20 +43,23 @@ func BuildDAG(wf *cwl.Workflow) (*DAGResult, error) {
 	for stepID, step := range wf.Steps {
 		seen := make(map[string]bool)
 		for _, si := range step.In {
-			if si.Source == "" {
-				continue
-			}
-			if strings.Contains(si.Source, "/") {
-				depID := strings.SplitN(si.Source, "/", 2)[0]
-				if stepIDs[depID] && !seen[depID] && depID != stepID {
-					seen[depID] = true
-					forward[depID] = append(forward[depID], stepID)
-					deps[stepID] = append(deps[stepID], depID)
-					inDegree[stepID]++
+			// Handle multiple sources.
+			for _, source := range si.Sources {
+				if source == "" {
+					continue
 				}
-				// Self-loop: step depends on itself.
-				if depID == stepID {
-					return nil, fmt.Errorf("workflow contains a cycle involving steps: %s", stepID)
+				if strings.Contains(source, "/") {
+					depID := strings.SplitN(source, "/", 2)[0]
+					if stepIDs[depID] && !seen[depID] && depID != stepID {
+						seen[depID] = true
+						forward[depID] = append(forward[depID], stepID)
+						deps[stepID] = append(deps[stepID], depID)
+						inDegree[stepID]++
+					}
+					// Self-loop: step depends on itself.
+					if depID == stepID {
+						return nil, fmt.Errorf("workflow contains a cycle involving steps: %s", stepID)
+					}
 				}
 			}
 		}

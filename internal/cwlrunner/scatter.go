@@ -84,6 +84,14 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 	}
 
 	// Merge results into output arrays.
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		// Calculate dimensions for nested output structure.
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		return mergeScatterOutputsNested(results, tool, dims), nil
+	}
 	return mergeScatterOutputs(results, tool), nil
 }
 
@@ -190,6 +198,61 @@ func copyInputs(inputs map[string]any) map[string]any {
 		result[k] = v
 	}
 	return result
+}
+
+// mergeScatterOutputsNested merges individual outputs into nested arrays for nested_crossproduct.
+// dims contains the size of each scatter dimension, e.g., [2, 2] for two scatter inputs of size 2.
+// Results are structured as nested arrays: [[r0, r1], [r2, r3]] for dims=[2, 2].
+func mergeScatterOutputsNested(results []map[string]any, tool *cwl.CommandLineTool, dims []int) map[string]any {
+	merged := make(map[string]any)
+
+	for outputID := range tool.Outputs {
+		// Build nested array structure.
+		merged[outputID] = nestResults(results, dims, 0, outputID)
+	}
+
+	return merged
+}
+
+// nestResults recursively builds nested arrays from flat results.
+func nestResults(results []map[string]any, dims []int, dimIdx int, outputID string) any {
+	if dimIdx >= len(dims) || len(results) == 0 {
+		return nil
+	}
+
+	outerSize := dims[dimIdx]
+	if dimIdx == len(dims)-1 {
+		// Base case: innermost dimension, return flat array.
+		arr := make([]any, min(outerSize, len(results)))
+		for i := range arr {
+			if results[i] != nil {
+				arr[i] = results[i][outputID]
+			}
+		}
+		return arr
+	}
+
+	// Calculate size of each inner chunk.
+	innerSize := 1
+	for _, d := range dims[dimIdx+1:] {
+		innerSize *= d
+	}
+
+	// Build outer array with nested inner arrays.
+	arr := make([]any, outerSize)
+	for i := 0; i < outerSize; i++ {
+		start := i * innerSize
+		end := start + innerSize
+		if end > len(results) {
+			end = len(results)
+		}
+		if start >= len(results) {
+			break
+		}
+		arr[i] = nestResults(results[start:end], dims, dimIdx+1, outputID)
+	}
+
+	return arr
 }
 
 // mergeScatterOutputs merges individual outputs into arrays.
@@ -363,5 +426,13 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		outputMaps[i] = res.outputs
 	}
 
+	// Apply nested structure for nested_crossproduct.
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		return mergeScatterOutputsNested(outputMaps, tool, dims), nil
+	}
 	return mergeScatterOutputs(outputMaps, tool), nil
 }

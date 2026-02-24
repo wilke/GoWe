@@ -29,7 +29,7 @@ func validGraph() *cwl.GraphDocument {
 			Steps: map[string]cwl.Step{
 				"step1": {
 					Run: "#tool1",
-					In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+					In:  map[string]cwl.StepInput{"x": {Sources: []string{"input1"}}},
 					Out: []string{"out"},
 				},
 			},
@@ -153,7 +153,7 @@ func TestValidate_NoOutputs_Allowed(t *testing.T) {
 	// Also need to remove step output references from the workflow.
 	g.Workflow.Steps["step1"] = cwl.Step{
 		Run: "#tool1",
-		In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+		In:  map[string]cwl.StepInput{"x": {Sources: []string{"input1"}}},
 		Out: []string{},
 	}
 	apiErr := v.Validate(g)
@@ -180,7 +180,7 @@ func TestValidate_StepMissingRun(t *testing.T) {
 	g := validGraph()
 	g.Workflow.Steps["bad_step"] = cwl.Step{
 		Run: "",
-		In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+		In:  map[string]cwl.StepInput{"x": {Sources: []string{"input1"}}},
 		Out: []string{"out"},
 	}
 	apiErr := v.Validate(g)
@@ -197,7 +197,7 @@ func TestValidate_StepNoOutputs_Allowed(t *testing.T) {
 	g := validGraph()
 	g.Workflow.Steps["no_out"] = cwl.Step{
 		Run: "#tool1",
-		In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+		In:  map[string]cwl.StepInput{"x": {Sources: []string{"input1"}}},
 		Out: []string{},
 	}
 	apiErr := v.Validate(g)
@@ -211,7 +211,7 @@ func TestValidate_InvalidSourceRef(t *testing.T) {
 	g := validGraph()
 	g.Workflow.Steps["step1"] = cwl.Step{
 		Run: "#tool1",
-		In:  map[string]cwl.StepInput{"x": {Source: "nonexistent/output"}},
+		In:  map[string]cwl.StepInput{"x": {Sources: []string{"nonexistent/output"}}},
 		Out: []string{"out"},
 	}
 	apiErr := v.Validate(g)
@@ -260,7 +260,7 @@ func TestValidate_ToolRefNotInGraph(t *testing.T) {
 	g := validGraph()
 	g.Workflow.Steps["step1"] = cwl.Step{
 		Run: "#missing-tool",
-		In:  map[string]cwl.StepInput{"x": {Source: "input1"}},
+		In:  map[string]cwl.StepInput{"x": {Sources: []string{"input1"}}},
 		Out: []string{"out"},
 	}
 	apiErr := v.Validate(g)
@@ -288,12 +288,12 @@ func TestValidate_CycleDetected(t *testing.T) {
 			Steps: map[string]cwl.Step{
 				"a": {
 					Run: "#tool1",
-					In:  map[string]cwl.StepInput{"x": {Source: "b/out"}},
+					In:  map[string]cwl.StepInput{"x": {Sources: []string{"b/out"}}},
 					Out: []string{"out"},
 				},
 				"b": {
 					Run: "#tool1",
-					In:  map[string]cwl.StepInput{"x": {Source: "a/out"}},
+					In:  map[string]cwl.StepInput{"x": {Sources: []string{"a/out"}}},
 					Out: []string{"out"},
 				},
 			},
@@ -316,7 +316,7 @@ func TestValidate_StepInputNoSourceNoDefault(t *testing.T) {
 	g := validGraph()
 	g.Workflow.Steps["step1"] = cwl.Step{
 		Run: "#tool1",
-		In:  map[string]cwl.StepInput{"x": {Source: "", Default: nil}},
+		In:  map[string]cwl.StepInput{"x": {Sources: []string{""}, Default: nil}},
 		Out: []string{"out"},
 	}
 	apiErr := v.Validate(g)
@@ -341,7 +341,7 @@ func TestValidate_CommandLineTool_EmptyOutputs(t *testing.T) {
 			Steps: map[string]cwl.Step{
 				"run_tool": {
 					Run: "#tool",
-					In:  map[string]cwl.StepInput{"x": {Source: "x"}},
+					In:  map[string]cwl.StepInput{"x": {Sources: []string{"x"}}},
 					Out: []string{},
 				},
 			},
