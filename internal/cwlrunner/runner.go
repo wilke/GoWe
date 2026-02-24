@@ -483,6 +483,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 		}
 
 		// Handle scatter if present.
+		// Note: 'when' condition is evaluated per-iteration inside executeScatter.
 		if len(step.Scatter) > 0 {
 			outputs, err := r.executeScatter(ctx, graph, tool, step, stepInputs, evaluator)
 			if err != nil {
@@ -490,7 +491,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 			}
 			stepOutputs[stepID] = outputs
 		} else {
-			// Handle conditional execution.
+			// Handle conditional execution for non-scattered steps.
 			if step.When != "" {
 				evalCtx := cwlexpr.NewContext(stepInputs)
 				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
@@ -513,7 +514,10 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	}
 
 	// Collect workflow outputs (pass inputs for passthrough workflows).
-	workflowOutputs := collectWorkflowOutputs(graph.Workflow, mergedInputs, stepOutputs)
+	workflowOutputs, err := collectWorkflowOutputs(graph.Workflow, mergedInputs, stepOutputs)
+	if err != nil {
+		return fmt.Errorf("collect outputs: %w", err)
+	}
 	return r.writeOutputs(workflowOutputs, w)
 }
 
@@ -970,12 +974,121 @@ func applyLoadContents(value any, cwlDir string) any {
 }
 
 // collectWorkflowOutputs collects outputs from completed steps or passthrough from inputs.
-func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, stepOutputs map[string]map[string]any) map[string]any {
+// Supports multiple sources with linkMerge and pickValue for conditional workflows.
+func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, stepOutputs map[string]map[string]any) (map[string]any, error) {
 	outputs := make(map[string]any)
 	for outputID, output := range wf.Outputs {
-		outputs[outputID] = resolveSource(output.OutputSource, workflowInputs, stepOutputs)
+		// Collect all sources.
+		var sources []string
+		if output.OutputSource != "" {
+			sources = []string{output.OutputSource}
+		} else {
+			sources = output.OutputSources
+		}
+
+		// Resolve all source values.
+		var values []any
+		for _, src := range sources {
+			values = append(values, resolveSource(src, workflowInputs, stepOutputs))
+		}
+
+		// Apply linkMerge to flatten arrays if specified.
+		// merge_flattened: concatenate all arrays into one
+		// merge_nested (default): keep arrays separate
+		if output.LinkMerge == "merge_flattened" {
+			var flattened []any
+			for _, v := range values {
+				if arr, ok := v.([]any); ok {
+					flattened = append(flattened, arr...)
+				} else {
+					flattened = append(flattened, v)
+				}
+			}
+			values = flattened
+		}
+
+		// Apply pickValue to filter/select among values.
+		// For scatter outputs with conditionals, apply to individual elements.
+		if output.PickValue != "" {
+			// If values came from link-merged scatter outputs, they're already flattened.
+			// Otherwise, for a single scatter source (array), apply to its elements.
+			if output.LinkMerge != "merge_flattened" && len(values) == 1 {
+				if arr, ok := values[0].([]any); ok {
+					values = arr
+				}
+			}
+		}
+
+		result, err := applyPickValue(values, output.PickValue)
+		if err != nil {
+			return nil, fmt.Errorf("output %s: %w", outputID, err)
+		}
+		outputs[outputID] = result
 	}
-	return outputs
+	return outputs, nil
+}
+
+// applyPickValue applies the pickValue logic to select among multiple source values.
+// pickValue can be: "first_non_null", "the_only_non_null", or "all_non_null".
+// If pickValue is empty and there's only one value, return it directly.
+// Returns an error for conditions that CWL spec requires to fail.
+func applyPickValue(values []any, pickValue string) (any, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	// If no pickValue specified and single source, return it directly.
+	if pickValue == "" {
+		if len(values) == 1 {
+			return values[0], nil
+		}
+		// Multiple values without pickValue - return array.
+		return values, nil
+	}
+
+	switch pickValue {
+	case "first_non_null":
+		// Return the first non-null value.
+		for _, v := range values {
+			if v != nil {
+				return v, nil
+			}
+		}
+		// CWL spec: error if all values are null with first_non_null.
+		return nil, fmt.Errorf("pickValue first_non_null: all sources are null")
+
+	case "the_only_non_null":
+		// Return the only non-null value; error if multiple or none are non-null.
+		var result any
+		count := 0
+		for _, v := range values {
+			if v != nil {
+				result = v
+				count++
+			}
+		}
+		if count == 1 {
+			return result, nil
+		}
+		if count == 0 {
+			return nil, fmt.Errorf("pickValue the_only_non_null: no non-null values")
+		}
+		return nil, fmt.Errorf("pickValue the_only_non_null: multiple non-null values (%d)", count)
+
+	case "all_non_null":
+		// Return array of all non-null values (empty array if all null).
+		result := make([]any, 0)
+		for _, v := range values {
+			if v != nil {
+				result = append(result, v)
+			}
+		}
+		return result, nil
+
+	default:
+		// Unknown pickValue, return first value.
+		return values[0], nil
+	}
 }
 
 // extractExpressionLib extracts the expression library from requirements.

@@ -34,9 +34,12 @@ type InputParam struct {
 
 // OutputParam is a CWL workflow output.
 type OutputParam struct {
-	Type         string
-	OutputSource string
-	Doc          string
+	Type          string
+	OutputSource  string   // Single source (for backwards compatibility)
+	OutputSources []string // Multiple sources (for MultipleInputFeatureRequirement)
+	PickValue     string   // "first_non_null", "the_only_non_null", or "all_non_null"
+	LinkMerge     string   // "merge_nested" (default) or "merge_flattened"
+	Doc           string
 }
 
 // Step is a CWL workflow step.
