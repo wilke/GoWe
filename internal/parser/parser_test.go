@@ -858,23 +858,3 @@ func TestComputeDependsOn(t *testing.T) {
 	}
 }
 
-func TestDebugSumParse(t *testing.T) {
-	p := testParser()
-	data := loadTestdata(t, "cwl-v1.2/tests/sum-wf.cwl")
-	graph, err := p.ParseGraph(data)
-	if err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
-	
-	t.Logf("Workflow: %v", graph.Workflow != nil)
-	t.Logf("Tools: %d", len(graph.Tools))
-	t.Logf("ExpressionTools: %d", len(graph.ExpressionTools))
-	
-	for stepID, step := range graph.Workflow.Steps {
-		t.Logf("Step %s: Run=%s, Out=%v", stepID, step.Run, step.Out)
-	}
-	
-	for toolID := range graph.ExpressionTools {
-		t.Logf("ExprTool: %s", toolID)
-	}
-}
