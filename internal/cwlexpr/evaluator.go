@@ -5,6 +5,7 @@ package cwlexpr
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -90,8 +91,23 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 	}
 
 	// Check for JavaScript code block: ${ ... }
-	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
-		return e.evaluateCodeBlock(vm, expr)
+	if strings.HasPrefix(expr, "${") {
+		// Find the matching closing brace for the code block.
+		if idx := findMatchingBrace(expr); idx >= 0 {
+			if idx == len(expr)-1 {
+				// Sole code block — return typed result.
+				return e.evaluateCodeBlock(vm, expr[:idx+1])
+			}
+			// Code block followed by literal text (e.g., ${...}\n from YAML |).
+			// Evaluate the code block, convert result to string, append rest.
+			codeBlock := expr[:idx+1]
+			remaining := expr[idx+1:]
+			result, err := e.evaluateCodeBlock(vm, codeBlock)
+			if err != nil {
+				return nil, err
+			}
+			return toString(result) + remaining, nil
+		}
 	}
 
 	// Handle string with embedded expressions: "prefix_$(inputs.id)_suffix"
@@ -184,6 +200,26 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 	out := strings.ReplaceAll(result.String(), "\\$(", "$(")
 	out = strings.ReplaceAll(out, "\\${", "${")
 	return out, nil
+}
+
+// findMatchingBrace finds the index of the closing brace for a ${...} code block.
+// Returns -1 if no matching brace is found.
+func findMatchingBrace(s string) int {
+	if !strings.HasPrefix(s, "${") {
+		return -1
+	}
+	depth := 0
+	for i, c := range s {
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // exprMatch represents a matched CWL expression.
@@ -376,7 +412,8 @@ func IsSoleExpression(s string) bool {
 }
 
 // toString converts any value to a string representation.
-// Maps and arrays are converted to JSON format.
+// Maps and arrays are converted to JSON format matching Python's json.dumps()
+// default separators (", " and ": ").
 // nil values become "null" (JSON representation).
 // Floats are formatted without scientific notation.
 func toString(v any) string {
@@ -399,15 +436,56 @@ func toString(v any) string {
 		// Format without scientific notation.
 		return strconv.FormatFloat(val, 'f', -1, 64)
 	case map[string]any, []any:
-		// Convert floats to json.Number before marshaling to avoid scientific notation.
-		converted := convertFloatsForJSON(val)
-		jsonBytes, err := json.Marshal(converted)
-		if err != nil {
-			return fmt.Sprintf("%v", v)
-		}
-		return string(jsonBytes)
+		return JsonDumps(val)
 	default:
 		return fmt.Sprintf("%v", val)
+	}
+}
+
+// JsonDumps serializes a value to JSON matching Python's json.dumps() default
+// format: separators are ", " (comma-space) and ": " (colon-space).
+func JsonDumps(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case string:
+		data, _ := json.Marshal(val)
+		return string(data)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case json.Number:
+		return string(val)
+	case []any:
+		parts := make([]string, len(val))
+		for i, item := range val {
+			parts[i] = JsonDumps(item)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case map[string]any:
+		// Sort keys for deterministic output.
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			keyJSON, _ := json.Marshal(k)
+			parts = append(parts, string(keyJSON)+": "+JsonDumps(val[k]))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	default:
+		data, _ := json.Marshal(v)
+		return string(data)
 	}
 }
 

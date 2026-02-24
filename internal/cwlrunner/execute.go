@@ -73,15 +73,19 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 		stdoutCapture = "cwl.stdout.txt"
 	}
 
-	// Handle stdout - capture to file if specified or needed for output.
+	// Handle stdout - capture to temp file first, then move to workDir after execution.
+	// This prevents the stdout file from appearing in the workDir during execution
+	// (e.g., affecting `find` commands that scan the workDir).
 	var stdoutFile *os.File
+	var stdoutTempPath string
 	if stdoutCapture != "" {
-		stdoutPath := filepath.Join(workDir, stdoutCapture)
 		var err error
-		stdoutFile, err = os.Create(stdoutPath)
+		stdoutFile, err = os.CreateTemp("", "cwl-stdout-*")
 		if err != nil {
-			return nil, fmt.Errorf("create stdout file: %w", err)
+			return nil, fmt.Errorf("create stdout temp file: %w", err)
 		}
+		stdoutTempPath = stdoutFile.Name()
+		defer os.Remove(stdoutTempPath)
 		defer stdoutFile.Close()
 		cmd.Stdout = stdoutFile
 	} else {
@@ -94,15 +98,17 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 		stderrCapture = "cwl.stderr.txt"
 	}
 
-	// Handle stderr - capture to file if specified or needed for output.
+	// Handle stderr - capture to temp file first, then move to workDir after execution.
 	var stderrFile *os.File
+	var stderrTempPath string
 	if stderrCapture != "" {
-		stderrPath := filepath.Join(workDir, stderrCapture)
 		var err error
-		stderrFile, err = os.Create(stderrPath)
+		stderrFile, err = os.CreateTemp("", "cwl-stderr-*")
 		if err != nil {
-			return nil, fmt.Errorf("create stderr file: %w", err)
+			return nil, fmt.Errorf("create stderr temp file: %w", err)
 		}
+		stderrTempPath = stderrFile.Name()
+		defer os.Remove(stderrTempPath)
 		defer stderrFile.Close()
 		cmd.Stderr = stderrFile
 	} else {
@@ -123,6 +129,22 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 		}
 	}
 
+	// Move stdout/stderr from temp files to the workDir after command completion.
+	if stdoutCapture != "" && stdoutTempPath != "" {
+		stdoutFile.Close()
+		stdoutFinalPath := filepath.Join(workDir, stdoutCapture)
+		if err := moveFile(stdoutTempPath, stdoutFinalPath); err != nil {
+			return nil, fmt.Errorf("move stdout file: %w", err)
+		}
+	}
+	if stderrCapture != "" && stderrTempPath != "" {
+		stderrFile.Close()
+		stderrFinalPath := filepath.Join(workDir, stderrCapture)
+		if err := moveFile(stderrTempPath, stderrFinalPath); err != nil {
+			return nil, fmt.Errorf("move stderr file: %w", err)
+		}
+	}
+
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := r.collectOutputs(tool, workDir, inputs, exitCode)
 	if err != nil {
@@ -130,6 +152,22 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 	}
 
 	return outputs, nil
+}
+
+// moveFile moves a file from src to dst, attempting rename first then falling back to copy.
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	// Cross-device fallback: copy then remove.
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
 
 // executeInDockerWithWorkDir executes a tool in a Docker container with the specified work directory.
@@ -644,6 +682,11 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 		collected, err := r.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool, exitCode)
 		if err != nil {
 			return nil, fmt.Errorf("output %s: %w", outputID, err)
+		}
+
+		// Add secondaryFiles to collected output.
+		if len(output.SecondaryFiles) > 0 {
+			collected = r.addSecondaryFilesToOutput(collected, output.SecondaryFiles, workDir)
 		}
 
 		// Apply format to collected File objects.
