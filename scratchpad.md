@@ -1,5 +1,55 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-24 (Issue #50 - Global Concurrency Limit)
+
+### Status: IN PROGRESS - Global semaphore implemented
+
+Fixing issue #50: `-j N` flag should limit total concurrent tool executions, not just DAG steps.
+
+### Branch: `issue/50`
+
+### Problem
+
+The `-j N` flag limited concurrent DAG steps, but scatter iterations ran in parallel independently:
+- 4 steps × 10 scatter iterations = 40 concurrent processes (instead of N)
+
+### Solution
+
+Created a global semaphore shared between DAG step executor and scatter executor:
+
+1. **New `Semaphore` type** (`internal/cwlrunner/semaphore.go`)
+   - Thread-safe counting semaphore with context cancellation support
+   - `Acquire(ctx)` blocks until slot available or context cancelled
+   - `Release()` frees a slot
+   - Nil semaphore allows unlimited concurrency
+
+2. **Updated `ParallelConfig`** to hold shared `*Semaphore`
+
+3. **Updated `executeStep`** (parallel.go)
+   - Non-scatter tool executions acquire semaphore before running
+
+4. **Updated `executeScatterParallel`** (scatter.go)
+   - Uses shared semaphore instead of creating local one
+   - Each scatter iteration acquires from global pool
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwlrunner/semaphore.go` | **NEW** - Global concurrency semaphore |
+| `internal/cwlrunner/semaphore_test.go` | **NEW** - Semaphore unit tests |
+| `internal/cwlrunner/parallel.go` | Added Semaphore to config, acquire in executeStep |
+| `internal/cwlrunner/scatter.go` | Use shared semaphore in executeScatterParallel |
+
+### Tests
+
+- All unit tests pass
+- 84/84 required conformance tests pass
+- 46/46 conditional conformance tests pass
+- 30/42 scatter conformance tests pass (same as before)
+
+---
+
 ## Session: 2026-02-24 (Server Conditional + Code Deduplication)
 
 ### Status: COMPLETE - Shared package created, server conditional support implemented
