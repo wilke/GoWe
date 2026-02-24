@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -512,7 +513,8 @@ func (r *Runner) writeOutputs(outputs map[string]any, w io.Writer) error {
 }
 
 // convertFloatsToNumbers recursively converts float64 values to json.Number
-// to avoid scientific notation in JSON output.
+// to avoid scientific notation in JSON output. NaN and Inf values are converted
+// to null since JSON does not support these special float values.
 func convertFloatsToNumbers(v any) any {
 	switch val := v.(type) {
 	case map[string]any:
@@ -528,6 +530,10 @@ func convertFloatsToNumbers(v any) any {
 		}
 		return result
 	case float64:
+		// NaN and Inf are not valid JSON - convert to null.
+		if math.IsNaN(val) || math.IsInf(val, 0) {
+			return nil
+		}
 		// Format without scientific notation.
 		return json.Number(strconv.FormatFloat(val, 'f', -1, 64))
 	default:
