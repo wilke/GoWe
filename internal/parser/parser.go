@@ -1342,12 +1342,16 @@ func stringField(m map[string]any, key string) string {
 
 // stringSlice safely extracts a []string from a map value.
 // YAML decoder produces []any, not []string.
+// Also handles single string values (e.g., scatter: message).
 func stringSlice(m map[string]any, key string) []string {
 	v, ok := m[key]
 	if !ok {
 		return nil
 	}
 	switch s := v.(type) {
+	case string:
+		// Handle single string value (e.g., scatter: message)
+		return []string{s}
 	case []string:
 		return s
 	case []any:

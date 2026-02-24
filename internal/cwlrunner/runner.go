@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
@@ -32,9 +33,13 @@ type Runner struct {
 	OutputFormat string // "json" or "yaml"
 	ProcessID    string // specific process ID to run from $graph document
 
+	// Parallel execution configuration.
+	Parallel ParallelConfig
+
 	// Internal state.
 	cwlDir     string            // directory of CWL file, for resolving relative paths in defaults
 	stepCount  int               // counter for unique step directories
+	stepMu     sync.Mutex        // protects stepCount for parallel execution
 	namespaces map[string]string // namespace prefix -> URI mappings
 }
 
@@ -45,6 +50,7 @@ func NewRunner(logger *slog.Logger) *Runner {
 		parser:       parser.New(logger),
 		OutDir:       "./cwl-output",
 		OutputFormat: "json",
+		Parallel:     DefaultParallelConfig(),
 	}
 }
 
@@ -294,8 +300,12 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	useDocker := r.ForceDocker || (!r.NoContainer && hasDockerRequirement(tool, graph.Workflow))
 
 	// Get the work directory for this execution (increments stepCount).
+	// Use mutex for thread-safety in parallel execution.
+	r.stepMu.Lock()
 	r.stepCount++
-	workDir := filepath.Join(r.OutDir, fmt.Sprintf("work_%d", r.stepCount))
+	stepNum := r.stepCount
+	r.stepMu.Unlock()
+	workDir := filepath.Join(r.OutDir, fmt.Sprintf("work_%d", stepNum))
 	// Make workDir absolute for use in runtime.outdir expressions.
 	if absWorkDir, err := filepath.Abs(workDir); err == nil {
 		workDir = absWorkDir
@@ -359,7 +369,7 @@ func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[stri
 
 // executeWorkflow executes a workflow.
 func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, inputs map[string]any, w io.Writer) error {
-	r.logger.Info("executing workflow", "id", graph.Workflow.ID)
+	r.logger.Info("executing workflow", "id", graph.Workflow.ID, "parallel", r.Parallel.Enabled)
 
 	// Merge workflow input defaults with provided inputs.
 	mergedInputs := mergeWorkflowInputDefaults(graph.Workflow, inputs, r.cwlDir)
@@ -369,6 +379,24 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 	if err != nil {
 		return fmt.Errorf("build DAG: %w", err)
 	}
+
+	// Use parallel execution if enabled
+	if r.Parallel.Enabled {
+		pe := newParallelExecutor(r, graph, dag, mergedInputs, r.Parallel)
+		workflowOutputs, err := pe.execute(ctx)
+		if err != nil {
+			return err
+		}
+		return r.writeOutputs(workflowOutputs, w)
+	}
+
+	// Sequential execution (original behavior)
+	return r.executeWorkflowSequential(ctx, graph, dag, mergedInputs, w)
+}
+
+// executeWorkflowSequential executes workflow steps sequentially.
+func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.GraphDocument,
+	dag *parser.DAGResult, mergedInputs map[string]any, w io.Writer) error {
 
 	// Track outputs from completed steps.
 	stepOutputs := make(map[string]map[string]any)

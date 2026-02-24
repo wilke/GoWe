@@ -21,6 +21,9 @@ var (
 	outputFormat string
 	verbose      bool
 	quiet        bool
+	parallel     bool
+	maxJobs      int
+	noFailFast   bool
 )
 
 func main() {
@@ -54,6 +57,11 @@ Examples:
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress informational output")
 
+	// Parallel execution flags.
+	rootCmd.PersistentFlags().BoolVar(&parallel, "parallel", false, "Enable parallel execution of independent steps and scatter iterations")
+	rootCmd.PersistentFlags().IntVarP(&maxJobs, "jobs", "j", 0, "Maximum concurrent jobs (default: number of CPUs)")
+	rootCmd.PersistentFlags().BoolVar(&noFailFast, "no-fail-fast", false, "Continue execution after errors (default: fail fast)")
+
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
 	rootCmd.AddCommand(dagCmd())
@@ -81,6 +89,16 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 	r.NoContainer = noContainer
 	r.ForceDocker = forceDocker
 	r.OutputFormat = outputFormat
+
+	// Configure parallel execution.
+	if parallel {
+		r.Parallel.Enabled = true
+		if maxJobs > 0 {
+			r.Parallel.MaxWorkers = maxJobs
+		}
+		r.Parallel.FailFast = !noFailFast
+	}
+
 	return r
 }
 

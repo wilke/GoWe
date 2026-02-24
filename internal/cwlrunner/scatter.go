@@ -3,6 +3,7 @@ package cwlrunner
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/me/gowe/pkg/cwl"
 )
@@ -185,4 +186,145 @@ func mergeScatterOutputs(results []map[string]any, tool *cwl.CommandLineTool) ma
 	}
 
 	return merged
+}
+
+// scatterResult holds the result of a single scatter iteration.
+type scatterResult struct {
+	index   int
+	outputs map[string]any
+	err     error
+}
+
+// executeScatterParallel executes scatter iterations in parallel.
+func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any,
+	config ParallelConfig) (map[string]any, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Determine scatter method
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Generate input combinations
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	n := len(combinations)
+	if n == 0 {
+		return mergeScatterOutputs(nil, tool), nil
+	}
+
+	r.logger.Debug("executing scatter in parallel",
+		"iterations", n,
+		"workers", config.MaxWorkers)
+
+	// Create cancellable context for fail-fast
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Semaphore for bounded parallelism
+	sem := make(chan struct{}, config.MaxWorkers)
+
+	// Results storage (pre-allocated for order preservation)
+	results := make([]scatterResult, n)
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+
+	for i, combo := range combinations {
+		wg.Add(1)
+		go func(idx int, inputsCopy map[string]any) {
+			defer wg.Done()
+
+			// Acquire semaphore slot
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[idx] = scatterResult{index: idx, err: ctx.Err()}
+				return
+			}
+
+			// Check if we should stop due to earlier error
+			select {
+			case <-ctx.Done():
+				results[idx] = scatterResult{index: idx, err: ctx.Err()}
+				return
+			default:
+			}
+
+			r.logger.Debug("scatter iteration start", "index", idx)
+
+			outputs, err := r.executeTool(ctx, graph, tool, inputsCopy, false)
+
+			results[idx] = scatterResult{
+				index:   idx,
+				outputs: outputs,
+				err:     err,
+			}
+
+			if err != nil && config.FailFast {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("scatter iteration %d: %w", idx, err)
+					cancel()
+				})
+			}
+
+			r.logger.Debug("scatter iteration complete", "index", idx, "error", err)
+		}(i, combo)
+	}
+
+	wg.Wait()
+
+	// Check for errors
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// If not fail-fast, check all results for errors
+	if !config.FailFast {
+		for _, res := range results {
+			if res.err != nil {
+				return nil, fmt.Errorf("scatter iteration %d: %w", res.index, res.err)
+			}
+		}
+	}
+
+	// Collect outputs in order
+	outputMaps := make([]map[string]any, n)
+	for i, res := range results {
+		outputMaps[i] = res.outputs
+	}
+
+	return mergeScatterOutputs(outputMaps, tool), nil
 }

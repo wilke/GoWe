@@ -1,5 +1,58 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-24 (Parallel Execution for cwl-runner)
+
+### Status: COMPLETE
+
+Implemented parallel execution for the cwl-runner, allowing independent workflow steps and scatter iterations to run concurrently.
+
+**New Files:**
+- `internal/cwlrunner/parallel.go` - Parallel executor with worker pool and DAG-based scheduling
+
+**Modified Files:**
+- `internal/cwlrunner/runner.go` - Added ParallelConfig, integrated parallel execution
+- `internal/cwlrunner/scatter.go` - Added executeScatterParallel with bounded goroutines
+- `internal/cwlrunner/runner_test.go` - Added parallel execution tests
+- `internal/parser/parser.go` - Fixed stringSlice to handle single string values (scatter bug fix)
+- `cmd/cwl-runner/main.go` - Added --parallel, --jobs, --no-fail-fast flags
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Parallel Workflow Executor                      │
+│                                                                      │
+│  DAG Tracker → Ready Queue (channel) → Worker Pool (N workers)      │
+│       │                                        │                     │
+│       └──────────── Results Collector ◀────────┘                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**CLI Usage:**
+```bash
+cwl-runner --parallel workflow.cwl job.yml           # Use all CPUs
+cwl-runner --parallel --jobs 8 workflow.cwl job.yml  # Limit to 8 concurrent
+cwl-runner --parallel --no-fail-fast workflow.cwl    # Continue on errors
+```
+
+**Key Features:**
+- Worker pool pattern with bounded concurrency
+- DAG-based ready-queue for workflow steps
+- Semaphore-bounded parallel scatter iterations
+- Fail-fast with context cancellation (default)
+- Thread-safe stepCount with mutex for unique work directories
+
+**Bug Fix:**
+- Fixed `stringSlice` in parser to handle single string values (e.g., `scatter: message`)
+- Previously, scatter with single input name returned nil, causing scatter to not execute
+
+**Tests:**
+- TestRunner_Execute_Parallel - Two independent steps
+- TestRunner_Execute_Parallel_Scatter - 4-way scatter with parallel iterations
+- TestRunner_Execute_Sequential_Scatter - Verify sequential scatter still works
+- TestParallelConfig_Defaults - Config defaults
+
+---
+
 ## Session: 2026-02-20 (Work Summary Generation)
 
 ### Status: COMPLETE

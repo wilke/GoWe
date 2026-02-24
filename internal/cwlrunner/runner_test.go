@@ -3,6 +3,7 @@ package cwlrunner
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -246,5 +247,278 @@ func TestResolveInputPaths(t *testing.T) {
 	arrayFile := array[0].(map[string]any)
 	if arrayFile["path"] != "/base/dir/in/array.txt" {
 		t.Errorf("Array file path not resolved: %v", arrayFile["path"])
+	}
+}
+
+func TestRunner_Execute_Parallel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := NewRunner(logger)
+	runner.NoContainer = true
+	runner.Parallel.Enabled = true
+	runner.Parallel.MaxWorkers = 4
+
+	tmpDir := t.TempDir()
+	runner.OutDir = filepath.Join(tmpDir, "output")
+
+	// Create echo tool
+	echoToolContent := `
+cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: echo
+inputs:
+  message:
+    type: string
+    inputBinding:
+      position: 1
+outputs:
+  output:
+    type: stdout
+stdout: message.txt
+`
+
+	// Create a workflow with two independent steps that can run in parallel
+	cwlContent := `
+cwlVersion: v1.2
+class: Workflow
+inputs:
+  msg1:
+    type: string
+  msg2:
+    type: string
+outputs:
+  out1:
+    type: File
+    outputSource: step1/output
+  out2:
+    type: File
+    outputSource: step2/output
+steps:
+  step1:
+    run: echo.cwl
+    in:
+      message: msg1
+    out: [output]
+  step2:
+    run: echo.cwl
+    in:
+      message: msg2
+    out: [output]
+`
+	jobContent := `
+msg1: "Hello from step 1"
+msg2: "Hello from step 2"
+`
+	echoPath := filepath.Join(tmpDir, "echo.cwl")
+	cwlPath := filepath.Join(tmpDir, "workflow.cwl")
+	jobPath := filepath.Join(tmpDir, "job.yml")
+	if err := os.WriteFile(echoPath, []byte(echoToolContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cwlPath, []byte(cwlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jobPath, []byte(jobContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := context.Background()
+	if err := runner.Execute(ctx, cwlPath, jobPath, &buf); err != nil {
+		t.Errorf("Execute() error = %v", err)
+	}
+
+	output := buf.String()
+	// Check that both outputs are present
+	if !strings.Contains(output, "out1") {
+		t.Errorf("Execute() output missing out1: %s", output)
+	}
+	if !strings.Contains(output, "out2") {
+		t.Errorf("Execute() output missing out2: %s", output)
+	}
+}
+
+func TestRunner_Execute_Parallel_Scatter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := NewRunner(logger)
+	runner.NoContainer = true
+	runner.Parallel.Enabled = true
+	runner.Parallel.MaxWorkers = 4
+
+	tmpDir := t.TempDir()
+	runner.OutDir = filepath.Join(tmpDir, "output")
+
+	// Create echo tool
+	echoToolContent := `
+cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: echo
+inputs:
+  message:
+    type: string
+    inputBinding:
+      position: 1
+outputs:
+  output:
+    type: stdout
+stdout: message.txt
+`
+
+	// Create a workflow with scatter
+	cwlContent := `
+cwlVersion: v1.2
+class: Workflow
+inputs:
+  messages:
+    type: string[]
+outputs:
+  outputs:
+    type: File[]
+    outputSource: scatter_step/output
+steps:
+  scatter_step:
+    run: echo.cwl
+    scatter: message
+    in:
+      message: messages
+    out: [output]
+`
+	jobContent := `
+messages:
+  - "Message 1"
+  - "Message 2"
+  - "Message 3"
+  - "Message 4"
+`
+	echoPath := filepath.Join(tmpDir, "echo.cwl")
+	cwlPath := filepath.Join(tmpDir, "scatter.cwl")
+	jobPath := filepath.Join(tmpDir, "job.yml")
+	if err := os.WriteFile(echoPath, []byte(echoToolContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cwlPath, []byte(cwlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jobPath, []byte(jobContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := context.Background()
+	if err := runner.Execute(ctx, cwlPath, jobPath, &buf); err != nil {
+		t.Errorf("Execute() error = %v", err)
+	}
+
+	output := buf.String()
+	// Check that outputs array is present with 4 elements
+	// Each file appears multiple times in JSON (basename, path, location, etc.)
+	// So we check for 4 different work directories instead
+	if !strings.Contains(output, `"outputs": [`) {
+		t.Errorf("Execute() output should have outputs array: %s", output)
+	}
+	// Check we have 4 different work directories (work_1, work_2, work_3, work_4)
+	for i := 1; i <= 4; i++ {
+		workDir := fmt.Sprintf("work_%d", i)
+		if !strings.Contains(output, workDir) {
+			t.Errorf("Execute() output missing %s: %s", workDir, output)
+		}
+	}
+}
+
+func TestParallelConfig_Defaults(t *testing.T) {
+	config := DefaultParallelConfig()
+
+	if config.Enabled {
+		t.Error("Expected Enabled to be false by default")
+	}
+	if config.MaxWorkers < 1 {
+		t.Errorf("Expected MaxWorkers >= 1, got %d", config.MaxWorkers)
+	}
+	if !config.FailFast {
+		t.Error("Expected FailFast to be true by default")
+	}
+}
+
+func TestRunner_Execute_Sequential_Scatter(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	runner := NewRunner(logger)
+	runner.NoContainer = true
+	runner.Parallel.Enabled = false // Explicitly sequential
+
+	tmpDir := t.TempDir()
+	runner.OutDir = filepath.Join(tmpDir, "output")
+
+	// Create echo tool
+	echoToolContent := `
+cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: echo
+inputs:
+  message:
+    type: string
+    inputBinding:
+      position: 1
+outputs:
+  output:
+    type: stdout
+stdout: message.txt
+`
+
+	// Create a workflow with scatter
+	cwlContent := `
+cwlVersion: v1.2
+class: Workflow
+inputs:
+  messages:
+    type: string[]
+outputs:
+  outputs:
+    type: File[]
+    outputSource: scatter_step/output
+steps:
+  scatter_step:
+    run: echo.cwl
+    scatter: message
+    in:
+      message: messages
+    out: [output]
+`
+	jobContent := `
+messages:
+  - "Message 1"
+  - "Message 2"
+  - "Message 3"
+  - "Message 4"
+`
+	echoPath := filepath.Join(tmpDir, "echo.cwl")
+	cwlPath := filepath.Join(tmpDir, "scatter.cwl")
+	jobPath := filepath.Join(tmpDir, "job.yml")
+	if err := os.WriteFile(echoPath, []byte(echoToolContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cwlPath, []byte(cwlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jobPath, []byte(jobContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := context.Background()
+	if err := runner.Execute(ctx, cwlPath, jobPath, &buf); err != nil {
+		t.Errorf("Execute() error = %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("Sequential scatter output: %s", output)
+	// Check that outputs array is present with 4 elements
+	if !strings.Contains(output, `"outputs": [`) {
+		t.Errorf("Execute() output should have outputs array: %s", output)
+	}
+	// Check we have 4 different work directories
+	for i := 1; i <= 4; i++ {
+		workDir := fmt.Sprintf("work_%d", i)
+		if !strings.Contains(output, workDir) {
+			t.Errorf("Execute() output missing %s: %s", workDir, output)
+		}
 	}
 }
