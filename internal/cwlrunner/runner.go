@@ -906,8 +906,18 @@ func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workD
 		var content string
 		switch v := entryRaw.(type) {
 		case string:
-			// Evaluate if it contains expressions.
-			if strings.Contains(v, "$(") || strings.Contains(v, "${") {
+			// Check for unescaped CWL expressions (not preceded by backslash).
+			// \$( is an escaped literal, $( without backslash is an expression.
+			hasExpr := false
+			for i := 0; i < len(v)-1; i++ {
+				if v[i] == '$' && (v[i+1] == '(' || v[i+1] == '{') {
+					if i == 0 || v[i-1] != '\\' {
+						hasExpr = true
+						break
+					}
+				}
+			}
+			if hasExpr {
 				ctx := cwlexpr.NewContext(inputs)
 				evaluated, err := evaluator.Evaluate(v, ctx)
 				if err != nil {
@@ -915,7 +925,9 @@ func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workD
 				}
 				content = fmt.Sprintf("%v", evaluated)
 			} else {
-				content = v
+				// Replace escaped \$( with literal $(
+				content = strings.ReplaceAll(v, "\\$(", "$(")
+				content = strings.ReplaceAll(content, "\\${", "${")
 			}
 		default:
 			continue // Skip non-string entries (File/Directory literals not yet supported).
