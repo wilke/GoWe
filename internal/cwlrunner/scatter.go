@@ -404,14 +404,14 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 
 	r.logger.Debug("executing scatter in parallel",
 		"iterations", n,
-		"workers", config.MaxWorkers)
+		"max_concurrent", config.Semaphore.Capacity())
 
 	// Create cancellable context for fail-fast
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Semaphore for bounded parallelism
-	sem := make(chan struct{}, config.MaxWorkers)
+	// Use global semaphore for bounded parallelism across all steps and scatter iterations
+	sem := config.Semaphore
 
 	// Results storage (pre-allocated for order preservation)
 	results := make([]scatterResult, n)
@@ -425,14 +425,12 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		go func(idx int, inputsCopy map[string]any) {
 			defer wg.Done()
 
-			// Acquire semaphore slot
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
+			// Acquire semaphore slot from global semaphore
+			if !sem.Acquire(ctx) {
 				results[idx] = scatterResult{index: idx, err: ctx.Err()}
 				return
 			}
+			defer sem.Release()
 
 			// Check if we should stop due to earlier error
 			select {

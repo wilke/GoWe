@@ -16,13 +16,18 @@ type ParallelConfig struct {
 	// Enabled controls whether parallel execution is used.
 	Enabled bool
 
-	// MaxWorkers limits concurrent step/scatter executions.
+	// MaxWorkers limits concurrent tool executions (steps + scatter iterations).
 	// Default: runtime.NumCPU()
 	MaxWorkers int
 
 	// FailFast stops execution on first error.
 	// Default: true
 	FailFast bool
+
+	// Semaphore controls global concurrency for tool executions.
+	// When set, this limits total concurrent processes across all steps
+	// and scatter iterations. If nil, MaxWorkers is used to create one.
+	Semaphore *Semaphore
 }
 
 // DefaultParallelConfig returns the default parallel configuration.
@@ -67,6 +72,11 @@ type parallelExecutor struct {
 // newParallelExecutor creates a new parallel executor.
 func newParallelExecutor(r *Runner, graph *cwl.GraphDocument, dag *parser.DAGResult,
 	workflowInputs map[string]any, config ParallelConfig) *parallelExecutor {
+
+	// Create semaphore if not provided - this limits total concurrent tool executions
+	if config.Semaphore == nil && config.MaxWorkers > 0 {
+		config.Semaphore = NewSemaphore(config.MaxWorkers)
+	}
 
 	pe := &parallelExecutor{
 		runner:         r,
@@ -188,7 +198,8 @@ func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error)
 
 	pe.runner.logger.Debug("starting parallel execution",
 		"steps", totalSteps,
-		"workers", numWorkers)
+		"workers", numWorkers,
+		"max_concurrent_tools", pe.config.Semaphore.Capacity())
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -402,6 +413,12 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 			return make(map[string]any), nil
 		}
 	}
+
+	// Acquire semaphore slot for tool execution (non-scatter)
+	if !pe.config.Semaphore.Acquire(ctx) {
+		return nil, ctx.Err()
+	}
+	defer pe.config.Semaphore.Release()
 
 	return pe.runner.executeTool(ctx, pe.graph, tool, job.inputs, false)
 }
