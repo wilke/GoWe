@@ -35,9 +35,9 @@ func skipIfNoBVBRC(t *testing.T) (bvbrc.RPCCaller, string) {
 // TestBVBRCIntegration_SubmitAndPoll submits a small Date job to BV-BRC
 // and polls until it reaches a terminal state.
 func TestBVBRCIntegration_SubmitAndPoll(t *testing.T) {
-	caller, username := skipIfNoBVBRC(t)
+	caller, _ := skipIfNoBVBRC(t)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	exec := NewBVBRCExecutor(caller, username, logger)
+	exec := NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, caller, logger)
 
 	task := &model.Task{
 		ID:         "integ_task_1",

@@ -258,6 +258,130 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 	return outputs, nil
 }
 
+// executeInApptainerWithWorkDir executes a tool in an Apptainer container with the specified work directory.
+func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string) (map[string]any, error) {
+	r.logger.Info("executing in Apptainer", "image", dockerImage, "command", cmdResult.Command)
+
+	// Create directories for this execution.
+	tmpDir := workDir + "_tmp"
+	for _, dir := range []string{workDir, tmpDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+
+	// Stage input files.
+	if err := r.stageInputFiles(inputs, workDir); err != nil {
+		return nil, fmt.Errorf("stage inputs: %w", err)
+	}
+
+	// Build Apptainer command.
+	apptainerArgs := []string{"exec"}
+
+	// Mount working directory (resolve symlinks for consistency).
+	absWorkDir := resolveSymlinks(workDir)
+	apptainerArgs = append(apptainerArgs, "--bind", absWorkDir+":/var/spool/cwl")
+	apptainerArgs = append(apptainerArgs, "--pwd", "/var/spool/cwl")
+
+	// Mount tmp directory.
+	absTmpDir := resolveSymlinks(tmpDir)
+	apptainerArgs = append(apptainerArgs, "--bind", absTmpDir+":/tmp")
+
+	// Mount input files that are outside working directory.
+	mounts := collectInputMounts(inputs)
+	for hostPath, containerPath := range mounts {
+		apptainerArgs = append(apptainerArgs, "--bind", hostPath+":"+containerPath+":ro")
+	}
+
+	// Add image with docker:// prefix for pulling from Docker registries.
+	apptainerArgs = append(apptainerArgs, "docker://"+dockerImage)
+
+	// Add tool command.
+	apptainerArgs = append(apptainerArgs, cmdResult.Command...)
+
+	r.logger.Debug("apptainer command", "args", apptainerArgs)
+
+	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
+
+	// Handle stdin.
+	if cmdResult.Stdin != "" {
+		stdinPath := cmdResult.Stdin
+		if !filepath.IsAbs(stdinPath) {
+			stdinPath = filepath.Join(workDir, stdinPath)
+		}
+		stdin, err := os.Open(stdinPath)
+		if err != nil {
+			return nil, fmt.Errorf("open stdin: %w", err)
+		}
+		defer stdin.Close()
+		cmd.Stdin = stdin
+	}
+
+	// Determine stdout capture filename.
+	stdoutCapture := cmdResult.Stdout
+	if stdoutCapture == "" && hasStdoutOutput(tool) {
+		stdoutCapture = "cwl.stdout.txt"
+	}
+
+	// Handle stdout - capture to file if specified or needed for output.
+	var stdoutFile *os.File
+	if stdoutCapture != "" {
+		stdoutPath := filepath.Join(workDir, stdoutCapture)
+		var err error
+		stdoutFile, err = os.Create(stdoutPath)
+		if err != nil {
+			return nil, fmt.Errorf("create stdout file: %w", err)
+		}
+		defer stdoutFile.Close()
+		cmd.Stdout = stdoutFile
+	} else {
+		cmd.Stdout = io.Discard
+	}
+
+	// Determine stderr capture filename.
+	stderrCapture := cmdResult.Stderr
+	if stderrCapture == "" && hasStderrOutput(tool) {
+		stderrCapture = "cwl.stderr.txt"
+	}
+
+	// Handle stderr - capture to file if specified or needed for output.
+	var stderrFile *os.File
+	if stderrCapture != "" {
+		stderrPath := filepath.Join(workDir, stderrCapture)
+		var err error
+		stderrFile, err = os.Create(stderrPath)
+		if err != nil {
+			return nil, fmt.Errorf("create stderr file: %w", err)
+		}
+		defer stderrFile.Close()
+		cmd.Stderr = stderrFile
+	} else {
+		cmd.Stderr = io.Discard
+	}
+
+	// Run Apptainer command and capture exit code.
+	var exitCode int
+	if err := cmd.Run(); err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if ok {
+			exitCode = exitErr.ExitCode()
+			if !isSuccessCode(exitCode, tool.SuccessCodes) {
+				return nil, fmt.Errorf("apptainer command failed: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("apptainer command failed: %w", err)
+		}
+	}
+
+	// Collect outputs (passing exit code for runtime.exitCode).
+	outputs, err := r.collectOutputs(tool, workDir, inputs, exitCode)
+	if err != nil {
+		return nil, fmt.Errorf("collect outputs: %w", err)
+	}
+
+	return outputs, nil
+}
+
 // stageInputFiles stages input files in the working directory.
 func (r *Runner) stageInputFiles(inputs map[string]any, workDir string) error {
 	for _, v := range inputs {

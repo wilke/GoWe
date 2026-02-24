@@ -27,11 +27,12 @@ type Runner struct {
 	parser *parser.Parser
 
 	// Configuration options.
-	OutDir       string
-	NoContainer  bool
-	ForceDocker  bool
-	OutputFormat string // "json" or "yaml"
-	ProcessID    string // specific process ID to run from $graph document
+	OutDir           string
+	NoContainer      bool
+	ForceDocker      bool
+	ContainerRuntime string // "docker", "apptainer", or "" (auto-detect)
+	OutputFormat     string // "json" or "yaml"
+	ProcessID        string // specific process ID to run from $graph document
 
 	// Parallel execution configuration.
 	Parallel ParallelConfig
@@ -295,9 +296,19 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph)
 
-	// Determine execution mode (Docker or local).
-	// Check both tool-level and workflow-level DockerRequirement.
-	useDocker := r.ForceDocker || (!r.NoContainer && hasDockerRequirement(tool, graph.Workflow))
+	// Determine container runtime.
+	// Priority: NoContainer (forces local) > ContainerRuntime (explicit) > ForceDocker > auto-detect.
+	containerRuntime := r.ContainerRuntime
+	if r.NoContainer {
+		containerRuntime = ""
+	} else if containerRuntime == "" {
+		if r.ForceDocker {
+			containerRuntime = "docker"
+		} else if hasDockerRequirement(tool, graph.Workflow) {
+			// Auto-detect: default to "docker" when DockerRequirement is present.
+			containerRuntime = "docker"
+		}
+	}
 
 	// Get the work directory for this execution (increments stepCount).
 	// Use mutex for thread-safety in parallel execution.
@@ -324,13 +335,20 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 	r.logger.Debug("built command", "cmd", cmdResult.Command)
 
 	var outputs map[string]any
-	if useDocker {
+	switch containerRuntime {
+	case "docker":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
 		outputs, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
-	} else {
+	case "apptainer":
+		dockerImage := getDockerImage(tool, graph.Workflow)
+		if dockerImage == "" {
+			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
+		}
+		outputs, err = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+	default:
 		outputs, err = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
 

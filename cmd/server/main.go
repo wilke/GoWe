@@ -80,6 +80,7 @@ func main() {
 	reg := executor.NewRegistry(logger)
 	reg.Register(executor.NewLocalExecutor("", logger))
 	reg.Register(executor.NewDockerExecutor("", logger))
+	reg.Register(executor.NewApptainerExecutor("", logger))
 	reg.Register(executor.NewWorkerExecutor(st, logger))
 
 	// Register BVBRCExecutor and create RPC callers if a token is available.

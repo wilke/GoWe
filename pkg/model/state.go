@@ -93,8 +93,9 @@ func (s SubmissionState) CanTransitionTo(next SubmissionState) bool {
 type ExecutorType string
 
 const (
-	ExecutorTypeLocal     ExecutorType = "local"
-	ExecutorTypeBVBRC     ExecutorType = "bvbrc"
-	ExecutorTypeContainer ExecutorType = "container"
-	ExecutorTypeWorker    ExecutorType = "worker"
+	ExecutorTypeLocal      ExecutorType = "local"
+	ExecutorTypeBVBRC      ExecutorType = "bvbrc"
+	ExecutorTypeContainer  ExecutorType = "container"
+	ExecutorTypeApptainer  ExecutorType = "apptainer"
+	ExecutorTypeWorker     ExecutorType = "worker"
 )

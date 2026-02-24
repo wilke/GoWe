@@ -15,15 +15,16 @@ import (
 )
 
 var (
-	outDir       string
-	noContainer  bool
-	forceDocker  bool
-	outputFormat string
-	verbose      bool
-	quiet        bool
-	parallel     bool
-	maxJobs      int
-	noFailFast   bool
+	outDir           string
+	noContainer      bool
+	forceDocker      bool
+	containerRuntime string
+	outputFormat     string
+	verbose          bool
+	quiet            bool
+	parallel         bool
+	maxJobs          int
+	noFailFast       bool
 )
 
 func main() {
@@ -51,8 +52,9 @@ Examples:
 
 	// Flags.
 	rootCmd.PersistentFlags().StringVar(&outDir, "outdir", "./cwl-output", "Output directory")
-	rootCmd.PersistentFlags().BoolVar(&noContainer, "no-container", false, "Disable Docker execution")
-	rootCmd.PersistentFlags().BoolVar(&forceDocker, "docker", false, "Force Docker execution")
+	rootCmd.PersistentFlags().BoolVar(&noContainer, "no-container", false, "Disable container execution")
+	rootCmd.PersistentFlags().BoolVar(&forceDocker, "docker", false, "Force Docker execution (alias for --runtime docker)")
+	rootCmd.PersistentFlags().StringVar(&containerRuntime, "runtime", "", "Container runtime: docker, apptainer, or none (default: auto-detect)")
 	rootCmd.PersistentFlags().StringVar(&outputFormat, "output-format", "json", "Output format (json|yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress informational output")
@@ -86,9 +88,18 @@ func newLogger() *slog.Logger {
 func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 	r := cwlrunner.NewRunner(logger)
 	r.OutDir = outDir
-	r.NoContainer = noContainer
-	r.ForceDocker = forceDocker
 	r.OutputFormat = outputFormat
+
+	// Wire container runtime: --runtime flag takes precedence over --docker/--no-container.
+	switch containerRuntime {
+	case "none":
+		r.NoContainer = true
+	case "docker", "apptainer":
+		r.ContainerRuntime = containerRuntime
+	default:
+		r.NoContainer = noContainer
+		r.ForceDocker = forceDocker
+	}
 
 	// Configure parallel execution.
 	if parallel {
