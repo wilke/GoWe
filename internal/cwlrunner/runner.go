@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
@@ -38,6 +39,10 @@ type Runner struct {
 
 	// Parallel execution configuration.
 	Parallel ParallelConfig
+
+	// Metrics collection.
+	CollectMetrics bool              // Enable metrics collection
+	metrics        *MetricsCollector // Internal metrics collector
 
 	// Internal state.
 	cwlDir     string            // directory of CWL file, for resolving relative paths in defaults
@@ -224,6 +229,9 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
+	// Initialize metrics collector if enabled.
+	r.metrics = NewMetricsCollector(r.CollectMetrics)
+
 	// If ProcessID is specified, select that specific process.
 	if r.ProcessID != "" {
 		// Normalize processID for comparison (strip leading #)
@@ -232,18 +240,24 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 
 		// Check if it's a tool.
 		if tool, ok := graph.Tools[processID]; ok {
+			r.metrics.SetWorkflowID(tool.ID)
+			r.metrics.SetTotalSteps(1)
 			outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs, true)
 			if err != nil {
+				r.finalizeAndPrintMetrics(w)
 				return err
 			}
-			return r.writeOutputs(outputs, w)
+			return r.writeOutputsWithMetrics(outputs, w)
 		}
 		if tool, ok := graph.Tools[processIDWithHash]; ok {
+			r.metrics.SetWorkflowID(tool.ID)
+			r.metrics.SetTotalSteps(1)
 			outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs, true)
 			if err != nil {
+				r.finalizeAndPrintMetrics(w)
 				return err
 			}
-			return r.writeOutputs(outputs, w)
+			return r.writeOutputsWithMetrics(outputs, w)
 		}
 		// Check if it matches the workflow ID (with or without # prefix).
 		if graph.Workflow != nil {
@@ -262,20 +276,52 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 
 	// Single tool execution.
 	for _, tool := range graph.Tools {
+		r.metrics.SetWorkflowID(tool.ID)
+		r.metrics.SetTotalSteps(1)
 		outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs, true)
 		if err != nil {
+			r.finalizeAndPrintMetrics(w)
 			return err
 		}
-		return r.writeOutputs(outputs, w)
+		return r.writeOutputsWithMetrics(outputs, w)
 	}
 
 	return fmt.Errorf("no tools found in document")
+}
+
+// finalizeAndPrintMetrics finalizes metrics and prints summary to stderr.
+func (r *Runner) finalizeAndPrintMetrics(w io.Writer) {
+	if r.metrics == nil || !r.metrics.Enabled() {
+		return
+	}
+	metrics := r.metrics.Finalize()
+	PrintMetricsSummary(os.Stderr, metrics)
+}
+
+// writeOutputsWithMetrics writes outputs and includes metrics if enabled.
+func (r *Runner) writeOutputsWithMetrics(outputs map[string]any, w io.Writer) error {
+	// Finalize metrics first
+	var metricsMap map[string]any
+	if r.metrics != nil && r.metrics.Enabled() {
+		metrics := r.metrics.Finalize()
+		metricsMap = metrics.ToMap()
+		// Print summary to stderr
+		PrintMetricsSummary(os.Stderr, metrics)
+	}
+
+	// Write outputs with optional metrics
+	return r.writeOutputsInternal(outputs, metricsMap, w)
 }
 
 // executeTool executes a single CommandLineTool.
 // If resolveSecondary is true, secondary files will be resolved from tool definitions.
 // For workflow steps, secondary files should already be resolved from workflow inputs.
 func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, inputs map[string]any, resolveSecondary bool) (map[string]any, error) {
+	return r.executeToolWithStepID(ctx, graph, tool, inputs, resolveSecondary, "")
+}
+
+// executeToolWithStepID executes a single CommandLineTool with an optional step ID for metrics.
+func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, inputs map[string]any, resolveSecondary bool, stepID string) (map[string]any, error) {
 	r.logger.Info("executing tool", "id", tool.ID)
 
 	// Resolve secondaryFiles for tool inputs if requested (direct tool execution).
@@ -336,29 +382,313 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 
 	r.logger.Debug("built command", "cmd", cmdResult.Command)
 
-	var outputs map[string]any
+	var result *ExecutionResult
 	switch containerRuntime {
 	case "docker":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
-		outputs, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+		result, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
 		}
-		outputs, err = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+		result, err = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
 	default:
-		outputs, err = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
+		result, err = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
 
 	if err != nil {
+		// Record failed step metrics if enabled
+		if r.metrics != nil && r.metrics.Enabled() {
+			metricsStepID := stepID
+			if metricsStepID == "" {
+				metricsStepID = tool.ID
+			}
+			r.metrics.RecordStep(StepMetrics{
+				StepID:   metricsStepID,
+				ToolID:   tool.ID,
+				Status:   "failed",
+				ExitCode: -1,
+			})
+		}
 		return nil, err
 	}
 
-	return outputs, nil
+	// Record successful step metrics if enabled
+	if r.metrics != nil && r.metrics.Enabled() {
+		metricsStepID := stepID
+		if metricsStepID == "" {
+			metricsStepID = tool.ID
+		}
+		r.metrics.RecordStep(StepMetrics{
+			StepID:       metricsStepID,
+			ToolID:       tool.ID,
+			StartTime:    result.StartTime,
+			Duration:     result.Duration,
+			ExitCode:     result.ExitCode,
+			PeakMemoryKB: result.PeakMemoryKB,
+			Status:       "success",
+		})
+	}
+
+	return result.Outputs, nil
+}
+
+// executeScatterWithMetrics executes a scatter step and records per-iteration metrics.
+func (r *Runner) executeScatterWithMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, stepID string,
+	evaluator *cwlexpr.Evaluator) (map[string]any, error) {
+
+	startTime := time.Now()
+
+	// Execute the scatter with iteration tracking
+	outputs, iterMetrics, err := r.executeScatterWithIterationMetrics(ctx, graph, tool, step, inputs, evaluator)
+
+	duration := time.Since(startTime)
+
+	// Record metrics for the scatter step
+	if r.metrics != nil && r.metrics.Enabled() {
+		status := "success"
+		if err != nil {
+			status = "failed"
+		}
+
+		stepMetrics := StepMetrics{
+			StepID:     stepID,
+			ToolID:     tool.ID,
+			StartTime:  startTime,
+			Duration:   duration,
+			Status:     status,
+			Iterations: iterMetrics,
+		}
+
+		// Compute scatter summary from iteration metrics
+		if len(iterMetrics) > 0 {
+			stepMetrics.ScatterSummary = ComputeScatterSummary(iterMetrics)
+		}
+
+		r.metrics.RecordStep(stepMetrics)
+	}
+
+	return outputs, err
+}
+
+// executeScatterWithIterationMetrics executes scatter and returns per-iteration metrics.
+func (r *Runner) executeScatterWithIterationMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any,
+	evaluator *cwlexpr.Evaluator) (map[string]any, []IterationMetrics, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if evaluator != nil {
+		eval = evaluator
+	}
+
+	// Check 'when' condition early (before scatter validation).
+	if step.When != "" && eval != nil && !whenReferencesScatterVars(step.When, step.Scatter) {
+		evalCtx := cwlexpr.NewContext(inputs)
+		shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+		if err != nil {
+			r.logger.Debug("when condition pre-check failed, will evaluate per-iteration", "error", err)
+		} else if !shouldRun {
+			r.logger.Info("skipping scatter step (when condition false)", "step", step.Run)
+			outputs := make(map[string]any)
+			for _, outID := range step.Out {
+				outputs[outID] = nil
+			}
+			return outputs, nil, nil
+		}
+	}
+
+	// Determine scatter method
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Generate input combinations
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	// Evaluate valueFrom expressions per scatter iteration
+	if eval != nil && hasValueFrom(step) {
+		for _, combo := range combinations {
+			if err := evaluateValueFrom(step, combo, eval); err != nil {
+				return nil, nil, fmt.Errorf("scatter valueFrom: %w", err)
+			}
+		}
+	}
+
+	// Execute tool for each combination, collecting iteration metrics
+	var results []map[string]any
+	var iterMetrics []IterationMetrics
+	for i, combo := range combinations {
+		r.logger.Debug("scatter iteration", "index", i, "inputs", combo)
+
+		iterStart := time.Now()
+		var iterStatus string
+		var iterExitCode int
+		var iterMemory int64
+
+		// Evaluate 'when' condition if present
+		if step.When != "" && eval != nil {
+			evalCtx := cwlexpr.NewContext(combo)
+			shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+			if err != nil {
+				return nil, nil, fmt.Errorf("scatter iteration %d when: %w", i, err)
+			}
+			if !shouldRun {
+				// Condition is false for this iteration
+				nullOutputs := make(map[string]any)
+				for _, outID := range step.Out {
+					nullOutputs[outID] = nil
+				}
+				results = append(results, nullOutputs)
+				iterMetrics = append(iterMetrics, IterationMetrics{
+					Index:       i,
+					Duration:    time.Since(iterStart),
+					DurationStr: formatDuration(time.Since(iterStart)),
+					Status:      "skipped",
+				})
+				continue
+			}
+		}
+
+		// Execute the tool
+		result, err := r.executeToolInternal(ctx, graph, tool, combo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scatter iteration %d: %w", i, err)
+		}
+
+		results = append(results, result.Outputs)
+		iterStatus = "success"
+		iterExitCode = result.ExitCode
+		iterMemory = result.PeakMemoryKB
+
+		iterMetrics = append(iterMetrics, IterationMetrics{
+			Index:        i,
+			Duration:     result.Duration,
+			DurationStr:  formatDuration(result.Duration),
+			PeakMemoryKB: iterMemory,
+			ExitCode:     iterExitCode,
+			Status:       iterStatus,
+		})
+	}
+
+	// Merge results into output arrays
+	var outputs map[string]any
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		outputs = mergeScatterOutputsNested(results, tool, dims)
+	} else {
+		outputs = mergeScatterOutputs(results, tool)
+	}
+
+	return outputs, iterMetrics, nil
+}
+
+// executeToolInternal executes a tool and returns ExecutionResult without recording metrics.
+// This is used by scatter executors to collect per-iteration results.
+func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, inputs map[string]any) (*ExecutionResult, error) {
+
+	// Merge tool input defaults with resolved inputs.
+	mergedInputs, err := mergeToolDefaults(tool, inputs, r.cwlDir)
+	if err != nil {
+		return nil, fmt.Errorf("process inputs: %w", err)
+	}
+
+	// Validate inputs against tool schema.
+	if err := validateToolInputs(tool, mergedInputs); err != nil {
+		return nil, err
+	}
+
+	// Get expression library from requirements.
+	expressionLib := extractExpressionLib(graph)
+
+	// Determine container runtime.
+	containerRuntime := r.ContainerRuntime
+	if r.NoContainer {
+		containerRuntime = ""
+	} else if containerRuntime == "" {
+		if r.ForceDocker {
+			containerRuntime = "docker"
+		} else if hasDockerRequirement(tool, graph.Workflow) {
+			containerRuntime = "docker"
+		}
+	}
+
+	// Get the work directory for this execution.
+	r.stepMu.Lock()
+	r.stepCount++
+	stepNum := r.stepCount
+	r.stepMu.Unlock()
+	workDir := filepath.Join(r.OutDir, fmt.Sprintf("work_%d", stepNum))
+	if absWorkDir, err := filepath.Abs(workDir); err == nil {
+		workDir = absWorkDir
+	}
+
+	// Build runtime context.
+	runtime := buildRuntimeContext(tool, workDir)
+
+	// Build command line.
+	builder := cmdline.NewBuilder(expressionLib)
+	cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+	if err != nil {
+		return nil, fmt.Errorf("build command: %w", err)
+	}
+
+	// Execute based on container runtime
+	switch containerRuntime {
+	case "docker":
+		dockerImage := getDockerImage(tool, graph.Workflow)
+		if dockerImage == "" {
+			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
+		}
+		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+	case "apptainer":
+		dockerImage := getDockerImage(tool, graph.Workflow)
+		if dockerImage == "" {
+			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
+		}
+		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+	default:
+		return r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
+	}
 }
 
 // executeExpressionTool executes a CWL ExpressionTool by evaluating its JavaScript expression.
@@ -413,14 +743,19 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 		return fmt.Errorf("build DAG: %w", err)
 	}
 
+	// Set metrics for workflow
+	r.metrics.SetWorkflowID(graph.Workflow.ID)
+	r.metrics.SetTotalSteps(len(dag.Order))
+
 	// Use parallel execution if enabled
 	if r.Parallel.Enabled {
 		pe := newParallelExecutor(r, graph, dag, mergedInputs, r.Parallel)
 		workflowOutputs, err := pe.execute(ctx)
 		if err != nil {
+			r.finalizeAndPrintMetrics(w)
 			return err
 		}
-		return r.writeOutputs(workflowOutputs, w)
+		return r.writeOutputsWithMetrics(workflowOutputs, w)
 	}
 
 	// Sequential execution (original behavior)
@@ -465,6 +800,14 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 				if !shouldRun {
 					r.logger.Info("skipping step (when condition false)", "step", stepID)
 					stepOutputs[stepID] = make(map[string]any)
+					// Record skipped step metrics
+					if r.metrics != nil && r.metrics.Enabled() {
+						r.metrics.RecordStep(StepMetrics{
+							StepID: stepID,
+							ToolID: exprTool.ID,
+							Status: "skipped",
+						})
+					}
 					continue
 				}
 			}
@@ -486,8 +829,9 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 		// Handle scatter if present.
 		// Note: 'when' condition is evaluated per-iteration inside executeScatter.
 		if len(step.Scatter) > 0 {
-			outputs, err := r.executeScatter(ctx, graph, tool, step, stepInputs, evaluator)
+			outputs, err := r.executeScatterWithMetrics(ctx, graph, tool, step, stepInputs, stepID, evaluator)
 			if err != nil {
+				r.finalizeAndPrintMetrics(w)
 				return fmt.Errorf("step %s: %w", stepID, err)
 			}
 			stepOutputs[stepID] = outputs
@@ -502,12 +846,21 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 				if !shouldRun {
 					r.logger.Info("skipping step (when condition false)", "step", stepID)
 					stepOutputs[stepID] = make(map[string]any)
+					// Record skipped step metrics
+					if r.metrics != nil && r.metrics.Enabled() {
+						r.metrics.RecordStep(StepMetrics{
+							StepID: stepID,
+							ToolID: tool.ID,
+							Status: "skipped",
+						})
+					}
 					continue
 				}
 			}
 
-			outputs, err := r.executeTool(ctx, graph, tool, stepInputs, false)
+			outputs, err := r.executeToolWithStepID(ctx, graph, tool, stepInputs, false, stepID)
 			if err != nil {
+				r.finalizeAndPrintMetrics(w)
 				return fmt.Errorf("step %s: %w", stepID, err)
 			}
 			stepOutputs[stepID] = outputs
@@ -519,20 +872,35 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	if err != nil {
 		return fmt.Errorf("collect outputs: %w", err)
 	}
-	return r.writeOutputs(workflowOutputs, w)
+	return r.writeOutputsWithMetrics(workflowOutputs, w)
 }
 
 // writeOutputs writes the outputs to the writer in the configured format.
 func (r *Runner) writeOutputs(outputs map[string]any, w io.Writer) error {
+	return r.writeOutputsInternal(outputs, nil, w)
+}
+
+// writeOutputsInternal writes the outputs to the writer with optional metrics.
+func (r *Runner) writeOutputsInternal(outputs map[string]any, metricsMap map[string]any, w io.Writer) error {
 	var data []byte
 	var err error
+
+	// If metrics are provided and format is JSON, include them in the output.
+	outputWithMetrics := outputs
+	if metricsMap != nil && r.OutputFormat != "yaml" {
+		outputWithMetrics = make(map[string]any)
+		for k, v := range outputs {
+			outputWithMetrics[k] = v
+		}
+		outputWithMetrics["cwl:metrics"] = metricsMap
+	}
 
 	switch r.OutputFormat {
 	case "yaml":
 		data, err = yaml.Marshal(outputs)
 	default:
 		// Convert floats to json.Number to avoid scientific notation.
-		converted := convertFloatsToNumbers(outputs)
+		converted := convertFloatsToNumbers(outputWithMetrics)
 		data, err = json.MarshalIndent(converted, "", "  ")
 	}
 

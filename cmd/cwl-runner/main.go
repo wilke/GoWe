@@ -25,6 +25,7 @@ var (
 	parallel         bool
 	maxJobs          int
 	noFailFast       bool
+	collectMetrics   bool
 )
 
 func main() {
@@ -63,6 +64,9 @@ Examples:
 	rootCmd.PersistentFlags().BoolVar(&parallel, "parallel", false, "Enable parallel execution of independent steps and scatter iterations")
 	rootCmd.PersistentFlags().IntVarP(&maxJobs, "jobs", "j", 0, "Maximum concurrent jobs (default: number of CPUs)")
 	rootCmd.PersistentFlags().BoolVar(&noFailFast, "no-fail-fast", false, "Continue execution after errors (default: fail fast)")
+
+	// Metrics flags.
+	rootCmd.PersistentFlags().BoolVar(&collectMetrics, "metrics", false, "Collect and display execution metrics (duration, memory usage)")
 
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
@@ -109,6 +113,9 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 		}
 		r.Parallel.FailFast = !noFailFast
 	}
+
+	// Configure metrics collection.
+	r.CollectMetrics = collectMetrics
 
 	return r
 }

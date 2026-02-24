@@ -1,5 +1,98 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-24 (Issue #47 - Per-Step Runtime and Memory Metrics)
+
+### Status: COMPLETE - Implementation verified
+
+Implemented per-step runtime and memory metrics for cwl-runner per issue #47.
+
+### Branch: `issue/47`
+
+### Features Implemented
+
+1. **Per-step duration** - Wall-clock time for each step on completion
+2. **Peak memory usage** - Tracked via `getrusage` (`ru_maxrss`)
+3. **Workflow summary** - Table printed to stderr with duration, peak memory, exit status
+4. **JSON output** - Metrics included under `cwl:metrics` extension field when `--metrics` flag is enabled
+
+### New Files Created
+
+| File | Purpose |
+|------|---------|
+| `internal/cwlrunner/metrics.go` | StepMetrics, WorkflowMetrics, MetricsCollector, helper functions |
+| `internal/cwlrunner/metrics_test.go` | Unit tests for metrics functionality |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwlrunner/runner.go` | Added `CollectMetrics` field, `metrics` collector, `executeToolWithStepID`, `executeScatterWithMetrics`, `writeOutputsWithMetrics` |
+| `internal/cwlrunner/execute.go` | Added `ExecutionResult` struct, modified execute functions to return timing/memory info |
+| `internal/cwlrunner/parallel.go` | Updated `executeStep` to pass step IDs and record skipped step metrics |
+| `internal/cwlrunner/scatter.go` | Added `executeScatterParallelWithMetrics`, added time import |
+| `cmd/cwl-runner/main.go` | Added `--metrics` flag |
+
+### CLI Usage
+
+```bash
+# Run with metrics collection enabled
+cwl-runner --metrics workflow.cwl job.yml
+
+# Parallel execution with metrics
+cwl-runner --parallel --metrics workflow.cwl job.yml
+```
+
+### Console Output
+
+```
+=== Workflow Execution Summary ===
+Workflow: my-workflow
+Total Duration: 14m 32s
+
+Step                      Duration    Memory    Status
+---------------------------------------------------------
+step1                       4m 12s    2.3 GB    ✓ success
+step2                       3m 45s    1.8 GB    ✓ success
+step3                       3m 22s    4.1 GB    ✓ success
+
+Steps: 3 completed, 0 failed, 0 skipped
+Peak Memory: 4.1 GB (step3)
+```
+
+### JSON Output
+
+```json
+{
+  "outputs": { ... },
+  "cwl:metrics": {
+    "workflow_id": "my-workflow",
+    "duration": "14m32s",
+    "duration_ns": 872000000000,
+    "steps": [
+      {
+        "step_id": "step1",
+        "duration": "4m12s",
+        "peak_memory_kb": 2411520,
+        "exit_code": 0,
+        "status": "success"
+      }
+    ]
+  }
+}
+```
+
+### Verification
+
+- All unit tests pass
+- 84/84 required conformance tests pass
+- Manual testing with `--metrics` flag verified
+
+### Note on Container Execution
+
+For Docker/Apptainer execution, `rusage` captures the container CLI process overhead, not the application inside the container. This is a known limitation.
+
+---
+
 ## Session: 2026-02-24 (Issue #50 - Global Concurrency Limit)
 
 ### Status: COMPLETE - Verified with real workflows
