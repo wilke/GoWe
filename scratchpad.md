@@ -1,12 +1,57 @@
 # GoWe Scratchpad
 
-## Session: 2026-02-24 (Conditional Conformance - 46/46 COMPLETE)
+## Session: 2026-02-24 (Server Conditional + Code Deduplication)
+
+### Status: COMPLETE - Shared package created, server conditional support implemented
+
+Implemented conditional workflow support for the scheduler (server-side) and created shared `cwloutput` package for code reuse between cwlrunner and scheduler.
+
+### Branch: `conditional`
+
+### Work Completed
+
+1. **Created shared package `internal/cwloutput/conditional.go`**
+   - `ApplyPickValue()` - handles `first_non_null`, `the_only_non_null`, `all_non_null`
+   - `ApplyLinkMerge()` - handles `merge_nested` (default), `merge_flattened`
+   - `CollectWorkflowOutputs()` - gathers workflow outputs from task outputs
+   - `resolveSource()` - resolves step/outputID or workflow input references
+
+2. **Updated scheduler for conditional support**
+   - Added `when` condition evaluation in `submitTask()` before dispatching
+   - Added `evaluateWhenCondition()` helper using cwlexpr
+   - Added `collectWorkflowOutputs()` using shared package
+   - Updated `finalizeSubmissions()` to collect workflow outputs
+
+3. **Refactored cwlrunner to use shared package**
+   - Updated `collectWorkflowOutputs()` to use `cwloutput.ApplyLinkMerge()` and `cwloutput.ApplyPickValue()`
+   - Removed duplicate `applyPickValue()` function (~60 lines)
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwloutput/conditional.go` | **NEW** - Shared pickValue/linkMerge logic |
+| `internal/scheduler/loop.go` | Added `when` evaluation, workflow output collection |
+| `internal/cwlrunner/runner.go` | Refactored to use shared cwloutput package |
+
+### Verification
+
+```bash
+# cwl-runner conformance
+cwltest --test conformance_tests.yaml --tool ./bin/cwl-runner --tags conditional
+# All 46 tests passed
+
+cwltest --test conformance_tests.yaml --tool ./bin/cwl-runner --tags required
+# All 84 tests passed
+```
+
+---
+
+## Previous Session: 2026-02-24 (Conditional Conformance - 46/46 COMPLETE)
 
 ### Status: COMPLETE - All 46 conditional tests passing
 
 Improved CWL conditional conformance tests from **0/46 to 46/46 (100%)**.
-
-### Branch: `conditional`
 
 ### Key Fixes
 
@@ -24,14 +69,6 @@ Improved CWL conditional conformance tests from **0/46 to 46/46 (100%)**.
 | `internal/cwlrunner/scatter.go` | Added `whenReferencesScatterVars()` helper, skip early `when` check when condition references scatter variables |
 | `internal/parser/parser.go` | Handle `[]any` step input sources, use `serializeCWLType` for output types |
 | `internal/parser/validator.go` | Added `isArrayType()` helper, validate `all_non_null` requires array output type |
-
-### Verification
-
-```bash
-./scripts/run-conformance.sh conditional
-# All tests passed
-# === All conditional tests passed! ===
-```
 
 ---
 
