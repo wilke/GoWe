@@ -2,7 +2,7 @@
 
 ## Session: 2026-02-24 (Issue #50 - Global Concurrency Limit)
 
-### Status: IN PROGRESS - Global semaphore implemented
+### Status: COMPLETE - Verified with real workflows
 
 Fixing issue #50: `-j N` flag should limit total concurrent tool executions, not just DAG steps.
 
@@ -47,6 +47,15 @@ Created a global semaphore shared between DAG step executor and scatter executor
 - 84/84 required conformance tests pass
 - 46/46 conditional conformance tests pass
 - 30/42 scatter conformance tests pass (same as before)
+
+### Manual Verification
+
+Tested with real scatter workflows:
+- Single step, 8 scatter items, `-j 2`: 8 seconds (4 batches × 2s sleep)
+- Single step, 8 scatter items, `-j 4`: 4 seconds (2 batches × 2s sleep)
+- Two parallel steps, 4 items each, `-j 2`: 4 seconds (semaphore shared across steps)
+
+PR #51: https://github.com/wilke/GoWe/pull/51
 
 ---
 
