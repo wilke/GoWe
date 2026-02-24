@@ -495,27 +495,15 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 	return mergeScatterOutputs(outputMaps, tool), nil
 }
 
-// executeScatterParallelWithMetrics executes scatter iterations in parallel and records aggregated metrics.
+// executeScatterParallelWithMetrics executes scatter iterations in parallel and records per-iteration metrics.
 func (r *Runner) executeScatterParallelWithMetrics(ctx context.Context, graph *cwl.GraphDocument,
 	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, stepID string,
 	config ParallelConfig, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
 
 	startTime := time.Now()
 
-	// Count the number of scatter iterations
-	iterations := 0
-	for _, scatterInput := range step.Scatter {
-		if val := inputs[scatterInput]; val != nil {
-			if arr, ok := toAnySlice(val); ok {
-				if iterations == 0 || len(arr) < iterations {
-					iterations = len(arr)
-				}
-			}
-		}
-	}
-
-	// Execute the parallel scatter
-	outputs, err := r.executeScatterParallel(ctx, graph, tool, step, inputs, config, evaluator)
+	// Execute the parallel scatter with iteration tracking
+	outputs, iterMetrics, err := r.executeScatterParallelWithIterationMetrics(ctx, graph, tool, step, inputs, config, evaluator)
 
 	duration := time.Since(startTime)
 
@@ -525,15 +513,238 @@ func (r *Runner) executeScatterParallelWithMetrics(ctx context.Context, graph *c
 		if err != nil {
 			status = "failed"
 		}
-		r.metrics.RecordStep(StepMetrics{
+
+		stepMetrics := StepMetrics{
 			StepID:     stepID,
 			ToolID:     tool.ID,
 			StartTime:  startTime,
 			Duration:   duration,
-			Iterations: iterations,
 			Status:     status,
-		})
+			Iterations: iterMetrics,
+		}
+
+		// Compute scatter summary from iteration metrics
+		if len(iterMetrics) > 0 {
+			stepMetrics.ScatterSummary = ComputeScatterSummary(iterMetrics)
+		}
+
+		r.metrics.RecordStep(stepMetrics)
 	}
 
 	return outputs, err
+}
+
+// scatterResultWithMetrics holds the result of a single scatter iteration including metrics.
+type scatterResultWithMetrics struct {
+	index   int
+	outputs map[string]any
+	metrics IterationMetrics
+	err     error
+}
+
+// executeScatterParallelWithIterationMetrics executes scatter in parallel and returns per-iteration metrics.
+func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any,
+	config ParallelConfig, evaluator *cwlexpr.Evaluator) (map[string]any, []IterationMetrics, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Determine scatter method
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if evaluator != nil {
+		eval = evaluator
+	}
+
+	// Generate input combinations
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	// Evaluate valueFrom expressions per scatter iteration
+	if eval != nil && hasValueFrom(step) {
+		for _, combo := range combinations {
+			if err := evaluateValueFrom(step, combo, eval); err != nil {
+				return nil, nil, fmt.Errorf("scatter valueFrom: %w", err)
+			}
+		}
+	}
+
+	n := len(combinations)
+	if n == 0 {
+		return mergeScatterOutputs(nil, tool), nil, nil
+	}
+
+	r.logger.Debug("executing scatter in parallel with metrics",
+		"iterations", n,
+		"max_concurrent", config.Semaphore.Capacity())
+
+	// Create cancellable context for fail-fast
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Use global semaphore for bounded parallelism
+	sem := config.Semaphore
+
+	// Results storage (pre-allocated for order preservation)
+	results := make([]scatterResultWithMetrics, n)
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+
+	for i, combo := range combinations {
+		wg.Add(1)
+		go func(idx int, inputsCopy map[string]any) {
+			defer wg.Done()
+
+			iterStart := time.Now()
+
+			// Acquire semaphore slot from global semaphore
+			if !sem.Acquire(ctx) {
+				results[idx] = scatterResultWithMetrics{
+					index: idx,
+					err:   ctx.Err(),
+					metrics: IterationMetrics{
+						Index:       idx,
+						Duration:    time.Since(iterStart),
+						DurationStr: formatDuration(time.Since(iterStart)),
+						Status:      "failed",
+					},
+				}
+				return
+			}
+			defer sem.Release()
+
+			// Check if we should stop due to earlier error
+			select {
+			case <-ctx.Done():
+				results[idx] = scatterResultWithMetrics{
+					index: idx,
+					err:   ctx.Err(),
+					metrics: IterationMetrics{
+						Index:       idx,
+						Duration:    time.Since(iterStart),
+						DurationStr: formatDuration(time.Since(iterStart)),
+						Status:      "failed",
+					},
+				}
+				return
+			default:
+			}
+
+			r.logger.Debug("scatter iteration start", "index", idx)
+
+			// Execute the tool using internal method
+			execResult, err := r.executeToolInternal(ctx, graph, tool, inputsCopy)
+
+			iterDuration := time.Since(iterStart)
+			var iterMetrics IterationMetrics
+
+			if err != nil {
+				iterMetrics = IterationMetrics{
+					Index:       idx,
+					Duration:    iterDuration,
+					DurationStr: formatDuration(iterDuration),
+					Status:      "failed",
+				}
+			} else {
+				iterMetrics = IterationMetrics{
+					Index:        idx,
+					Duration:     execResult.Duration,
+					DurationStr:  formatDuration(execResult.Duration),
+					PeakMemoryKB: execResult.PeakMemoryKB,
+					ExitCode:     execResult.ExitCode,
+					Status:       "success",
+				}
+			}
+
+			results[idx] = scatterResultWithMetrics{
+				index:   idx,
+				outputs: nil,
+				metrics: iterMetrics,
+				err:     err,
+			}
+			if execResult != nil {
+				results[idx].outputs = execResult.Outputs
+			}
+
+			if err != nil && config.FailFast {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("scatter iteration %d: %w", idx, err)
+					cancel()
+				})
+			}
+
+			r.logger.Debug("scatter iteration complete", "index", idx, "error", err)
+		}(i, combo)
+	}
+
+	wg.Wait()
+
+	// Check for errors
+	if firstErr != nil {
+		return nil, nil, firstErr
+	}
+
+	// If not fail-fast, check all results for errors
+	if !config.FailFast {
+		for _, res := range results {
+			if res.err != nil {
+				return nil, nil, fmt.Errorf("scatter iteration %d: %w", res.index, res.err)
+			}
+		}
+	}
+
+	// Collect outputs and metrics in order
+	outputMaps := make([]map[string]any, n)
+	iterMetrics := make([]IterationMetrics, n)
+	for i, res := range results {
+		outputMaps[i] = res.outputs
+		iterMetrics[i] = res.metrics
+	}
+
+	// Apply nested structure for nested_crossproduct.
+	var outputs map[string]any
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for j, name := range step.Scatter {
+			dims[j] = len(scatterArrays[name])
+		}
+		outputs = mergeScatterOutputsNested(outputMaps, tool, dims)
+	} else {
+		outputs = mergeScatterOutputs(outputMaps, tool)
+	}
+
+	return outputs, iterMetrics, nil
 }

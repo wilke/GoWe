@@ -3,6 +3,7 @@ package cwlrunner
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"sort"
@@ -11,6 +12,29 @@ import (
 	"syscall"
 	"time"
 )
+
+// IterationMetrics holds metrics for a single scatter iteration.
+type IterationMetrics struct {
+	Index        int           `json:"index"`
+	Duration     time.Duration `json:"duration_ns"`
+	DurationStr  string        `json:"duration"`
+	PeakMemoryKB int64         `json:"peak_memory_kb"`
+	ExitCode     int           `json:"exit_code"`
+	Status       string        `json:"status"`
+}
+
+// ScatterSummary holds aggregate statistics for scatter iterations.
+type ScatterSummary struct {
+	Count           int           `json:"count"`
+	DurationAvg     time.Duration `json:"duration_avg_ns"`
+	DurationAvgStr  string        `json:"duration_avg"`
+	DurationStddev  time.Duration `json:"duration_stddev_ns"`
+	DurationStddevStr string      `json:"duration_stddev"`
+	MemoryAvgKB     int64         `json:"memory_avg_kb"`
+	MemoryMaxKB     int64         `json:"memory_max_kb"`
+	SuccessCount    int           `json:"success_count"`
+	FailedCount     int           `json:"failed_count"`
+}
 
 // StepMetrics holds metrics for a single step/tool execution.
 type StepMetrics struct {
@@ -21,8 +45,11 @@ type StepMetrics struct {
 	DurationStr  string        `json:"duration"`
 	ExitCode     int           `json:"exit_code"`
 	PeakMemoryKB int64         `json:"peak_memory_kb"`
-	Iterations   int           `json:"iterations,omitempty"`
 	Status       string        `json:"status"` // "success", "failed", "skipped"
+
+	// Scatter-specific fields
+	Iterations     []IterationMetrics `json:"iterations,omitempty"`
+	ScatterSummary *ScatterSummary    `json:"scatter_summary,omitempty"`
 }
 
 // WorkflowMetrics holds aggregate metrics for an entire workflow.
@@ -129,6 +156,54 @@ func (mc *MetricsCollector) Enabled() bool {
 	return mc != nil && mc.enabled
 }
 
+// ComputeScatterSummary computes aggregate statistics from iteration metrics.
+func ComputeScatterSummary(iterations []IterationMetrics) *ScatterSummary {
+	if len(iterations) == 0 {
+		return nil
+	}
+
+	summary := &ScatterSummary{
+		Count: len(iterations),
+	}
+
+	var totalDuration time.Duration
+	var totalMemory int64
+	for _, iter := range iterations {
+		totalDuration += iter.Duration
+		totalMemory += iter.PeakMemoryKB
+		if iter.PeakMemoryKB > summary.MemoryMaxKB {
+			summary.MemoryMaxKB = iter.PeakMemoryKB
+		}
+		if iter.Status == "success" {
+			summary.SuccessCount++
+		} else if iter.Status == "failed" {
+			summary.FailedCount++
+		}
+	}
+
+	// Compute averages
+	n := len(iterations)
+	summary.DurationAvg = totalDuration / time.Duration(n)
+	summary.DurationAvgStr = formatDuration(summary.DurationAvg)
+	summary.MemoryAvgKB = totalMemory / int64(n)
+
+	// Compute standard deviation for duration
+	if n > 1 {
+		var sumSquaredDiff float64
+		avgNs := float64(summary.DurationAvg.Nanoseconds())
+		for _, iter := range iterations {
+			diff := float64(iter.Duration.Nanoseconds()) - avgNs
+			sumSquaredDiff += diff * diff
+		}
+		variance := sumSquaredDiff / float64(n)
+		stddevNs := int64(math.Sqrt(variance))
+		summary.DurationStddev = time.Duration(stddevNs)
+		summary.DurationStddevStr = formatDuration(summary.DurationStddev)
+	}
+
+	return summary
+}
+
 // getResourceUsage extracts peak memory usage from process state.
 // Returns peak RSS in KB. On Darwin (macOS), Maxrss is in bytes; on Linux, it's in KB.
 func getResourceUsage(ps *os.ProcessState) int64 {
@@ -210,15 +285,19 @@ func PrintMetricsSummary(w io.Writer, m *WorkflowMetrics) {
 		}
 
 		// Print header
-		fmt.Fprintf(w, "%-*s  %12s  %12s  %s\n", maxStepLen, "Step", "Duration", "Memory", "Status")
-		fmt.Fprintln(w, strings.Repeat("-", maxStepLen+42))
+		fmt.Fprintf(w, "%-*s  %18s  %12s  %s\n", maxStepLen, "Step", "Duration", "Memory", "Status")
+		fmt.Fprintln(w, strings.Repeat("-", maxStepLen+50))
 
 		// Find peak memory step
 		var peakMemoryKB int64
 		var peakMemoryStep string
 		for _, step := range m.Steps {
-			if step.PeakMemoryKB > peakMemoryKB {
-				peakMemoryKB = step.PeakMemoryKB
+			stepPeakMem := step.PeakMemoryKB
+			if step.ScatterSummary != nil {
+				stepPeakMem = step.ScatterSummary.MemoryMaxKB
+			}
+			if stepPeakMem > peakMemoryKB {
+				peakMemoryKB = stepPeakMem
 				peakMemoryStep = step.StepID
 			}
 		}
@@ -238,14 +317,33 @@ func PrintMetricsSummary(w io.Writer, m *WorkflowMetrics) {
 				statusIcon = "○"
 			}
 
-			fmt.Fprintf(w, "%-*s  %12s  %12s  %s %s\n",
+			// Format duration and memory based on whether this is a scatter step
+			var durationStr, memoryStr, statusStr string
+			if step.ScatterSummary != nil {
+				// Scatter step: show avg±stddev
+				ss := step.ScatterSummary
+				if ss.DurationStddev > 0 {
+					durationStr = fmt.Sprintf("%s ± %s", ss.DurationAvgStr, ss.DurationStddevStr)
+				} else {
+					durationStr = ss.DurationAvgStr
+				}
+				memoryStr = formatMemory(ss.MemoryAvgKB)
+				statusStr = fmt.Sprintf("%s %d/%d", statusIcon, ss.SuccessCount, ss.Count)
+			} else {
+				// Regular step
+				durationStr = step.DurationStr
+				memoryStr = formatMemory(step.PeakMemoryKB)
+				statusStr = fmt.Sprintf("%s %s", statusIcon, step.Status)
+			}
+
+			fmt.Fprintf(w, "%-*s  %18s  %12s  %s\n",
 				maxStepLen, stepID,
-				step.DurationStr,
-				formatMemory(step.PeakMemoryKB),
-				statusIcon, step.Status)
+				durationStr,
+				memoryStr,
+				statusStr)
 		}
 
-		fmt.Fprintln(w, strings.Repeat("-", maxStepLen+42))
+		fmt.Fprintln(w, strings.Repeat("-", maxStepLen+50))
 
 		// Print summary
 		fmt.Fprintf(w, "Steps: %d completed", m.StepsComplete)
@@ -284,9 +382,39 @@ func (m *WorkflowMetrics) ToMap() map[string]any {
 		if step.ToolID != "" {
 			stepMap["tool_id"] = step.ToolID
 		}
-		if step.Iterations > 0 {
-			stepMap["iterations"] = step.Iterations
+
+		// Add scatter iteration details
+		if len(step.Iterations) > 0 {
+			iterations := make([]map[string]any, len(step.Iterations))
+			for j, iter := range step.Iterations {
+				iterations[j] = map[string]any{
+					"index":          iter.Index,
+					"duration":       iter.DurationStr,
+					"duration_ns":    int64(iter.Duration),
+					"peak_memory_kb": iter.PeakMemoryKB,
+					"exit_code":      iter.ExitCode,
+					"status":         iter.Status,
+				}
+			}
+			stepMap["iterations"] = iterations
 		}
+
+		// Add scatter summary
+		if step.ScatterSummary != nil {
+			ss := step.ScatterSummary
+			stepMap["scatter_summary"] = map[string]any{
+				"count":             ss.Count,
+				"duration_avg":      ss.DurationAvgStr,
+				"duration_avg_ns":   int64(ss.DurationAvg),
+				"duration_stddev":   ss.DurationStddevStr,
+				"duration_stddev_ns": int64(ss.DurationStddev),
+				"memory_avg_kb":     ss.MemoryAvgKB,
+				"memory_max_kb":     ss.MemoryMaxKB,
+				"success_count":     ss.SuccessCount,
+				"failed_count":      ss.FailedCount,
+			}
+		}
+
 		steps[i] = stepMap
 	}
 

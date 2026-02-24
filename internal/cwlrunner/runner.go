@@ -437,27 +437,15 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	return result.Outputs, nil
 }
 
-// executeScatterWithMetrics executes a scatter step and records aggregated metrics.
+// executeScatterWithMetrics executes a scatter step and records per-iteration metrics.
 func (r *Runner) executeScatterWithMetrics(ctx context.Context, graph *cwl.GraphDocument,
 	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, stepID string,
 	evaluator *cwlexpr.Evaluator) (map[string]any, error) {
 
 	startTime := time.Now()
 
-	// Count the number of scatter iterations
-	iterations := 0
-	for _, scatterInput := range step.Scatter {
-		if val := inputs[scatterInput]; val != nil {
-			if arr, ok := toAnySlice(val); ok {
-				if iterations == 0 || len(arr) < iterations {
-					iterations = len(arr)
-				}
-			}
-		}
-	}
-
-	// Execute the scatter
-	outputs, err := r.executeScatter(ctx, graph, tool, step, inputs, evaluator)
+	// Execute the scatter with iteration tracking
+	outputs, iterMetrics, err := r.executeScatterWithIterationMetrics(ctx, graph, tool, step, inputs, evaluator)
 
 	duration := time.Since(startTime)
 
@@ -467,17 +455,240 @@ func (r *Runner) executeScatterWithMetrics(ctx context.Context, graph *cwl.Graph
 		if err != nil {
 			status = "failed"
 		}
-		r.metrics.RecordStep(StepMetrics{
+
+		stepMetrics := StepMetrics{
 			StepID:     stepID,
 			ToolID:     tool.ID,
 			StartTime:  startTime,
 			Duration:   duration,
-			Iterations: iterations,
 			Status:     status,
-		})
+			Iterations: iterMetrics,
+		}
+
+		// Compute scatter summary from iteration metrics
+		if len(iterMetrics) > 0 {
+			stepMetrics.ScatterSummary = ComputeScatterSummary(iterMetrics)
+		}
+
+		r.metrics.RecordStep(stepMetrics)
 	}
 
 	return outputs, err
+}
+
+// executeScatterWithIterationMetrics executes scatter and returns per-iteration metrics.
+func (r *Runner) executeScatterWithIterationMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any,
+	evaluator *cwlexpr.Evaluator) (map[string]any, []IterationMetrics, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if evaluator != nil {
+		eval = evaluator
+	}
+
+	// Check 'when' condition early (before scatter validation).
+	if step.When != "" && eval != nil && !whenReferencesScatterVars(step.When, step.Scatter) {
+		evalCtx := cwlexpr.NewContext(inputs)
+		shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+		if err != nil {
+			r.logger.Debug("when condition pre-check failed, will evaluate per-iteration", "error", err)
+		} else if !shouldRun {
+			r.logger.Info("skipping scatter step (when condition false)", "step", step.Run)
+			outputs := make(map[string]any)
+			for _, outID := range step.Out {
+				outputs[outID] = nil
+			}
+			return outputs, nil, nil
+		}
+	}
+
+	// Determine scatter method
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Generate input combinations
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	// Evaluate valueFrom expressions per scatter iteration
+	if eval != nil && hasValueFrom(step) {
+		for _, combo := range combinations {
+			if err := evaluateValueFrom(step, combo, eval); err != nil {
+				return nil, nil, fmt.Errorf("scatter valueFrom: %w", err)
+			}
+		}
+	}
+
+	// Execute tool for each combination, collecting iteration metrics
+	var results []map[string]any
+	var iterMetrics []IterationMetrics
+	for i, combo := range combinations {
+		r.logger.Debug("scatter iteration", "index", i, "inputs", combo)
+
+		iterStart := time.Now()
+		var iterStatus string
+		var iterExitCode int
+		var iterMemory int64
+
+		// Evaluate 'when' condition if present
+		if step.When != "" && eval != nil {
+			evalCtx := cwlexpr.NewContext(combo)
+			shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+			if err != nil {
+				return nil, nil, fmt.Errorf("scatter iteration %d when: %w", i, err)
+			}
+			if !shouldRun {
+				// Condition is false for this iteration
+				nullOutputs := make(map[string]any)
+				for _, outID := range step.Out {
+					nullOutputs[outID] = nil
+				}
+				results = append(results, nullOutputs)
+				iterMetrics = append(iterMetrics, IterationMetrics{
+					Index:       i,
+					Duration:    time.Since(iterStart),
+					DurationStr: formatDuration(time.Since(iterStart)),
+					Status:      "skipped",
+				})
+				continue
+			}
+		}
+
+		// Execute the tool
+		result, err := r.executeToolInternal(ctx, graph, tool, combo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scatter iteration %d: %w", i, err)
+		}
+
+		results = append(results, result.Outputs)
+		iterStatus = "success"
+		iterExitCode = result.ExitCode
+		iterMemory = result.PeakMemoryKB
+
+		iterMetrics = append(iterMetrics, IterationMetrics{
+			Index:        i,
+			Duration:     result.Duration,
+			DurationStr:  formatDuration(result.Duration),
+			PeakMemoryKB: iterMemory,
+			ExitCode:     iterExitCode,
+			Status:       iterStatus,
+		})
+	}
+
+	// Merge results into output arrays
+	var outputs map[string]any
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		outputs = mergeScatterOutputsNested(results, tool, dims)
+	} else {
+		outputs = mergeScatterOutputs(results, tool)
+	}
+
+	return outputs, iterMetrics, nil
+}
+
+// executeToolInternal executes a tool and returns ExecutionResult without recording metrics.
+// This is used by scatter executors to collect per-iteration results.
+func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, inputs map[string]any) (*ExecutionResult, error) {
+
+	// Merge tool input defaults with resolved inputs.
+	mergedInputs, err := mergeToolDefaults(tool, inputs, r.cwlDir)
+	if err != nil {
+		return nil, fmt.Errorf("process inputs: %w", err)
+	}
+
+	// Validate inputs against tool schema.
+	if err := validateToolInputs(tool, mergedInputs); err != nil {
+		return nil, err
+	}
+
+	// Get expression library from requirements.
+	expressionLib := extractExpressionLib(graph)
+
+	// Determine container runtime.
+	containerRuntime := r.ContainerRuntime
+	if r.NoContainer {
+		containerRuntime = ""
+	} else if containerRuntime == "" {
+		if r.ForceDocker {
+			containerRuntime = "docker"
+		} else if hasDockerRequirement(tool, graph.Workflow) {
+			containerRuntime = "docker"
+		}
+	}
+
+	// Get the work directory for this execution.
+	r.stepMu.Lock()
+	r.stepCount++
+	stepNum := r.stepCount
+	r.stepMu.Unlock()
+	workDir := filepath.Join(r.OutDir, fmt.Sprintf("work_%d", stepNum))
+	if absWorkDir, err := filepath.Abs(workDir); err == nil {
+		workDir = absWorkDir
+	}
+
+	// Build runtime context.
+	runtime := buildRuntimeContext(tool, workDir)
+
+	// Build command line.
+	builder := cmdline.NewBuilder(expressionLib)
+	cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+	if err != nil {
+		return nil, fmt.Errorf("build command: %w", err)
+	}
+
+	// Execute based on container runtime
+	switch containerRuntime {
+	case "docker":
+		dockerImage := getDockerImage(tool, graph.Workflow)
+		if dockerImage == "" {
+			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
+		}
+		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+	case "apptainer":
+		dockerImage := getDockerImage(tool, graph.Workflow)
+		if dockerImage == "" {
+			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
+		}
+		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+	default:
+		return r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
+	}
 }
 
 // executeExpressionTool executes a CWL ExpressionTool by evaluating its JavaScript expression.

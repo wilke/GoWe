@@ -222,8 +222,21 @@ func TestWorkflowMetrics_ToMap(t *testing.T) {
 				StepID:      "step2",
 				Duration:    60 * time.Second,
 				DurationStr: "1m 00s",
-				Iterations:  4,
 				Status:      "success",
+				Iterations: []IterationMetrics{
+					{Index: 0, Duration: 15 * time.Second, DurationStr: "15.0s", PeakMemoryKB: 512, Status: "success"},
+					{Index: 1, Duration: 14 * time.Second, DurationStr: "14.0s", PeakMemoryKB: 520, Status: "success"},
+					{Index: 2, Duration: 16 * time.Second, DurationStr: "16.0s", PeakMemoryKB: 530, Status: "success"},
+					{Index: 3, Duration: 15 * time.Second, DurationStr: "15.0s", PeakMemoryKB: 510, Status: "success"},
+				},
+				ScatterSummary: &ScatterSummary{
+					Count:          4,
+					DurationAvg:   15 * time.Second,
+					DurationAvgStr: "15.0s",
+					MemoryAvgKB:   518,
+					MemoryMaxKB:   530,
+					SuccessCount:  4,
+				},
 			},
 		},
 	}
@@ -255,9 +268,12 @@ func TestWorkflowMetrics_ToMap(t *testing.T) {
 	if steps[0]["tool_id"] != "tool1" {
 		t.Errorf("expected step[0].tool_id 'tool1', got %v", steps[0]["tool_id"])
 	}
-	// Check second step has iterations
-	if steps[1]["iterations"] != 4 {
-		t.Errorf("expected step[1].iterations 4, got %v", steps[1]["iterations"])
+	// Check second step has scatter_summary and iterations
+	if _, ok := steps[1]["scatter_summary"]; !ok {
+		t.Error("expected step[1] to have scatter_summary")
+	}
+	if iters, ok := steps[1]["iterations"].([]map[string]any); !ok || len(iters) != 4 {
+		t.Errorf("expected step[1].iterations to be array of 4, got %v", steps[1]["iterations"])
 	}
 }
 
