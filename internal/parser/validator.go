@@ -121,18 +121,29 @@ func (v *Validator) validateSources(graph *cwl.GraphDocument) []model.FieldError
 	// Check each step input source.
 	for stepID, step := range wf.Steps {
 		for inID, si := range step.In {
-			if si.Source == "" && si.Default == nil && si.ValueFrom == "" {
+			// Check if there are any non-empty sources.
+			hasSource := false
+			for _, s := range si.Sources {
+				if s != "" {
+					hasSource = true
+					break
+				}
+			}
+			if !hasSource && si.Default == nil && si.ValueFrom == "" {
 				errs = append(errs, model.FieldError{
 					Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
 					Message: fmt.Sprintf("step %q input %q has no source, no default, and no valueFrom", stepID, inID),
 				})
 				continue
 			}
-			if si.Source != "" && !validSources[si.Source] {
-				errs = append(errs, model.FieldError{
-					Field:   fmt.Sprintf("steps.%s.in.%s.source", stepID, inID),
-					Message: fmt.Sprintf("source %q does not match any workflow input or step output", si.Source),
-				})
+			// Validate each source reference.
+			for _, source := range si.Sources {
+				if source != "" && !validSources[source] {
+					errs = append(errs, model.FieldError{
+						Field:   fmt.Sprintf("steps.%s.in.%s.source", stepID, inID),
+						Message: fmt.Sprintf("source %q does not match any workflow input or step output", source),
+					})
+				}
 			}
 		}
 	}

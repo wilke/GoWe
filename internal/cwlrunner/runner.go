@@ -779,7 +779,18 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 
 	// First pass: resolve sources and defaults.
 	for inputID, stepInput := range step.In {
-		value := resolveSource(stepInput.Source, workflowInputs, stepOutputs)
+		var value any
+		if len(stepInput.Sources) == 1 {
+			// Single source - value is the resolved source.
+			value = resolveSource(stepInput.Sources[0], workflowInputs, stepOutputs)
+		} else if len(stepInput.Sources) > 1 {
+			// Multiple sources (MultipleInputFeatureRequirement) - value is array of resolved sources.
+			values := make([]any, len(stepInput.Sources))
+			for i, src := range stepInput.Sources {
+				values[i] = resolveSource(src, workflowInputs, stepOutputs)
+			}
+			value = values
+		}
 		if value == nil && stepInput.Default != nil {
 			// Resolve File/Directory objects in defaults relative to CWL directory.
 			value = resolveDefaultValue(stepInput.Default, cwlDir)

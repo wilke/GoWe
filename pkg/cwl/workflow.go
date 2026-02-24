@@ -51,7 +51,7 @@ type Step struct {
 // StepInput is a normalized CWL step input.
 // Handles both shorthand ("read1: reads_r1") and expanded form.
 type StepInput struct {
-	Source    string
+	Sources   []string // One or more source references (supports MultipleInputFeatureRequirement)
 	Default   any
 	ValueFrom string // Expression to transform input (requires StepInputExpressionRequirement)
 }

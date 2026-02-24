@@ -19,13 +19,13 @@ func TestBuildDAG_LinearPipeline(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"assemble": {
 			Run: "#tool1",
-			In:  map[string]cwl.StepInput{"read1": {Source: "reads_r1"}},
+			In:  map[string]cwl.StepInput{"read1": {Sources: []string{"reads_r1"}}},
 			Out: []string{"contigs"},
 		},
 		"annotate": {
 			Run: "#tool2",
 			In: map[string]cwl.StepInput{
-				"contigs": {Source: "assemble/contigs"},
+				"contigs": {Sources: []string{"assemble/contigs"}},
 			},
 			Out: []string{"genome"},
 		},
@@ -57,12 +57,12 @@ func TestBuildDAG_ParallelSteps(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"step_a": {
 			Run: "#tool1",
-			In:  map[string]cwl.StepInput{"input": {Source: "wf_input"}},
+			In:  map[string]cwl.StepInput{"input": {Sources: []string{"wf_input"}}},
 			Out: []string{"output"},
 		},
 		"step_b": {
 			Run: "#tool2",
-			In:  map[string]cwl.StepInput{"input": {Source: "wf_input"}},
+			In:  map[string]cwl.StepInput{"input": {Sources: []string{"wf_input"}}},
 			Out: []string{"output"},
 		},
 	})
@@ -90,24 +90,24 @@ func TestBuildDAG_DiamondShape(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"a": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "input"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"input"}}},
 			Out: []string{"out"},
 		},
 		"b": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "a/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"a/out"}}},
 			Out: []string{"out"},
 		},
 		"c": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "a/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"a/out"}}},
 			Out: []string{"out"},
 		},
 		"d": {
 			Run: "#t",
 			In: map[string]cwl.StepInput{
-				"x": {Source: "b/out"},
-				"y": {Source: "c/out"},
+				"x": {Sources: []string{"b/out"}},
+				"y": {Sources: []string{"c/out"}},
 			},
 			Out: []string{"out"},
 		},
@@ -142,12 +142,12 @@ func TestBuildDAG_CycleDetected(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"a": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "b/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"b/out"}}},
 			Out: []string{"out"},
 		},
 		"b": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "a/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"a/out"}}},
 			Out: []string{"out"},
 		},
 	})
@@ -165,7 +165,7 @@ func TestBuildDAG_SelfLoop(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"a": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "a/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"a/out"}}},
 			Out: []string{"out"},
 		},
 	})
@@ -183,7 +183,7 @@ func TestBuildDAG_SingleStep(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"only": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "input"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"input"}}},
 			Out: []string{"out"},
 		},
 	})
@@ -202,17 +202,17 @@ func TestBuildDAG_ThreeStepChain(t *testing.T) {
 	wf := makeWorkflow(map[string]cwl.Step{
 		"a": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "input"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"input"}}},
 			Out: []string{"out"},
 		},
 		"b": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "a/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"a/out"}}},
 			Out: []string{"out"},
 		},
 		"c": {
 			Run: "#t",
-			In:  map[string]cwl.StepInput{"x": {Source: "b/out"}},
+			In:  map[string]cwl.StepInput{"x": {Sources: []string{"b/out"}}},
 			Out: []string{"out"},
 		},
 	})

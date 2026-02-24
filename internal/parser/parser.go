@@ -125,6 +125,13 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			for toolID, tool := range wfResult.InlineTools {
 				graph.Tools[toolID] = tool
 			}
+			// Add inline expression tools from workflow steps.
+			for toolID, exprTool := range wfResult.InlineExpressionTools {
+				if graph.ExpressionTools == nil {
+					graph.ExpressionTools = make(map[string]*cwl.ExpressionTool)
+				}
+				graph.ExpressionTools[toolID] = exprTool
+			}
 
 		case "CommandLineTool":
 			tool, err := p.parseTool(m)
@@ -214,7 +221,7 @@ func createSyntheticWorkflow(tool *cwl.CommandLineTool) *cwl.Workflow {
 	// Build step inputs (map workflow inputs to step inputs).
 	stepIn := make(map[string]cwl.StepInput)
 	for id := range tool.Inputs {
-		stepIn[id] = cwl.StepInput{Source: id}
+		stepIn[id] = cwl.StepInput{Sources: []string{id}}
 	}
 
 	// Create Run reference - always use "#" prefix with the stripped ID.
@@ -260,8 +267,8 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 		tools = make(map[string]*cwl.CommandLineTool)
 	}
 
-	// Initialize expression tools map.
-	var exprTools map[string]*cwl.ExpressionTool
+	// Initialize expression tools map with any inline expression tools from steps.
+	exprTools := wfResult.InlineExpressionTools
 
 	// Load external tool files referenced by steps.
 	for stepID, step := range wfResult.Workflow.Steps {
@@ -383,7 +390,7 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 	// Build step inputs (map workflow inputs to step inputs).
 	stepIn := make(map[string]cwl.StepInput)
 	for id := range tool.Inputs {
-		stepIn[id] = cwl.StepInput{Source: id}
+		stepIn[id] = cwl.StepInput{Sources: []string{id}}
 	}
 
 	// Create synthetic workflow with single step.
@@ -425,14 +432,16 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 
 // workflowParseResult holds the result of parsing a workflow.
 type workflowParseResult struct {
-	Workflow    *cwl.Workflow
-	InlineTools map[string]*cwl.CommandLineTool
+	Workflow               *cwl.Workflow
+	InlineTools            map[string]*cwl.CommandLineTool
+	InlineExpressionTools  map[string]*cwl.ExpressionTool
 }
 
 // parseWorkflow parses a single CWL Workflow from a raw map.
 func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) {
 	result := workflowParseResult{
-		InlineTools: make(map[string]*cwl.CommandLineTool),
+		InlineTools:           make(map[string]*cwl.CommandLineTool),
+		InlineExpressionTools: make(map[string]*cwl.ExpressionTool),
 	}
 
 	wf := &cwl.Workflow{
@@ -506,6 +515,10 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 				toolID := stepResult.InlineTool.ID
 				result.InlineTools[toolID] = stepResult.InlineTool
 			}
+			if stepResult.InlineExpressionTool != nil {
+				toolID := stepResult.InlineExpressionTool.ID
+				result.InlineExpressionTools[toolID] = stepResult.InlineExpressionTool
+			}
 		}
 	}
 
@@ -574,8 +587,9 @@ func normalizeHintsToMap(v any) map[string]any {
 
 // stepParseResult holds the result of parsing a workflow step.
 type stepParseResult struct {
-	Step       cwl.Step
-	InlineTool *cwl.CommandLineTool // non-nil if step has inline tool
+	Step                 cwl.Step
+	InlineTool           *cwl.CommandLineTool   // non-nil if step has inline CommandLineTool
+	InlineExpressionTool *cwl.ExpressionTool    // non-nil if step has inline ExpressionTool
 }
 
 // parseStep parses a single CWL workflow step from a raw map.
@@ -611,20 +625,37 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 	case string:
 		step.Run = runVal
 	case map[string]any:
-		// Inline tool - parse it and generate a reference.
-		tool, err := p.parseTool(runVal)
-		if err != nil {
-			return result, fmt.Errorf("parse inline tool: %w", err)
-		}
-		// Generate ID for inline tool based on step ID.
+		// Inline tool - check class to determine type.
+		class := stringField(runVal, "class")
 		inlineID := stepID + "_inline"
-		if tool.ID == "" {
-			tool.ID = inlineID
+
+		if class == "ExpressionTool" {
+			// Parse as ExpressionTool.
+			exprTool, err := p.parseExpressionTool(runVal)
+			if err != nil {
+				return result, fmt.Errorf("parse inline expression tool: %w", err)
+			}
+			if exprTool.ID == "" {
+				exprTool.ID = inlineID
+			} else {
+				inlineID = exprTool.ID
+			}
+			step.Run = "#" + inlineID
+			result.InlineExpressionTool = exprTool
 		} else {
-			inlineID = tool.ID
+			// Parse as CommandLineTool (default).
+			tool, err := p.parseTool(runVal)
+			if err != nil {
+				return result, fmt.Errorf("parse inline tool: %w", err)
+			}
+			if tool.ID == "" {
+				tool.ID = inlineID
+			} else {
+				inlineID = tool.ID
+			}
+			step.Run = "#" + inlineID
+			result.InlineTool = tool
 		}
-		step.Run = "#" + inlineID
-		result.InlineTool = tool
 	}
 
 	// Parse step inputs: supports both array-style and map-style.
@@ -632,10 +663,10 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 	for id, v := range in {
 		switch val := v.(type) {
 		case string:
-			step.In[id] = cwl.StepInput{Source: normalizeSourceRef(val)}
+			step.In[id] = cwl.StepInput{Sources: []string{normalizeSourceRef(val)}}
 		case map[string]any:
 			step.In[id] = cwl.StepInput{
-				Source:    normalizeSourceRef(stringField(val, "source")),
+				Sources:   normalizeSourceRefs(val["source"]),
 				Default:   val["default"],
 				ValueFrom: stringField(val, "valueFrom"),
 			}
@@ -684,6 +715,38 @@ func normalizeSourceRef(source string) string {
 
 	// Fallback - return last component
 	return parts[len(parts)-1]
+}
+
+// normalizeSourceRefs handles step input source which can be a string or array.
+// Returns a slice of normalized source references.
+func normalizeSourceRefs(source any) []string {
+	if source == nil {
+		return nil
+	}
+	switch v := source.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []string{normalizeSourceRef(v)}
+	case []any:
+		result := make([]string, 0, len(v))
+		for _, s := range v {
+			if str, ok := s.(string); ok && str != "" {
+				result = append(result, normalizeSourceRef(str))
+			}
+		}
+		return result
+	case []string:
+		result := make([]string, 0, len(v))
+		for _, s := range v {
+			if s != "" {
+				result = append(result, normalizeSourceRef(s))
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 // parseTool parses a single CWL CommandLineTool from a raw map.
@@ -1166,9 +1229,17 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 
 		// Convert step inputs.
 		for inID, si := range step.In {
+			// For model storage, join multiple sources with comma.
+			// The cwl-runner uses cwl.StepInput.Sources directly.
+			source := ""
+			if len(si.Sources) == 1 {
+				source = si.Sources[0]
+			} else if len(si.Sources) > 1 {
+				source = strings.Join(si.Sources, ",")
+			}
 			ms.In = append(ms.In, model.StepInput{
 				ID:        inID,
-				Source:    si.Source,
+				Source:    source,
 				ValueFrom: si.ValueFrom,
 			})
 		}

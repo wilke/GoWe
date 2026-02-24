@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/me/gowe/pkg/cwl"
@@ -143,8 +144,8 @@ func TestParseGraph_Steps(t *testing.T) {
 	if len(assemble.In) != 2 {
 		t.Errorf("assemble.In count = %d, want 2", len(assemble.In))
 	}
-	if r1, ok := assemble.In["read1"]; !ok || r1.Source != "reads_r1" {
-		t.Errorf("assemble.In[read1].Source = %q, want reads_r1", assemble.In["read1"].Source)
+	if r1, ok := assemble.In["read1"]; !ok || len(r1.Sources) != 1 || r1.Sources[0] != "reads_r1" {
+		t.Errorf("assemble.In[read1].Sources = %v, want [reads_r1]", assemble.In["read1"].Sources)
 	}
 	if len(assemble.Out) != 1 || assemble.Out[0] != "contigs" {
 		t.Errorf("assemble.Out = %v, want [contigs]", assemble.Out)
@@ -161,8 +162,8 @@ func TestParseGraph_Steps(t *testing.T) {
 		t.Errorf("annotate.In count = %d, want 3", len(annotate.In))
 	}
 	// Source referencing another step's output.
-	if c, ok := annotate.In["contigs"]; !ok || c.Source != "assemble/contigs" {
-		t.Errorf("annotate.In[contigs].Source = %q, want assemble/contigs", annotate.In["contigs"].Source)
+	if c, ok := annotate.In["contigs"]; !ok || len(c.Sources) != 1 || c.Sources[0] != "assemble/contigs" {
+		t.Errorf("annotate.In[contigs].Sources = %v, want [assemble/contigs]", annotate.In["contigs"].Sources)
 	}
 }
 
@@ -539,8 +540,8 @@ $graph:
 
 	// Step input with expanded source.
 	si := graph.Workflow.Steps["step1"].In["input1"]
-	if si.Source != "reads" {
-		t.Errorf("step1.In[input1].Source = %q, want reads", si.Source)
+	if len(si.Sources) != 1 || si.Sources[0] != "reads" {
+		t.Errorf("step1.In[input1].Sources = %v, want [reads]", si.Sources)
 	}
 }
 
@@ -808,8 +809,8 @@ func TestComputeDependsOn(t *testing.T) {
 		{
 			name: "no dependencies",
 			inputs: []cwl.StepInput{
-				{Source: "reads_r1"},
-				{Source: "reads_r2"},
+				{Sources: []string{"reads_r1"}},
+				{Sources: []string{"reads_r2"}},
 			},
 			wfInputs: map[string]bool{"reads_r1": true, "reads_r2": true},
 			want:     nil,
@@ -817,8 +818,8 @@ func TestComputeDependsOn(t *testing.T) {
 		{
 			name: "one dependency",
 			inputs: []cwl.StepInput{
-				{Source: "assemble/contigs"},
-				{Source: "scientific_name"},
+				{Sources: []string{"assemble/contigs"}},
+				{Sources: []string{"scientific_name"}},
 			},
 			wfInputs: map[string]bool{"scientific_name": true},
 			want:     []string{"assemble"},
@@ -826,8 +827,8 @@ func TestComputeDependsOn(t *testing.T) {
 		{
 			name: "deduplicated",
 			inputs: []cwl.StepInput{
-				{Source: "assemble/contigs"},
-				{Source: "assemble/stats"},
+				{Sources: []string{"assemble/contigs"}},
+				{Sources: []string{"assemble/stats"}},
 			},
 			wfInputs: map[string]bool{},
 			want:     []string{"assemble"},
@@ -838,7 +839,11 @@ func TestComputeDependsOn(t *testing.T) {
 			// Convert cwl.StepInput to model.StepInput.
 			var modelInputs []model.StepInput
 			for _, si := range tt.inputs {
-				modelInputs = append(modelInputs, model.StepInput{Source: si.Source})
+				source := ""
+				if len(si.Sources) > 0 {
+					source = strings.Join(si.Sources, ",")
+				}
+				modelInputs = append(modelInputs, model.StepInput{Source: source})
 			}
 			got := computeDependsOn(modelInputs, tt.wfInputs)
 			if len(got) != len(tt.want) {
@@ -850,5 +855,26 @@ func TestComputeDependsOn(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDebugSumParse(t *testing.T) {
+	p := testParser()
+	data := loadTestdata(t, "cwl-v1.2/tests/sum-wf.cwl")
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	
+	t.Logf("Workflow: %v", graph.Workflow != nil)
+	t.Logf("Tools: %d", len(graph.Tools))
+	t.Logf("ExpressionTools: %d", len(graph.ExpressionTools))
+	
+	for stepID, step := range graph.Workflow.Steps {
+		t.Logf("Step %s: Run=%s, Out=%v", stepID, step.Run, step.Out)
+	}
+	
+	for toolID := range graph.ExpressionTools {
+		t.Logf("ExprTool: %s", toolID)
 	}
 }
