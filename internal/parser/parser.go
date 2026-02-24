@@ -1220,9 +1220,12 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 	// Convert outputs.
 	for id, out := range wf.Outputs {
 		mw.Outputs = append(mw.Outputs, model.WorkflowOutput{
-			ID:           id,
-			Type:         out.Type,
-			OutputSource: out.OutputSource,
+			ID:            id,
+			Type:          out.Type,
+			OutputSource:  out.OutputSource,
+			OutputSources: out.OutputSources,
+			PickValue:     out.PickValue,
+			LinkMerge:     out.LinkMerge,
 		})
 	}
 	sort.Slice(mw.Outputs, func(i, j int) bool {

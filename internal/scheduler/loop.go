@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/store"
@@ -255,6 +257,23 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 	}
 	tasksByStep := BuildTasksByStepID(allTasks)
 
+	// Evaluate 'when' condition if present.
+	if step.When != "" {
+		shouldRun, err := l.evaluateWhenCondition(step, sub.Inputs, tasksByStep)
+		if err != nil {
+			l.logger.Warn("when condition evaluation failed", "task_id", task.ID, "error", err)
+			// Continue with execution if evaluation fails
+		} else if !shouldRun {
+			// Skip this task - when condition is false
+			now := time.Now().UTC()
+			task.State = model.TaskStateSkipped
+			task.CompletedAt = &now
+			task.Outputs = make(map[string]any) // Empty outputs for skipped task
+			l.logger.Info("task skipped (when condition false)", "task_id", task.ID, "step_id", task.StepID)
+			return l.store.UpdateTask(ctx, task)
+		}
+	}
+
 	// For worker executor tasks, populate Tool and Job fields from the CWL.
 	if task.ExecutorType == model.ExecutorTypeWorker {
 		if err := l.populateToolAndJob(task, step, wf, sub.Inputs, tasksByStep); err != nil {
@@ -435,6 +454,21 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 				sub.State = model.SubmissionStateFailed
 			} else {
 				sub.State = model.SubmissionStateCompleted
+
+				// Collect workflow outputs with pickValue and linkMerge support.
+				wf, wfErr := l.store.GetWorkflow(ctx, sub.WorkflowID)
+				if wfErr != nil {
+					l.logger.Error("get workflow for output collection", "submission_id", subID, "error", wfErr)
+				} else if wf != nil {
+					outputs, outErr := l.collectWorkflowOutputs(wf, sub)
+					if outErr != nil {
+						l.logger.Error("collect workflow outputs", "submission_id", subID, "error", outErr)
+						// Don't fail the submission - just log the error
+					} else {
+						sub.Outputs = outputs
+						l.logger.Debug("collected workflow outputs", "submission_id", subID, "outputs", len(outputs))
+					}
+				}
 			}
 			now := time.Now().UTC()
 			sub.CompletedAt = &now
@@ -496,6 +530,69 @@ func groupBySubmission(tasks []*model.Task) map[string][]*model.Task {
 		m[t.SubmissionID] = append(m[t.SubmissionID], t)
 	}
 	return m
+}
+
+// evaluateWhenCondition evaluates a step's 'when' condition.
+// Returns true if the step should run, false if it should be skipped.
+func (l *Loop) evaluateWhenCondition(step *model.Step, submissionInputs map[string]any, tasksByStepID map[string]*model.Task) (bool, error) {
+	if step.When == "" {
+		return true, nil
+	}
+
+	// Build inputs context for the when expression.
+	// The context includes workflow inputs and resolved step inputs.
+	inputs := make(map[string]any)
+
+	// Add workflow inputs
+	for k, v := range submissionInputs {
+		inputs[k] = v
+	}
+
+	// Resolve step input sources to get values for the when expression
+	for _, si := range step.In {
+		if si.Source == "" {
+			continue
+		}
+		if strings.Contains(si.Source, "/") {
+			// Upstream task output
+			parts := strings.SplitN(si.Source, "/", 2)
+			stepID, outputID := parts[0], parts[1]
+			if depTask, ok := tasksByStepID[stepID]; ok {
+				if val, ok := depTask.Outputs[outputID]; ok {
+					inputs[si.ID] = val
+				}
+			}
+		} else {
+			// Workflow input
+			if val, ok := submissionInputs[si.Source]; ok {
+				inputs[si.ID] = val
+			}
+		}
+	}
+
+	// Evaluate the when expression
+	evaluator := cwlexpr.NewEvaluator(nil)
+	ctx := cwlexpr.NewContext(inputs)
+	shouldRun, err := evaluator.EvaluateBool(step.When, ctx)
+	if err != nil {
+		return true, fmt.Errorf("when expression: %w", err)
+	}
+	return shouldRun, nil
+}
+
+// collectWorkflowOutputs gathers the final workflow outputs from completed tasks.
+// This is called when finalizing a submission.
+func (l *Loop) collectWorkflowOutputs(wf *model.Workflow, sub *model.Submission) (map[string]any, error) {
+	// Build task outputs map by step ID
+	taskOutputs := make(map[string]map[string]any)
+	for _, task := range sub.Tasks {
+		if task.Outputs != nil {
+			taskOutputs[task.StepID] = task.Outputs
+		}
+	}
+
+	// Use the shared cwloutput package to collect outputs
+	return cwloutput.CollectWorkflowOutputs(wf.Outputs, sub.Inputs, taskOutputs)
 }
 
 // populateToolAndJob extracts the full CWL tool definition from the workflow's
