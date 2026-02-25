@@ -156,7 +156,7 @@ func (r *Runner) PrintCommandLine(ctx context.Context, cwlPath, jobPath string, 
 	resolvedInputs := resolveInputPaths(inputs, jobDir)
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Build command line for each tool.
 	for toolID, tool := range graph.Tools {
@@ -342,7 +342,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	}
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Determine container runtime.
 	// Priority: NoContainer (forces local) > ContainerRuntime (explicit) > ForceDocker > auto-detect.
@@ -656,7 +656,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	}
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Determine container runtime.
 	containerRuntime := r.ContainerRuntime
@@ -741,7 +741,7 @@ func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[stri
 	}
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Create expression context with processed inputs (with contents loaded).
 	ctx := cwlexpr.NewContext(processedInputs)
@@ -802,7 +802,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	stepOutputs := make(map[string]map[string]any)
 
 	// Create evaluator for expressions (valueFrom, when).
-	evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph))
+	evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph, r.cwlDir))
 
 	// Execute steps in topological order.
 	for _, stepID := range dag.Order {
@@ -2180,7 +2180,7 @@ func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, ste
 }
 
 // extractExpressionLib extracts the expression library from requirements.
-func extractExpressionLib(graph *cwl.GraphDocument) []string {
+func extractExpressionLib(graph *cwl.GraphDocument, cwlDir string) []string {
 	// Check workflow requirements.
 	if graph.Workflow != nil {
 		// Requirements not yet stored in Workflow struct.
@@ -2193,8 +2193,18 @@ func extractExpressionLib(graph *cwl.GraphDocument) []string {
 				if lib, ok := ijsReq["expressionLib"].([]any); ok {
 					var result []string
 					for _, item := range lib {
-						if s, ok := item.(string); ok {
-							result = append(result, s)
+						switch v := item.(type) {
+						case string:
+							result = append(result, v)
+						case map[string]any:
+							// Handle $include directive: { $include: "filename.js" }
+							if includePath, ok := v["$include"].(string); ok {
+								fullPath := filepath.Join(cwlDir, includePath)
+								data, err := os.ReadFile(fullPath)
+								if err == nil {
+									result = append(result, string(data))
+								}
+							}
 						}
 					}
 					return result
@@ -2518,7 +2528,12 @@ func validateFileSecondaryFiles(path string, fileObj map[string]any, required []
 		}
 
 		// Compute the expected secondary file name.
-		expectedName := computeSecondaryFileName(basename, schema.Pattern)
+		expectedName := computeSecondaryFileName(basename, schema.Pattern, fileObj, nil)
+
+		// Skip empty names (expression evaluation failed or returned nil).
+		if expectedName == "" {
+			continue
+		}
 
 		if !existingSecondary[expectedName] {
 			return fmt.Errorf("input %q: missing required secondary file %q (pattern: %s)", path, expectedName, schema.Pattern)
@@ -2529,7 +2544,49 @@ func validateFileSecondaryFiles(path string, fileObj map[string]any, required []
 }
 
 // computeSecondaryFileName computes the secondary file name from a base name and pattern.
-func computeSecondaryFileName(basename, pattern string) string {
+// If the pattern is a JavaScript expression, it evaluates it with 'self' set to the file object.
+// inputs is optional and used for expressions that reference $(inputs.xxx).
+func computeSecondaryFileName(basename, pattern string, fileObj map[string]any, inputs map[string]any) string {
+	// Check if this is a JavaScript expression.
+	if cwlexpr.IsExpression(pattern) {
+		// Evaluate the expression with 'self' set to the file object.
+		evaluator := cwlexpr.NewEvaluator(nil)
+		ctx := cwlexpr.NewContext(inputs).WithSelf(fileObj)
+		result, err := evaluator.Evaluate(pattern, ctx)
+		if err != nil {
+			// Fall back to treating it as a literal if evaluation fails.
+			return basename + pattern
+		}
+
+		// Handle the result.
+		switch v := result.(type) {
+		case string:
+			return v
+		case map[string]any:
+			// File object returned - extract the path.
+			if p, ok := v["path"].(string); ok {
+				return filepath.Base(p)
+			}
+			if bn, ok := v["basename"].(string); ok {
+				return bn
+			}
+		case []any:
+			// Array of results - take the first string.
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					return s
+				}
+				if m, ok := item.(map[string]any); ok {
+					if bn, ok := m["basename"].(string); ok {
+						return bn
+					}
+				}
+			}
+		}
+		// If we can't extract a name, return empty.
+		return ""
+	}
+
 	// Handle caret pattern (replace extension).
 	if strings.HasPrefix(pattern, "^") {
 		// Count carets and remove that many extensions.
@@ -2776,7 +2833,13 @@ func resolveSecondaryFilesForFile(fileObj map[string]any, schemas []cwl.Secondar
 	dir := filepath.Dir(filePath)
 
 	for _, schema := range schemas {
-		secFileName := computeSecondaryFileName(basename, schema.Pattern)
+		secFileName := computeSecondaryFileName(basename, schema.Pattern, result, nil)
+
+		// Skip empty names (expression evaluation failed or returned nil).
+		if secFileName == "" {
+			continue
+		}
+
 		secPath := filepath.Join(dir, secFileName)
 
 		// Check if the secondary file exists.

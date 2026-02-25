@@ -650,6 +650,22 @@ func collectInputMountsValue(v any, mounts map[string]string) {
 						mounts[resolved] = path
 					}
 				}
+				// Also collect secondary files for File objects.
+				if class == "File" {
+					if secFiles, ok := val["secondaryFiles"].([]any); ok {
+						for _, sf := range secFiles {
+							collectInputMountsValue(sf, mounts)
+						}
+					}
+				}
+				// Collect listing for Directory objects.
+				if class == "Directory" {
+					if listing, ok := val["listing"].([]any); ok {
+						for _, item := range listing {
+							collectInputMountsValue(item, mounts)
+						}
+					}
+				}
 			}
 		}
 	case []any:
@@ -804,7 +820,7 @@ func (r *Runner) collectOutputs(tool *cwl.CommandLineTool, workDir string, input
 
 		// Add secondaryFiles to collected output.
 		if len(output.SecondaryFiles) > 0 {
-			collected = r.addSecondaryFilesToOutput(collected, output.SecondaryFiles, workDir)
+			collected = r.addSecondaryFilesToOutput(collected, output.SecondaryFiles, workDir, inputs)
 		}
 
 		// Apply format to collected File objects.
@@ -832,7 +848,7 @@ func (r *Runner) collectRecordOutput(fields []cwl.OutputRecordField, workDir str
 
 		// Add secondaryFiles to collected File objects.
 		if len(field.SecondaryFiles) > 0 {
-			collected = r.addSecondaryFilesToOutput(collected, field.SecondaryFiles, workDir)
+			collected = r.addSecondaryFilesToOutput(collected, field.SecondaryFiles, workDir, inputs)
 		}
 
 		record[field.Name] = collected
@@ -842,12 +858,12 @@ func (r *Runner) collectRecordOutput(fields []cwl.OutputRecordField, workDir str
 }
 
 // addSecondaryFilesToOutput adds secondary files to File objects in the output.
-func (r *Runner) addSecondaryFilesToOutput(output any, schemas []cwl.SecondaryFileSchema, workDir string) any {
+func (r *Runner) addSecondaryFilesToOutput(output any, schemas []cwl.SecondaryFileSchema, workDir string, inputs map[string]any) any {
 	switch v := output.(type) {
 	case map[string]any:
 		if class, ok := v["class"].(string); ok && class == "File" {
 			// Add secondary files to this File object.
-			r.addSecondaryFiles(v, schemas, workDir)
+			r.addSecondaryFiles(v, schemas, workDir, inputs)
 		}
 		return v
 
@@ -855,7 +871,7 @@ func (r *Runner) addSecondaryFilesToOutput(output any, schemas []cwl.SecondaryFi
 		// Process each File object in the array.
 		for _, item := range v {
 			if class, ok := item["class"].(string); ok && class == "File" {
-				r.addSecondaryFiles(item, schemas, workDir)
+				r.addSecondaryFiles(item, schemas, workDir, inputs)
 			}
 		}
 		return v
@@ -863,7 +879,7 @@ func (r *Runner) addSecondaryFilesToOutput(output any, schemas []cwl.SecondaryFi
 	case []any:
 		// Process each item in the array.
 		for i, item := range v {
-			v[i] = r.addSecondaryFilesToOutput(item, schemas, workDir)
+			v[i] = r.addSecondaryFilesToOutput(item, schemas, workDir, inputs)
 		}
 		return v
 
@@ -873,7 +889,7 @@ func (r *Runner) addSecondaryFilesToOutput(output any, schemas []cwl.SecondaryFi
 }
 
 // addSecondaryFiles adds secondary files to a File object.
-func (r *Runner) addSecondaryFiles(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, workDir string) {
+func (r *Runner) addSecondaryFiles(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, workDir string, inputs map[string]any) {
 	path, ok := fileObj["path"].(string)
 	if !ok {
 		return
@@ -886,35 +902,95 @@ func (r *Runner) addSecondaryFiles(fileObj map[string]any, schemas []cwl.Seconda
 			continue
 		}
 
-		// Apply pattern to derive secondary file path.
-		// Pattern starting with ^ means remove extension first.
-		secondaryPath := path
-		for strings.HasPrefix(pattern, "^") {
-			// Remove one extension.
-			ext := filepath.Ext(secondaryPath)
-			if ext != "" {
-				secondaryPath = strings.TrimSuffix(secondaryPath, ext)
+		// Collect paths to add for this pattern (may be multiple for array results).
+		var pathsToAdd []string
+
+		// Check if pattern is a JavaScript expression.
+		if cwlexpr.IsExpression(pattern) {
+			// Evaluate the expression with 'self' set to the file object.
+			evaluator := cwlexpr.NewEvaluator(nil)
+			ctx := cwlexpr.NewContext(inputs).WithSelf(fileObj)
+			result, err := evaluator.Evaluate(pattern, ctx)
+			if err != nil {
+				r.logger.Debug("failed to evaluate secondaryFiles expression", "pattern", pattern, "error", err)
+				continue
 			}
-			pattern = strings.TrimPrefix(pattern, "^")
-		}
-		secondaryPath = secondaryPath + pattern
 
-		// Check if secondary file exists.
-		if _, err := os.Stat(secondaryPath); err != nil {
-			continue // Skip missing secondary files.
+			// Extract the secondary file path(s) from the result.
+			pathsToAdd = r.extractSecondaryPaths(result, filepath.Dir(path))
+		} else {
+			// Apply pattern to derive secondary file path.
+			// Pattern starting with ^ means remove extension first.
+			secondaryPath := path
+			for strings.HasPrefix(pattern, "^") {
+				// Remove one extension.
+				ext := filepath.Ext(secondaryPath)
+				if ext != "" {
+					secondaryPath = strings.TrimSuffix(secondaryPath, ext)
+				}
+				pattern = strings.TrimPrefix(pattern, "^")
+			}
+			secondaryPath = secondaryPath + pattern
+			pathsToAdd = append(pathsToAdd, secondaryPath)
 		}
 
-		// Create File object for secondary file.
-		secFileObj, err := createFileObject(secondaryPath, false)
-		if err != nil {
-			continue
+		// Add each path as a secondary file or directory.
+		for _, secondaryPath := range pathsToAdd {
+			if secondaryPath == "" {
+				continue
+			}
+
+			// Check if secondary file/directory exists.
+			info, err := os.Stat(secondaryPath)
+			if err != nil {
+				continue // Skip missing secondary files.
+			}
+
+			// Create File or Directory object.
+			var secObj map[string]any
+			if info.IsDir() {
+				secObj, err = createDirectoryObject(secondaryPath)
+			} else {
+				secObj, err = createFileObject(secondaryPath, false)
+			}
+			if err != nil {
+				continue
+			}
+			secondaryFiles = append(secondaryFiles, secObj)
 		}
-		secondaryFiles = append(secondaryFiles, secFileObj)
 	}
 
 	if len(secondaryFiles) > 0 {
 		fileObj["secondaryFiles"] = secondaryFiles
 	}
+}
+
+// extractSecondaryPaths extracts file paths from an expression result.
+// The result can be a string, File object, or array of strings/File objects.
+func (r *Runner) extractSecondaryPaths(result any, baseDir string) []string {
+	var paths []string
+
+	switch v := result.(type) {
+	case string:
+		// Result is a filename - construct full path in same directory.
+		paths = append(paths, filepath.Join(baseDir, v))
+	case map[string]any:
+		// Result is a File object - extract path or construct from basename.
+		if p, ok := v["path"].(string); ok {
+			paths = append(paths, p)
+		} else if loc, ok := v["location"].(string); ok {
+			paths = append(paths, loc)
+		} else if bn, ok := v["basename"].(string); ok {
+			paths = append(paths, filepath.Join(baseDir, bn))
+		}
+	case []any:
+		// Array of results - process each element.
+		for _, item := range v {
+			paths = append(paths, r.extractSecondaryPaths(item, baseDir)...)
+		}
+	}
+
+	return paths
 }
 
 // collectOutputBinding collects files matching an output binding.
