@@ -379,7 +379,9 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	populateDirectoryListings(tool, mergedInputs)
 
 	// Stage files from InitialWorkDirRequirement.
-	if err := stageInitialWorkDir(tool, mergedInputs, workDir, expressionLib, r.cwlDir); err != nil {
+	// For container execution, copy files instead of symlinking (symlinks point to host paths).
+	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"
+	if err := stageInitialWorkDir(tool, mergedInputs, workDir, expressionLib, r.cwlDir, useContainer); err != nil {
 		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
 	}
 
@@ -1277,7 +1279,8 @@ func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexp
 // stageInitialWorkDir stages files from InitialWorkDirRequirement into the work directory.
 // Supports the full CWL v1.2 spec: Dirent entries with entryname/entry/writable,
 // File/Directory objects in listing, expression entries, arrays, and null handling.
-func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workDir string, expressionLib []string, cwlDir string) error {
+// When copyForContainer is true, files are copied instead of symlinked (for Docker/Apptainer).
+func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workDir string, expressionLib []string, cwlDir string, copyForContainer bool) error {
 	reqRaw, ok := tool.Requirements["InitialWorkDirRequirement"]
 	if !ok {
 		return nil
@@ -1308,7 +1311,7 @@ func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workD
 		if item == nil {
 			continue
 		}
-		if err := stageIWDItem(item, inputs, workDir, evaluator, cwlDir, stagedPaths); err != nil {
+		if err := stageIWDItem(item, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer); err != nil {
 			return err
 		}
 	}
@@ -1361,7 +1364,7 @@ func resolveIWDListing(listingRaw any, inputs map[string]any, evaluator *cwlexpr
 // stageIWDItem stages a single item from the InitialWorkDirRequirement listing.
 // An item can be: a Dirent (map with entry/entryname), a File/Directory object,
 // a string expression that evaluates to File/Directory/array, or null.
-func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string) error {
+func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool) error {
 	switch v := item.(type) {
 	case map[string]any:
 		// Check if this is a File or Directory object (has "class" field).
@@ -1369,14 +1372,14 @@ func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cw
 			switch class {
 			case "File":
 				resolveIWDObjectPaths(v, cwlDir)
-				return stageIWDFile(v, "", false, workDir, stagedPaths)
+				return stageIWDFile(v, "", false, workDir, stagedPaths, copyForContainer)
 			case "Directory":
 				resolveIWDObjectPaths(v, cwlDir)
-				return stageIWDDirectory(v, "", false, workDir, stagedPaths)
+				return stageIWDDirectory(v, "", false, workDir, stagedPaths, copyForContainer)
 			}
 		}
 		// Otherwise treat as Dirent.
-		return stageIWDDirent(v, inputs, workDir, evaluator, cwlDir, stagedPaths)
+		return stageIWDDirent(v, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer)
 
 	case []any:
 		// An array in listing — flatten and stage each item.
@@ -1384,7 +1387,7 @@ func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cw
 			if sub == nil {
 				continue
 			}
-			if err := stageIWDItem(sub, inputs, workDir, evaluator, cwlDir, stagedPaths); err != nil {
+			if err := stageIWDItem(sub, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer); err != nil {
 				return err
 			}
 		}
@@ -1398,7 +1401,7 @@ func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cw
 			if err != nil {
 				return fmt.Errorf("evaluate listing item: %w", err)
 			}
-			return stageIWDEvaluatedResult(result, "", false, workDir, inputs, evaluator, stagedPaths)
+			return stageIWDEvaluatedResult(result, "", false, workDir, inputs, evaluator, stagedPaths, copyForContainer)
 		}
 		return nil
 
@@ -1438,7 +1441,7 @@ func resolveIWDObjectPaths(obj map[string]any, cwlDir string) {
 }
 
 // stageIWDDirent stages a Dirent entry (map with entry, optional entryname and writable).
-func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string) error {
+func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool) error {
 	entryname, _ := dirent["entryname"].(string)
 	entryRaw := dirent["entry"]
 	writable, _ := dirent["writable"].(bool)
@@ -1469,15 +1472,15 @@ func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string
 	// Evaluate entry.
 	switch v := entryRaw.(type) {
 	case string:
-		return stageIWDStringEntry(v, entryname, writable, inputs, workDir, evaluator, stagedPaths)
+		return stageIWDStringEntry(v, entryname, writable, inputs, workDir, evaluator, stagedPaths, copyForContainer)
 	case map[string]any:
 		// File/Directory object literal.
 		if class, ok := v["class"].(string); ok {
 			switch class {
 			case "File":
-				return stageIWDFile(v, entryname, writable, workDir, stagedPaths)
+				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer)
 			case "Directory":
-				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths)
+				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer)
 			}
 		}
 		return nil
@@ -1487,7 +1490,7 @@ func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string
 }
 
 // stageIWDStringEntry handles a Dirent entry that is a string (literal or expression).
-func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string) error {
+func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool) error {
 	if !cwlexpr.IsExpression(entry) {
 		// Pure literal string content — unescape \$( to $(.
 		content := strings.ReplaceAll(entry, "\\$(", "$(")
@@ -1512,7 +1515,7 @@ func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[stri
 
 	if isSoleExpr {
 		// Single expression — result could be File, Directory, array, string, number, etc.
-		return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator, stagedPaths)
+		return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator, stagedPaths, copyForContainer)
 	}
 
 	// String interpolation — result is always string content.
@@ -1525,7 +1528,7 @@ func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[stri
 
 // stageIWDEvaluatedResult stages the result of evaluating an expression.
 // The result can be a File, Directory, array, string, number, null, etc.
-func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDir string, inputs map[string]any, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string) error {
+func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDir string, inputs map[string]any, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool) error {
 	if result == nil {
 		return nil
 	}
@@ -1535,9 +1538,9 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 		if class, ok := v["class"].(string); ok {
 			switch class {
 			case "File":
-				return stageIWDFile(v, entryname, writable, workDir, stagedPaths)
+				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer)
 			case "Directory":
-				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths)
+				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer)
 			}
 		}
 		// Object that isn't File/Directory — serialize to JSON.
@@ -1553,7 +1556,7 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 				if class, ok := first["class"].(string); ok && (class == "File" || class == "Directory") {
 					// Array of File/Directory objects — stage each.
 					for _, item := range v {
-						if err := stageIWDEvaluatedResult(item, "", writable, workDir, inputs, evaluator, stagedPaths); err != nil {
+						if err := stageIWDEvaluatedResult(item, "", writable, workDir, inputs, evaluator, stagedPaths, copyForContainer); err != nil {
 							return err
 						}
 					}
@@ -1583,7 +1586,8 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 }
 
 // stageIWDFile stages a CWL File object into the work directory.
-func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string) error {
+// When copyForContainer is true, files are copied instead of symlinked (for Docker/Apptainer).
+func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool) error {
 	// Get source path.
 	srcPath := ""
 	if p, ok := fileObj["path"].(string); ok {
@@ -1621,15 +1625,15 @@ func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workD
 		stagedPaths[absSrc] = destPath
 	}
 
-	if writable {
-		// Also stage secondaryFiles if present.
+	// Copy files when writable or when executing in container (symlinks don't work in containers).
+	if writable || copyForContainer {
 		if err := copyFile(srcPath, destPath); err != nil {
 			return err
 		}
-		stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths)
+		stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer)
 		return nil
 	}
-	// Non-writable: symlink.
+	// Non-writable, local execution: symlink.
 	absSrc, err := filepath.Abs(srcPath)
 	if err != nil {
 		absSrc = srcPath
@@ -1637,12 +1641,12 @@ func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workD
 	if err := os.Symlink(absSrc, destPath); err != nil {
 		return err
 	}
-	stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths)
+	stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer)
 	return nil
 }
 
 // stageIWDSecondaryFiles stages secondaryFiles alongside a staged file.
-func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, writable bool, stagedPaths map[string]string) {
+func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, writable bool, stagedPaths map[string]string, copyForContainer bool) {
 	secFiles, ok := fileObj["secondaryFiles"].([]any)
 	if !ok {
 		return
@@ -1664,7 +1668,8 @@ func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, wr
 		sfBasename := filepath.Base(sfPath)
 		sfDest := filepath.Join(workDir, sfBasename)
 		// If the primary file was renamed with entryname, don't rename secondaryFiles.
-		if writable {
+		// Copy when writable or executing in container.
+		if writable || copyForContainer {
 			_ = copyFile(sfPath, sfDest)
 		} else {
 			absSf, _ := filepath.Abs(sfPath)
@@ -1674,7 +1679,8 @@ func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, wr
 }
 
 // stageIWDDirectory stages a CWL Directory object into the work directory.
-func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string) error {
+// When copyForContainer is true, directories are copied instead of symlinked (for Docker/Apptainer).
+func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool) error {
 	// Get source path.
 	srcPath := ""
 	if p, ok := dirObj["path"].(string); ok {
@@ -1705,11 +1711,11 @@ func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, w
 			for _, item := range listing {
 				if fileObj, ok := item.(map[string]any); ok {
 					if class, _ := fileObj["class"].(string); class == "File" {
-						if err := stageIWDFile(fileObj, "", writable, destPath, stagedPaths); err != nil {
+						if err := stageIWDFile(fileObj, "", writable, destPath, stagedPaths, copyForContainer); err != nil {
 							return err
 						}
 					} else if class == "Directory" {
-						if err := stageIWDDirectory(fileObj, "", writable, destPath, stagedPaths); err != nil {
+						if err := stageIWDDirectory(fileObj, "", writable, destPath, stagedPaths, copyForContainer); err != nil {
 							return err
 						}
 					}
@@ -1719,11 +1725,12 @@ func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, w
 		return nil
 	}
 
-	if writable {
+	// Copy when writable or executing in container (symlinks don't work in containers).
+	if writable || copyForContainer {
 		return copyDir(srcPath, destPath)
 	}
 
-	// Non-writable: symlink.
+	// Non-writable, local execution: symlink.
 	absSrc, err := filepath.Abs(srcPath)
 	if err != nil {
 		absSrc = srcPath
