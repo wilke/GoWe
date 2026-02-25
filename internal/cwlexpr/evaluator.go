@@ -91,19 +91,28 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 	}
 
 	// Check for JavaScript code block: ${ ... }
-	// Trim whitespace to handle YAML literal blocks (|) which include trailing newlines.
-	trimmed := strings.TrimSpace(expr)
-	if strings.HasPrefix(trimmed, "${") {
+	// Trim only LEADING whitespace to handle YAML literal blocks.
+	// Trailing content (including newlines from YAML | blocks) must be preserved.
+	trimmedLeft := strings.TrimLeft(expr, " \t\n\r")
+	if strings.HasPrefix(trimmedLeft, "${") {
 		// Find the matching closing brace for the code block.
-		if idx := findMatchingBrace(trimmed); idx >= 0 {
-			if idx == len(trimmed)-1 {
+		if idx := findMatchingBrace(trimmedLeft); idx >= 0 {
+			// Calculate how much leading whitespace was removed.
+			leadingLen := len(expr) - len(trimmedLeft)
+			// Get the remaining content after the code block from original expression.
+			originalIdx := leadingLen + idx
+			remaining := ""
+			if originalIdx+1 < len(expr) {
+				remaining = expr[originalIdx+1:]
+			}
+
+			if remaining == "" {
 				// Sole code block — return typed result.
-				return e.evaluateCodeBlock(vm, trimmed[:idx+1])
+				return e.evaluateCodeBlock(vm, trimmedLeft[:idx+1])
 			}
 			// Code block followed by literal text (e.g., ${...}\n from YAML |).
 			// Evaluate the code block, convert result to string, append rest.
-			codeBlock := trimmed[:idx+1]
-			remaining := trimmed[idx+1:]
+			codeBlock := trimmedLeft[:idx+1]
 			result, err := e.evaluateCodeBlock(vm, codeBlock)
 			if err != nil {
 				return nil, err
