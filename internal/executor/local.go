@@ -174,10 +174,49 @@ func (e *LocalExecutor) submitLegacy(ctx context.Context, task *model.Task, task
 
 // Status derives the task state from the recorded exit code.
 // If no exit code has been set yet the task is considered queued.
+// When the task has a Tool with successCodes defined, those are checked.
 func (e *LocalExecutor) Status(_ context.Context, task *model.Task) (model.TaskState, error) {
 	if task.ExitCode == nil {
 		return model.TaskStateQueued, nil
 	}
+
+	// Check against tool's successCodes if available.
+	if task.Tool != nil {
+		if sc, ok := task.Tool["successCodes"].([]any); ok && len(sc) > 0 {
+			// Check if exit code is in successCodes.
+			for _, code := range sc {
+				switch c := code.(type) {
+				case int:
+					if *task.ExitCode == c {
+						return model.TaskStateSuccess, nil
+					}
+				case float64:
+					if *task.ExitCode == int(c) {
+						return model.TaskStateSuccess, nil
+					}
+				}
+			}
+			// Exit code not in successCodes - check permanentFailCodes and temporaryFailCodes.
+			if pf, ok := task.Tool["permanentFailCodes"].([]any); ok {
+				for _, code := range pf {
+					switch c := code.(type) {
+					case int:
+						if *task.ExitCode == c {
+							return model.TaskStateFailed, nil
+						}
+					case float64:
+						if *task.ExitCode == int(c) {
+							return model.TaskStateFailed, nil
+						}
+					}
+				}
+			}
+			// If not in successCodes or permanentFailCodes, it's a temporary failure (will retry).
+			return model.TaskStateFailed, nil
+		}
+	}
+
+	// Default behavior: exit code 0 is success, anything else is failure.
 	if *task.ExitCode == 0 {
 		return model.TaskStateSuccess, nil
 	}
@@ -215,8 +254,10 @@ func extractBaseCommand(inputs map[string]any) []string {
 }
 
 // parseToolFromMap converts a task.Tool map to a cwl.CommandLineTool.
+// With proper JSON tags on cwl types, this is now a simple JSON roundtrip.
 func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
 	// Marshal to JSON then unmarshal to struct.
+	// The cwl.CommandLineTool has proper json tags, so this preserves all fields.
 	data, err := json.Marshal(toolMap)
 	if err != nil {
 		return nil, fmt.Errorf("marshal tool: %w", err)
@@ -240,22 +281,57 @@ func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
 				}
 			}
 			tool.BaseCommand = baseCmd
+		case []string:
+			tool.BaseCommand = cmd
 		}
 	}
 
-	// Handle inputs map conversion.
-	if inputs, ok := toolMap["inputs"].(map[string]any); ok {
+	// Handle arguments which need custom parsing for ArgumentEntry.
+	if argsRaw, ok := toolMap["arguments"].([]any); ok {
+		tool.Arguments = parseArguments(argsRaw)
+	}
+
+	// Handle inputs conversion (may be map or array format in CWL).
+	if tool.Inputs == nil {
 		tool.Inputs = make(map[string]cwl.ToolInputParam)
-		for id, param := range inputs {
-			tool.Inputs[id] = parseInputParam(param)
+	}
+	if inputsRaw, ok := toolMap["inputs"]; ok {
+		switch inputs := inputsRaw.(type) {
+		case map[string]any:
+			for id, param := range inputs {
+				tool.Inputs[id] = parseInputParam(param)
+			}
+		case []any:
+			// Array format - each element has "id" field.
+			for _, item := range inputs {
+				if m, ok := item.(map[string]any); ok {
+					if id, ok := m["id"].(string); ok && id != "" {
+						tool.Inputs[id] = parseInputParam(m)
+					}
+				}
+			}
 		}
 	}
 
-	// Handle outputs map conversion.
-	if outputs, ok := toolMap["outputs"].(map[string]any); ok {
+	// Handle outputs conversion (may be map or array format in CWL).
+	if tool.Outputs == nil {
 		tool.Outputs = make(map[string]cwl.ToolOutputParam)
-		for id, param := range outputs {
-			tool.Outputs[id] = parseOutputParam(param)
+	}
+	if outputsRaw, ok := toolMap["outputs"]; ok {
+		switch outputs := outputsRaw.(type) {
+		case map[string]any:
+			for id, param := range outputs {
+				tool.Outputs[id] = parseOutputParam(param)
+			}
+		case []any:
+			// Array format - each element has "id" field.
+			for _, item := range outputs {
+				if m, ok := item.(map[string]any); ok {
+					if id, ok := m["id"].(string); ok && id != "" {
+						tool.Outputs[id] = parseOutputParam(m)
+					}
+				}
+			}
 		}
 	}
 
@@ -271,12 +347,29 @@ func parseInputParam(param any) cwl.ToolInputParam {
 	case map[string]any:
 		if t, ok := p["type"].(string); ok {
 			result.Type = t
+		} else if typeMap, ok := p["type"].(map[string]any); ok {
+			// Handle complex types (array, union).
+			if typeStr, ok := typeMap["type"].(string); ok && typeStr == "array" {
+				if items, ok := typeMap["items"].(string); ok {
+					result.Type = items + "[]"
+				}
+				// Parse itemInputBinding from nested array type.
+				if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
+					result.ItemInputBinding = parseInputBinding(itemIB)
+				}
+			} else {
+				result.Type = fmt.Sprintf("%v", p["type"])
+			}
 		}
 		if d, ok := p["default"]; ok {
 			result.Default = d
 		}
 		if ib, ok := p["inputBinding"].(map[string]any); ok {
 			result.InputBinding = parseInputBinding(ib)
+		}
+		// Parse itemInputBinding if stored at top level (from JSON).
+		if itemIB, ok := p["itemInputBinding"].(map[string]any); ok {
+			result.ItemInputBinding = parseInputBinding(itemIB)
 		}
 	}
 	return result
@@ -291,6 +384,9 @@ func parseOutputParam(param any) cwl.ToolOutputParam {
 	case map[string]any:
 		if t, ok := p["type"].(string); ok {
 			result.Type = t
+		} else if t, ok := p["type"]; ok {
+			// Handle complex types.
+			result.Type = fmt.Sprintf("%v", t)
 		}
 		if ob, ok := p["outputBinding"].(map[string]any); ok {
 			result.OutputBinding = parseOutputBinding(ob)
@@ -302,9 +398,11 @@ func parseOutputParam(param any) cwl.ToolOutputParam {
 // parseInputBinding converts an inputBinding map to cwl.InputBinding.
 func parseInputBinding(m map[string]any) *cwl.InputBinding {
 	ib := &cwl.InputBinding{}
+	// Position can be int or float64 depending on JSON source.
 	if pos, ok := m["position"].(float64); ok {
-		p := int(pos)
-		ib.Position = &p
+		ib.Position = int(pos)
+	} else if pos, ok := m["position"].(int); ok {
+		ib.Position = pos
 	}
 	if prefix, ok := m["prefix"].(string); ok {
 		ib.Prefix = prefix
@@ -314,6 +412,9 @@ func parseInputBinding(m map[string]any) *cwl.InputBinding {
 	}
 	if vf, ok := m["valueFrom"].(string); ok {
 		ib.ValueFrom = vf
+	}
+	if is, ok := m["itemSeparator"].(string); ok {
+		ib.ItemSeparator = is
 	}
 	return ib
 }
@@ -331,4 +432,95 @@ func parseOutputBinding(m map[string]any) *cwl.OutputBinding {
 		ob.OutputEval = oe
 	}
 	return ob
+}
+
+// parseArguments converts an arguments array to []cwl.ArgumentEntry.
+func parseArguments(args []any) []cwl.ArgumentEntry {
+	result := make([]cwl.ArgumentEntry, 0, len(args))
+	for _, arg := range args {
+		switch a := arg.(type) {
+		case string:
+			result = append(result, cwl.ArgumentEntry{
+				StringValue: a,
+				IsString:    true,
+			})
+		case map[string]any:
+			binding := parseArgumentBinding(a)
+			result = append(result, cwl.ArgumentEntry{
+				Binding:  binding,
+				IsString: false,
+			})
+		}
+	}
+	return result
+}
+
+// parseArgumentBinding converts an argument binding map to cwl.Argument.
+func parseArgumentBinding(m map[string]any) *cwl.Argument {
+	arg := &cwl.Argument{}
+
+	// Position - check both keys and handle int/float types.
+	if pos, ok := m["position"]; ok {
+		arg.Position = normalizePosition(pos)
+	} else if pos, ok := m["Position"]; ok {
+		arg.Position = normalizePosition(pos)
+	}
+
+	// Prefix.
+	if prefix, ok := m["prefix"].(string); ok {
+		arg.Prefix = prefix
+	} else if prefix, ok := m["Prefix"].(string); ok {
+		arg.Prefix = prefix
+	}
+
+	// ValueFrom.
+	if vf, ok := m["valueFrom"].(string); ok {
+		arg.ValueFrom = vf
+	} else if vf, ok := m["ValueFrom"].(string); ok {
+		arg.ValueFrom = vf
+	}
+
+	// Separate.
+	if sep, ok := m["separate"].(bool); ok {
+		arg.Separate = &sep
+	} else if sep, ok := m["Separate"].(bool); ok {
+		arg.Separate = &sep
+	}
+
+	// ShellQuote.
+	if sq, ok := m["shellQuote"].(bool); ok {
+		arg.ShellQuote = &sq
+	} else if sq, ok := m["ShellQuote"].(bool); ok {
+		arg.ShellQuote = &sq
+	}
+
+	return arg
+}
+
+// normalizePosition converts position values to int for consistency.
+func normalizePosition(pos any) any {
+	switch p := pos.(type) {
+	case float64:
+		return int(p)
+	case int64:
+		return int(p)
+	default:
+		return p
+	}
+}
+
+// parseIntArray converts []any to []int for exit code arrays.
+func parseIntArray(arr []any) []int {
+	result := make([]int, 0, len(arr))
+	for _, v := range arr {
+		switch n := v.(type) {
+		case int:
+			result = append(result, n)
+		case int64:
+			result = append(result, int(n))
+		case float64:
+			result = append(result, int(n))
+		}
+	}
+	return result
 }
