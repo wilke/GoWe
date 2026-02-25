@@ -156,7 +156,7 @@ func (r *Runner) PrintCommandLine(ctx context.Context, cwlPath, jobPath string, 
 	resolvedInputs := resolveInputPaths(inputs, jobDir)
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Build command line for each tool.
 	for toolID, tool := range graph.Tools {
@@ -342,7 +342,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	}
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Determine container runtime.
 	// Priority: NoContainer (forces local) > ContainerRuntime (explicit) > ForceDocker > auto-detect.
@@ -370,6 +370,22 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		workDir = absWorkDir
 	}
 
+	// Ensure work directory exists for staging.
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return nil, fmt.Errorf("create work dir: %w", err)
+	}
+
+	// Populate directory listings for inputs with loadListing.
+	populateDirectoryListings(tool, mergedInputs)
+
+	// Stage files from InitialWorkDirRequirement.
+	// For container execution, copy files instead of symlinking (symlinks point to host paths).
+	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"
+	containerMounts, err := stageInitialWorkDir(tool, mergedInputs, workDir, expressionLib, r.cwlDir, useContainer)
+	if err != nil {
+		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
+	}
+
 	// Build runtime context using the actual work directory.
 	runtime := buildRuntimeContext(tool, workDir)
 
@@ -389,13 +405,15 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
-		result, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+		dockerOutputDir := getDockerOutputDirectory(tool)
+		result, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
 		}
-		result, err = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+		dockerOutputDir := getDockerOutputDirectory(tool)
+		result, err = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	default:
 		result, err = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
@@ -638,7 +656,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	}
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Determine container runtime.
 	containerRuntime := r.ContainerRuntime
@@ -662,6 +680,18 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		workDir = absWorkDir
 	}
 
+	// Ensure work directory exists for staging.
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return nil, fmt.Errorf("create work dir: %w", err)
+	}
+
+	// Stage files from InitialWorkDirRequirement.
+	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"
+	containerMounts, err := stageInitialWorkDir(tool, mergedInputs, workDir, expressionLib, r.cwlDir, useContainer)
+	if err != nil {
+		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
+	}
+
 	// Build runtime context.
 	runtime := buildRuntimeContext(tool, workDir)
 
@@ -679,13 +709,15 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
-		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+		dockerOutputDir := getDockerOutputDirectory(tool)
+		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
 		}
-		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir)
+		dockerOutputDir := getDockerOutputDirectory(tool)
+		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	default:
 		return r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
@@ -709,7 +741,7 @@ func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[stri
 	}
 
 	// Get expression library from requirements.
-	expressionLib := extractExpressionLib(graph)
+	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Create expression context with processed inputs (with contents loaded).
 	ctx := cwlexpr.NewContext(processedInputs)
@@ -770,7 +802,7 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 	stepOutputs := make(map[string]map[string]any)
 
 	// Create evaluator for expressions (valueFrom, when).
-	evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph))
+	evaluator := cwlexpr.NewEvaluator(extractExpressionLib(graph, r.cwlDir))
 
 	// Execute steps in topological order.
 	for _, stepID := range dag.Order {
@@ -1261,6 +1293,768 @@ func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexp
 	return nil
 }
 
+// ContainerMount represents a file/directory to mount at a specific absolute path inside a container.
+// Used when InitialWorkDirRequirement has an absolute entryname path.
+type ContainerMount struct {
+	HostPath      string // Absolute path on the host
+	ContainerPath string // Absolute path inside the container
+	IsDirectory   bool   // True if this is a directory mount
+}
+
+// stageInitialWorkDir stages files from InitialWorkDirRequirement into the work directory.
+// Supports the full CWL v1.2 spec: Dirent entries with entryname/entry/writable,
+// File/Directory objects in listing, expression entries, arrays, and null handling.
+// When copyForContainer is true, files are copied instead of symlinked (for Docker/Apptainer).
+// Returns a list of ContainerMount for items with absolute entryname paths (container execution only).
+func stageInitialWorkDir(tool *cwl.CommandLineTool, inputs map[string]any, workDir string, expressionLib []string, cwlDir string, copyForContainer bool) ([]ContainerMount, error) {
+	reqRaw, ok := tool.Requirements["InitialWorkDirRequirement"]
+	if !ok {
+		return nil, nil
+	}
+
+	reqMap, ok := reqRaw.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+
+	listingRaw, ok := reqMap["listing"]
+	if !ok {
+		return nil, nil
+	}
+
+	evaluator := cwlexpr.NewEvaluator(expressionLib)
+
+	// stagedPaths maps original absolute path → staged absolute path for entryname renames.
+	stagedPaths := make(map[string]string)
+
+	// containerMounts collects files with absolute entrynames for container mounting.
+	var containerMounts []ContainerMount
+
+	// Check if absolute entrynames are allowed. Per CWL spec, absolute paths are only
+	// permitted when DockerRequirement is in the requirements section (not hints).
+	allowAbsoluteEntryname := hasDockerAsRequirement(tool)
+
+	// The listing can itself be an expression (e.g., "$(inputs.indir.listing)").
+	listing, err := resolveIWDListing(listingRaw, inputs, evaluator)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range listing {
+		if item == nil {
+			continue
+		}
+		mounts, err := stageIWDItem(item, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+		if err != nil {
+			return nil, err
+		}
+		containerMounts = append(containerMounts, mounts...)
+	}
+
+	// Update input File paths to reflect staged locations.
+	updateInputPathsForIWD(inputs, workDir, stagedPaths)
+
+	return containerMounts, nil
+}
+
+// resolveIWDListing resolves the listing field which can be an array or an expression.
+func resolveIWDListing(listingRaw any, inputs map[string]any, evaluator *cwlexpr.Evaluator) ([]any, error) {
+	switch v := listingRaw.(type) {
+	case []any:
+		return v, nil
+	case string:
+		// listing itself is an expression.
+		if cwlexpr.IsExpression(v) {
+			ctx := cwlexpr.NewContext(inputs)
+			result, err := evaluator.Evaluate(v, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("evaluate listing expression: %w", err)
+			}
+			if arr, ok := result.([]any); ok {
+				return arr, nil
+			}
+			// If result is a string that looks like JSON array (from YAML | blocks
+			// which append trailing newline causing stringification), try to parse it.
+			if str, ok := result.(string); ok {
+				str = strings.TrimSpace(str)
+				if strings.HasPrefix(str, "[") {
+					var arr []any
+					if err := json.Unmarshal([]byte(str), &arr); err == nil {
+						return arr, nil
+					}
+				}
+			}
+			if result == nil {
+				return nil, nil
+			}
+			// Single item.
+			return []any{result}, nil
+		}
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+
+// stageIWDItem stages a single item from the InitialWorkDirRequirement listing.
+// An item can be: a Dirent (map with entry/entryname), a File/Directory object,
+// a string expression that evaluates to File/Directory/array, or null.
+// Returns ContainerMounts for items with absolute entryname paths.
+// allowAbsoluteEntryname controls whether absolute paths in entryname are permitted.
+func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	switch v := item.(type) {
+	case map[string]any:
+		// Check if this is a File or Directory object (has "class" field).
+		if class, ok := v["class"].(string); ok {
+			switch class {
+			case "File":
+				resolveIWDObjectPaths(v, cwlDir)
+				return stageIWDFile(v, "", false, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			case "Directory":
+				resolveIWDObjectPaths(v, cwlDir)
+				return stageIWDDirectory(v, "", false, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			}
+		}
+		// Otherwise treat as Dirent.
+		return stageIWDDirent(v, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+
+	case []any:
+		// An array in listing — flatten and stage each item.
+		var mounts []ContainerMount
+		for _, sub := range v {
+			if sub == nil {
+				continue
+			}
+			subMounts, err := stageIWDItem(sub, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			if err != nil {
+				return nil, err
+			}
+			mounts = append(mounts, subMounts...)
+		}
+		return mounts, nil
+
+	case string:
+		// A bare expression in listing (e.g., "$(inputs.input_file)").
+		if cwlexpr.IsExpression(v) {
+			ctx := cwlexpr.NewContext(inputs)
+			result, err := evaluator.Evaluate(v, ctx)
+			if err != nil {
+				return nil, fmt.Errorf("evaluate listing item: %w", err)
+			}
+			return stageIWDEvaluatedResult(result, "", false, workDir, inputs, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+		}
+		return nil, nil
+
+	default:
+		return nil, nil
+	}
+}
+
+// resolveIWDObjectPaths resolves relative location/path fields in File/Directory
+// objects found directly in InitialWorkDirRequirement listing, relative to the CWL file directory.
+func resolveIWDObjectPaths(obj map[string]any, cwlDir string) {
+	if cwlDir == "" {
+		return
+	}
+	pathResolved := false
+	if loc, ok := obj["location"].(string); ok && loc != "" && !filepath.IsAbs(loc) && !isURI(loc) {
+		absLoc := filepath.Clean(filepath.Join(cwlDir, loc))
+		obj["location"] = absLoc
+		if _, hasPath := obj["path"]; !hasPath {
+			obj["path"] = absLoc
+			pathResolved = true
+		}
+	}
+	if !pathResolved {
+		if p, ok := obj["path"].(string); ok && p != "" && !filepath.IsAbs(p) {
+			obj["path"] = filepath.Clean(filepath.Join(cwlDir, p))
+		}
+	}
+	// Resolve listing entries recursively.
+	if listing, ok := obj["listing"].([]any); ok {
+		for _, item := range listing {
+			if itemMap, ok := item.(map[string]any); ok {
+				resolveIWDObjectPaths(itemMap, cwlDir)
+			}
+		}
+	}
+}
+
+// stageIWDDirent stages a Dirent entry (map with entry, optional entryname and writable).
+// Returns ContainerMounts for items with absolute entryname paths.
+// allowAbsoluteEntryname controls whether absolute paths in entryname are permitted.
+func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	entryname, _ := dirent["entryname"].(string)
+	entryRaw := dirent["entry"]
+	writable, _ := dirent["writable"].(bool)
+
+	// entry can be nil (e.g., $(null)).
+	if entryRaw == nil {
+		return nil, nil
+	}
+
+	// Validate entryname: must not contain path traversal (../).
+	// Absolute paths (starting with /) are only allowed when DockerRequirement is a requirement.
+	if entryname != "" && !strings.HasPrefix(entryname, "/") {
+		cleaned := filepath.Clean(entryname)
+		if strings.HasPrefix(cleaned, "..") || strings.Contains(cleaned, "/../") {
+			return nil, fmt.Errorf("entryname %q is invalid: must not reference parent directory", entryname)
+		}
+	}
+
+	// Evaluate entryname if it's an expression.
+	if entryname != "" && cwlexpr.IsExpression(entryname) {
+		ctx := cwlexpr.NewContext(inputs)
+		evaluated, err := evaluator.Evaluate(entryname, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate entryname %q: %w", entryname, err)
+		}
+		entryname = fmt.Sprintf("%v", evaluated)
+	}
+
+	// Validate absolute entryname: only allowed when DockerRequirement is in requirements.
+	if strings.HasPrefix(entryname, "/") && !allowAbsoluteEntryname {
+		return nil, fmt.Errorf("absolute entryname %q requires DockerRequirement in requirements (not hints)", entryname)
+	}
+
+	// Evaluate entry.
+	switch v := entryRaw.(type) {
+	case string:
+		return stageIWDStringEntry(v, entryname, writable, inputs, workDir, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+	case map[string]any:
+		// File/Directory object literal.
+		if class, ok := v["class"].(string); ok {
+			switch class {
+			case "File":
+				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			case "Directory":
+				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			}
+		}
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+
+// stageIWDStringEntry handles a Dirent entry that is a string (literal or expression).
+// Returns ContainerMounts for items with absolute entryname paths.
+func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	if !cwlexpr.IsExpression(entry) {
+		// Pure literal string content — unescape \$( to $(.
+		content := strings.ReplaceAll(entry, "\\$(", "$(")
+		content = strings.ReplaceAll(content, "\\${", "${")
+		if entryname == "" {
+			return nil, nil
+		}
+		return writeIWDFileWithMounts(workDir, entryname, content, copyForContainer, allowAbsoluteEntryname)
+	}
+
+	// Check if the entire string is a single expression (no surrounding text).
+	// If so, the result type determines behavior (File object vs string content).
+	// Important: check on the original entry, not trimmed — YAML | adds trailing \n
+	// which makes it NOT a sole expression (content should include the trailing text).
+	isSoleExpr := cwlexpr.IsSoleExpression(entry)
+
+	ctx := cwlexpr.NewContext(inputs)
+	evaluated, err := evaluator.Evaluate(entry, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate entry for %q: %w", entryname, err)
+	}
+
+	if isSoleExpr {
+		// Single expression — result could be File, Directory, array, string, number, etc.
+		return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+	}
+
+	// String interpolation — result is always string content.
+	content := fmt.Sprintf("%v", evaluated)
+	if entryname == "" {
+		return nil, nil
+	}
+	return writeIWDFileWithMounts(workDir, entryname, content, copyForContainer, allowAbsoluteEntryname)
+}
+
+// stageIWDEvaluatedResult stages the result of evaluating an expression.
+// The result can be a File, Directory, array, string, number, null, etc.
+// Returns ContainerMounts for items with absolute entryname paths.
+func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDir string, inputs map[string]any, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	if result == nil {
+		return nil, nil
+	}
+
+	switch v := result.(type) {
+	case map[string]any:
+		if class, ok := v["class"].(string); ok {
+			switch class {
+			case "File":
+				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			case "Directory":
+				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			}
+		}
+		// Object that isn't File/Directory — serialize to JSON.
+		if entryname != "" {
+			return writeIWDFileWithMounts(workDir, entryname, iwdResultToString(v), copyForContainer, allowAbsoluteEntryname)
+		}
+		return nil, nil
+
+	case []any:
+		// Could be an array of File/Directory objects or a JSON array to serialize.
+		if len(v) > 0 {
+			if first, ok := v[0].(map[string]any); ok {
+				if class, ok := first["class"].(string); ok && (class == "File" || class == "Directory") {
+					// Array of File/Directory objects — stage each.
+					var mounts []ContainerMount
+					for _, item := range v {
+						itemMounts, err := stageIWDEvaluatedResult(item, "", writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+						if err != nil {
+							return nil, err
+						}
+						mounts = append(mounts, itemMounts...)
+					}
+					return mounts, nil
+				}
+			}
+		}
+		// JSON array — serialize.
+		if entryname != "" {
+			return writeIWDFileWithMounts(workDir, entryname, iwdResultToString(v), copyForContainer, allowAbsoluteEntryname)
+		}
+		return nil, nil
+
+	case string:
+		if entryname != "" {
+			return writeIWDFileWithMounts(workDir, entryname, v, copyForContainer, allowAbsoluteEntryname)
+		}
+		return nil, nil
+
+	default:
+		// Number, bool, etc.
+		if entryname != "" {
+			return writeIWDFileWithMounts(workDir, entryname, iwdResultToString(v), copyForContainer, allowAbsoluteEntryname)
+		}
+		return nil, nil
+	}
+}
+
+// stageIWDFile stages a CWL File object into the work directory.
+// When copyForContainer is true, files are copied instead of symlinked (for Docker/Apptainer).
+// If entryname is an absolute path and copyForContainer is true, returns a ContainerMount
+// for the file to be mounted at that path inside the container.
+func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	// Get source path.
+	srcPath := ""
+	if p, ok := fileObj["path"].(string); ok {
+		srcPath = p
+	} else if loc, ok := fileObj["location"].(string); ok {
+		srcPath = strings.TrimPrefix(loc, "file://")
+	}
+
+	if srcPath == "" {
+		return nil, nil
+	}
+
+	// Handle absolute entryname for container execution.
+	// Per CWL spec: "When executing in a container, entryname may be an absolute path."
+	if copyForContainer && entryname != "" && strings.HasPrefix(entryname, "/") {
+		// Get absolute source path.
+		absSrc, err := filepath.Abs(srcPath)
+		if err != nil {
+			absSrc = srcPath
+		}
+		// Return a container mount for this file.
+		return []ContainerMount{{
+			HostPath:      absSrc,
+			ContainerPath: entryname,
+			IsDirectory:   false,
+		}}, nil
+	}
+
+	// Determine destination name (for non-absolute entrynames).
+	destName := entryname
+	if destName == "" {
+		if bn, ok := fileObj["basename"].(string); ok {
+			destName = bn
+		} else {
+			destName = filepath.Base(srcPath)
+		}
+	}
+
+	destPath := filepath.Join(workDir, destName)
+
+	// Create parent directory if needed (for nested paths).
+	if dir := filepath.Dir(destPath); dir != workDir {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create parent dir for %q: %w", destName, err)
+		}
+	}
+
+	// Record the staging for input path updates.
+	if stagedPaths != nil && entryname != "" {
+		absSrc, _ := filepath.Abs(srcPath)
+		stagedPaths[absSrc] = destPath
+	}
+
+	// Copy files when writable or when executing in container (symlinks don't work in containers).
+	if writable || copyForContainer {
+		if err := copyFile(srcPath, destPath); err != nil {
+			return nil, err
+		}
+		stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer)
+		return nil, nil
+	}
+	// Non-writable, local execution: symlink.
+	absSrc, err := filepath.Abs(srcPath)
+	if err != nil {
+		absSrc = srcPath
+	}
+	if err := os.Symlink(absSrc, destPath); err != nil {
+		return nil, err
+	}
+	stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer)
+	return nil, nil
+}
+
+// stageIWDSecondaryFiles stages secondaryFiles alongside a staged file.
+func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, writable bool, stagedPaths map[string]string, copyForContainer bool) {
+	secFiles, ok := fileObj["secondaryFiles"].([]any)
+	if !ok {
+		return
+	}
+	for _, sf := range secFiles {
+		sfObj, ok := sf.(map[string]any)
+		if !ok {
+			continue
+		}
+		sfPath := ""
+		if p, ok := sfObj["path"].(string); ok {
+			sfPath = p
+		} else if loc, ok := sfObj["location"].(string); ok {
+			sfPath = strings.TrimPrefix(loc, "file://")
+		}
+		if sfPath == "" {
+			continue
+		}
+		sfBasename := filepath.Base(sfPath)
+		sfDest := filepath.Join(workDir, sfBasename)
+		// If the primary file was renamed with entryname, don't rename secondaryFiles.
+		// Copy when writable or executing in container.
+		if writable || copyForContainer {
+			_ = copyFile(sfPath, sfDest)
+		} else {
+			absSf, _ := filepath.Abs(sfPath)
+			_ = os.Symlink(absSf, sfDest)
+		}
+	}
+}
+
+// stageIWDDirectory stages a CWL Directory object into the work directory.
+// When copyForContainer is true, directories are copied instead of symlinked (for Docker/Apptainer).
+// If entryname is an absolute path and copyForContainer is true, returns a ContainerMount.
+func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	// Get source path.
+	srcPath := ""
+	if p, ok := dirObj["path"].(string); ok {
+		srcPath = p
+	} else if loc, ok := dirObj["location"].(string); ok {
+		srcPath = strings.TrimPrefix(loc, "file://")
+	}
+
+	// Handle absolute entryname for container execution.
+	if copyForContainer && entryname != "" && strings.HasPrefix(entryname, "/") && srcPath != "" {
+		absSrc, err := filepath.Abs(srcPath)
+		if err != nil {
+			absSrc = srcPath
+		}
+		return []ContainerMount{{
+			HostPath:      absSrc,
+			ContainerPath: entryname,
+			IsDirectory:   true,
+		}}, nil
+	}
+
+	// Determine destination name.
+	destName := entryname
+	if destName == "" {
+		if bn, ok := dirObj["basename"].(string); ok {
+			destName = bn
+		} else if srcPath != "" {
+			destName = filepath.Base(srcPath)
+		}
+	}
+
+	destPath := filepath.Join(workDir, destName)
+
+	// Handle Directory with listing but no source path (synthetic directory).
+	if srcPath == "" {
+		if err := os.MkdirAll(destPath, 0755); err != nil {
+			return nil, fmt.Errorf("create directory %q: %w", destName, err)
+		}
+		// Stage listing contents if present.
+		var mounts []ContainerMount
+		if listing, ok := dirObj["listing"].([]any); ok {
+			for _, item := range listing {
+				if fileObj, ok := item.(map[string]any); ok {
+					if class, _ := fileObj["class"].(string); class == "File" {
+						itemMounts, err := stageIWDFile(fileObj, "", writable, destPath, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+						if err != nil {
+							return nil, err
+						}
+						mounts = append(mounts, itemMounts...)
+					} else if class == "Directory" {
+						itemMounts, err := stageIWDDirectory(fileObj, "", writable, destPath, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+						if err != nil {
+							return nil, err
+						}
+						mounts = append(mounts, itemMounts...)
+					}
+				}
+			}
+		}
+		return mounts, nil
+	}
+
+	// Copy when writable or executing in container (symlinks don't work in containers).
+	if writable || copyForContainer {
+		return nil, copyDir(srcPath, destPath)
+	}
+
+	// Non-writable, local execution: symlink.
+	absSrc, err := filepath.Abs(srcPath)
+	if err != nil {
+		absSrc = srcPath
+	}
+	return nil, os.Symlink(absSrc, destPath)
+}
+
+// writeIWDFile writes content to a file in the work directory.
+func writeIWDFile(workDir, name, content string) error {
+	outPath := filepath.Join(workDir, name)
+	// Create parent directory if needed.
+	if dir := filepath.Dir(outPath); dir != workDir {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create parent dir for %q: %w", name, err)
+		}
+	}
+	return os.WriteFile(outPath, []byte(content), 0644)
+}
+
+// writeIWDFileWithMounts writes content to a file and handles absolute paths for containers.
+// If name is an absolute path and copyForContainer is true, the file is written to workDir
+// but a ContainerMount is returned to mount it at the absolute path inside the container.
+// allowAbsoluteEntryname is validated upstream; this function trusts it.
+func writeIWDFileWithMounts(workDir, name, content string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	// Handle absolute path for container execution.
+	if copyForContainer && strings.HasPrefix(name, "/") {
+		// Write to a staging file in workDir, return mount for container.
+		// Use the basename for local storage.
+		stageName := "_mount_" + filepath.Base(name)
+		stagePath := filepath.Join(workDir, stageName)
+		if err := os.WriteFile(stagePath, []byte(content), 0644); err != nil {
+			return nil, fmt.Errorf("write staged file for %q: %w", name, err)
+		}
+		return []ContainerMount{{
+			HostPath:      stagePath,
+			ContainerPath: name,
+			IsDirectory:   false,
+		}}, nil
+	}
+
+	// Normal case: write to workDir with the given name.
+	if err := writeIWDFile(workDir, name, content); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// iwdResultToString converts a value to its string representation for file content.
+// Per CWL spec: objects and arrays are JSON-serialized (matching Python json.dumps format),
+// numbers/booleans are stringified.
+func iwdResultToString(v any) string {
+	return cwlexpr.JsonDumps(v)
+}
+
+// copyFile copies a file from src to dst with write permissions.
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+	return os.WriteFile(dst, data, 0644)
+}
+
+// copyDir recursively copies a directory tree with write permissions.
+func copyDir(src, dst string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dst, srcInfo.Mode()|0755); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// copyDirContents copies the contents of src directory into dst directory.
+// Unlike copyDir, this does not create a subdirectory with the source name.
+func copyDirContents(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// updateInputPathsForIWD updates input File objects' paths to reflect staged locations.
+// Per CWL spec, when a File is staged (possibly with entryname), inputs.file.path should
+// point to the new location in the working directory.
+// stagedPaths maps original absolute path → staged absolute path for entryname renames.
+func updateInputPathsForIWD(inputs map[string]any, workDir string, stagedPaths map[string]string) {
+	for _, v := range inputs {
+		updateInputPathValue(v, workDir, stagedPaths)
+	}
+}
+
+// updateInputPathValue recursively updates paths for staged files.
+func updateInputPathValue(v any, workDir string, stagedPaths map[string]string) {
+	switch val := v.(type) {
+	case map[string]any:
+		if class, ok := val["class"].(string); ok && class == "File" {
+			if origPath, ok := val["path"].(string); ok {
+				// Check if this file was explicitly staged with entryname.
+				if newPath, ok := stagedPaths[origPath]; ok {
+					val["path"] = newPath
+					val["basename"] = filepath.Base(newPath)
+					return
+				}
+				// Otherwise check if staged by basename.
+				bn := filepath.Base(origPath)
+				stagedPath := filepath.Join(workDir, bn)
+				if _, err := os.Lstat(stagedPath); err == nil {
+					val["path"] = stagedPath
+				}
+			}
+		}
+		if class, ok := val["class"].(string); ok && class == "Directory" {
+			if origPath, ok := val["path"].(string); ok {
+				if newPath, ok := stagedPaths[origPath]; ok {
+					val["path"] = newPath
+					val["basename"] = filepath.Base(newPath)
+				}
+			}
+		}
+	case []any:
+		for _, item := range val {
+			updateInputPathValue(item, workDir, stagedPaths)
+		}
+	}
+}
+
+// populateDirectoryListings adds listing entries to Directory inputs based on loadListing.
+func populateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any) {
+	for inputID, inp := range tool.Inputs {
+		loadListing := inp.LoadListing
+		if loadListing == "" || loadListing == "no_listing" {
+			continue
+		}
+
+		inputVal, ok := inputs[inputID]
+		if !ok || inputVal == nil {
+			continue
+		}
+
+		if dirObj, ok := inputVal.(map[string]any); ok {
+			if class, _ := dirObj["class"].(string); class == "Directory" {
+				populateDirListing(dirObj, loadListing)
+			}
+		}
+	}
+}
+
+// populateDirListing reads the filesystem and populates a Directory object's listing.
+func populateDirListing(dirObj map[string]any, depth string) {
+	dirPath, _ := dirObj["path"].(string)
+	if dirPath == "" {
+		return
+	}
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return
+	}
+
+	var listing []any
+	for _, entry := range entries {
+		entryPath := filepath.Join(dirPath, entry.Name())
+		if entry.IsDir() {
+			child := map[string]any{
+				"class":    "Directory",
+				"location": "file://" + entryPath,
+				"path":     entryPath,
+				"basename": entry.Name(),
+			}
+			if depth == "deep_listing" {
+				populateDirListing(child, depth)
+			}
+			listing = append(listing, child)
+		} else {
+			info, err := entry.Info()
+			size := int64(0)
+			if err == nil {
+				size = info.Size()
+			}
+			child := map[string]any{
+				"class":    "File",
+				"location": "file://" + entryPath,
+				"path":     entryPath,
+				"basename": entry.Name(),
+				"size":     size,
+			}
+			listing = append(listing, child)
+		}
+	}
+	dirObj["listing"] = listing
+}
+
 // resolveSource resolves a source reference to its value.
 func resolveSource(source string, workflowInputs map[string]any, stepOutputs map[string]map[string]any) any {
 	if source == "" {
@@ -1386,7 +2180,7 @@ func collectWorkflowOutputs(wf *cwl.Workflow, workflowInputs map[string]any, ste
 }
 
 // extractExpressionLib extracts the expression library from requirements.
-func extractExpressionLib(graph *cwl.GraphDocument) []string {
+func extractExpressionLib(graph *cwl.GraphDocument, cwlDir string) []string {
 	// Check workflow requirements.
 	if graph.Workflow != nil {
 		// Requirements not yet stored in Workflow struct.
@@ -1399,8 +2193,18 @@ func extractExpressionLib(graph *cwl.GraphDocument) []string {
 				if lib, ok := ijsReq["expressionLib"].([]any); ok {
 					var result []string
 					for _, item := range lib {
-						if s, ok := item.(string); ok {
-							result = append(result, s)
+						switch v := item.(type) {
+						case string:
+							result = append(result, v)
+						case map[string]any:
+							// Handle $include directive: { $include: "filename.js" }
+							if includePath, ok := v["$include"].(string); ok {
+								fullPath := filepath.Join(cwlDir, includePath)
+								data, err := os.ReadFile(fullPath)
+								if err == nil {
+									result = append(result, string(data))
+								}
+							}
 						}
 					}
 					return result
@@ -1442,6 +2246,18 @@ func hasDockerRequirement(tool *cwl.CommandLineTool, wf *cwl.Workflow) bool {
 	return false
 }
 
+// hasDockerAsRequirement checks if DockerRequirement is in the requirements section
+// (not hints). Per CWL spec, absolute entryname paths in InitialWorkDirRequirement
+// are only allowed when DockerRequirement is a requirement, not just a hint.
+func hasDockerAsRequirement(tool *cwl.CommandLineTool) bool {
+	if tool.Requirements != nil {
+		if _, ok := tool.Requirements["DockerRequirement"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // getDockerImage extracts the Docker image from requirements or hints.
 // It checks tool first, then workflow-level hints if present.
 func getDockerImage(tool *cwl.CommandLineTool, wf *cwl.Workflow) string {
@@ -1474,6 +2290,26 @@ func getDockerImage(tool *cwl.CommandLineTool, wf *cwl.Workflow) string {
 		if dr, ok := wf.Hints["DockerRequirement"].(map[string]any); ok {
 			if pull, ok := dr["dockerPull"].(string); ok {
 				return pull
+			}
+		}
+	}
+	return ""
+}
+
+// getDockerOutputDirectory extracts dockerOutputDirectory from DockerRequirement.
+// Returns the custom output directory path if specified, empty string otherwise.
+func getDockerOutputDirectory(tool *cwl.CommandLineTool) string {
+	if tool.Requirements != nil {
+		if dr, ok := tool.Requirements["DockerRequirement"].(map[string]any); ok {
+			if outputDir, ok := dr["dockerOutputDirectory"].(string); ok {
+				return outputDir
+			}
+		}
+	}
+	if tool.Hints != nil {
+		if dr, ok := tool.Hints["DockerRequirement"].(map[string]any); ok {
+			if outputDir, ok := dr["dockerOutputDirectory"].(string); ok {
+				return outputDir
 			}
 		}
 	}
@@ -1692,7 +2528,12 @@ func validateFileSecondaryFiles(path string, fileObj map[string]any, required []
 		}
 
 		// Compute the expected secondary file name.
-		expectedName := computeSecondaryFileName(basename, schema.Pattern)
+		expectedName := computeSecondaryFileName(basename, schema.Pattern, fileObj, nil)
+
+		// Skip empty names (expression evaluation failed or returned nil).
+		if expectedName == "" {
+			continue
+		}
 
 		if !existingSecondary[expectedName] {
 			return fmt.Errorf("input %q: missing required secondary file %q (pattern: %s)", path, expectedName, schema.Pattern)
@@ -1703,7 +2544,49 @@ func validateFileSecondaryFiles(path string, fileObj map[string]any, required []
 }
 
 // computeSecondaryFileName computes the secondary file name from a base name and pattern.
-func computeSecondaryFileName(basename, pattern string) string {
+// If the pattern is a JavaScript expression, it evaluates it with 'self' set to the file object.
+// inputs is optional and used for expressions that reference $(inputs.xxx).
+func computeSecondaryFileName(basename, pattern string, fileObj map[string]any, inputs map[string]any) string {
+	// Check if this is a JavaScript expression.
+	if cwlexpr.IsExpression(pattern) {
+		// Evaluate the expression with 'self' set to the file object.
+		evaluator := cwlexpr.NewEvaluator(nil)
+		ctx := cwlexpr.NewContext(inputs).WithSelf(fileObj)
+		result, err := evaluator.Evaluate(pattern, ctx)
+		if err != nil {
+			// Fall back to treating it as a literal if evaluation fails.
+			return basename + pattern
+		}
+
+		// Handle the result.
+		switch v := result.(type) {
+		case string:
+			return v
+		case map[string]any:
+			// File object returned - extract the path.
+			if p, ok := v["path"].(string); ok {
+				return filepath.Base(p)
+			}
+			if bn, ok := v["basename"].(string); ok {
+				return bn
+			}
+		case []any:
+			// Array of results - take the first string.
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					return s
+				}
+				if m, ok := item.(map[string]any); ok {
+					if bn, ok := m["basename"].(string); ok {
+						return bn
+					}
+				}
+			}
+		}
+		// If we can't extract a name, return empty.
+		return ""
+	}
+
 	// Handle caret pattern (replace extension).
 	if strings.HasPrefix(pattern, "^") {
 		// Count carets and remove that many extensions.
@@ -1950,7 +2833,13 @@ func resolveSecondaryFilesForFile(fileObj map[string]any, schemas []cwl.Secondar
 	dir := filepath.Dir(filePath)
 
 	for _, schema := range schemas {
-		secFileName := computeSecondaryFileName(basename, schema.Pattern)
+		secFileName := computeSecondaryFileName(basename, schema.Pattern, result, nil)
+
+		// Skip empty names (expression evaluation failed or returned nil).
+		if secFileName == "" {
+			continue
+		}
+
 		secPath := filepath.Join(dir, secFileName)
 
 		// Check if the secondary file exists.

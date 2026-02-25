@@ -5,6 +5,7 @@ package cwlexpr
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -76,9 +77,12 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 		return "", nil
 	}
 
-	// Check if this is a pure literal (no expressions)
+	// Check if this is a pure literal (no unescaped expressions)
 	if !containsExpression(expr) {
-		return expr, nil
+		// Unescape \$( to $( per CWL spec.
+		result := strings.ReplaceAll(expr, "\\$(", "$(")
+		result = strings.ReplaceAll(result, "\\${", "${")
+		return result, nil
 	}
 
 	vm, err := e.setupVM(ctx)
@@ -87,10 +91,34 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 	}
 
 	// Check for JavaScript code block: ${ ... }
-	// Trim whitespace to handle YAML literal blocks (|) which include trailing newlines.
-	trimmed := strings.TrimSpace(expr)
-	if strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}") {
-		return e.evaluateCodeBlock(vm, trimmed)
+	// Trim only LEADING whitespace to handle YAML literal blocks.
+	// Trailing content (including newlines from YAML | blocks) must be preserved.
+	trimmedLeft := strings.TrimLeft(expr, " \t\n\r")
+	if strings.HasPrefix(trimmedLeft, "${") {
+		// Find the matching closing brace for the code block.
+		if idx := findMatchingBrace(trimmedLeft); idx >= 0 {
+			// Calculate how much leading whitespace was removed.
+			leadingLen := len(expr) - len(trimmedLeft)
+			// Get the remaining content after the code block from original expression.
+			originalIdx := leadingLen + idx
+			remaining := ""
+			if originalIdx+1 < len(expr) {
+				remaining = expr[originalIdx+1:]
+			}
+
+			if remaining == "" {
+				// Sole code block — return typed result.
+				return e.evaluateCodeBlock(vm, trimmedLeft[:idx+1])
+			}
+			// Code block followed by literal text (e.g., ${...}\n from YAML |).
+			// Evaluate the code block, convert result to string, append rest.
+			codeBlock := trimmedLeft[:idx+1]
+			result, err := e.evaluateCodeBlock(vm, codeBlock)
+			if err != nil {
+				return nil, err
+			}
+			return toString(result) + remaining, nil
+		}
 	}
 
 	// Handle string with embedded expressions: "prefix_$(inputs.id)_suffix"
@@ -120,7 +148,10 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 	matches := findExpressions(expr)
 
 	if len(matches) == 0 {
-		return expr, nil
+		// No unescaped expressions found — unescape \$( to $( per CWL spec.
+		result := strings.ReplaceAll(expr, "\\$(", "$(")
+		result = strings.ReplaceAll(result, "\\${", "${")
+		return result, nil
 	}
 
 	// If the entire string is a single expression, return the evaluated value directly
@@ -176,7 +207,30 @@ func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, er
 	// Append remaining text
 	result.WriteString(expr[lastEnd:])
 
-	return result.String(), nil
+	// Unescape \$( to $( per CWL spec.
+	out := strings.ReplaceAll(result.String(), "\\$(", "$(")
+	out = strings.ReplaceAll(out, "\\${", "${")
+	return out, nil
+}
+
+// findMatchingBrace finds the index of the closing brace for a ${...} code block.
+// Returns -1 if no matching brace is found.
+func findMatchingBrace(s string) int {
+	if !strings.HasPrefix(s, "${") {
+		return -1
+	}
+	depth := 0
+	for i, c := range s {
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // exprMatch represents a matched CWL expression.
@@ -191,7 +245,7 @@ func findExpressions(s string) []exprMatch {
 	var matches []exprMatch
 	i := 0
 	for i < len(s)-1 {
-		if s[i] == '$' && s[i+1] == '(' {
+		if s[i] == '$' && s[i+1] == '(' && (i == 0 || s[i-1] != '\\') {
 			start := i
 			// Find matching closing paren
 			depth := 1
@@ -309,7 +363,18 @@ func validateLengthAccess(vm *goja.Runtime, exprCode string) error {
 
 // containsExpression checks if a string contains CWL expression syntax.
 func containsExpression(s string) bool {
-	return strings.Contains(s, "$(") || strings.HasPrefix(s, "${")
+	if strings.HasPrefix(s, "${") {
+		return true
+	}
+	// Check for unescaped $( — CWL spec says \$( is a literal $(, not an expression.
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == '$' && s[i+1] == '(' {
+			if i == 0 || s[i-1] != '\\' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsExpression returns true if the string is a CWL expression.
@@ -317,8 +382,49 @@ func IsExpression(s string) bool {
 	return containsExpression(s)
 }
 
+// IsSoleExpression returns true if the string is a single CWL expression
+// with no surrounding literal text. For example:
+//   - "$(inputs.x)" → true
+//   - "${return inputs.x}" → true
+//   - "hello $(inputs.x)" → false (has prefix text)
+//   - "$(inputs.x)\n" → false (has trailing text)
+func IsSoleExpression(s string) bool {
+	if strings.HasPrefix(s, "${") {
+		// JS block expression — sole if it ends with } and is balanced.
+		depth := 0
+		for i, c := range s {
+			if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+				if depth == 0 {
+					return i == len(s)-1
+				}
+			}
+		}
+		return false
+	}
+	if strings.HasPrefix(s, "$(") {
+		// Parameter reference — sole if balanced parens close at end.
+		depth := 0
+		for i, c := range s {
+			if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+				if depth == 0 {
+					return i == len(s)-1
+				}
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // toString converts any value to a string representation.
-// Maps and arrays are converted to JSON format.
+// Maps and arrays are converted to JSON format matching Python's json.dumps()
+// default separators (", " and ": ").
 // nil values become "null" (JSON representation).
 // Floats are formatted without scientific notation.
 func toString(v any) string {
@@ -341,15 +447,56 @@ func toString(v any) string {
 		// Format without scientific notation.
 		return strconv.FormatFloat(val, 'f', -1, 64)
 	case map[string]any, []any:
-		// Convert floats to json.Number before marshaling to avoid scientific notation.
-		converted := convertFloatsForJSON(val)
-		jsonBytes, err := json.Marshal(converted)
-		if err != nil {
-			return fmt.Sprintf("%v", v)
-		}
-		return string(jsonBytes)
+		return JsonDumps(val)
 	default:
 		return fmt.Sprintf("%v", val)
+	}
+}
+
+// JsonDumps serializes a value to JSON matching Python's json.dumps() default
+// format: separators are ", " (comma-space) and ": " (colon-space).
+func JsonDumps(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case string:
+		data, _ := json.Marshal(val)
+		return string(data)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case json.Number:
+		return string(val)
+	case []any:
+		parts := make([]string, len(val))
+		for i, item := range val {
+			parts[i] = JsonDumps(item)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case map[string]any:
+		// Sort keys for deterministic output.
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			keyJSON, _ := json.Marshal(k)
+			parts = append(parts, string(keyJSON)+": "+JsonDumps(val[k]))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	default:
+		data, _ := json.Marshal(v)
+		return string(data)
 	}
 }
 

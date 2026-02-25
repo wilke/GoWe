@@ -84,7 +84,7 @@ func newParallelExecutor(r *Runner, graph *cwl.GraphDocument, dag *parser.DAGRes
 		dag:            dag,
 		config:         config,
 		workflowInputs: workflowInputs,
-		evaluator:      cwlexpr.NewEvaluator(extractExpressionLib(graph)),
+		evaluator:      cwlexpr.NewEvaluator(extractExpressionLib(graph, r.cwlDir)),
 		stepOutputs:    make(map[string]map[string]any),
 		pending:        make(map[string][]string),
 		dependents:     make(map[string][]string),
