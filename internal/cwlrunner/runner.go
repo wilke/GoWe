@@ -1335,6 +1335,17 @@ func resolveIWDListing(listingRaw any, inputs map[string]any, evaluator *cwlexpr
 			if arr, ok := result.([]any); ok {
 				return arr, nil
 			}
+			// If result is a string that looks like JSON array (from YAML | blocks
+			// which append trailing newline causing stringification), try to parse it.
+			if str, ok := result.(string); ok {
+				str = strings.TrimSpace(str)
+				if strings.HasPrefix(str, "[") {
+					var arr []any
+					if err := json.Unmarshal([]byte(str), &arr); err == nil {
+						return arr, nil
+					}
+				}
+			}
 			if result == nil {
 				return nil, nil
 			}
