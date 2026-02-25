@@ -27,13 +27,19 @@ type InputParam struct {
 
 	// SecondaryFiles specifies additional files associated with this input.
 	SecondaryFiles []SecondaryFileSchema
+
+	// LoadContents reads the file contents into the contents field.
+	LoadContents bool
 }
 
 // OutputParam is a CWL workflow output.
 type OutputParam struct {
-	Type         string
-	OutputSource string
-	Doc          string
+	Type          string
+	OutputSource  string   // Single source (for backwards compatibility)
+	OutputSources []string // Multiple sources (for MultipleInputFeatureRequirement)
+	PickValue     string   // "first_non_null", "the_only_non_null", or "all_non_null"
+	LinkMerge     string   // "merge_nested" (default) or "merge_flattened"
+	Doc           string
 }
 
 // Step is a CWL workflow step.
@@ -51,9 +57,10 @@ type Step struct {
 // StepInput is a normalized CWL step input.
 // Handles both shorthand ("read1: reads_r1") and expanded form.
 type StepInput struct {
-	Source    string
-	Default   any
-	ValueFrom string // Expression to transform input (requires StepInputExpressionRequirement)
+	Sources      []string // One or more source references (supports MultipleInputFeatureRequirement)
+	Default      any
+	ValueFrom    string // Expression to transform input (requires StepInputExpressionRequirement)
+	LoadContents bool   // Read file contents into the contents field before valueFrom
 }
 
 // GoWeHint holds GoWe-specific hints extracted from CWL hints.

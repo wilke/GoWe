@@ -91,17 +91,19 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 	}
 
 	// Check for JavaScript code block: ${ ... }
-	if strings.HasPrefix(expr, "${") {
+	// Trim whitespace to handle YAML literal blocks (|) which include trailing newlines.
+	trimmed := strings.TrimSpace(expr)
+	if strings.HasPrefix(trimmed, "${") {
 		// Find the matching closing brace for the code block.
-		if idx := findMatchingBrace(expr); idx >= 0 {
-			if idx == len(expr)-1 {
+		if idx := findMatchingBrace(trimmed); idx >= 0 {
+			if idx == len(trimmed)-1 {
 				// Sole code block — return typed result.
-				return e.evaluateCodeBlock(vm, expr[:idx+1])
+				return e.evaluateCodeBlock(vm, trimmed[:idx+1])
 			}
 			// Code block followed by literal text (e.g., ${...}\n from YAML |).
 			// Evaluate the code block, convert result to string, append rest.
-			codeBlock := expr[:idx+1]
-			remaining := expr[idx+1:]
+			codeBlock := trimmed[:idx+1]
+			remaining := trimmed[idx+1:]
 			result, err := e.evaluateCodeBlock(vm, codeBlock)
 			if err != nil {
 				return nil, err

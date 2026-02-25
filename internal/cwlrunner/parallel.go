@@ -16,13 +16,18 @@ type ParallelConfig struct {
 	// Enabled controls whether parallel execution is used.
 	Enabled bool
 
-	// MaxWorkers limits concurrent step/scatter executions.
+	// MaxWorkers limits concurrent tool executions (steps + scatter iterations).
 	// Default: runtime.NumCPU()
 	MaxWorkers int
 
 	// FailFast stops execution on first error.
 	// Default: true
 	FailFast bool
+
+	// Semaphore controls global concurrency for tool executions.
+	// When set, this limits total concurrent processes across all steps
+	// and scatter iterations. If nil, MaxWorkers is used to create one.
+	Semaphore *Semaphore
 }
 
 // DefaultParallelConfig returns the default parallel configuration.
@@ -67,6 +72,11 @@ type parallelExecutor struct {
 // newParallelExecutor creates a new parallel executor.
 func newParallelExecutor(r *Runner, graph *cwl.GraphDocument, dag *parser.DAGResult,
 	workflowInputs map[string]any, config ParallelConfig) *parallelExecutor {
+
+	// Create semaphore if not provided - this limits total concurrent tool executions
+	if config.Semaphore == nil && config.MaxWorkers > 0 {
+		config.Semaphore = NewSemaphore(config.MaxWorkers)
+	}
 
 	pe := &parallelExecutor{
 		runner:         r,
@@ -165,7 +175,7 @@ func (pe *parallelExecutor) getStepOutputs() map[string]map[string]any {
 func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error) {
 	totalSteps := len(pe.dag.Order)
 	if totalSteps == 0 {
-		return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.stepOutputs), nil
+		return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.stepOutputs)
 	}
 
 	// Create cancellable context for fail-fast
@@ -188,7 +198,8 @@ func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error)
 
 	pe.runner.logger.Debug("starting parallel execution",
 		"steps", totalSteps,
-		"workers", numWorkers)
+		"workers", numWorkers,
+		"max_concurrent_tools", pe.config.Semaphore.Capacity())
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -299,7 +310,7 @@ func (pe *parallelExecutor) execute(ctx context.Context) (map[string]any, error)
 	wg.Wait()
 
 	// Collect workflow outputs
-	return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.getStepOutputs()), nil
+	return collectWorkflowOutputs(pe.graph.Workflow, pe.workflowInputs, pe.getStepOutputs())
 }
 
 // createStepJob creates a job for the given step.
@@ -369,6 +380,14 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 			}
 			if !shouldRun {
 				pe.runner.logger.Info("skipping step (when condition false)", "step", job.stepID)
+				// Record skipped step metrics
+				if pe.runner.metrics != nil && pe.runner.metrics.Enabled() {
+					pe.runner.metrics.RecordStep(StepMetrics{
+						StepID: job.stepID,
+						ToolID: exprTool.ID,
+						Status: "skipped",
+					})
+				}
 				return make(map[string]any), nil
 			}
 		}
@@ -385,9 +404,9 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 	// Handle scatter if present
 	if len(job.step.Scatter) > 0 {
 		if pe.config.Enabled && pe.config.MaxWorkers > 1 {
-			return pe.runner.executeScatterParallel(ctx, pe.graph, tool, job.step, job.inputs, pe.config, pe.evaluator)
+			return pe.runner.executeScatterParallelWithMetrics(ctx, pe.graph, tool, job.step, job.inputs, job.stepID, pe.config, pe.evaluator)
 		}
-		return pe.runner.executeScatter(ctx, pe.graph, tool, job.step, job.inputs, pe.evaluator)
+		return pe.runner.executeScatterWithMetrics(ctx, pe.graph, tool, job.step, job.inputs, job.stepID, pe.evaluator)
 	}
 
 	// Handle conditional execution
@@ -399,11 +418,25 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 		}
 		if !shouldRun {
 			pe.runner.logger.Info("skipping step (when condition false)", "step", job.stepID)
+			// Record skipped step metrics
+			if pe.runner.metrics != nil && pe.runner.metrics.Enabled() {
+				pe.runner.metrics.RecordStep(StepMetrics{
+					StepID: job.stepID,
+					ToolID: tool.ID,
+					Status: "skipped",
+				})
+			}
 			return make(map[string]any), nil
 		}
 	}
 
-	return pe.runner.executeTool(ctx, pe.graph, tool, job.inputs, false)
+	// Acquire semaphore slot for tool execution (non-scatter)
+	if !pe.config.Semaphore.Acquire(ctx) {
+		return nil, ctx.Err()
+	}
+	defer pe.config.Semaphore.Release()
+
+	return pe.runner.executeToolWithStepID(ctx, pe.graph, tool, job.inputs, false, job.stepID)
 }
 
 // newCWLExprEvaluator creates a new expression evaluator with the given library.

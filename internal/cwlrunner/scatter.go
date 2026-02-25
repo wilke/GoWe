@@ -3,7 +3,9 @@ package cwlrunner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/pkg/cwl"
@@ -19,10 +21,51 @@ func hasValueFrom(step cwl.Step) bool {
 	return false
 }
 
+// whenReferencesScatterVars checks if the when expression references any scattered variables.
+// This is a simple heuristic that looks for "inputs.<varname>" patterns.
+func whenReferencesScatterVars(when string, scatterVars []string) bool {
+	for _, v := range scatterVars {
+		// Check for common patterns: inputs.varname or inputs["varname"]
+		if strings.Contains(when, "inputs."+v) ||
+			strings.Contains(when, "inputs[\""+v+"\"]") ||
+			strings.Contains(when, "inputs['"+v+"']") {
+			return true
+		}
+	}
+	return false
+}
+
 // executeScatter executes a step with scatter over input arrays.
 func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, evaluator ...*cwlexpr.Evaluator) (map[string]any, error) {
 	if len(step.Scatter) == 0 {
 		return nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if len(evaluator) > 0 {
+		eval = evaluator[0]
+	}
+
+	// Check 'when' condition early (before scatter validation).
+	// This handles cases where the condition depends on non-scattered variables
+	// and allows skipping the step even if scatter inputs are invalid.
+	// Skip early check if the expression references scattered variables.
+	if step.When != "" && eval != nil && !whenReferencesScatterVars(step.When, step.Scatter) {
+		evalCtx := cwlexpr.NewContext(inputs)
+		shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+		if err != nil {
+			// If evaluation fails (e.g., depends on scattered vars), continue to per-iteration eval.
+			r.logger.Debug("when condition pre-check failed, will evaluate per-iteration", "error", err)
+		} else if !shouldRun {
+			r.logger.Info("skipping scatter step (when condition false)", "step", step.Run)
+			// Return empty outputs for skipped scatter step.
+			outputs := make(map[string]any)
+			for _, outID := range step.Out {
+				outputs[outID] = nil
+			}
+			return outputs, nil
+		}
 	}
 
 	// Determine scatter method (default: dotproduct for single input, nested_crossproduct for multiple).
@@ -60,10 +103,6 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 	}
 
 	// Evaluate valueFrom expressions per scatter iteration (after scatter expansion).
-	var eval *cwlexpr.Evaluator
-	if len(evaluator) > 0 {
-		eval = evaluator[0]
-	}
 	if eval != nil && hasValueFrom(step) {
 		for _, combo := range combinations {
 			if err := evaluateValueFrom(step, combo, eval); err != nil {
@@ -72,10 +111,29 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 		}
 	}
 
-	// Execute tool for each combination.
+	// Execute tool for each combination, evaluating 'when' condition per iteration.
 	var results []map[string]any
 	for i, combo := range combinations {
 		r.logger.Debug("scatter iteration", "index", i, "inputs", combo)
+
+		// Evaluate 'when' condition if present.
+		if step.When != "" && eval != nil {
+			evalCtx := cwlexpr.NewContext(combo)
+			shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+			if err != nil {
+				return nil, fmt.Errorf("scatter iteration %d when: %w", i, err)
+			}
+			if !shouldRun {
+				// Condition is false for this iteration - output null for all outputs.
+				nullOutputs := make(map[string]any)
+				for _, outID := range step.Out {
+					nullOutputs[outID] = nil
+				}
+				results = append(results, nullOutputs)
+				continue
+			}
+		}
+
 		output, err := r.executeTool(ctx, graph, tool, combo, false)
 		if err != nil {
 			return nil, fmt.Errorf("scatter iteration %d: %w", i, err)
@@ -84,6 +142,14 @@ func (r *Runner) executeScatter(ctx context.Context, graph *cwl.GraphDocument, t
 	}
 
 	// Merge results into output arrays.
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		// Calculate dimensions for nested output structure.
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		return mergeScatterOutputsNested(results, tool, dims), nil
+	}
 	return mergeScatterOutputs(results, tool), nil
 }
 
@@ -192,6 +258,61 @@ func copyInputs(inputs map[string]any) map[string]any {
 	return result
 }
 
+// mergeScatterOutputsNested merges individual outputs into nested arrays for nested_crossproduct.
+// dims contains the size of each scatter dimension, e.g., [2, 2] for two scatter inputs of size 2.
+// Results are structured as nested arrays: [[r0, r1], [r2, r3]] for dims=[2, 2].
+func mergeScatterOutputsNested(results []map[string]any, tool *cwl.CommandLineTool, dims []int) map[string]any {
+	merged := make(map[string]any)
+
+	for outputID := range tool.Outputs {
+		// Build nested array structure.
+		merged[outputID] = nestResults(results, dims, 0, outputID)
+	}
+
+	return merged
+}
+
+// nestResults recursively builds nested arrays from flat results.
+func nestResults(results []map[string]any, dims []int, dimIdx int, outputID string) any {
+	if dimIdx >= len(dims) || len(results) == 0 {
+		return nil
+	}
+
+	outerSize := dims[dimIdx]
+	if dimIdx == len(dims)-1 {
+		// Base case: innermost dimension, return flat array.
+		arr := make([]any, min(outerSize, len(results)))
+		for i := range arr {
+			if results[i] != nil {
+				arr[i] = results[i][outputID]
+			}
+		}
+		return arr
+	}
+
+	// Calculate size of each inner chunk.
+	innerSize := 1
+	for _, d := range dims[dimIdx+1:] {
+		innerSize *= d
+	}
+
+	// Build outer array with nested inner arrays.
+	arr := make([]any, outerSize)
+	for i := 0; i < outerSize; i++ {
+		start := i * innerSize
+		end := start + innerSize
+		if end > len(results) {
+			end = len(results)
+		}
+		if start >= len(results) {
+			break
+		}
+		arr[i] = nestResults(results[start:end], dims, dimIdx+1, outputID)
+	}
+
+	return arr
+}
+
 // mergeScatterOutputs merges individual outputs into arrays.
 func mergeScatterOutputs(results []map[string]any, tool *cwl.CommandLineTool) map[string]any {
 	merged := make(map[string]any)
@@ -249,6 +370,12 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		scatterArrays[scatterInput] = arr
 	}
 
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if len(evaluator) > 0 {
+		eval = evaluator[0]
+	}
+
 	// Generate input combinations
 	var combinations []map[string]any
 	switch method {
@@ -263,10 +390,6 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 	}
 
 	// Evaluate valueFrom expressions per scatter iteration (after scatter expansion).
-	var eval *cwlexpr.Evaluator
-	if len(evaluator) > 0 {
-		eval = evaluator[0]
-	}
 	if eval != nil && hasValueFrom(step) {
 		for _, combo := range combinations {
 			if err := evaluateValueFrom(step, combo, eval); err != nil {
@@ -282,14 +405,14 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 
 	r.logger.Debug("executing scatter in parallel",
 		"iterations", n,
-		"workers", config.MaxWorkers)
+		"max_concurrent", config.Semaphore.Capacity())
 
 	// Create cancellable context for fail-fast
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Semaphore for bounded parallelism
-	sem := make(chan struct{}, config.MaxWorkers)
+	// Use global semaphore for bounded parallelism across all steps and scatter iterations
+	sem := config.Semaphore
 
 	// Results storage (pre-allocated for order preservation)
 	results := make([]scatterResult, n)
@@ -303,14 +426,12 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		go func(idx int, inputsCopy map[string]any) {
 			defer wg.Done()
 
-			// Acquire semaphore slot
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
+			// Acquire semaphore slot from global semaphore
+			if !sem.Acquire(ctx) {
 				results[idx] = scatterResult{index: idx, err: ctx.Err()}
 				return
 			}
+			defer sem.Release()
 
 			// Check if we should stop due to earlier error
 			select {
@@ -363,5 +484,267 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		outputMaps[i] = res.outputs
 	}
 
+	// Apply nested structure for nested_crossproduct.
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		return mergeScatterOutputsNested(outputMaps, tool, dims), nil
+	}
 	return mergeScatterOutputs(outputMaps, tool), nil
+}
+
+// executeScatterParallelWithMetrics executes scatter iterations in parallel and records per-iteration metrics.
+func (r *Runner) executeScatterParallelWithMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any, stepID string,
+	config ParallelConfig, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
+
+	startTime := time.Now()
+
+	// Execute the parallel scatter with iteration tracking
+	outputs, iterMetrics, err := r.executeScatterParallelWithIterationMetrics(ctx, graph, tool, step, inputs, config, evaluator)
+
+	duration := time.Since(startTime)
+
+	// Record metrics for the scatter step
+	if r.metrics != nil && r.metrics.Enabled() {
+		status := "success"
+		if err != nil {
+			status = "failed"
+		}
+
+		stepMetrics := StepMetrics{
+			StepID:     stepID,
+			ToolID:     tool.ID,
+			StartTime:  startTime,
+			Duration:   duration,
+			Status:     status,
+			Iterations: iterMetrics,
+		}
+
+		// Compute scatter summary from iteration metrics
+		if len(iterMetrics) > 0 {
+			stepMetrics.ScatterSummary = ComputeScatterSummary(iterMetrics)
+		}
+
+		r.metrics.RecordStep(stepMetrics)
+	}
+
+	return outputs, err
+}
+
+// scatterResultWithMetrics holds the result of a single scatter iteration including metrics.
+type scatterResultWithMetrics struct {
+	index   int
+	outputs map[string]any
+	metrics IterationMetrics
+	err     error
+}
+
+// executeScatterParallelWithIterationMetrics executes scatter in parallel and returns per-iteration metrics.
+func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context, graph *cwl.GraphDocument,
+	tool *cwl.CommandLineTool, step cwl.Step, inputs map[string]any,
+	config ParallelConfig, evaluator *cwlexpr.Evaluator) (map[string]any, []IterationMetrics, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Determine scatter method
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Get evaluator if provided.
+	var eval *cwlexpr.Evaluator
+	if evaluator != nil {
+		eval = evaluator
+	}
+
+	// Generate input combinations
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	// Evaluate valueFrom expressions per scatter iteration
+	if eval != nil && hasValueFrom(step) {
+		for _, combo := range combinations {
+			if err := evaluateValueFrom(step, combo, eval); err != nil {
+				return nil, nil, fmt.Errorf("scatter valueFrom: %w", err)
+			}
+		}
+	}
+
+	n := len(combinations)
+	if n == 0 {
+		return mergeScatterOutputs(nil, tool), nil, nil
+	}
+
+	r.logger.Debug("executing scatter in parallel with metrics",
+		"iterations", n,
+		"max_concurrent", config.Semaphore.Capacity())
+
+	// Create cancellable context for fail-fast
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Use global semaphore for bounded parallelism
+	sem := config.Semaphore
+
+	// Results storage (pre-allocated for order preservation)
+	results := make([]scatterResultWithMetrics, n)
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+
+	for i, combo := range combinations {
+		wg.Add(1)
+		go func(idx int, inputsCopy map[string]any) {
+			defer wg.Done()
+
+			iterStart := time.Now()
+
+			// Acquire semaphore slot from global semaphore
+			if !sem.Acquire(ctx) {
+				results[idx] = scatterResultWithMetrics{
+					index: idx,
+					err:   ctx.Err(),
+					metrics: IterationMetrics{
+						Index:       idx,
+						Duration:    time.Since(iterStart),
+						DurationStr: formatDuration(time.Since(iterStart)),
+						Status:      "failed",
+					},
+				}
+				return
+			}
+			defer sem.Release()
+
+			// Check if we should stop due to earlier error
+			select {
+			case <-ctx.Done():
+				results[idx] = scatterResultWithMetrics{
+					index: idx,
+					err:   ctx.Err(),
+					metrics: IterationMetrics{
+						Index:       idx,
+						Duration:    time.Since(iterStart),
+						DurationStr: formatDuration(time.Since(iterStart)),
+						Status:      "failed",
+					},
+				}
+				return
+			default:
+			}
+
+			r.logger.Debug("scatter iteration start", "index", idx)
+
+			// Execute the tool using internal method
+			execResult, err := r.executeToolInternal(ctx, graph, tool, inputsCopy)
+
+			iterDuration := time.Since(iterStart)
+			var iterMetrics IterationMetrics
+
+			if err != nil {
+				iterMetrics = IterationMetrics{
+					Index:       idx,
+					Duration:    iterDuration,
+					DurationStr: formatDuration(iterDuration),
+					Status:      "failed",
+				}
+			} else {
+				iterMetrics = IterationMetrics{
+					Index:        idx,
+					Duration:     execResult.Duration,
+					DurationStr:  formatDuration(execResult.Duration),
+					PeakMemoryKB: execResult.PeakMemoryKB,
+					ExitCode:     execResult.ExitCode,
+					Status:       "success",
+				}
+			}
+
+			results[idx] = scatterResultWithMetrics{
+				index:   idx,
+				outputs: nil,
+				metrics: iterMetrics,
+				err:     err,
+			}
+			if execResult != nil {
+				results[idx].outputs = execResult.Outputs
+			}
+
+			if err != nil && config.FailFast {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("scatter iteration %d: %w", idx, err)
+					cancel()
+				})
+			}
+
+			r.logger.Debug("scatter iteration complete", "index", idx, "error", err)
+		}(i, combo)
+	}
+
+	wg.Wait()
+
+	// Check for errors
+	if firstErr != nil {
+		return nil, nil, firstErr
+	}
+
+	// If not fail-fast, check all results for errors
+	if !config.FailFast {
+		for _, res := range results {
+			if res.err != nil {
+				return nil, nil, fmt.Errorf("scatter iteration %d: %w", res.index, res.err)
+			}
+		}
+	}
+
+	// Collect outputs and metrics in order
+	outputMaps := make([]map[string]any, n)
+	iterMetrics := make([]IterationMetrics, n)
+	for i, res := range results {
+		outputMaps[i] = res.outputs
+		iterMetrics[i] = res.metrics
+	}
+
+	// Apply nested structure for nested_crossproduct.
+	var outputs map[string]any
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for j, name := range step.Scatter {
+			dims[j] = len(scatterArrays[name])
+		}
+		outputs = mergeScatterOutputsNested(outputMaps, tool, dims)
+	} else {
+		outputs = mergeScatterOutputs(outputMaps, tool)
+	}
+
+	return outputs, iterMetrics, nil
 }

@@ -1,5 +1,339 @@
 # GoWe Scratchpad
 
+## Session: 2026-02-24 (Issue #47 - Per-Step Runtime and Memory Metrics)
+
+### Status: COMPLETE - Implementation verified
+
+Implemented per-step runtime and memory metrics for cwl-runner per issue #47.
+
+### Branch: `issue/47`
+
+### Features Implemented
+
+1. **Per-step duration** - Wall-clock time for each step on completion
+2. **Peak memory usage** - Tracked via `getrusage` (`ru_maxrss`)
+3. **Workflow summary** - Table printed to stderr with duration, peak memory, exit status
+4. **JSON output** - Metrics included under `cwl:metrics` extension field when `--metrics` flag is enabled
+
+### New Files Created
+
+| File | Purpose |
+|------|---------|
+| `internal/cwlrunner/metrics.go` | StepMetrics, WorkflowMetrics, MetricsCollector, helper functions |
+| `internal/cwlrunner/metrics_test.go` | Unit tests for metrics functionality |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwlrunner/runner.go` | Added `CollectMetrics` field, `metrics` collector, `executeToolWithStepID`, `executeScatterWithMetrics`, `writeOutputsWithMetrics` |
+| `internal/cwlrunner/execute.go` | Added `ExecutionResult` struct, modified execute functions to return timing/memory info |
+| `internal/cwlrunner/parallel.go` | Updated `executeStep` to pass step IDs and record skipped step metrics |
+| `internal/cwlrunner/scatter.go` | Added `executeScatterParallelWithMetrics`, added time import |
+| `cmd/cwl-runner/main.go` | Added `--metrics` flag |
+
+### CLI Usage
+
+```bash
+# Run with metrics collection enabled
+cwl-runner --metrics workflow.cwl job.yml
+
+# Parallel execution with metrics
+cwl-runner --parallel --metrics workflow.cwl job.yml
+```
+
+### Console Output
+
+```
+=== Workflow Execution Summary ===
+Workflow: my-workflow
+Total Duration: 14m 32s
+
+Step                      Duration    Memory    Status
+---------------------------------------------------------
+step1                       4m 12s    2.3 GB    ✓ success
+step2                       3m 45s    1.8 GB    ✓ success
+step3                       3m 22s    4.1 GB    ✓ success
+
+Steps: 3 completed, 0 failed, 0 skipped
+Peak Memory: 4.1 GB (step3)
+```
+
+### JSON Output
+
+```json
+{
+  "outputs": { ... },
+  "cwl:metrics": {
+    "workflow_id": "my-workflow",
+    "duration": "14m32s",
+    "duration_ns": 872000000000,
+    "steps": [
+      {
+        "step_id": "step1",
+        "duration": "4m12s",
+        "peak_memory_kb": 2411520,
+        "exit_code": 0,
+        "status": "success"
+      }
+    ]
+  }
+}
+```
+
+### Verification
+
+- All unit tests pass
+- 84/84 required conformance tests pass
+- Manual testing with `--metrics` flag verified
+
+### Note on Container Execution
+
+For Docker/Apptainer execution, `rusage` captures the container CLI process overhead, not the application inside the container. This is a known limitation.
+
+---
+
+## Session: 2026-02-24 (Issue #50 - Global Concurrency Limit)
+
+### Status: COMPLETE - Verified with real workflows
+
+Fixing issue #50: `-j N` flag should limit total concurrent tool executions, not just DAG steps.
+
+### Branch: `issue/50`
+
+### Problem
+
+The `-j N` flag limited concurrent DAG steps, but scatter iterations ran in parallel independently:
+- 4 steps × 10 scatter iterations = 40 concurrent processes (instead of N)
+
+### Solution
+
+Created a global semaphore shared between DAG step executor and scatter executor:
+
+1. **New `Semaphore` type** (`internal/cwlrunner/semaphore.go`)
+   - Thread-safe counting semaphore with context cancellation support
+   - `Acquire(ctx)` blocks until slot available or context cancelled
+   - `Release()` frees a slot
+   - Nil semaphore allows unlimited concurrency
+
+2. **Updated `ParallelConfig`** to hold shared `*Semaphore`
+
+3. **Updated `executeStep`** (parallel.go)
+   - Non-scatter tool executions acquire semaphore before running
+
+4. **Updated `executeScatterParallel`** (scatter.go)
+   - Uses shared semaphore instead of creating local one
+   - Each scatter iteration acquires from global pool
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwlrunner/semaphore.go` | **NEW** - Global concurrency semaphore |
+| `internal/cwlrunner/semaphore_test.go` | **NEW** - Semaphore unit tests |
+| `internal/cwlrunner/parallel.go` | Added Semaphore to config, acquire in executeStep |
+| `internal/cwlrunner/scatter.go` | Use shared semaphore in executeScatterParallel |
+
+### Tests
+
+- All unit tests pass
+- 84/84 required conformance tests pass
+- 46/46 conditional conformance tests pass
+- 30/42 scatter conformance tests pass (same as before)
+
+### Manual Verification
+
+Tested with real scatter workflows:
+- Single step, 8 scatter items, `-j 2`: 8 seconds (4 batches × 2s sleep)
+- Single step, 8 scatter items, `-j 4`: 4 seconds (2 batches × 2s sleep)
+- Two parallel steps, 4 items each, `-j 2`: 4 seconds (semaphore shared across steps)
+
+PR #51: https://github.com/wilke/GoWe/pull/51
+
+---
+
+## Session: 2026-02-24 (Server Conditional + Code Deduplication)
+
+### Status: COMPLETE - Shared package created, server conditional support implemented
+
+Implemented conditional workflow support for the scheduler (server-side) and created shared `cwloutput` package for code reuse between cwlrunner and scheduler.
+
+### Branch: `conditional`
+
+### Work Completed
+
+1. **Created shared package `internal/cwloutput/conditional.go`**
+   - `ApplyPickValue()` - handles `first_non_null`, `the_only_non_null`, `all_non_null`
+   - `ApplyLinkMerge()` - handles `merge_nested` (default), `merge_flattened`
+   - `CollectWorkflowOutputs()` - gathers workflow outputs from task outputs
+   - `resolveSource()` - resolves step/outputID or workflow input references
+
+2. **Updated scheduler for conditional support**
+   - Added `when` condition evaluation in `submitTask()` before dispatching
+   - Added `evaluateWhenCondition()` helper using cwlexpr
+   - Added `collectWorkflowOutputs()` using shared package
+   - Updated `finalizeSubmissions()` to collect workflow outputs
+
+3. **Refactored cwlrunner to use shared package**
+   - Updated `collectWorkflowOutputs()` to use `cwloutput.ApplyLinkMerge()` and `cwloutput.ApplyPickValue()`
+   - Removed duplicate `applyPickValue()` function (~60 lines)
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwloutput/conditional.go` | **NEW** - Shared pickValue/linkMerge logic |
+| `internal/scheduler/loop.go` | Added `when` evaluation, workflow output collection |
+| `internal/cwlrunner/runner.go` | Refactored to use shared cwloutput package |
+
+### Verification
+
+```bash
+# cwl-runner conformance
+cwltest --test conformance_tests.yaml --tool ./bin/cwl-runner --tags conditional
+# All 46 tests passed
+
+cwltest --test conformance_tests.yaml --tool ./bin/cwl-runner --tags required
+# All 84 tests passed
+```
+
+---
+
+## Previous Session: 2026-02-24 (Conditional Conformance - 46/46 COMPLETE)
+
+### Status: COMPLETE - All 46 conditional tests passing
+
+Improved CWL conditional conformance tests from **0/46 to 46/46 (100%)**.
+
+### Key Fixes
+
+| Issue | Tests | Fix |
+|-------|-------|-----|
+| Early `when` check with scatter vars | 19, 20, 22 | Skip early `when` check if expression references scattered variables |
+| Step input array sources | 45, 46 | Handle `[]any` case in step input parsing (multiple sources shorthand) |
+| `all_non_null` validation | 11, 33 | Validate that `pickValue: all_non_null` requires array output type |
+| Complex output types | 20, 42 | Use `serializeCWLType` for workflow output types to handle nested array types |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `internal/cwlrunner/scatter.go` | Added `whenReferencesScatterVars()` helper, skip early `when` check when condition references scatter variables |
+| `internal/parser/parser.go` | Handle `[]any` step input sources, use `serializeCWLType` for output types |
+| `internal/parser/validator.go` | Added `isArrayType()` helper, validate `all_non_null` requires array output type |
+
+---
+
+## Session: 2026-02-24 (step_input Conformance - 20/20 COMPLETE)
+
+### Status: COMPLETE - All 20 step_input tests passing
+
+Improved CWL step_input conformance tests from 10/20 to **20/20 (100%)**.
+
+### Branch: `step_input`
+
+### Commits This Session
+
+1. `9a1b9fb` - fix: handle NaN and Inf values in JSON output serialization
+2. `4736e97` - fix: preserve source-resolved values in valueFrom inputs context
+3. `dcaa31c` - feat: support MultipleInputFeatureRequirement and inline ExpressionTools
+4. `e64b4d6` - chore: remove debug test
+5. `e1f3006` - feat: implement loadContents and fix nested_crossproduct scatter
+
+### Key Fixes
+
+| Issue | Tests | Fix |
+|-------|-------|-----|
+| NaN serialization | Test 1 | `math.IsNaN(val) || math.IsInf(val, 0)` → return nil |
+| valueFrom inputs context | Multiple | Don't update inputsCtx during valueFrom (preserves source values) |
+| Multiple sources | Tests 11,15 | StepInput.Source → Sources []string |
+| Inline ExpressionTools | Tests 11,15 | Parse `run: {class: ExpressionTool, ...}` inline |
+| YAML literal whitespace | Multiple | `strings.TrimSpace(expr)` before checking `${...}` |
+| loadContents | Tests 1,16-19 | Apply loadContents for workflow inputs, step inputs, ExpressionTool inputs |
+| nested_crossproduct | Test 5 | `mergeScatterOutputsNested` with proper nesting structure |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `pkg/cwl/workflow.go` | Added LoadContents to InputParam and StepInput; Source → Sources |
+| `internal/parser/parser.go` | Parse loadContents field, multiple sources, inline ExpressionTools |
+| `internal/parser/validator.go` | Updated for Sources []string |
+| `internal/parser/dag.go` | Updated for Sources []string dependency tracking |
+| `internal/cwlrunner/runner.go` | NaN fix, applyLoadContents, loadContents for workflow/step/ExpressionTool inputs |
+| `internal/cwlrunner/scatter.go` | mergeScatterOutputsNested, nestResults for nested_crossproduct |
+| `internal/cwlexpr/evaluator.go` | TrimSpace for YAML literal blocks |
+
+### Verification
+
+```bash
+./scripts/run-conformance.sh step_input
+# All tests passed
+# === All step_input tests passed! ===
+```
+
+---
+
+## Session: 2026-02-24 (StepInputExpressionRequirement)
+
+### Status: COMPLETE
+
+Implemented StepInputExpressionRequirement support for both cwl-runner and gowe server.
+
+**StepInputExpressionRequirement** allows workflow step inputs to use `valueFrom` expressions that transform the source value before passing it to the tool.
+
+**Files Modified:**
+
+| File | Changes |
+|------|---------|
+| `pkg/cwl/workflow.go` | Added `ValueFrom` field to `StepInput` struct |
+| `pkg/model/workflow.go` | Added `ValueFrom` field to `StepInput` struct |
+| `internal/parser/parser.go` | Parse `valueFrom` from step inputs (lines 636-641), convert to model.StepInput with ValueFrom (line 1169) |
+| `internal/cwlrunner/runner.go` | Updated `resolveStepInputs` to evaluate valueFrom expressions using cwlexpr |
+| `internal/cwlrunner/parallel.go` | Added evaluator to parallelExecutor, use shared evaluator for valueFrom and when expressions |
+| `internal/scheduler/resolve.go` | Added expressionLib parameter, evaluate valueFrom expressions in ResolveTaskInputs |
+| `internal/scheduler/loop.go` | Updated call to ResolveTaskInputs with nil expressionLib |
+| `internal/cwlrunner/runner_test.go` | Added `TestRunner_Execute_ValueFrom` test |
+| `internal/scheduler/resolve_test.go` | Added `TestResolveTaskInputs_ValueFrom` and `TestResolveTaskInputs_ValueFrom_NoSource` tests |
+
+**Example Usage:**
+```yaml
+cwlVersion: v1.2
+class: Workflow
+requirements:
+  StepInputExpressionRequirement: {}
+inputs:
+  prefix: string
+  name: string
+outputs:
+  result:
+    type: File
+    outputSource: greet/output
+steps:
+  greet:
+    run: echo.cwl
+    in:
+      message:
+        source: name
+        valueFrom: $(inputs.prefix + " " + self)  # "Hello World"
+    out: [output]
+```
+
+**Key Implementation Details:**
+- In cwl-runner: `resolveStepInputs` now takes an evaluator and evaluates valueFrom with `inputs` = workflow inputs, `self` = resolved source value
+- In gowe server: `ResolveTaskInputs` takes expressionLib parameter, creates evaluator, evaluates valueFrom similarly
+- Shared evaluators for efficiency (one per workflow execution instead of per-expression)
+- Works with or without source (valueFrom can generate value from scratch if source is empty)
+
+**Tests:**
+- `TestRunner_Execute_ValueFrom` - cwl-runner workflow with valueFrom expression
+- `TestResolveTaskInputs_ValueFrom` - scheduler with source + valueFrom
+- `TestResolveTaskInputs_ValueFrom_NoSource` - scheduler with no source, only valueFrom
+
+All tests pass (77 unit test packages).
+
+---
+
 ## Session: 2026-02-24 (Parallel Execution for cwl-runner)
 
 ### Status: COMPLETE
