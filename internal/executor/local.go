@@ -3,12 +3,15 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 
+	"github.com/me/gowe/internal/execution"
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -38,14 +41,80 @@ func (e *LocalExecutor) Type() model.ExecutorType {
 // Submit executes the task synchronously as a local process.
 // It returns the task working directory as the externalID.
 func (e *LocalExecutor) Submit(ctx context.Context, task *model.Task) (string, error) {
-	parts := extractBaseCommand(task.Inputs)
-	if len(parts) == 0 {
-		return "", fmt.Errorf("task %s: _base_command is missing or empty", task.ID)
-	}
-
 	taskDir := filepath.Join(e.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return "", fmt.Errorf("task %s: create work dir: %w", task.ID, err)
+	}
+
+	// Use execution.Engine for full CWL support when Tool/Job are available.
+	if task.HasTool() {
+		return e.submitWithEngine(ctx, task, taskDir)
+	}
+
+	// Legacy path: use _base_command from task.Inputs.
+	return e.submitLegacy(ctx, task, taskDir)
+}
+
+// submitWithEngine executes a task using execution.Engine with full CWL output support.
+func (e *LocalExecutor) submitWithEngine(ctx context.Context, task *model.Task, taskDir string) (string, error) {
+	e.logger.Debug("executing with engine", "task_id", task.ID)
+
+	// Parse tool from task.Tool map.
+	tool, err := parseToolFromMap(task.Tool)
+	if err != nil {
+		return "", fmt.Errorf("task %s: parse tool: %w", task.ID, err)
+	}
+
+	// Build engine configuration.
+	var expressionLib []string
+	var namespaces map[string]string
+	var cwlDir string
+	if task.RuntimeHints != nil {
+		expressionLib = task.RuntimeHints.ExpressionLib
+		namespaces = task.RuntimeHints.Namespaces
+		cwlDir = task.RuntimeHints.CWLDir
+	}
+
+	engine := execution.NewEngine(execution.Config{
+		Logger:        e.logger,
+		ExpressionLib: expressionLib,
+		Namespaces:    namespaces,
+		CWLDir:        cwlDir,
+	})
+
+	// Execute the tool.
+	result, err := engine.ExecuteTool(ctx, tool, task.Job, taskDir)
+	if err != nil {
+		// Even on error, capture any partial results.
+		if result != nil {
+			task.ExitCode = &result.ExitCode
+			task.Stdout = result.Stdout
+			task.Stderr = result.Stderr
+			task.Outputs = result.Outputs
+		}
+		return taskDir, fmt.Errorf("task %s: execute: %w", task.ID, err)
+	}
+
+	// Capture results.
+	task.ExitCode = &result.ExitCode
+	task.Stdout = result.Stdout
+	task.Stderr = result.Stderr
+	task.Outputs = result.Outputs
+
+	e.logger.Debug("task completed with engine",
+		"task_id", task.ID,
+		"exit_code", result.ExitCode,
+		"outputs", len(result.Outputs),
+	)
+
+	return taskDir, nil
+}
+
+// submitLegacy executes a task using the legacy _base_command approach.
+func (e *LocalExecutor) submitLegacy(ctx context.Context, task *model.Task, taskDir string) (string, error) {
+	parts := extractBaseCommand(task.Inputs)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("task %s: _base_command is missing or empty", task.ID)
 	}
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
@@ -94,7 +163,7 @@ func (e *LocalExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		}
 	}
 
-	e.logger.Debug("task submitted",
+	e.logger.Debug("task submitted (legacy)",
 		"task_id", task.ID,
 		"command", parts,
 		"exit_code", exitCode,
@@ -143,4 +212,123 @@ func extractBaseCommand(inputs map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// parseToolFromMap converts a task.Tool map to a cwl.CommandLineTool.
+func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
+	// Marshal to JSON then unmarshal to struct.
+	data, err := json.Marshal(toolMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshal tool: %w", err)
+	}
+
+	var tool cwl.CommandLineTool
+	if err := json.Unmarshal(data, &tool); err != nil {
+		return nil, fmt.Errorf("unmarshal tool: %w", err)
+	}
+
+	// Handle baseCommand which may be string or []string in YAML.
+	if bc, ok := toolMap["baseCommand"]; ok {
+		switch cmd := bc.(type) {
+		case string:
+			tool.BaseCommand = []string{cmd}
+		case []any:
+			var baseCmd []string
+			for _, c := range cmd {
+				if s, ok := c.(string); ok {
+					baseCmd = append(baseCmd, s)
+				}
+			}
+			tool.BaseCommand = baseCmd
+		}
+	}
+
+	// Handle inputs map conversion.
+	if inputs, ok := toolMap["inputs"].(map[string]any); ok {
+		tool.Inputs = make(map[string]cwl.ToolInputParam)
+		for id, param := range inputs {
+			tool.Inputs[id] = parseInputParam(param)
+		}
+	}
+
+	// Handle outputs map conversion.
+	if outputs, ok := toolMap["outputs"].(map[string]any); ok {
+		tool.Outputs = make(map[string]cwl.ToolOutputParam)
+		for id, param := range outputs {
+			tool.Outputs[id] = parseOutputParam(param)
+		}
+	}
+
+	return &tool, nil
+}
+
+// parseInputParam converts an input parameter map to cwl.ToolInputParam.
+func parseInputParam(param any) cwl.ToolInputParam {
+	var result cwl.ToolInputParam
+	switch p := param.(type) {
+	case string:
+		result.Type = p
+	case map[string]any:
+		if t, ok := p["type"].(string); ok {
+			result.Type = t
+		}
+		if d, ok := p["default"]; ok {
+			result.Default = d
+		}
+		if ib, ok := p["inputBinding"].(map[string]any); ok {
+			result.InputBinding = parseInputBinding(ib)
+		}
+	}
+	return result
+}
+
+// parseOutputParam converts an output parameter map to cwl.ToolOutputParam.
+func parseOutputParam(param any) cwl.ToolOutputParam {
+	var result cwl.ToolOutputParam
+	switch p := param.(type) {
+	case string:
+		result.Type = p
+	case map[string]any:
+		if t, ok := p["type"].(string); ok {
+			result.Type = t
+		}
+		if ob, ok := p["outputBinding"].(map[string]any); ok {
+			result.OutputBinding = parseOutputBinding(ob)
+		}
+	}
+	return result
+}
+
+// parseInputBinding converts an inputBinding map to cwl.InputBinding.
+func parseInputBinding(m map[string]any) *cwl.InputBinding {
+	ib := &cwl.InputBinding{}
+	if pos, ok := m["position"].(float64); ok {
+		p := int(pos)
+		ib.Position = &p
+	}
+	if prefix, ok := m["prefix"].(string); ok {
+		ib.Prefix = prefix
+	}
+	if sep, ok := m["separate"].(bool); ok {
+		ib.Separate = &sep
+	}
+	if vf, ok := m["valueFrom"].(string); ok {
+		ib.ValueFrom = vf
+	}
+	return ib
+}
+
+// parseOutputBinding converts an outputBinding map to cwl.OutputBinding.
+func parseOutputBinding(m map[string]any) *cwl.OutputBinding {
+	ob := &cwl.OutputBinding{}
+	if glob, ok := m["glob"].(string); ok {
+		ob.Glob = glob
+	}
+	if lc, ok := m["loadContents"].(bool); ok {
+		ob.LoadContents = lc
+	}
+	if oe, ok := m["outputEval"].(string); ok {
+		ob.OutputEval = oe
+	}
+	return ob
 }

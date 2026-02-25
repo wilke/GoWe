@@ -13,6 +13,7 @@ import (
 	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -274,12 +275,11 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 		}
 	}
 
-	// For worker executor tasks, populate Tool and Job fields from the CWL.
-	if task.ExecutorType == model.ExecutorTypeWorker {
-		if err := l.populateToolAndJob(task, step, wf, sub.Inputs, tasksByStep); err != nil {
-			l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
-				"task_id", task.ID, "error", err)
-		}
+	// Populate Tool and Job fields from the CWL for full CWL execution support.
+	// This enables proper output collection (outputEval, loadContents, etc.) for all executors.
+	if err := l.populateToolAndJob(task, step, wf, sub.Inputs, tasksByStep); err != nil {
+		l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
+			"task_id", task.ID, "error", err)
 	}
 
 	// Resolve inputs (sets _base_command, _output_globs, and real inputs).
@@ -661,40 +661,31 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		return fmt.Errorf("tool %q not found in parsed workflow", toolID)
 	}
 
-	// Resolve job inputs (same logic as ResolveTaskInputs but store in Job).
-	job := make(map[string]any)
-	for _, si := range step.In {
-		if si.Source == "" {
-			continue
+	// Build stepOutputs from completed upstream tasks.
+	stepOutputs := make(map[string]map[string]any)
+	for stepID, t := range tasksByStepID {
+		if t.State == model.TaskStateSuccess && t.Outputs != nil {
+			stepOutputs[stepID] = t.Outputs
 		}
+	}
 
-		if strings.Contains(si.Source, "/") {
-			// Upstream task output: "stepID/outputID"
-			parts := strings.SplitN(si.Source, "/", 2)
-			stepID, outputID := parts[0], parts[1]
+	// Convert model.StepInput to stepinput.InputDef and resolve using shared logic.
+	inputs := make([]stepinput.InputDef, len(step.In))
+	for i, si := range step.In {
+		inputs[i] = stepinput.InputDefFromModel(
+			si.ID,
+			si.Sources,
+			si.Source,
+			si.Default,
+			si.ValueFrom,
+			si.LoadContents,
+		)
+	}
 
-			depTask, exists := tasksByStepID[stepID]
-			if !exists {
-				return fmt.Errorf("upstream step %q not found", stepID)
-			}
-
-			val, exists := depTask.Outputs[outputID]
-			if !exists {
-				if depTask.State == model.TaskStateSuccess && len(depTask.Outputs) == 0 {
-					job[si.ID] = nil
-					continue
-				}
-				return fmt.Errorf("output %q not found on step %q", outputID, stepID)
-			}
-			job[si.ID] = val
-		} else {
-			// Workflow-level input.
-			val, exists := submissionInputs[si.Source]
-			if !exists {
-				return fmt.Errorf("workflow input %q not found", si.Source)
-			}
-			job[si.ID] = val
-		}
+	// Use shared resolution logic (handles defaults, multiple sources, valueFrom).
+	job, err := stepinput.ResolveInputs(inputs, submissionInputs, stepOutputs, stepinput.Options{})
+	if err != nil {
+		return fmt.Errorf("resolve job inputs: %w", err)
 	}
 
 	task.Tool = tool

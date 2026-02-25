@@ -15,6 +15,10 @@ services:
       - "-default-executor"
       - "worker"
       - "-allow-anonymous"
+      - "-anonymous-executors"
+      - "local,docker,worker,container"
+      - "-scheduler-poll"
+      - "500ms"
       - "-debug"
     volumes:
       - gowe-data:/data
@@ -46,7 +50,7 @@ services:
       - "-stage-out"
       - "file:///workdir/outputs"
       - "-poll"
-      - "2s"
+      - "500ms"
       - "-debug"
     volumes:
       - ./tmp/workdir:/workdir
@@ -72,7 +76,7 @@ services:
       - "-stage-out"
       - "file:///workdir/outputs"
       - "-poll"
-      - "2s"
+      - "500ms"
       - "-debug"
     volumes:
       - ./tmp/workdir:/workdir
@@ -98,7 +102,7 @@ services:
       - "-stage-out"
       - "file:///workdir/outputs"
       - "-poll"
-      - "2s"
+      - "500ms"
       - "-debug"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

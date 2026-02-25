@@ -166,9 +166,13 @@ func TestResolveTaskInputs_MissingWorkflowInput(t *testing.T) {
 		},
 	}
 
+	// Per CWL semantics, missing sources resolve to nil (not an error).
 	err := ResolveTaskInputs(task, step, map[string]any{}, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for missing workflow input, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if task.Inputs["param"] != nil {
+		t.Errorf("expected nil for missing input, got %v", task.Inputs["param"])
 	}
 }
 
@@ -189,9 +193,13 @@ func TestResolveTaskInputs_MissingUpstreamOutput(t *testing.T) {
 		},
 	}
 
+	// Per CWL semantics, missing outputs resolve to nil (not an error).
 	err := ResolveTaskInputs(task, step, nil, tasksByStepID, nil)
-	if err == nil {
-		t.Fatal("expected error for missing upstream output, got nil")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if task.Inputs["input_file"] != nil {
+		t.Errorf("expected nil for missing output, got %v", task.Inputs["input_file"])
 	}
 }
 
@@ -207,8 +215,9 @@ func TestResolveTaskInputs_EmptySource(t *testing.T) {
 	if err := ResolveTaskInputs(task, step, map[string]any{}, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, exists := task.Inputs["optional_param"]; exists {
-		t.Error("Inputs should not contain key for empty-source input")
+	// Per CWL semantics, empty source resolves to nil and is included in the map.
+	if task.Inputs["optional_param"] != nil {
+		t.Errorf("expected nil for empty source, got %v", task.Inputs["optional_param"])
 	}
 }
 

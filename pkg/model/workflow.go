@@ -59,11 +59,14 @@ type Step struct {
 	Hints     *StepHints   `json:"hints,omitempty"`
 }
 
-// StepInput maps a step input to its source.
+// StepInput maps a step input to its source(s).
 type StepInput struct {
-	ID        string `json:"id"`
-	Source    string `json:"source"`
-	ValueFrom string `json:"value_from,omitempty"` // Expression to transform input
+	ID           string   `json:"id"`
+	Sources      []string `json:"sources"`                  // Primary: array of sources
+	Source       string   `json:"source,omitempty"`         // Deprecated: backwards compat (comma-joined)
+	Default      any      `json:"default,omitempty"`        // Fallback value if sources resolve to nil
+	ValueFrom    string   `json:"value_from,omitempty"`     // Expression to transform input
+	LoadContents bool     `json:"load_contents,omitempty"`  // Read file contents before valueFrom
 }
 
 // StepHints holds GoWe-specific hints extracted from a CWL step.
