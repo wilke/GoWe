@@ -1,6 +1,49 @@
 # GoWe Scratchpad
 
-## Session: 2026-02-24 (Issue #52 - InitialWorkDirRequirement Conformance)
+## Session: 2026-02-24 (Shared IWDR Package Refactoring)
+
+### Status: COMPLETE - Shared iwdr package extracted
+
+Extracted InitialWorkDirRequirement logic into shared package `internal/iwdr/` for use by both cwl-runner and server/executor.
+
+### Branch: `feature/InitialWorkDirRequirement`
+
+### Changes Made
+
+1. **Created `internal/iwdr/` package** with:
+   - `iwdr.go` - Public API: `Stage()`, `UpdateInputPaths()`, `HasDockerRequirement()`, types
+   - `stage.go` - Core staging logic extracted from runner.go (~500 lines)
+   - `file_ops.go` - File operations: `copyFile()`, `copyDir()`, `CopyDirContents()`
+   - `iwdr_test.go` - Unit tests for the package
+
+2. **Updated `internal/cwlrunner/`**:
+   - `runner.go` - Removed ~700 lines of IWD functions, now imports and uses `iwdr` package
+   - `execute.go` - Updated to use `iwdr.ContainerMount` and `iwdr.CopyDirContents()`
+
+3. **Updated `internal/execution/`**:
+   - `engine.go` - Added `CWLDir` to Config, calls `iwdr.Stage()` in `ExecuteTool()`
+   - `docker.go` - Added `containerMounts` parameter to `executeDocker()`, mounts IWD files
+
+4. **Updated `internal/worker/worker.go`**:
+   - Extracts `CWLDir` from `task.RuntimeHints` and passes to Engine
+
+5. **Updated `pkg/model/task.go`**:
+   - Added `CWLDir` field to `RuntimeHints` struct
+
+### Test Results
+
+- InitialWorkDirRequirement: 38/38 passing
+- Required conformance: 84/84 passing
+- All Go unit tests passing
+
+### Next Steps
+
+- Consider adding CWLDir to task serialization when creating tasks on the server side
+- Workers can now handle InitialWorkDirRequirement workflows (pending CWLDir propagation from scheduler)
+
+---
+
+## Previous Session: 2026-02-24 (Issue #52 - InitialWorkDirRequirement Conformance)
 
 ### Status: COMPLETE - 38/38 tests passing
 

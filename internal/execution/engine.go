@@ -5,9 +5,11 @@ package execution
 import (
 	"context"
 	"log/slog"
+	"os"
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -17,6 +19,7 @@ type Engine struct {
 	stager  Stager
 	runtime Runtime
 	gpu     GPUConfig // GPU configuration for container execution
+	cwlDir  string    // Directory containing the CWL file
 
 	// ExpressionLib contains JavaScript library code from InlineJavascriptRequirement.
 	ExpressionLib []string
@@ -33,6 +36,7 @@ type Config struct {
 	ExpressionLib []string
 	Namespaces    map[string]string
 	GPU           GPUConfig // GPU configuration for container execution
+	CWLDir        string    // Directory containing the CWL file
 }
 
 // NewEngine creates a new execution engine.
@@ -57,6 +61,7 @@ func NewEngine(cfg Config) *Engine {
 		stager:        stager,
 		runtime:       runtime,
 		gpu:           cfg.GPU,
+		cwlDir:        cfg.CWLDir,
 		ExpressionLib: cfg.ExpressionLib,
 		Namespaces:    cfg.Namespaces,
 	}
@@ -73,6 +78,11 @@ type ExecuteResult struct {
 // ExecuteTool executes a CWL CommandLineTool with the given inputs.
 func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inputs map[string]any, workDir string) (*ExecuteResult, error) {
 	e.logger.Info("executing tool", "id", tool.ID, "workDir", workDir)
+
+	// Ensure work directory exists.
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return nil, &ExecutionError{Phase: "setup", Err: err}
+	}
 
 	// Build runtime context.
 	runtimeCtx := e.buildRuntimeContext(tool, workDir)
@@ -94,6 +104,21 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	// Determine execution mode.
 	useDocker := hasDockerRequirement(tool)
 
+	// Stage files from InitialWorkDirRequirement.
+	var containerMounts []iwdr.ContainerMount
+	iwdResult, err := iwdr.Stage(tool, inputs, workDir, iwdr.StageOptions{
+		CopyForContainer: useDocker,
+		CWLDir:           e.cwlDir,
+		ExpressionLib:    e.ExpressionLib,
+	})
+	if err != nil {
+		return nil, &ExecutionError{Phase: "stage_iwd", Err: err}
+	}
+	if iwdResult != nil {
+		containerMounts = iwdResult.ContainerMounts
+		iwdr.UpdateInputPaths(inputs, workDir, iwdResult.StagedPaths)
+	}
+
 	// Execute the tool.
 	var runResult *RunResult
 	if useDocker {
@@ -101,7 +126,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 		if dockerImage == "" {
 			return nil, &ExecutionError{Phase: "execute", Err: ErrNoDockerImage}
 		}
-		runResult, err = e.executeDocker(ctx, tool, cmdResult, inputs, dockerImage, workDir)
+		runResult, err = e.executeDocker(ctx, tool, cmdResult, inputs, dockerImage, workDir, containerMounts)
 	} else {
 		runResult, err = e.executeLocal(ctx, tool, cmdResult, inputs, workDir)
 	}

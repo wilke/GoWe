@@ -259,9 +259,11 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 	// Build engine configuration.
 	var expressionLib []string
 	var namespaces map[string]string
+	var cwlDir string
 	if task.RuntimeHints != nil {
 		expressionLib = task.RuntimeHints.ExpressionLib
 		namespaces = task.RuntimeHints.Namespaces
+		cwlDir = task.RuntimeHints.CWLDir
 	}
 
 	// Apply per-task stager overrides if present.
@@ -276,6 +278,7 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		Stager:        stager,
 		ExpressionLib: expressionLib,
 		Namespaces:    namespaces,
+		CWLDir:        cwlDir,
 		GPU: execution.GPUConfig{
 			Enabled:  w.gpu.Enabled,
 			DeviceID: w.gpu.DeviceID,

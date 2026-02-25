@@ -67,6 +67,9 @@ type RuntimeHints struct {
 	// WorkerGroup specifies which worker group should execute this task.
 	// If empty, any worker can execute the task.
 	WorkerGroup string `json:"worker_group,omitempty"`
+
+	// CWLDir is the directory containing the CWL file, used for resolving relative paths.
+	CWLDir string `json:"cwl_dir,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

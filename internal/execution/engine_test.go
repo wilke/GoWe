@@ -115,6 +115,65 @@ func TestEngine_ExecuteTool_Touch(t *testing.T) {
 	}
 }
 
+func TestEngine_ExecuteTool_InitialWorkDir(t *testing.T) {
+	// Create a tool with InitialWorkDirRequirement that creates a config file.
+	tool := &cwl.CommandLineTool{
+		ID:          "cat-config-tool",
+		BaseCommand: []string{"cat"},
+		Requirements: map[string]any{
+			"InitialWorkDirRequirement": map[string]any{
+				"listing": []any{
+					map[string]any{
+						"entryname": "config.txt",
+						"entry":     "key=value",
+					},
+				},
+			},
+		},
+		Inputs: map[string]cwl.ToolInputParam{
+			"config": {
+				Type: "string",
+				InputBinding: &cwl.InputBinding{
+					Position: 1,
+				},
+			},
+		},
+		Outputs: map[string]cwl.ToolOutputParam{
+			"out": {
+				Type: "stdout",
+			},
+		},
+	}
+
+	inputs := map[string]any{
+		"config": "config.txt",
+	}
+
+	// Create temp workdir.
+	workDir := filepath.Join(os.TempDir(), "gowe-test-iwd")
+	defer os.RemoveAll(workDir)
+
+	engine := NewEngine(Config{})
+	result, err := engine.ExecuteTool(context.Background(), tool, inputs, workDir)
+	if err != nil {
+		t.Fatalf("ExecuteTool failed: %v", err)
+	}
+
+	if result.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0; stderr: %s", result.ExitCode, result.Stderr)
+	}
+
+	// Check that config.txt was staged
+	configPath := filepath.Join(workDir, "config.txt")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("staged file not found: %v", err)
+	}
+	if string(content) != "key=value" {
+		t.Errorf("config content = %q, want %q", string(content), "key=value")
+	}
+}
+
 func TestFileStager_StageIn(t *testing.T) {
 	// Create a temp file to stage.
 	srcDir := filepath.Join(os.TempDir(), "gowe-stager-src")
