@@ -194,13 +194,16 @@ func moveFile(src, dst string) error {
 // executeInDockerWithWorkDir executes a tool in a Docker container with the specified work directory.
 // Note: For containerized execution, resource usage captures the container CLI process overhead,
 // not the application inside the container.
-func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string) (*ExecutionResult, error) {
+// containerMounts: files to mount at absolute paths inside container (from InitialWorkDirRequirement).
+// dockerOutputDir: custom output directory inside container (from dockerOutputDirectory).
+func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
 	startTime := time.Now()
 	r.logger.Info("executing in Docker", "image", dockerImage, "command", cmdResult.Command)
 
 	// Create directories for this execution.
 	tmpDir := workDir + "_tmp"
-	for _, dir := range []string{workDir, tmpDir} {
+	outputDir := workDir + "_output" // For dockerOutputDirectory
+	for _, dir := range []string{workDir, tmpDir, outputDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -214,11 +217,26 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 	// Build Docker command.
 	dockerArgs := []string{"run", "--rm", "-i"}
 
+	// Determine container working directory.
+	containerWorkDir := "/var/spool/cwl"
+	if dockerOutputDir != "" {
+		// When dockerOutputDirectory is specified, outputs go there instead.
+		containerWorkDir = dockerOutputDir
+	}
+
 	// Mount working directory (resolve symlinks for macOS /tmp -> /private/tmp).
 	// Use --mount syntax to handle paths with colons (Docker -v uses : as separator).
 	absWorkDir := resolveSymlinks(workDir)
 	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/var/spool/cwl", absWorkDir))
-	dockerArgs = append(dockerArgs, "-w", "/var/spool/cwl")
+
+	// If dockerOutputDirectory is specified, mount outputDir there.
+	if dockerOutputDir != "" {
+		absOutputDir := resolveSymlinks(outputDir)
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absOutputDir, dockerOutputDir))
+	}
+
+	// Set working directory.
+	dockerArgs = append(dockerArgs, "-w", containerWorkDir)
 
 	// Mount tmp directory.
 	absTmpDir := resolveSymlinks(tmpDir)
@@ -228,6 +246,12 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 	mounts := collectInputMounts(inputs)
 	for hostPath, containerPath := range mounts {
 		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", hostPath, containerPath))
+	}
+
+	// Mount files/directories at absolute paths (from InitialWorkDirRequirement with absolute entryname).
+	for _, m := range containerMounts {
+		absHostPath := resolveSymlinks(m.HostPath)
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
 	}
 
 	// Add image.
@@ -320,6 +344,13 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 	peakMemoryKB := getResourceUsage(cmd.ProcessState)
 	duration := time.Since(startTime)
 
+	// If dockerOutputDirectory was used, copy outputs from outputDir to workDir.
+	if dockerOutputDir != "" {
+		if err := copyDirContents(outputDir, workDir); err != nil {
+			return nil, fmt.Errorf("copy outputs from dockerOutputDirectory: %w", err)
+		}
+	}
+
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := r.collectOutputs(tool, workDir, inputs, exitCode)
 	if err != nil {
@@ -338,13 +369,16 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 // executeInApptainerWithWorkDir executes a tool in an Apptainer container with the specified work directory.
 // Note: For containerized execution, resource usage captures the container CLI process overhead,
 // not the application inside the container.
-func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string) (*ExecutionResult, error) {
+// containerMounts: files to mount at absolute paths inside container (from InitialWorkDirRequirement).
+// dockerOutputDir: custom output directory inside container (from dockerOutputDirectory).
+func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
 	startTime := time.Now()
 	r.logger.Info("executing in Apptainer", "image", dockerImage, "command", cmdResult.Command)
 
 	// Create directories for this execution.
 	tmpDir := workDir + "_tmp"
-	for _, dir := range []string{workDir, tmpDir} {
+	outputDir := workDir + "_output" // For dockerOutputDirectory
+	for _, dir := range []string{workDir, tmpDir, outputDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -358,10 +392,24 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 	// Build Apptainer command.
 	apptainerArgs := []string{"exec"}
 
+	// Determine container working directory.
+	containerWorkDir := "/var/spool/cwl"
+	if dockerOutputDir != "" {
+		containerWorkDir = dockerOutputDir
+	}
+
 	// Mount working directory (resolve symlinks for consistency).
 	absWorkDir := resolveSymlinks(workDir)
 	apptainerArgs = append(apptainerArgs, "--bind", absWorkDir+":/var/spool/cwl")
-	apptainerArgs = append(apptainerArgs, "--pwd", "/var/spool/cwl")
+
+	// If dockerOutputDirectory is specified, mount outputDir there.
+	if dockerOutputDir != "" {
+		absOutputDir := resolveSymlinks(outputDir)
+		apptainerArgs = append(apptainerArgs, "--bind", absOutputDir+":"+dockerOutputDir)
+	}
+
+	// Set working directory.
+	apptainerArgs = append(apptainerArgs, "--pwd", containerWorkDir)
 
 	// Mount tmp directory.
 	absTmpDir := resolveSymlinks(tmpDir)
@@ -371,6 +419,12 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 	mounts := collectInputMounts(inputs)
 	for hostPath, containerPath := range mounts {
 		apptainerArgs = append(apptainerArgs, "--bind", hostPath+":"+containerPath+":ro")
+	}
+
+	// Mount files/directories at absolute paths (from InitialWorkDirRequirement with absolute entryname).
+	for _, m := range containerMounts {
+		absHostPath := resolveSymlinks(m.HostPath)
+		apptainerArgs = append(apptainerArgs, "--bind", absHostPath+":"+m.ContainerPath)
 	}
 
 	// Add image with docker:// prefix for pulling from Docker registries.
@@ -461,6 +515,13 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 	// Capture resource usage from ProcessState (note: this is for the apptainer CLI, not the container).
 	peakMemoryKB := getResourceUsage(cmd.ProcessState)
 	duration := time.Since(startTime)
+
+	// If dockerOutputDirectory was used, copy outputs from outputDir to workDir.
+	if dockerOutputDir != "" {
+		if err := copyDirContents(outputDir, workDir); err != nil {
+			return nil, fmt.Errorf("copy outputs from dockerOutputDirectory: %w", err)
+		}
+	}
 
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := r.collectOutputs(tool, workDir, inputs, exitCode)
