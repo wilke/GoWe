@@ -233,8 +233,13 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 	// Add image.
 	dockerArgs = append(dockerArgs, dockerImage)
 
-	// Add tool command.
-	dockerArgs = append(dockerArgs, cmdResult.Command...)
+	// Add tool command. For ShellCommandRequirement, wrap in /bin/sh -c.
+	if hasShellCommandRequirement(tool) {
+		cmdStr := strings.Join(cmdResult.Command, " ")
+		dockerArgs = append(dockerArgs, "/bin/sh", "-c", cmdStr)
+	} else {
+		dockerArgs = append(dockerArgs, cmdResult.Command...)
+	}
 
 	r.logger.Debug("docker command", "args", dockerArgs)
 
@@ -371,8 +376,13 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 	// Add image with docker:// prefix for pulling from Docker registries.
 	apptainerArgs = append(apptainerArgs, "docker://"+dockerImage)
 
-	// Add tool command.
-	apptainerArgs = append(apptainerArgs, cmdResult.Command...)
+	// Add tool command. For ShellCommandRequirement, wrap in /bin/sh -c.
+	if hasShellCommandRequirement(tool) {
+		cmdStr := strings.Join(cmdResult.Command, " ")
+		apptainerArgs = append(apptainerArgs, "/bin/sh", "-c", cmdStr)
+	} else {
+		apptainerArgs = append(apptainerArgs, cmdResult.Command...)
+	}
 
 	r.logger.Debug("apptainer command", "args", apptainerArgs)
 
