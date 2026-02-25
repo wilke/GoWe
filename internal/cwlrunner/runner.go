@@ -19,6 +19,7 @@ import (
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/cwloutput"
+	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
@@ -1086,17 +1087,9 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 
 	// Handle file literals: File objects with "contents" but no path/location.
 	// These need to be materialized as actual files.
-	if contents, hasContents := resolved["contents"].(string); hasContents {
-		_, hasPath := resolved["path"]
-		_, hasLocation := resolved["location"]
-		if !hasPath && !hasLocation {
-			// File literal - materialize to temp file.
-			tempFile, err := materializeFileLiteral(contents, resolved)
-			if err == nil {
-				resolved["path"] = tempFile
-				resolved["location"] = "file://" + tempFile
-			}
-		}
+	if _, err := fileliteral.MaterializeFileObject(resolved); err != nil {
+		// Log error but continue - file literals are not critical.
+		_ = err
 	}
 
 	// Step 1: Resolve location (make it absolute if relative).
@@ -1188,35 +1181,6 @@ func splitBasenameExt(basename string) (string, string) {
 		}
 	}
 	return basename, ""
-}
-
-// materializeFileLiteral creates a temp file from file literal contents.
-// Per CWL spec, file literals with "contents" field are written to a temp file.
-func materializeFileLiteral(contents string, fileObj map[string]any) (string, error) {
-	// Use basename if provided, otherwise generate a name.
-	basename := "cwl_literal"
-	if b, ok := fileObj["basename"].(string); ok && b != "" {
-		basename = b
-	}
-
-	// Create temp directory for file literals.
-	// Resolve symlinks (e.g., /var -> /private/var on macOS) for Docker compatibility.
-	tempDir := os.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempDir); err == nil {
-		tempDir = resolved
-	}
-	tempDir = filepath.Join(tempDir, "cwl-literals")
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", err
-	}
-
-	// Create the temp file.
-	tempPath := filepath.Join(tempDir, basename)
-	if err := os.WriteFile(tempPath, []byte(contents), 0644); err != nil {
-		return "", err
-	}
-
-	return tempPath, nil
 }
 
 // isURI checks if a string is a URI.

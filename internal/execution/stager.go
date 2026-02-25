@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -174,6 +175,23 @@ func (e *Engine) stageInputValue(ctx context.Context, inputID string, v any, wor
 
 // stageFileOrDirectory stages a File or Directory object.
 func (e *Engine) stageFileOrDirectory(ctx context.Context, inputID string, obj map[string]any, workDir string) error {
+	// Handle file literals: File objects with "contents" but no path/location.
+	// These need to be materialized as actual files before staging.
+	if _, err := fileliteral.MaterializeFileObject(obj); err != nil {
+		return fmt.Errorf("materialize file literal for %s: %w", inputID, err)
+	}
+
+	// Handle Directory listings with file literals.
+	if listing, ok := obj["listing"].([]any); ok {
+		for i, item := range listing {
+			if itemMap, ok := item.(map[string]any); ok {
+				if err := e.stageFileOrDirectory(ctx, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, workDir); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	location := ""
 	if loc, ok := obj["location"].(string); ok {
 		location = loc

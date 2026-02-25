@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/fileliteral"
 )
 
 // InputDef represents a step input definition with all CWL semantics.
@@ -139,10 +140,18 @@ func ResolveDefaultValue(v any, cwlDir string) any {
 }
 
 // resolveFileObject resolves paths in a File or Directory object relative to cwlDir.
+// It also handles file literals (File objects with contents but no path/location).
 func resolveFileObject(obj map[string]any, cwlDir string) map[string]any {
 	result := make(map[string]any, len(obj))
 	for k, v := range obj {
 		result[k] = v
+	}
+
+	// Handle file literals: File objects with "contents" but no path/location.
+	// These need to be materialized as actual files before execution.
+	if _, err := fileliteral.MaterializeFileObject(result); err != nil {
+		// Log error but continue - file literals are not critical.
+		_ = err
 	}
 
 	// Resolve location or path.
@@ -163,6 +172,15 @@ func resolveFileObject(obj map[string]any, cwlDir string) map[string]any {
 				result["path"] = path
 			} else if key == "path" && result["location"] == nil {
 				result["location"] = "file://" + path
+			}
+		}
+	}
+
+	// Recursively resolve Directory listings (may contain file literals).
+	if listing, ok := result["listing"].([]any); ok {
+		for i, item := range listing {
+			if itemMap, ok := item.(map[string]any); ok {
+				listing[i] = resolveFileObject(itemMap, cwlDir)
 			}
 		}
 	}

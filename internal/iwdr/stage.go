@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/fileliteral"
 )
 
 // resolveIWDListing resolves the listing field which can be an array or an expression.
@@ -296,6 +297,12 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 // If entryname is an absolute path and copyForContainer is true, returns a ContainerMount
 // for the file to be mounted at that path inside the container.
 func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+	// Handle file literals: File objects with "contents" but no path/location.
+	// These need to be materialized as actual files before staging.
+	if _, err := fileliteral.MaterializeFileObject(fileObj); err != nil {
+		return nil, fmt.Errorf("materialize file literal: %w", err)
+	}
+
 	// Get source path.
 	srcPath := ""
 	if p, ok := fileObj["path"].(string); ok {

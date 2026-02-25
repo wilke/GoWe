@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -94,6 +95,17 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	}
 	if sub.Labels == nil {
 		sub.Labels = map[string]string{}
+	}
+
+	// Materialize file literals in submission inputs.
+	// CWL file literals are File objects with "contents" but no path/location.
+	// These must be written to temp files before execution.
+	for k, v := range sub.Inputs {
+		if materialized, err := fileliteral.MaterializeRecursive(v); err != nil {
+			s.logger.Warn("materialize file literal", "input", k, "error", err)
+		} else {
+			sub.Inputs[k] = materialized
+		}
 	}
 
 	if err := s.store.CreateSubmission(r.Context(), sub); err != nil {
