@@ -52,8 +52,33 @@ func Bundle(workflowPath string) (*Result, error) {
 	}
 	doc = resolved.(map[string]any)
 
-	// If already a $graph document, re-marshal with resolved imports and return.
-	if _, ok := doc["$graph"]; ok {
+	// If already a $graph document, propagate DockerRequirement and return.
+	if graphItems, ok := doc["$graph"].([]any); ok {
+		// Find the workflow and extract its DockerRequirement.
+		var workflowDockerReq map[string]any
+		for _, item := range graphItems {
+			if itemMap, ok := item.(map[string]any); ok {
+				if itemMap["class"] == "Workflow" {
+					workflowDockerReq = getDockerRequirement(itemMap)
+					break
+				}
+			}
+		}
+
+		// Propagate DockerRequirement to tools that don't have one.
+		if workflowDockerReq != nil {
+			for _, item := range graphItems {
+				if itemMap, ok := item.(map[string]any); ok {
+					class, _ := itemMap["class"].(string)
+					if class == "CommandLineTool" || class == "ExpressionTool" {
+						if !hasDockerRequirement(itemMap) {
+							injectDockerRequirement(itemMap, workflowDockerReq)
+						}
+					}
+				}
+			}
+		}
+
 		packed, err := yaml.Marshal(doc)
 		if err != nil {
 			return nil, fmt.Errorf("marshal packed document: %w", err)
@@ -69,6 +94,9 @@ func Bundle(workflowPath string) (*Result, error) {
 	if class != "Workflow" {
 		return nil, fmt.Errorf("expected class: Workflow, CommandLineTool, or ExpressionTool, got %q", class)
 	}
+
+	// Extract workflow-level DockerRequirement to propagate to tools.
+	workflowDockerReq := getDockerRequirement(doc)
 
 	// Collect all tools referenced by steps
 	graph := []any{}
@@ -158,6 +186,11 @@ func Bundle(workflowPath string) (*Result, error) {
 
 		// Remove cwlVersion from individual tools (it's at the top level)
 		delete(toolDoc, "cwlVersion")
+
+		// Propagate workflow's DockerRequirement to tool if tool doesn't have one.
+		if workflowDockerReq != nil && !hasDockerRequirement(toolDoc) {
+			injectDockerRequirement(toolDoc, workflowDockerReq)
+		}
 
 		graph = append(graph, toolDoc)
 
@@ -487,6 +520,104 @@ func normalizeToMap(v any) map[string]any {
 		return result
 	}
 	return make(map[string]any)
+}
+
+// getDockerRequirement extracts DockerRequirement from a workflow's requirements or hints.
+// Returns the DockerRequirement map if found, nil otherwise.
+func getDockerRequirement(doc map[string]any) map[string]any {
+	// Check requirements first (higher priority).
+	if reqs, ok := doc["requirements"].([]any); ok {
+		for _, req := range reqs {
+			if reqMap, ok := req.(map[string]any); ok {
+				if reqMap["class"] == "DockerRequirement" {
+					return reqMap
+				}
+			}
+		}
+	}
+	if reqs, ok := doc["requirements"].(map[string]any); ok {
+		if dr, ok := reqs["DockerRequirement"].(map[string]any); ok {
+			return dr
+		}
+	}
+
+	// Check hints.
+	if hints, ok := doc["hints"].([]any); ok {
+		for _, hint := range hints {
+			if hintMap, ok := hint.(map[string]any); ok {
+				if hintMap["class"] == "DockerRequirement" {
+					return hintMap
+				}
+			}
+		}
+	}
+	if hints, ok := doc["hints"].(map[string]any); ok {
+		if dr, ok := hints["DockerRequirement"].(map[string]any); ok {
+			return dr
+		}
+	}
+
+	return nil
+}
+
+// hasDockerRequirement checks if a tool already has a DockerRequirement.
+func hasDockerRequirement(toolDoc map[string]any) bool {
+	// Check requirements.
+	if reqs, ok := toolDoc["requirements"].([]any); ok {
+		for _, req := range reqs {
+			if reqMap, ok := req.(map[string]any); ok {
+				if reqMap["class"] == "DockerRequirement" {
+					return true
+				}
+			}
+		}
+	}
+	if reqs, ok := toolDoc["requirements"].(map[string]any); ok {
+		if _, ok := reqs["DockerRequirement"]; ok {
+			return true
+		}
+	}
+
+	// Check hints.
+	if hints, ok := toolDoc["hints"].([]any); ok {
+		for _, hint := range hints {
+			if hintMap, ok := hint.(map[string]any); ok {
+				if hintMap["class"] == "DockerRequirement" {
+					return true
+				}
+			}
+		}
+	}
+	if hints, ok := toolDoc["hints"].(map[string]any); ok {
+		if _, ok := hints["DockerRequirement"]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// injectDockerRequirement adds a DockerRequirement to a tool's hints.
+// The requirement is added as a hint (not requirement) to preserve CWL semantics.
+func injectDockerRequirement(toolDoc map[string]any, dockerReq map[string]any) {
+	// Create the hint to inject (copy to avoid mutating original).
+	hint := map[string]any{"class": "DockerRequirement"}
+	if pull, ok := dockerReq["dockerPull"]; ok {
+		hint["dockerPull"] = pull
+	}
+	if outputDir, ok := dockerReq["dockerOutputDirectory"]; ok {
+		hint["dockerOutputDirectory"] = outputDir
+	}
+
+	// Add to existing hints or create new hints array.
+	switch hints := toolDoc["hints"].(type) {
+	case []any:
+		toolDoc["hints"] = append(hints, hint)
+	case map[string]any:
+		hints["DockerRequirement"] = hint
+	default:
+		toolDoc["hints"] = []any{hint}
+	}
 }
 
 // resolveImports recursively resolves $import directives in a CWL document.
