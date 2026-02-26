@@ -7,11 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -952,7 +949,7 @@ func (r *Runner) writeOutputsInternal(outputs map[string]any, metricsMap map[str
 		data, err = yaml.Marshal(outputs)
 	default:
 		// Convert floats to json.Number to avoid scientific notation.
-		converted := convertFloatsToNumbers(outputWithMetrics)
+		converted := cwl.ConvertForCWLOutput(outputWithMetrics)
 		data, err = json.MarshalIndent(converted, "", "  ")
 	}
 
@@ -968,34 +965,8 @@ func (r *Runner) writeOutputsInternal(outputs map[string]any, metricsMap map[str
 	return nil
 }
 
-// convertFloatsToNumbers recursively converts float64 values to json.Number
-// to avoid scientific notation in JSON output. NaN and Inf values are converted
-// to null since JSON does not support these special float values.
-func convertFloatsToNumbers(v any) any {
-	switch val := v.(type) {
-	case map[string]any:
-		result := make(map[string]any)
-		for k, v := range val {
-			result[k] = convertFloatsToNumbers(v)
-		}
-		return result
-	case []any:
-		result := make([]any, len(val))
-		for i, v := range val {
-			result[i] = convertFloatsToNumbers(v)
-		}
-		return result
-	case float64:
-		// NaN and Inf are not valid JSON - convert to null.
-		if math.IsNaN(val) || math.IsInf(val, 0) {
-			return nil
-		}
-		// Format without scientific notation.
-		return json.Number(strconv.FormatFloat(val, 'f', -1, 64))
-	default:
-		return v
-	}
-}
+// Note: Float-to-number conversion for CWL output is now in pkg/cwl/json.go
+// as cwl.ConvertForCWLOutput to be shared with the CLI.
 
 // DAGOutput represents the DAG structure for JSON output.
 type DAGOutput struct {
@@ -1118,9 +1089,7 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 			}
 			// URL-decode the path (handle %23 -> # etc).
 			if path != "" {
-				if decoded, err := url.PathUnescape(path); err == nil {
-					path = decoded
-				}
+				path = cwl.DecodePath(path)
 				resolved["path"] = path
 			}
 		}

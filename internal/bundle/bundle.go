@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/me/gowe/pkg/cwl"
 	"gopkg.in/yaml.v3"
 )
 
@@ -181,6 +182,32 @@ func Bundle(workflowPath string) (*Result, error) {
 		"$graph":     graph,
 	}
 
+	// Extract and merge $namespaces from document and all tools.
+	allNamespaces := make(map[string]string)
+	if ns, ok := doc["$namespaces"].(map[string]any); ok {
+		for k, v := range ns {
+			if s, ok := v.(string); ok {
+				allNamespaces[k] = s
+			}
+		}
+	}
+	for _, item := range graph {
+		if itemMap, ok := item.(map[string]any); ok {
+			if ns, ok := itemMap["$namespaces"].(map[string]any); ok {
+				for k, v := range ns {
+					if s, ok := v.(string); ok {
+						allNamespaces[k] = s
+					}
+				}
+				// Remove from tool itself (it belongs at root level).
+				delete(itemMap, "$namespaces")
+			}
+		}
+	}
+	if len(allNamespaces) > 0 {
+		packed["$namespaces"] = allNamespaces
+	}
+
 	out, err := yaml.Marshal(packed)
 	if err != nil {
 		return nil, fmt.Errorf("marshal packed document: %w", err)
@@ -288,10 +315,26 @@ func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (
 	}
 	toolForGraph["id"] = toolID
 
+	// Extract $namespaces from the tool (it belongs at root level).
+	var namespaces map[string]string
+	if ns, ok := toolDoc["$namespaces"].(map[string]any); ok {
+		namespaces = make(map[string]string)
+		for k, v := range ns {
+			if s, ok := v.(string); ok {
+				namespaces[k] = s
+			}
+		}
+		// Remove from tool copy (it's at root level).
+		delete(toolForGraph, "$namespaces")
+	}
+
 	// Build packed document
 	packed := map[string]any{
 		"cwlVersion": cwlVersion,
 		"$graph":     []any{toolForGraph, workflow},
+	}
+	if len(namespaces) > 0 {
+		packed["$namespaces"] = namespaces
 	}
 
 	out, err := yaml.Marshal(packed)
@@ -322,8 +365,12 @@ func ResolveFilePaths(v any, baseDir string) any {
 			}
 
 			// Resolve location to absolute path.
+			// URL-decode the location first (handle %23 -> # etc).
 			var absLocation string
 			if loc, ok := result["location"].(string); ok {
+				// Decode URL-encoded characters in the location.
+				loc = cwl.DecodeLocation(loc)
+
 				if strings.HasPrefix(loc, "file://") {
 					// Strip file:// prefix and resolve.
 					localPath := strings.TrimPrefix(loc, "file://")
@@ -346,6 +393,8 @@ func ResolveFilePaths(v any, baseDir string) any {
 			// Resolve path to absolute, or set from location if not present.
 			var resolvedPath string
 			if path, ok := result["path"].(string); ok {
+				// Decode URL-encoded characters in the path.
+				path = cwl.DecodePath(path)
 				if !filepath.IsAbs(path) && !strings.HasPrefix(path, "file://") {
 					resolvedPath = filepath.Join(baseDir, path)
 				} else {
