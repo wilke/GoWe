@@ -20,6 +20,7 @@ import (
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"gopkg.in/yaml.v3"
 )
@@ -337,7 +338,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	}
 
 	// Validate inputs against tool schema.
-	if err := validateToolInputs(tool, mergedInputs); err != nil {
+	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
 		return nil, err
 	}
 
@@ -660,7 +661,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	}
 
 	// Validate inputs against tool schema.
-	if err := validateToolInputs(tool, mergedInputs); err != nil {
+	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
 		return nil, err
 	}
 
@@ -2142,44 +2143,5 @@ func resolveToolSecondaryFiles(tool *cwl.CommandLineTool, inputs map[string]any,
 	return result
 }
 
-// validateToolInputs validates that inputs match the tool's input schema.
-// Returns an error if required inputs are missing or null is provided for non-optional types.
-func validateToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
-	for inputID, inputDef := range tool.Inputs {
-		value, exists := inputs[inputID]
-
-		// Check if input is optional (type ends with ? or is a union with null).
-		isOptional := isOptionalType(inputDef.Type)
-
-		// Check for missing required inputs.
-		if !exists {
-			if inputDef.Default == nil && !isOptional {
-				return fmt.Errorf("missing required input: %s", inputID)
-			}
-			continue
-		}
-
-		// Check for null values on non-optional inputs.
-		if value == nil && !isOptional {
-			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
-		}
-	}
-	return nil
-}
-
-// isOptionalType checks if a CWL type is optional (can be null).
-// Types ending with ? or types that are unions including null are optional.
-func isOptionalType(t string) bool {
-	if t == "" {
-		return false
-	}
-	// Type ending with ? is optional.
-	if strings.HasSuffix(t, "?") {
-		return true
-	}
-	// "null" type itself is optional.
-	if t == "null" {
-		return true
-	}
-	return false
-}
+// Note: Input validation is now in internal/validate package as validate.ToolInputs
+// to be shared with the execution engine.

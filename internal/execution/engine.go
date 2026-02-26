@@ -4,12 +4,16 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/iwdr"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -84,12 +88,25 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 		return nil, &ExecutionError{Phase: "setup", Err: err}
 	}
 
+	// Apply tool input defaults for any inputs not provided in the job.
+	mergedInputs := applyToolDefaults(tool, inputs, e.cwlDir)
+
+	e.logger.Debug("merged inputs", "tool_inputs_count", len(tool.Inputs), "job_inputs_count", len(inputs), "merged_count", len(mergedInputs))
+	for k, v := range mergedInputs {
+		e.logger.Debug("merged input", "key", k, "value_type", fmt.Sprintf("%T", v))
+	}
+
+	// Validate inputs against tool schema.
+	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
+		return nil, &ExecutionError{Phase: "validate", Err: err}
+	}
+
 	// Build runtime context.
 	runtimeCtx := e.buildRuntimeContext(tool, workDir)
 
 	// Build command line.
 	builder := cmdline.NewBuilder(e.ExpressionLib)
-	cmdResult, err := builder.Build(tool, inputs, runtimeCtx)
+	cmdResult, err := builder.Build(tool, mergedInputs, runtimeCtx)
 	if err != nil {
 		return nil, &ExecutionError{Phase: "build_command", Err: err}
 	}
@@ -97,7 +114,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	e.logger.Debug("built command", "cmd", cmdResult.Command)
 
 	// Stage input files into workdir.
-	if err := e.stageInputs(ctx, inputs, workDir); err != nil {
+	if err := e.stageInputs(ctx, mergedInputs, workDir); err != nil {
 		return nil, &ExecutionError{Phase: "stage_in", Err: err}
 	}
 
@@ -106,7 +123,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 
 	// Stage files from InitialWorkDirRequirement.
 	var containerMounts []iwdr.ContainerMount
-	iwdResult, err := iwdr.Stage(tool, inputs, workDir, iwdr.StageOptions{
+	iwdResult, err := iwdr.Stage(tool, mergedInputs, workDir, iwdr.StageOptions{
 		CopyForContainer: useDocker,
 		CWLDir:           e.cwlDir,
 		ExpressionLib:    e.ExpressionLib,
@@ -116,7 +133,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	}
 	if iwdResult != nil {
 		containerMounts = iwdResult.ContainerMounts
-		iwdr.UpdateInputPaths(inputs, workDir, iwdResult.StagedPaths)
+		iwdr.UpdateInputPaths(mergedInputs, workDir, iwdResult.StagedPaths)
 	}
 
 	// Execute the tool.
@@ -126,9 +143,9 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 		if dockerImage == "" {
 			return nil, &ExecutionError{Phase: "execute", Err: ErrNoDockerImage}
 		}
-		runResult, err = e.executeDocker(ctx, tool, cmdResult, inputs, dockerImage, workDir, containerMounts)
+		runResult, err = e.executeDocker(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts)
 	} else {
-		runResult, err = e.executeLocal(ctx, tool, cmdResult, inputs, workDir)
+		runResult, err = e.executeLocal(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
 
 	if err != nil {
@@ -149,7 +166,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	}
 
 	// Collect outputs.
-	outputs, err := e.collectOutputs(tool, workDir, inputs, runResult.ExitCode)
+	outputs, err := e.collectOutputs(tool, workDir, mergedInputs, runResult.ExitCode)
 	if err != nil {
 		return nil, &ExecutionError{Phase: "collect_outputs", Err: err}
 	}
@@ -299,4 +316,84 @@ func hasStderrOutput(tool *cwl.CommandLineTool) bool {
 		}
 	}
 	return false
+}
+
+// applyToolDefaults merges tool input defaults with provided inputs.
+// Returns a new map with defaults applied for any missing or nil inputs.
+func applyToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) map[string]any {
+	result := make(map[string]any)
+
+	// Only include inputs that are declared in the tool's inputs.
+	// Undeclared inputs are ignored per CWL v1.2 spec.
+	for inputID, inputDef := range tool.Inputs {
+		if val, exists := inputs[inputID]; exists {
+			result[inputID] = val
+		} else if inputDef.Default != nil {
+			// Use default value if input not provided.
+			// Resolve File/Directory locations relative to CWL directory.
+			result[inputID] = resolveDefaultValue(inputDef.Default, cwlDir)
+		}
+	}
+
+	return result
+}
+
+// resolveDefaultValue resolves a default value, handling File/Directory objects specially.
+// Relative paths are resolved against cwlDir.
+func resolveDefaultValue(v any, cwlDir string) any {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			// Make a copy and resolve paths.
+			result := make(map[string]any)
+			for k, v := range val {
+				result[k] = v
+			}
+			// Resolve location path.
+			if loc, ok := result["location"].(string); ok {
+				result["location"] = resolvePath(loc, cwlDir)
+			}
+			// Resolve path field.
+			if path, ok := result["path"].(string); ok {
+				result["path"] = resolvePath(path, cwlDir)
+			}
+			// Recursively resolve secondary files.
+			if sf, ok := result["secondaryFiles"].([]any); ok {
+				resolved := make([]any, len(sf))
+				for i, item := range sf {
+					resolved[i] = resolveDefaultValue(item, cwlDir)
+				}
+				result["secondaryFiles"] = resolved
+			}
+			return result
+		}
+		// For other maps, recursively process.
+		result := make(map[string]any)
+		for k, v := range val {
+			result[k] = resolveDefaultValue(v, cwlDir)
+		}
+		return result
+	case []any:
+		result := make([]any, len(val))
+		for i, item := range val {
+			result[i] = resolveDefaultValue(item, cwlDir)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+// resolvePath resolves a relative path against a base directory.
+func resolvePath(path, baseDir string) string {
+	if path == "" || baseDir == "" {
+		return path
+	}
+	// Don't modify URIs or absolute paths.
+	if strings.HasPrefix(path, "file://") || strings.HasPrefix(path, "http://") ||
+		strings.HasPrefix(path, "https://") || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(baseDir, path)
 }
