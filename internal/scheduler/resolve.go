@@ -2,8 +2,11 @@ package scheduler
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -198,4 +201,96 @@ func BuildTasksByStepID(tasks []*model.Task) map[string]*model.Task {
 		m[t.StepID] = t
 	}
 	return m
+}
+
+// MergeWorkflowInputDefaults merges workflow input defaults with submission inputs.
+// Returns a new map with defaults applied for any missing inputs.
+func MergeWorkflowInputDefaults(wf *model.Workflow, submissionInputs map[string]any) map[string]any {
+	if wf == nil || len(wf.Inputs) == 0 {
+		return submissionInputs
+	}
+
+	merged := make(map[string]any)
+
+	// Copy provided inputs.
+	for k, v := range submissionInputs {
+		merged[k] = v
+	}
+
+	// Add defaults for missing inputs.
+	for _, inp := range wf.Inputs {
+		if _, exists := merged[inp.ID]; !exists && inp.Default != nil {
+			merged[inp.ID] = inp.Default
+		}
+	}
+
+	return merged
+}
+
+// ResolveWorkflowSecondaryFiles resolves secondaryFiles for workflow inputs based
+// on the workflow's input declarations. This should be called after MergeWorkflowInputDefaults.
+func ResolveWorkflowSecondaryFiles(wf *model.Workflow, inputs map[string]any, cwlDir string) map[string]any {
+	if wf == nil || wf.RawCWL == "" {
+		return inputs
+	}
+
+	// Parse the workflow to get full CWL input definitions with secondaryFiles.
+	p := parser.New(slog.Default())
+	graphDoc, err := p.ParseGraph([]byte(wf.RawCWL))
+	if err != nil {
+		// If parsing fails, return inputs unchanged.
+		return inputs
+	}
+
+	// Get the workflow definition.
+	if graphDoc.Workflow == nil {
+		return inputs
+	}
+	cwlWorkflow := graphDoc.Workflow
+
+	result := make(map[string]any)
+	for k, v := range inputs {
+		result[k] = v
+	}
+
+	// Resolve secondaryFiles for each input based on workflow declarations.
+	for inputID, inputDef := range cwlWorkflow.Inputs {
+		val, exists := result[inputID]
+		if !exists || val == nil {
+			continue
+		}
+
+		// Handle secondaryFiles at the input level.
+		if len(inputDef.SecondaryFiles) > 0 {
+			result[inputID] = secondaryfiles.ResolveForValue(val, inputDef.SecondaryFiles, cwlDir)
+			continue
+		}
+
+		// Handle record types with field-level secondaryFiles.
+		if len(inputDef.RecordFields) > 0 {
+			recordVal, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			// Create a copy to avoid modifying the original.
+			resolvedRecord := make(map[string]any)
+			for k, v := range recordVal {
+				resolvedRecord[k] = v
+			}
+
+			// Resolve secondaryFiles for each field.
+			for _, field := range inputDef.RecordFields {
+				if len(field.SecondaryFiles) == 0 {
+					continue
+				}
+				if fieldVal, exists := resolvedRecord[field.Name]; exists && fieldVal != nil {
+					resolvedRecord[field.Name] = secondaryfiles.ResolveForValue(fieldVal, field.SecondaryFiles, cwlDir)
+				}
+			}
+			result[inputID] = resolvedRecord
+		}
+	}
+
+	return result
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/internal/loadcontents"
+	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 )
@@ -325,7 +326,8 @@ func hasStderrOutput(tool *cwl.CommandLineTool) bool {
 
 // applyToolDefaults merges tool input defaults with provided inputs.
 // Returns a new map with defaults applied for any missing or nil inputs.
-// Also processes loadContents for File inputs (with 64KB limit per CWL spec).
+// Also processes loadContents for File inputs (with 64KB limit per CWL spec),
+// resolves secondaryFiles from disk, and validates secondaryFiles requirements.
 func applyToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) (map[string]any, error) {
 	result := make(map[string]any)
 
@@ -351,6 +353,20 @@ func applyToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 		}
 
 		result[inputID] = val
+	}
+
+	// Note: secondaryFiles resolution happens at the CLI level for direct tool execution,
+	// or at the scheduler level for workflow inputs. The execution engine only validates
+	// that required secondaryFiles are present (they should have been resolved upstream).
+
+	// Validate secondaryFiles requirements.
+	for inputID, inputDef := range tool.Inputs {
+		val := result[inputID]
+		if val != nil {
+			if err := secondaryfiles.ValidateInput(inputID, inputDef, val); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return result, nil

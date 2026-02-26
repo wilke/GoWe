@@ -263,9 +263,23 @@ func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
 		return nil, fmt.Errorf("marshal tool: %w", err)
 	}
 
+	// DEBUG: log JSON
+	jsonStr := string(data)
+	if len(jsonStr) > 500 {
+		jsonStr = jsonStr[:500]
+	}
+	slog.Debug("parseToolFromMap JSON", "json", jsonStr)
+
 	var tool cwl.CommandLineTool
 	if err := json.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("unmarshal tool: %w", err)
+	}
+
+	// DEBUG: check RecordFields
+	for id, inp := range tool.Inputs {
+		if len(inp.RecordFields) > 0 {
+			slog.Debug("parseToolFromMap input has RecordFields", "id", id, "count", len(inp.RecordFields))
+		}
 	}
 
 	// Handle baseCommand which may be string or []string in YAML.
@@ -291,48 +305,13 @@ func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
 		tool.Arguments = parseArguments(argsRaw)
 	}
 
-	// Handle inputs conversion (may be map or array format in CWL).
+	// Inputs and outputs are handled by JSON unmarshal via cwl struct tags.
+	// Only initialize empty maps if nil to avoid nil pointer issues.
 	if tool.Inputs == nil {
 		tool.Inputs = make(map[string]cwl.ToolInputParam)
 	}
-	if inputsRaw, ok := toolMap["inputs"]; ok {
-		switch inputs := inputsRaw.(type) {
-		case map[string]any:
-			for id, param := range inputs {
-				tool.Inputs[id] = parseInputParam(param)
-			}
-		case []any:
-			// Array format - each element has "id" field.
-			for _, item := range inputs {
-				if m, ok := item.(map[string]any); ok {
-					if id, ok := m["id"].(string); ok && id != "" {
-						tool.Inputs[id] = parseInputParam(m)
-					}
-				}
-			}
-		}
-	}
-
-	// Handle outputs conversion (may be map or array format in CWL).
 	if tool.Outputs == nil {
 		tool.Outputs = make(map[string]cwl.ToolOutputParam)
-	}
-	if outputsRaw, ok := toolMap["outputs"]; ok {
-		switch outputs := outputsRaw.(type) {
-		case map[string]any:
-			for id, param := range outputs {
-				tool.Outputs[id] = parseOutputParam(param)
-			}
-		case []any:
-			// Array format - each element has "id" field.
-			for _, item := range outputs {
-				if m, ok := item.(map[string]any); ok {
-					if id, ok := m["id"].(string); ok && id != "" {
-						tool.Outputs[id] = parseOutputParam(m)
-					}
-				}
-			}
-		}
 	}
 
 	return &tool, nil
@@ -348,14 +327,25 @@ func parseInputParam(param any) cwl.ToolInputParam {
 		if t, ok := p["type"].(string); ok {
 			result.Type = t
 		} else if typeMap, ok := p["type"].(map[string]any); ok {
-			// Handle complex types (array, union).
-			if typeStr, ok := typeMap["type"].(string); ok && typeStr == "array" {
-				if items, ok := typeMap["items"].(string); ok {
-					result.Type = items + "[]"
-				}
-				// Parse itemInputBinding from nested array type.
-				if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
-					result.ItemInputBinding = parseInputBinding(itemIB)
+			// Handle complex types (array, record, union).
+			if typeStr, ok := typeMap["type"].(string); ok {
+				switch typeStr {
+				case "array":
+					if items, ok := typeMap["items"].(string); ok {
+						result.Type = items + "[]"
+					}
+					// Parse itemInputBinding from nested array type.
+					if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
+						result.ItemInputBinding = parseInputBinding(itemIB)
+					}
+				case "record":
+					result.Type = "record"
+					// Parse record fields with their inputBindings.
+					if fields, ok := typeMap["fields"].([]any); ok {
+						result.RecordFields = parseRecordFields(fields)
+					}
+				default:
+					result.Type = typeStr
 				}
 			} else {
 				result.Type = fmt.Sprintf("%v", p["type"])
@@ -370,6 +360,10 @@ func parseInputParam(param any) cwl.ToolInputParam {
 		// Parse itemInputBinding if stored at top level (from JSON).
 		if itemIB, ok := p["itemInputBinding"].(map[string]any); ok {
 			result.ItemInputBinding = parseInputBinding(itemIB)
+		}
+		// Parse recordFields if stored at top level (from JSON).
+		if rf, ok := p["recordFields"].([]any); ok {
+			result.RecordFields = parseRecordFields(rf)
 		}
 	}
 	return result
@@ -520,6 +514,57 @@ func parseIntArray(arr []any) []int {
 			result = append(result, int(n))
 		case float64:
 			result = append(result, int(n))
+		}
+	}
+	return result
+}
+
+// parseRecordFields parses record field definitions for input bindings.
+func parseRecordFields(fields []any) []cwl.RecordField {
+	var result []cwl.RecordField
+	for _, item := range fields {
+		if fieldMap, ok := item.(map[string]any); ok {
+			field := cwl.RecordField{}
+			if name, ok := fieldMap["name"].(string); ok {
+				field.Name = name
+			}
+			if t, ok := fieldMap["type"].(string); ok {
+				field.Type = t
+			}
+			if doc, ok := fieldMap["doc"].(string); ok {
+				field.Doc = doc
+			}
+			if ib, ok := fieldMap["inputBinding"].(map[string]any); ok {
+				field.InputBinding = parseInputBinding(ib)
+			}
+			// Parse secondaryFiles for record fields.
+			if sf, ok := fieldMap["secondaryFiles"].([]any); ok {
+				field.SecondaryFiles = parseSecondaryFiles(sf)
+			}
+			result = append(result, field)
+		}
+	}
+	return result
+}
+
+// parseSecondaryFiles parses secondaryFiles from JSON array.
+func parseSecondaryFiles(items []any) []cwl.SecondaryFileSchema {
+	var result []cwl.SecondaryFileSchema
+	for _, item := range items {
+		switch v := item.(type) {
+		case string:
+			// Simple string pattern.
+			result = append(result, cwl.SecondaryFileSchema{Pattern: v})
+		case map[string]any:
+			// Full schema with pattern and required fields.
+			schema := cwl.SecondaryFileSchema{}
+			if pattern, ok := v["pattern"].(string); ok {
+				schema.Pattern = pattern
+			}
+			if req, ok := v["required"]; ok {
+				schema.Required = req
+			}
+			result = append(result, schema)
 		}
 	}
 	return result

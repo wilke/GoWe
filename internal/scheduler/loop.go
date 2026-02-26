@@ -263,6 +263,10 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 	// This ensures default values are available for step input resolution.
 	mergedInputs := MergeWorkflowInputDefaults(wf, sub.Inputs)
 
+	// Resolve secondaryFiles for workflow inputs based on workflow declarations.
+	// File paths should already be absolute from the bundler, so use empty cwlDir.
+	mergedInputs = ResolveWorkflowSecondaryFiles(wf, mergedInputs, "")
+
 	// Evaluate 'when' condition if present.
 	if step.When != "" {
 		shouldRun, err := l.evaluateWhenCondition(step, mergedInputs, tasksByStep)
