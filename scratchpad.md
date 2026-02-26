@@ -1,83 +1,101 @@
 # GoWe Project Scratchpad
 
-## Current Session: File Literals Implementation
+## Current Session: Code Modularization & Bug Fixes
 
-### Final Status
-- **cwl-runner**: 84/84 passing (100%) ✓
-- **server-local**: 58/84 passing (69%) - up from 52
+### Current Status
+- **cwl-runner**: 84/84 passing (100%)
+- **server-local**: 84/84 passing (100%) - ALL TESTS PASSING!
 
-### Completed Fixes This Session
+### Session Accomplishments
 
-1. **File Literals Support** (NEW shared package)
-   - Created `internal/fileliteral/literal.go` with shared implementation
-   - File literals are CWL File objects with `contents` but no `path`/`location`
-   - These must be materialized as temp files before execution
-   - Functions: `Materialize()`, `MaterializeFileObject()`, `MaterializeRecursive()`
+1. **Fixed scientific notation for large numbers (tests 71, 84)**:
+   - Created shared `pkg/cwl/json.go` with `ConvertForCWLOutput` and `MarshalCWLOutput`
+   - Updated `internal/cli/run.go` to use CWL-compliant JSON marshaling
+   - Updated `internal/cwlrunner/runner.go` to use the shared function (removed duplication)
+   - Large numbers like `1e42` now output as `1000000000000000000000000000000000000000000`
+   - Commit: `bf1e745`
 
-2. **Integration Points Updated**
-   - `internal/cwlrunner/runner.go` - Uses shared fileliteral package
-   - `internal/stepinput/resolve.go` - Materializes file literals during input resolution
-   - `internal/iwdr/stage.go` - Materializes file literals during IWDR staging
-   - `internal/execution/stager.go` - Materializes file literals during input staging
-   - `internal/server/handler_submissions.go` - **Critical fix**: Materializes at submission time
+2. **Fixed URL-encoded filenames (test 76)**:
+   - Created shared `pkg/cwl/path.go` with `DecodeLocation` and `DecodePath`
+   - Updated `internal/bundle/bundle.go` to decode URL-encoded file paths
+   - Fixed: `item %231.txt` now correctly resolves to `item #1.txt`
+   - Commit: `bf1e745`
 
-### Fixed Tests (+6 tests)
-- Test 22: `input_file_literal` - Basic file literal as input
-- Test 29: `fileliteral_input_docker` - File literal without Docker requirement
-- Test 45: `stdin_from_directory_literal_with_literal_file` - File literal in Directory listing via stdin
-- Test 46: `directory_literal_with_literal_file_nostdin` - File literal in Directory via valueFrom
-- Test 68: `directory_literal_with_literal_file_in_subdir_nostdin` - Nested directory with file literal
-- Plus one additional test fix from previous work
+3. **Fixed ExpressionTool execution in server mode (test 43)**:
+   - Created shared `internal/exprtool/exprtool.go` for ExpressionTool execution
+   - Modified scheduler to detect ExpressionTools and execute them directly
+   - ExpressionTools now run in the scheduler, not sent to workers
+   - Updated cwl-runner to use the shared exprtool package
+   - Commit: `05d4a8b`
 
-### Shared Code Between cwl-runner and Server
+4. **Fixed input validation (tests 37, 38, 39)**:
+   - Created shared `internal/validate/validate.go` for input validation
+   - Added `validate.ToolInputs()` to check required inputs and null values
+   - Fixed `applyToolDefaults()` to filter inputs to only declared parameters
+   - Tests now correctly fail when required inputs are missing or null
+   - Commit: `1b8c0ce`
 
-The following packages are shared and changes affect both:
+5. **Fixed loadContents 64KB limit (test 64)**:
+   - Created shared `internal/loadcontents/loadcontents.go` with `Process()` function
+   - Enforces CWL spec 64KB limit for loadContents on File inputs
+   - Updated execution engine and cwl-runner to use shared implementation
+   - Tests now correctly fail when file exceeds 64KB
+   - Commit: `cd92cbd`
 
-| Package | Purpose | File Literal Support |
-|---------|---------|---------------------|
-| `internal/fileliteral/` | **NEW** - File literal materialization | Core implementation |
-| `internal/bundle/` | CWL bundling | - |
-| `internal/parser/` | CWL parsing | - |
-| `internal/stepinput/` | Step input resolution | Uses fileliteral |
-| `internal/execution/` | CWL tool execution | Uses fileliteral |
-| `internal/iwdr/` | InitialWorkDirRequirement | Uses fileliteral |
-| `internal/cwloutput/` | Workflow output collection | - |
-| `pkg/cwl/` | CWL type definitions | - |
+6. **Fixed secondaryFiles validation (test 55)**:
+   - Created shared `internal/secondaryfiles/secondaryfiles.go` with:
+     - `ResolveForTool` and `ResolveForValue` for resolution
+     - `ValidateInput` for validation of required secondaryFiles
+     - `ComputeSecondaryFileName` for pattern computation
+   - Added workflow-level secondaryFiles resolution in scheduler
+   - Fixed executor to parse secondaryFiles on record fields
+   - Tests now correctly fail when required secondaryFiles are missing
+   - Commit: `a447437`
 
-### Remaining Failures (26 tests)
+7. **Fixed DockerRequirement propagation (tests 10, 27)**:
+   - Modified `internal/bundle/bundle.go` to propagate workflow DockerRequirement to tools
+   - Added `getDockerRequirement()` to extract DockerRequirement from workflow
+   - Added `hasDockerRequirement()` to check if tool already has DockerRequirement
+   - Added `injectDockerRequirement()` to add DockerRequirement to tool hints
+   - Handles both regular workflows AND pre-packed $graph documents
+   - Tests now use Docker container for consistent `sort` behavior
 
-| Category | Count | Tests |
-|----------|-------|-------|
-| Platform difference (macOS sort) | 2 | 10, 27 |
-| Format checking | 3 | 14, 15, 16 |
-| Nested prefix arrays | 1 | 2 |
-| Directory output listing | 3 | 21, 57, 79 |
-| Undeclared params | 1 | 37 |
-| Any without defaults | 2 | 38, 39 |
-| Null step workflows | 2 | 40, 43 |
-| Record secondaryFiles | 2 | 53, 55 |
-| Position expression | 1 | 58 |
-| Synth file | 1 | 62 |
-| LoadContents limit | 1 | 64 |
-| Colon in paths | 2 | 69, 70 |
-| Paramref arguments | 2 | 71, 84 |
-| Runtime outdir | 1 | 73 |
-| Record order | 1 | 74 |
-| Workflow output reference | 1 | 75 |
-| Octo yml | 1 | 76 |
+**Related Issue:** #55 - Health endpoint hardcodes executor availability
 
-### Key Files Modified This Session
+### Key Technical Findings
 
-```
-internal/fileliteral/literal.go           # NEW - shared file literal implementation
-internal/cwlrunner/runner.go              # Uses shared fileliteral
-internal/stepinput/resolve.go             # Uses shared fileliteral
-internal/iwdr/stage.go                    # Uses shared fileliteral
-internal/execution/stager.go              # Uses shared fileliteral
-internal/server/handler_submissions.go    # Materializes at submission time
-```
+1. **RecordFields flow works correctly**:
+   - Parser: `parseToolInput` populates `inp.RecordFields` from `type.fields`
+   - Scheduler: `json.Marshal(tool)` → `json.Unmarshal(data, &toolMap)` preserves recordFields
+   - Local executor: `parseToolFromMap` uses JSON round-trip which works correctly
+   - cmdline.Builder: `buildRecordInputBinding` expands fields with their inputBindings
 
-### Previous Session Work
+2. **The simplified `parseToolFromMap` in local.go works**:
+   - JSON marshal/unmarshal preserves all struct fields with JSON tags
+   - `cwl.ToolInputParam.RecordFields` has `json:"recordFields,omitempty"` tag
+   - No need for manual parsing like the old code did
 
-Fragment URL handling, empty steps array, tool lookup fix, zero-tasks handling.
-See git history for details.
+3. **Code Modularization**: Successfully extracted shared utilities:
+   - `pkg/cwl/json.go` - CWL-compliant JSON output formatting (no scientific notation)
+   - `pkg/cwl/path.go` - URL decoding for CWL file locations
+   - `internal/exprtool/exprtool.go` - ExpressionTool execution
+   - `internal/validate/validate.go` - Input validation
+   - `internal/loadcontents/loadcontents.go` - loadContents with 64KB limit
+   - `internal/secondaryfiles/secondaryfiles.go` - secondaryFiles resolution and validation
+
+### Session Commits
+1. `bf1e745` - feat: add shared CWL utilities for JSON output and URL decoding
+2. `05d4a8b` - feat: add ExpressionTool support in server mode
+3. `1b8c0ce` - feat: add input validation for CWL tools (fixes tests 37, 38, 39)
+4. `cd92cbd` - feat: add shared loadcontents package for 64KB limit enforcement
+5. `a447437` - feat: add shared secondaryFiles package for validation (fixes test 55)
+
+### Previous Session Commits
+1. `adf0e70` - feat: add shared fileliteral package for CWL file literal support
+2. `d353dd2` - feat: add ItemInputBinding support to worker and local executor
+3. `df0b005` - fix: resolve file paths in step input defaults during bundling
+
+### Next Steps
+- ALL CONFORMANCE TESTS PASSING (84/84)
+- Clean up test files (revsort-docker.cwl, etc.) if not needed
+- Fix #55: Health endpoint hardcodes executor availability
