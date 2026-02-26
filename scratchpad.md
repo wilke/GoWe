@@ -1,10 +1,30 @@
 # GoWe Project Scratchpad
 
-## Current Session: Code Modularization & Bug Fixes
+## Current Session: DockerExecutor Fix for Full CWL Support
 
 ### Current Status
 - **cwl-runner**: 84/84 passing (100%)
-- **server-local**: 84/84 passing (100%) - ALL TESTS PASSING!
+- **server-local**: 81/84 passing (96.4%) - Up from 59/84!
+
+### Latest Fix: DockerExecutor execution.Engine Integration
+
+The DockerExecutor was using legacy `_base_command` approach which doesn't do proper
+CWL command line building. Fixed by adding `submitWithEngine()` method that uses
+`execution.Engine` when `task.HasTool()` is true.
+
+**Changes made to `internal/executor/docker.go`:**
+- Added import for `internal/execution` package
+- Added `submitWithEngine()` method (same pattern as LocalExecutor)
+- Modified `Submit()` to check `task.HasTool()` and use execution.Engine when available
+- Shares `parseToolFromMap()` function with LocalExecutor (same package)
+
+This fix shares the same execution code path as cwl-runner, ensuring consistent
+CWL command line building, Docker execution, and output collection.
+
+### Remaining 3 Failing Tests
+- Test 33: exit-success.cwl (exit code handling)
+- Test 43: count-lines11-null-step-wf-noET.cwl (null step handling)
+- Test 59: exitcode.cwl (exit code handling)
 
 ### Session Accomplishments
 
