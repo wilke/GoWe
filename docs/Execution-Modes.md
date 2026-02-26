@@ -52,23 +52,23 @@ GoWe supports multiple execution modes (compute) and storage backends (data). Th
 
 - **http(s)://**: Uploads outputs via HTTP PUT/POST. Configurable with custom headers, authentication, and retry logic.
 
-- **shock://**: Uploads to Shock data service. Used with BV-BRC for large-scale data storage.
+- **shock://**: Uploads to Shock data service. Used with BV-BRC for large file storage.
+
+- **ws://**: Uploads to BV-BRC Workspace service. This is the default storage backend for BV-BRC execution.
 
 - **s3://**: Uploads to S3-compatible object storage (planned).
-
-- **ws://**: Uploads to BV-BRC Workspace service for integration with BV-BRC UI.
 
 ## Test Matrix
 
 ```
-                    │ local │ file:// │ http:// │ shock:// │ s3:// │
-────────────────────┼───────┼─────────┼─────────┼──────────┼───────┤
-cwl-runner          │  ✅   │    -    │    -    │    -     │   -   │
-server-local        │  ✅   │    -    │    -    │    -     │   -   │
-server-distributed  │   -   │   ✅    │   ❌    │   ❌     │  ❌   │
-server-docker       │  ❌   │   ❌    │   ❌    │   ❌     │  ❌   │
-server-apptainer    │  ❌   │   ❌    │   ❌    │   ❌     │  ❌   │
-server-bvbrc        │  ❌   │    -    │    -    │   ❌     │   -   │
+                    │ local │ file:// │ http:// │ shock:// │ ws:// │ s3:// │
+────────────────────┼───────┼─────────┼─────────┼──────────┼───────┼───────┤
+cwl-runner          │  ✅   │    -    │    -    │    -     │   -   │   -   │
+server-local        │  ✅   │    -    │    -    │    -     │   -   │   -   │
+server-distributed  │   -   │   ✅    │   ❌    │   ❌     │   -   │  ❌   │
+server-docker       │  ❌   │   ❌    │   ❌    │   ❌     │   -   │  ❌   │
+server-apptainer    │  ❌   │   ❌    │   ❌    │   ❌     │   -   │  ❌   │
+server-bvbrc        │   -   │    -    │    -    │   ❌     │  ❌   │   -   │
 ```
 
 Legend:
