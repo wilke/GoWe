@@ -263,23 +263,9 @@ func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
 		return nil, fmt.Errorf("marshal tool: %w", err)
 	}
 
-	// DEBUG: log JSON
-	jsonStr := string(data)
-	if len(jsonStr) > 500 {
-		jsonStr = jsonStr[:500]
-	}
-	slog.Debug("parseToolFromMap JSON", "json", jsonStr)
-
 	var tool cwl.CommandLineTool
 	if err := json.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("unmarshal tool: %w", err)
-	}
-
-	// DEBUG: check RecordFields
-	for id, inp := range tool.Inputs {
-		if len(inp.RecordFields) > 0 {
-			slog.Debug("parseToolFromMap input has RecordFields", "id", id, "count", len(inp.RecordFields))
-		}
 	}
 
 	// Handle baseCommand which may be string or []string in YAML.

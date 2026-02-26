@@ -166,7 +166,8 @@ func TestResolveTaskInputs_MissingWorkflowInput(t *testing.T) {
 		},
 	}
 
-	// Per CWL semantics, missing sources resolve to nil (not an error).
+	// Per CWL v1.2 semantics (see §4.1.5 "WorkflowStepInput"), a missing source
+	// is treated as null rather than raising an error, so we expect nil here.
 	err := ResolveTaskInputs(task, step, map[string]any{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

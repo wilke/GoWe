@@ -98,9 +98,6 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	}
 
 	e.logger.Debug("merged inputs", "tool_inputs_count", len(tool.Inputs), "job_inputs_count", len(inputs), "merged_count", len(mergedInputs))
-	for k, v := range mergedInputs {
-		e.logger.Debug("merged input", "key", k, "value_type", fmt.Sprintf("%T", v))
-	}
 
 	// Validate inputs against tool schema.
 	if err := validate.ToolInputs(tool, mergedInputs); err != nil {

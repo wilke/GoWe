@@ -1,5 +1,8 @@
 version: "3.9"
 
+# NOTE: Poll intervals are set to 500ms for fast test responsiveness.
+# For production, consider increasing to 2s or higher to reduce CPU/network overhead.
+
 services:
   gowe-server:
     build:

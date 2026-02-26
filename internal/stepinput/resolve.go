@@ -81,7 +81,8 @@ func ResolveInputs(
 
 	// Third pass: evaluate valueFrom expressions.
 	// Per CWL spec, `inputs` provides the source-resolved values (before valueFrom transformation),
-	// so all valueFrom expressions see the same snapshot of input values.
+	// so all valueFrom expressions see the same snapshot of input values. See CWL v1.2,
+	// section "WorkflowStepInput" and the definition of "valueFrom" for the precise semantics.
 	if err := evaluateValueFromExpressions(inputs, resolved, workflowInputs, opts); err != nil {
 		return nil, err
 	}
