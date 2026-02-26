@@ -9,8 +9,12 @@ import (
 	"path/filepath"
 
 	"github.com/me/gowe/internal/cmdline"
+	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/pkg/cwl"
 )
+
+// ContainerMount is an alias for iwdr.ContainerMount.
+type ContainerMount = iwdr.ContainerMount
 
 // DockerRuntime executes commands in Docker containers.
 type DockerRuntime struct {
@@ -132,7 +136,8 @@ func (r *DockerRuntime) Run(ctx context.Context, spec RunSpec) (*RunResult, erro
 }
 
 // executeDocker executes a tool in a Docker container.
-func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string) (*RunResult, error) {
+// containerMounts contains files from InitialWorkDirRequirement with absolute entrynames.
+func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []ContainerMount) (*RunResult, error) {
 	e.logger.Info("executing in Docker", "image", dockerImage, "command", cmdResult.Command)
 
 	// Create directories.
@@ -172,6 +177,12 @@ func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, c
 	mounts := collectInputMounts(inputs)
 	for hostPath, containerPath := range mounts {
 		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", hostPath, containerPath))
+	}
+
+	// Mount files from InitialWorkDirRequirement with absolute entrynames.
+	for _, cm := range containerMounts {
+		resolved := resolveSymlinks(cm.HostPath)
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", resolved, cm.ContainerPath))
 	}
 
 	// Set environment variables.

@@ -149,10 +149,11 @@ if ! command -v cwltest &> /dev/null; then
 fi
 
 # Check for conformance tests
-CONFORMANCE_DIR="testdata/cwl-conformance"
-if [ ! -d "$CONFORMANCE_DIR" ]; then
-    log_error "Conformance test directory not found: $CONFORMANCE_DIR"
-    exit 1
+CONFORMANCE_DIR="testdata/cwl-v1.2"
+if [ ! -f "$CONFORMANCE_DIR/conformance_tests.yaml" ]; then
+    log_error "Conformance test file not found: $CONFORMANCE_DIR/conformance_tests.yaml"
+    log_info "Cloning CWL v1.2 conformance tests..."
+    git clone --depth 1 https://github.com/common-workflow-language/cwl-v1.2.git "$CONFORMANCE_DIR"
 fi
 
 log_header "CWL v1.2 Conformance Tests (Distributed)"
@@ -226,11 +227,11 @@ fi
 log_info "Server: ${SERVER_URL} (default-executor: worker)"
 log_info "Workers: $workers registered"
 
-# Create a wrapper script for cwltest
+# Create a wrapper script for cwltest (it expects a single executable)
 WRAPPER_SCRIPT=$(mktemp)
 cat > "$WRAPPER_SCRIPT" << EOF
 #!/bin/bash
-exec "\$(dirname "\$0")/../bin/gowe" run --server ${SERVER_URL} --quiet "\$@"
+exec "$PROJECT_DIR/bin/gowe" run --server ${SERVER_URL} --quiet "\$@"
 EOF
 chmod +x "$WRAPPER_SCRIPT"
 
@@ -301,16 +302,25 @@ if [ -n "$TAGS" ]; then
     CWLTEST_CMD="$CWLTEST_CMD --tags $TAGS"
 fi
 
-CWLTEST_CMD="$CWLTEST_CMD --tool '$SCRIPT_DIR/../bin/gowe run --server ${SERVER_URL} --quiet'"
+# Use the wrapper script (cwltest expects a single executable)
+CWLTEST_CMD="$CWLTEST_CMD --tool $WRAPPER_SCRIPT --verbose"
+
+# Change to conformance directory (tests use relative paths)
+cd "$CONFORMANCE_DIR"
 
 log_info "Running: $CWLTEST_CMD"
-eval "$CWLTEST_CMD" || {
-    log_error "Some conformance tests failed"
-    rm -f docker-compose.override.yml
-    exit 1
-}
+eval "$CWLTEST_CMD" 2>&1 | tee "$PROJECT_DIR/conformance-distributed-results.txt"
+RESULT=${PIPESTATUS[0]}
 
-# Clean up override file
+cd "$PROJECT_DIR"
+
+# Clean up
 rm -f docker-compose.override.yml
+rm -f "$WRAPPER_SCRIPT"
+
+if [ $RESULT -ne 0 ]; then
+    log_error "Some conformance tests failed"
+    exit 1
+fi
 
 log_header "All Tests Completed"

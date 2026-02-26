@@ -32,6 +32,9 @@ func main() {
 	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor type: local, docker, worker (empty for hint-based)")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 
+	// Scheduler options
+	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
+
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
 	anonymousExecutors := flag.String("anonymous-executors", "local,docker,worker", "Comma-separated list of executors allowed for anonymous users")
@@ -149,8 +152,10 @@ func main() {
 	// Register BVBRCExecutor (uses per-task tokens for job submission).
 	reg.Register(executor.NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, defaultBVBRCCaller, logger))
 
-	// Create scheduler.
-	sched := scheduler.NewLoop(st, reg, scheduler.DefaultConfig(), logger)
+	// Create scheduler with configurable poll interval.
+	schedCfg := scheduler.DefaultConfig()
+	schedCfg.PollInterval = *schedulerPoll
+	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
 	srv := server.New(cfg, st, sched, logger, serverOpts...)
 

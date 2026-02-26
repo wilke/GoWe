@@ -2,9 +2,12 @@ package scheduler
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
-	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/secondaryfiles"
+	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -14,9 +17,11 @@ import (
 // tasks. It also injects reserved keys (_base_command, _output_globs) from the
 // step's inline tool definition when present.
 //
-// If expressionLib is provided and a step input has a valueFrom expression
-// (StepInputExpressionRequirement), it will be evaluated with `self` set to
-// the resolved source value and `inputs` set to the workflow inputs.
+// Uses the shared stepinput package to implement full CWL semantics including:
+// - Multiple sources (MultipleInputFeatureRequirement)
+// - Default values
+// - loadContents
+// - valueFrom expressions (StepInputExpressionRequirement)
 func ResolveTaskInputs(
 	task *model.Task,
 	step *model.Step,
@@ -24,74 +29,33 @@ func ResolveTaskInputs(
 	tasksByStepID map[string]*model.Task,
 	expressionLib []string,
 ) error {
-	resolved := make(map[string]any, len(step.In))
-
-	// Create evaluator for valueFrom expressions if we have an expression library.
-	var evaluator *cwlexpr.Evaluator
-	if len(expressionLib) > 0 {
-		evaluator = cwlexpr.NewEvaluator(expressionLib)
-	} else {
-		// Create evaluator without library for basic expression support.
-		evaluator = cwlexpr.NewEvaluator(nil)
+	// Build stepOutputs from completed upstream tasks.
+	stepOutputs := make(map[string]map[string]any)
+	for stepID, t := range tasksByStepID {
+		if t.State == model.TaskStateSuccess && t.Outputs != nil {
+			stepOutputs[stepID] = t.Outputs
+		}
 	}
 
-	for _, si := range step.In {
-		var val any
-		var hasSource bool
+	// Convert model.StepInput to stepinput.InputDef.
+	inputs := make([]stepinput.InputDef, len(step.In))
+	for i, si := range step.In {
+		inputs[i] = stepinput.InputDefFromModel(
+			si.ID,
+			si.Sources,
+			si.Source,
+			si.Default,
+			si.ValueFrom,
+			si.LoadContents,
+		)
+	}
 
-		if si.Source == "" {
-			hasSource = false
-		} else if strings.Contains(si.Source, "/") {
-			// Upstream task output: "stepID/outputID"
-			parts := strings.SplitN(si.Source, "/", 2)
-			stepID, outputID := parts[0], parts[1]
-
-			depTask, ok := tasksByStepID[stepID]
-			if !ok {
-				return fmt.Errorf("resolve: upstream step %q not found for input %q", stepID, si.ID)
-			}
-
-			val, ok = depTask.Outputs[outputID]
-			if !ok {
-				// Tolerate missing outputs on SUCCESS tasks with no output
-				// mapping (e.g. BV-BRC tasks that write to workspace, not
-				// local files). If the task has some outputs but not the
-				// requested one, still error (likely a source typo).
-				if depTask.State == model.TaskStateSuccess && len(depTask.Outputs) == 0 {
-					resolved[si.ID] = nil
-					continue
-				}
-				return fmt.Errorf("resolve: output %q not found on step %q for input %q", outputID, stepID, si.ID)
-			}
-			hasSource = true
-		} else {
-			// Workflow-level input
-			var ok bool
-			val, ok = submissionInputs[si.Source]
-			if !ok {
-				return fmt.Errorf("resolve: workflow input %q not found for input %q", si.Source, si.ID)
-			}
-			hasSource = true
-		}
-
-		// Evaluate valueFrom expression if present (StepInputExpressionRequirement).
-		if si.ValueFrom != "" {
-			// Per CWL spec: `inputs` contains workflow inputs, `self` is the resolved source value.
-			ctx := cwlexpr.NewContext(submissionInputs)
-			if hasSource {
-				ctx = ctx.WithSelf(val)
-			}
-			evaluated, err := evaluator.Evaluate(si.ValueFrom, ctx)
-			if err != nil {
-				return fmt.Errorf("resolve: step %q input %q valueFrom: %w", step.ID, si.ID, err)
-			}
-			val = evaluated
-		} else if !hasSource {
-			// No source and no valueFrom - skip this input.
-			continue
-		}
-
-		resolved[si.ID] = val
+	// Use shared resolution logic.
+	resolved, err := stepinput.ResolveInputs(inputs, submissionInputs, stepOutputs, stepinput.Options{
+		ExpressionLib: expressionLib,
+	})
+	if err != nil {
+		return fmt.Errorf("resolve inputs for task %s: %w", task.ID, err)
 	}
 
 	// Inject reserved keys from the inline tool definition.
@@ -237,4 +201,96 @@ func BuildTasksByStepID(tasks []*model.Task) map[string]*model.Task {
 		m[t.StepID] = t
 	}
 	return m
+}
+
+// MergeWorkflowInputDefaults merges workflow input defaults with submission inputs.
+// Returns a new map with defaults applied for any missing inputs.
+func MergeWorkflowInputDefaults(wf *model.Workflow, submissionInputs map[string]any) map[string]any {
+	if wf == nil || len(wf.Inputs) == 0 {
+		return submissionInputs
+	}
+
+	merged := make(map[string]any)
+
+	// Copy provided inputs.
+	for k, v := range submissionInputs {
+		merged[k] = v
+	}
+
+	// Add defaults for missing inputs.
+	for _, inp := range wf.Inputs {
+		if _, exists := merged[inp.ID]; !exists && inp.Default != nil {
+			merged[inp.ID] = inp.Default
+		}
+	}
+
+	return merged
+}
+
+// ResolveWorkflowSecondaryFiles resolves secondaryFiles for workflow inputs based
+// on the workflow's input declarations. This should be called after MergeWorkflowInputDefaults.
+func ResolveWorkflowSecondaryFiles(wf *model.Workflow, inputs map[string]any, cwlDir string) map[string]any {
+	if wf == nil || wf.RawCWL == "" {
+		return inputs
+	}
+
+	// Parse the workflow to get full CWL input definitions with secondaryFiles.
+	p := parser.New(slog.Default())
+	graphDoc, err := p.ParseGraph([]byte(wf.RawCWL))
+	if err != nil {
+		// If parsing fails, return inputs unchanged.
+		return inputs
+	}
+
+	// Get the workflow definition.
+	if graphDoc.Workflow == nil {
+		return inputs
+	}
+	cwlWorkflow := graphDoc.Workflow
+
+	result := make(map[string]any)
+	for k, v := range inputs {
+		result[k] = v
+	}
+
+	// Resolve secondaryFiles for each input based on workflow declarations.
+	for inputID, inputDef := range cwlWorkflow.Inputs {
+		val, exists := result[inputID]
+		if !exists || val == nil {
+			continue
+		}
+
+		// Handle secondaryFiles at the input level.
+		if len(inputDef.SecondaryFiles) > 0 {
+			result[inputID] = secondaryfiles.ResolveForValue(val, inputDef.SecondaryFiles, cwlDir)
+			continue
+		}
+
+		// Handle record types with field-level secondaryFiles.
+		if len(inputDef.RecordFields) > 0 {
+			recordVal, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			// Create a copy to avoid modifying the original.
+			resolvedRecord := make(map[string]any)
+			for k, v := range recordVal {
+				resolvedRecord[k] = v
+			}
+
+			// Resolve secondaryFiles for each field.
+			for _, field := range inputDef.RecordFields {
+				if len(field.SecondaryFiles) == 0 {
+					continue
+				}
+				if fieldVal, exists := resolvedRecord[field.Name]; exists && fieldVal != nil {
+					resolvedRecord[field.Name] = secondaryfiles.ResolveForValue(fieldVal, field.SecondaryFiles, cwlDir)
+				}
+			}
+			result[inputID] = resolvedRecord
+		}
+	}
+
+	return result
 }

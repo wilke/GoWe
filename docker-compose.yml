@@ -1,5 +1,8 @@
 version: "3.9"
 
+# NOTE: Poll intervals are set to 500ms for fast test responsiveness.
+# For production, consider increasing to 2s or higher to reduce CPU/network overhead.
+
 services:
   gowe-server:
     build:
@@ -15,6 +18,10 @@ services:
       - "-default-executor"
       - "worker"
       - "-allow-anonymous"
+      - "-anonymous-executors"
+      - "local,docker,worker,container"
+      - "-scheduler-poll"
+      - "500ms"
       - "-debug"
     volumes:
       - gowe-data:/data
@@ -46,7 +53,7 @@ services:
       - "-stage-out"
       - "file:///workdir/outputs"
       - "-poll"
-      - "2s"
+      - "500ms"
       - "-debug"
     volumes:
       - ./tmp/workdir:/workdir
@@ -72,7 +79,7 @@ services:
       - "-stage-out"
       - "file:///workdir/outputs"
       - "-poll"
-      - "2s"
+      - "500ms"
       - "-debug"
     volumes:
       - ./tmp/workdir:/workdir
@@ -98,7 +105,7 @@ services:
       - "-stage-out"
       - "file:///workdir/outputs"
       - "-poll"
-      - "2s"
+      - "500ms"
       - "-debug"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

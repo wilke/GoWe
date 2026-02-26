@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/bundle"
+	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -37,12 +38,24 @@ testing tool. It follows the same interface as cwl-runner.`,
 			// Parse job file if provided.
 			var inputs map[string]any
 			if len(args) > 1 {
-				data, err := os.ReadFile(args[1])
+				jobPath := args[1]
+				data, err := os.ReadFile(jobPath)
 				if err != nil {
 					return fmt.Errorf("read job file: %w", err)
 				}
 				if err := yaml.Unmarshal(data, &inputs); err != nil {
 					return fmt.Errorf("parse job file: %w", err)
+				}
+
+				// Resolve File/Directory paths relative to job file location.
+				// This ensures paths are absolute and 'path' property is set,
+				// which is required for CWL expressions like $(inputs.file1.path).
+				jobDir, err := filepath.Abs(filepath.Dir(jobPath))
+				if err != nil {
+					return fmt.Errorf("get job directory: %w", err)
+				}
+				if resolved, ok := bundle.ResolveFilePaths(inputs, jobDir).(map[string]any); ok {
+					inputs = resolved
 				}
 			}
 
@@ -177,7 +190,8 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, ti
 	}
 
 	// 7. Print CWL-formatted JSON to stdout.
-	outputJSON, err := json.MarshalIndent(outputs, "", "  ")
+	// Use CWL-compliant marshaling to avoid scientific notation for large numbers.
+	outputJSON, err := cwl.MarshalCWLOutput(outputs)
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
 	}
@@ -324,6 +338,11 @@ func formatFileOutput(fileMap map[string]any, outDir string) map[string]any {
 		}
 	}
 
+	// Preserve format field if present.
+	if format, ok := fileMap["format"].(string); ok && format != "" {
+		result["format"] = format
+	}
+
 	// Copy secondary files if present.
 	if secondaryFiles, ok := fileMap["secondaryFiles"].([]any); ok {
 		formatted := make([]any, 0, len(secondaryFiles))
@@ -340,7 +359,7 @@ func formatFileOutput(fileMap map[string]any, outDir string) map[string]any {
 	return result
 }
 
-// formatDirectoryOutput creates a CWL Directory object.
+// formatDirectoryOutput creates a CWL Directory object with listing.
 func formatDirectoryOutput(dirMap map[string]any, outDir string) map[string]any {
 	location, _ := dirMap["location"].(string)
 	if location == "" {
@@ -360,7 +379,48 @@ func formatDirectoryOutput(dirMap map[string]any, outDir string) map[string]any 
 		"basename": filepath.Base(dirPath),
 	}
 
+	// Include listing if present, recursively formatting each entry.
+	if listing, ok := dirMap["listing"].([]any); ok {
+		formattedListing := make([]any, 0, len(listing))
+		for _, item := range listing {
+			if itemMap, ok := item.(map[string]any); ok {
+				formattedListing = append(formattedListing, formatCWLOutput(itemMap, outDir))
+			} else {
+				formattedListing = append(formattedListing, item)
+			}
+		}
+		result["listing"] = formattedListing
+	} else if info, err := os.Stat(dirPath); err == nil && info.IsDir() {
+		// If no listing in server response but directory exists, populate it.
+		result["listing"] = buildDirectoryListing(dirPath, outDir)
+	}
+
 	return result
+}
+
+// buildDirectoryListing recursively lists directory contents.
+func buildDirectoryListing(dirPath string, outDir string) []any {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return []any{}
+	}
+
+	listing := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		entryPath := filepath.Join(dirPath, entry.Name())
+		if entry.IsDir() {
+			listing = append(listing, formatDirectoryOutput(map[string]any{
+				"class":    "Directory",
+				"location": "file://" + entryPath,
+			}, outDir))
+		} else {
+			listing = append(listing, formatFileOutput(map[string]any{
+				"class":    "File",
+				"location": "file://" + entryPath,
+			}, outDir))
+		}
+	}
+	return listing
 }
 
 // computeFileChecksum calculates the SHA1 checksum of a file.

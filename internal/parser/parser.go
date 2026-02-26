@@ -1250,10 +1250,9 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 			When:    step.When,
 		}
 
-		// Convert step inputs.
+		// Convert step inputs, preserving all CWL semantics.
 		for inID, si := range step.In {
-			// For model storage, join multiple sources with comma.
-			// The cwl-runner uses cwl.StepInput.Sources directly.
+			// For backwards compat, also set comma-joined Source.
 			source := ""
 			if len(si.Sources) == 1 {
 				source = si.Sources[0]
@@ -1261,9 +1260,12 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 				source = strings.Join(si.Sources, ",")
 			}
 			ms.In = append(ms.In, model.StepInput{
-				ID:        inID,
-				Source:    source,
-				ValueFrom: si.ValueFrom,
+				ID:           inID,
+				Sources:      si.Sources,
+				Source:       source,
+				Default:      si.Default,
+				ValueFrom:    si.ValueFrom,
+				LoadContents: si.LoadContents,
 			})
 		}
 		sort.Slice(ms.In, func(i, j int) bool {

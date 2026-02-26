@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/me/gowe/internal/execution"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -82,6 +83,17 @@ func (e *DockerExecutor) Type() model.ExecutorType {
 // Submit runs the task synchronously inside a Docker container.
 // It returns the container name as the externalID.
 func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, error) {
+	taskDir := filepath.Join(e.workDir, task.ID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return "", fmt.Errorf("task %s: create work dir: %w", task.ID, err)
+	}
+
+	// Use execution.Engine for full CWL support when Tool/Job are available.
+	if task.HasTool() {
+		return e.submitWithEngine(ctx, task, taskDir)
+	}
+
+	// Legacy path: use _base_command from task.Inputs.
 	image, ok := task.Inputs["_docker_image"].(string)
 	if !ok || image == "" {
 		return "", fmt.Errorf("task %s: _docker_image is missing or empty", task.ID)
@@ -92,7 +104,7 @@ func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, 
 		return "", fmt.Errorf("task %s: _base_command is missing or empty", task.ID)
 	}
 
-	taskDir := filepath.Join(e.workDir, task.ID)
+	taskDir = filepath.Join(e.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return "", fmt.Errorf("task %s: create work dir: %w", task.ID, err)
 	}
@@ -168,6 +180,61 @@ func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, 
 	)
 
 	return containerName, nil
+}
+
+// submitWithEngine executes a task using execution.Engine with full CWL support.
+func (e *DockerExecutor) submitWithEngine(ctx context.Context, task *model.Task, taskDir string) (string, error) {
+	e.logger.Debug("executing with engine", "task_id", task.ID)
+
+	// Parse tool from task.Tool map.
+	tool, err := parseToolFromMap(task.Tool)
+	if err != nil {
+		return "", fmt.Errorf("task %s: parse tool: %w", task.ID, err)
+	}
+
+	// Build engine configuration.
+	var expressionLib []string
+	var namespaces map[string]string
+	var cwlDir string
+	if task.RuntimeHints != nil {
+		expressionLib = task.RuntimeHints.ExpressionLib
+		namespaces = task.RuntimeHints.Namespaces
+		cwlDir = task.RuntimeHints.CWLDir
+	}
+
+	engine := execution.NewEngine(execution.Config{
+		Logger:        e.logger,
+		ExpressionLib: expressionLib,
+		Namespaces:    namespaces,
+		CWLDir:        cwlDir,
+	})
+
+	// Execute the tool.
+	result, err := engine.ExecuteTool(ctx, tool, task.Job, taskDir)
+	if err != nil {
+		// Even on error, capture any partial results.
+		if result != nil {
+			task.ExitCode = &result.ExitCode
+			task.Stdout = result.Stdout
+			task.Stderr = result.Stderr
+			task.Outputs = result.Outputs
+		}
+		return taskDir, fmt.Errorf("task %s: execute: %w", task.ID, err)
+	}
+
+	// Capture results.
+	task.ExitCode = &result.ExitCode
+	task.Stdout = result.Stdout
+	task.Stderr = result.Stderr
+	task.Outputs = result.Outputs
+
+	e.logger.Debug("task completed with engine",
+		"task_id", task.ID,
+		"exit_code", result.ExitCode,
+		"outputs", len(result.Outputs),
+	)
+
+	return taskDir, nil
 }
 
 // Status derives the task state from the recorded exit code.

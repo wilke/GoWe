@@ -12,7 +12,9 @@ import (
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/internal/executor"
+	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -257,9 +259,17 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 	}
 	tasksByStep := BuildTasksByStepID(allTasks)
 
+	// Merge workflow input defaults with submission inputs.
+	// This ensures default values are available for step input resolution.
+	mergedInputs := MergeWorkflowInputDefaults(wf, sub.Inputs)
+
+	// Resolve secondaryFiles for workflow inputs based on workflow declarations.
+	// File paths should already be absolute from the bundler, so use empty cwlDir.
+	mergedInputs = ResolveWorkflowSecondaryFiles(wf, mergedInputs, "")
+
 	// Evaluate 'when' condition if present.
 	if step.When != "" {
-		shouldRun, err := l.evaluateWhenCondition(step, sub.Inputs, tasksByStep)
+		shouldRun, err := l.evaluateWhenCondition(step, mergedInputs, tasksByStep)
 		if err != nil {
 			l.logger.Warn("when condition evaluation failed", "task_id", task.ID, "error", err)
 			// Continue with execution if evaluation fails
@@ -274,18 +284,38 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 		}
 	}
 
-	// For worker executor tasks, populate Tool and Job fields from the CWL.
-	if task.ExecutorType == model.ExecutorTypeWorker {
-		if err := l.populateToolAndJob(task, step, wf, sub.Inputs, tasksByStep); err != nil {
-			l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
-				"task_id", task.ID, "error", err)
+	// Populate Tool and Job fields from the CWL for full CWL execution support.
+	// This enables proper output collection (outputEval, loadContents, etc.) for all executors.
+	if err := l.populateToolAndJob(task, step, wf, mergedInputs, tasksByStep); err != nil {
+		l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
+			"task_id", task.ID, "error", err)
+	}
+
+	// Check if this is an ExpressionTool - execute it directly without sending to executor.
+	// ExpressionTools evaluate JavaScript expressions and don't run external commands.
+	if isExpressionTool(task.Tool) {
+		outputs, err := l.executeExpressionTool(task)
+		now := time.Now().UTC()
+		task.StartedAt = &now
+		task.CompletedAt = &now
+		if err != nil {
+			task.State = model.TaskStateFailed
+			task.Stderr = err.Error()
+			l.logger.Error("expression tool failed", "task_id", task.ID, "error", err)
+		} else {
+			task.State = model.TaskStateSuccess
+			task.Outputs = outputs
+			exitCode := 0
+			task.ExitCode = &exitCode
+			l.logger.Info("expression tool completed", "task_id", task.ID, "outputs", outputs)
 		}
+		return l.store.UpdateTask(ctx, task)
 	}
 
 	// Resolve inputs (sets _base_command, _output_globs, and real inputs).
 	// This is still needed for backward compatibility and non-worker executors.
 	// Note: expressionLib is nil here; workflow's InlineJavascriptRequirement could be passed for advanced expressions.
-	if err := ResolveTaskInputs(task, step, sub.Inputs, tasksByStep, nil); err != nil {
+	if err := ResolveTaskInputs(task, step, mergedInputs, tasksByStep, nil); err != nil {
 		now := time.Now().UTC()
 		task.State = model.TaskStateFailed
 		task.Stderr = err.Error()
@@ -418,6 +448,17 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 		l.logger.Error("list running submissions for finalize", "error", err)
 	} else {
 		for _, sub := range runningSubs {
+			affected[sub.ID] = true
+		}
+	}
+
+	// Also check PENDING submissions - they may have zero tasks (empty steps workflows)
+	// and need to be finalized immediately.
+	pendingSubs, _, err := l.store.ListSubmissions(ctx, model.ListOptions{State: "PENDING", Limit: 100})
+	if err != nil {
+		l.logger.Error("list pending submissions for finalize", "error", err)
+	} else {
+		for _, sub := range pendingSubs {
 			affected[sub.ID] = true
 		}
 	}
@@ -591,8 +632,13 @@ func (l *Loop) collectWorkflowOutputs(wf *model.Workflow, sub *model.Submission)
 		}
 	}
 
+	// Merge workflow input defaults with submission inputs.
+	// This is important for passthrough outputs (e.g., outputSource: inputName)
+	// where the input may have a default value but no submission value.
+	mergedInputs := MergeWorkflowInputDefaults(wf, sub.Inputs)
+
 	// Use the shared cwloutput package to collect outputs
-	return cwloutput.CollectWorkflowOutputs(wf.Outputs, sub.Inputs, taskOutputs)
+	return cwloutput.CollectWorkflowOutputs(wf.Outputs, mergedInputs, taskOutputs)
 }
 
 // populateToolAndJob extracts the full CWL tool definition from the workflow's
@@ -611,10 +657,11 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 	}
 
 	// Find the tool for this step.
+	// ToolRef already has the # prefix stripped by the parser.
+	// Use it directly as the lookup key - the parser stores tools with consistent IDs.
 	var toolID string
 	if step.ToolRef != "" {
-		toolID = strings.TrimPrefix(step.ToolRef, "#")
-		toolID = strings.TrimSuffix(toolID, ".cwl")
+		toolID = step.ToolRef
 	} else if step.ToolInline != nil {
 		toolID = step.ToolInline.ID
 	}
@@ -661,45 +708,44 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		return fmt.Errorf("tool %q not found in parsed workflow", toolID)
 	}
 
-	// Resolve job inputs (same logic as ResolveTaskInputs but store in Job).
-	job := make(map[string]any)
-	for _, si := range step.In {
-		if si.Source == "" {
-			continue
+	// Build stepOutputs from completed upstream tasks.
+	stepOutputs := make(map[string]map[string]any)
+	for stepID, t := range tasksByStepID {
+		if t.State == model.TaskStateSuccess && t.Outputs != nil {
+			stepOutputs[stepID] = t.Outputs
 		}
+	}
 
-		if strings.Contains(si.Source, "/") {
-			// Upstream task output: "stepID/outputID"
-			parts := strings.SplitN(si.Source, "/", 2)
-			stepID, outputID := parts[0], parts[1]
+	// Convert model.StepInput to stepinput.InputDef and resolve using shared logic.
+	inputs := make([]stepinput.InputDef, len(step.In))
+	for i, si := range step.In {
+		inputs[i] = stepinput.InputDefFromModel(
+			si.ID,
+			si.Sources,
+			si.Source,
+			si.Default,
+			si.ValueFrom,
+			si.LoadContents,
+		)
+	}
 
-			depTask, exists := tasksByStepID[stepID]
-			if !exists {
-				return fmt.Errorf("upstream step %q not found", stepID)
-			}
-
-			val, exists := depTask.Outputs[outputID]
-			if !exists {
-				if depTask.State == model.TaskStateSuccess && len(depTask.Outputs) == 0 {
-					job[si.ID] = nil
-					continue
-				}
-				return fmt.Errorf("output %q not found on step %q", outputID, stepID)
-			}
-			job[si.ID] = val
-		} else {
-			// Workflow-level input.
-			val, exists := submissionInputs[si.Source]
-			if !exists {
-				return fmt.Errorf("workflow input %q not found", si.Source)
-			}
-			job[si.ID] = val
-		}
+	// Use shared resolution logic (handles defaults, multiple sources, valueFrom).
+	job, err := stepinput.ResolveInputs(inputs, submissionInputs, stepOutputs, stepinput.Options{})
+	if err != nil {
+		return fmt.Errorf("resolve job inputs: %w", err)
 	}
 
 	task.Tool = tool
 	task.Job = job
 	task.RuntimeHints = runtimeHints
+
+	// Add namespaces from the graph document for format resolution.
+	if len(graphDoc.Namespaces) > 0 {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
+		}
+		task.RuntimeHints.Namespaces = graphDoc.Namespaces
+	}
 
 	return nil
 }
@@ -821,4 +867,72 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 	}
 
 	return hints
+}
+
+// isExpressionTool checks if a tool map represents a CWL ExpressionTool.
+func isExpressionTool(tool map[string]any) bool {
+	if tool == nil {
+		return false
+	}
+	class, ok := tool["class"].(string)
+	return ok && class == "ExpressionTool"
+}
+
+// executeExpressionTool executes an ExpressionTool directly in the scheduler.
+// ExpressionTools evaluate JavaScript expressions and don't need external execution.
+func (l *Loop) executeExpressionTool(task *model.Task) (map[string]any, error) {
+	// Convert task.Tool map back to cwl.ExpressionTool.
+	data, err := json.Marshal(task.Tool)
+	if err != nil {
+		return nil, fmt.Errorf("marshal tool: %w", err)
+	}
+	var tool cwl.ExpressionTool
+	if err := json.Unmarshal(data, &tool); err != nil {
+		return nil, fmt.Errorf("unmarshal expression tool: %w", err)
+	}
+
+	// Get expression library from RuntimeHints.
+	var expressionLib []string
+	var cwlDir string
+	if task.RuntimeHints != nil {
+		expressionLib = task.RuntimeHints.ExpressionLib
+		cwlDir = task.RuntimeHints.CWLDir
+	}
+
+	// Also extract from the tool itself if not in RuntimeHints.
+	if len(expressionLib) == 0 {
+		expressionLib = extractExpressionLibFromTool(task.Tool)
+	}
+
+	// Execute using the shared exprtool package.
+	return exprtool.Execute(&tool, task.Job, exprtool.ExecuteOptions{
+		ExpressionLib: expressionLib,
+		CWLDir:        cwlDir,
+	})
+}
+
+// extractExpressionLibFromTool extracts expressionLib from a tool's requirements.
+func extractExpressionLibFromTool(tool map[string]any) []string {
+	if tool == nil {
+		return nil
+	}
+	reqs, ok := tool["requirements"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	ijsReq, ok := reqs["InlineJavascriptRequirement"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	lib, ok := ijsReq["expressionLib"].([]any)
+	if !ok {
+		return nil
+	}
+	var result []string
+	for _, item := range lib {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }

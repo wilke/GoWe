@@ -14,6 +14,7 @@ import (
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -196,7 +197,7 @@ func moveFile(src, dst string) error {
 // not the application inside the container.
 // containerMounts: files to mount at absolute paths inside container (from InitialWorkDirRequirement).
 // dockerOutputDir: custom output directory inside container (from dockerOutputDirectory).
-func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
+func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
 	startTime := time.Now()
 	r.logger.Info("executing in Docker", "image", dockerImage, "command", cmdResult.Command)
 
@@ -346,7 +347,7 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 
 	// If dockerOutputDirectory was used, copy outputs from outputDir to workDir.
 	if dockerOutputDir != "" {
-		if err := copyDirContents(outputDir, workDir); err != nil {
+		if err := iwdr.CopyDirContents(outputDir, workDir); err != nil {
 			return nil, fmt.Errorf("copy outputs from dockerOutputDirectory: %w", err)
 		}
 	}
@@ -371,7 +372,7 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 // not the application inside the container.
 // containerMounts: files to mount at absolute paths inside container (from InitialWorkDirRequirement).
 // dockerOutputDir: custom output directory inside container (from dockerOutputDirectory).
-func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
+func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
 	startTime := time.Now()
 	r.logger.Info("executing in Apptainer", "image", dockerImage, "command", cmdResult.Command)
 
@@ -518,7 +519,7 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 
 	// If dockerOutputDirectory was used, copy outputs from outputDir to workDir.
 	if dockerOutputDir != "" {
-		if err := copyDirContents(outputDir, workDir); err != nil {
+		if err := iwdr.CopyDirContents(outputDir, workDir); err != nil {
 			return nil, fmt.Errorf("copy outputs from dockerOutputDirectory: %w", err)
 		}
 	}

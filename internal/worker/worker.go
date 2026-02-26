@@ -259,9 +259,11 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 	// Build engine configuration.
 	var expressionLib []string
 	var namespaces map[string]string
+	var cwlDir string
 	if task.RuntimeHints != nil {
 		expressionLib = task.RuntimeHints.ExpressionLib
 		namespaces = task.RuntimeHints.Namespaces
+		cwlDir = task.RuntimeHints.CWLDir
 	}
 
 	// Apply per-task stager overrides if present.
@@ -276,6 +278,7 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		Stager:        stager,
 		ExpressionLib: expressionLib,
 		Namespaces:    namespaces,
+		CWLDir:        cwlDir,
 		GPU: execution.GPUConfig{
 			Enabled:  w.gpu.Enabled,
 			DeviceID: w.gpu.DeviceID,
@@ -544,23 +547,20 @@ func parseInputParam(id string, v any) (cwl.ToolInputParam, error) {
 		}
 
 		if ib, ok := val["inputBinding"].(map[string]any); ok {
-			binding := &cwl.InputBinding{}
-			if pos, ok := ib["position"]; ok {
-				binding.Position = pos
+			param.InputBinding = parseInputBinding(ib)
+		}
+
+		// Parse itemInputBinding from nested array type or from top-level.
+		// Can be in: val["itemInputBinding"] or val["type"]["inputBinding"]
+		if itemIB, ok := val["itemInputBinding"].(map[string]any); ok {
+			param.ItemInputBinding = parseInputBinding(itemIB)
+		} else if typeMap, ok := val["type"].(map[string]any); ok {
+			// Array type with nested inputBinding: {type: array, items: File, inputBinding: {prefix: "-X"}}
+			if typeMap["type"] == "array" {
+				if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
+					param.ItemInputBinding = parseInputBinding(itemIB)
+				}
 			}
-			if prefix, ok := ib["prefix"].(string); ok {
-				binding.Prefix = prefix
-			}
-			if sep, ok := ib["separate"].(bool); ok {
-				binding.Separate = &sep
-			}
-			if vf, ok := ib["valueFrom"].(string); ok {
-				binding.ValueFrom = vf
-			}
-			if is, ok := ib["itemSeparator"].(string); ok {
-				binding.ItemSeparator = is
-			}
-			param.InputBinding = binding
 		}
 
 		if def, ok := val["default"]; ok {
@@ -609,6 +609,27 @@ func parseOutputParam(id string, v any) (cwl.ToolOutputParam, error) {
 	}
 
 	return param, nil
+}
+
+// parseInputBinding parses a CWL inputBinding from map.
+func parseInputBinding(ib map[string]any) *cwl.InputBinding {
+	binding := &cwl.InputBinding{}
+	if pos, ok := ib["position"]; ok {
+		binding.Position = pos
+	}
+	if prefix, ok := ib["prefix"].(string); ok {
+		binding.Prefix = prefix
+	}
+	if sep, ok := ib["separate"].(bool); ok {
+		binding.Separate = &sep
+	}
+	if vf, ok := ib["valueFrom"].(string); ok {
+		binding.ValueFrom = vf
+	}
+	if is, ok := ib["itemSeparator"].(string); ok {
+		binding.ItemSeparator = is
+	}
+	return binding
 }
 
 // reportFailure sends a FAILED completion with the given error as stderr.

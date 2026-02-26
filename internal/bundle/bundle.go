@@ -6,18 +6,29 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/me/gowe/pkg/cwl"
 	"gopkg.in/yaml.v3"
 )
 
 // Result holds the output of bundling a workflow.
 type Result struct {
-	Packed []byte // The packed $graph YAML document
-	Name   string // Workflow name (derived from filename)
+	Packed    []byte // The packed $graph YAML document
+	Name      string // Workflow name (derived from filename)
+	ProcessID string // Process ID from #fragment (e.g., "main" from "file.cwl#main")
 }
 
 // Bundle reads a workflow CWL file, resolves all run: references relative
 // to its location, and produces a packed $graph document.
+// If workflowPath contains a #fragment (e.g., "file.cwl#main"), the fragment
+// is extracted and returned in Result.ProcessID for process selection.
 func Bundle(workflowPath string) (*Result, error) {
+	// Parse #fragment from path (like cwl-runner does).
+	var processID string
+	if idx := strings.Index(workflowPath, "#"); idx != -1 {
+		processID = workflowPath[idx+1:]
+		workflowPath = workflowPath[:idx]
+	}
+
 	absPath, err := filepath.Abs(workflowPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve path: %w", err)
@@ -34,26 +45,84 @@ func Bundle(workflowPath string) (*Result, error) {
 		return nil, fmt.Errorf("parse workflow YAML: %w", err)
 	}
 
-	// If already a $graph document, return as-is
-	if _, ok := doc["$graph"]; ok {
-		return &Result{Packed: data, Name: nameFromPath(workflowPath)}, nil
+	// Resolve $import directives before further processing.
+	resolved, err := resolveImports(doc, baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve imports: %w", err)
+	}
+	doc = resolved.(map[string]any)
+
+	// If already a $graph document, propagate DockerRequirement and return.
+	if graphItems, ok := doc["$graph"].([]any); ok {
+		// Find the workflow and extract its DockerRequirement.
+		var workflowDockerReq map[string]any
+		for _, item := range graphItems {
+			if itemMap, ok := item.(map[string]any); ok {
+				if itemMap["class"] == "Workflow" {
+					workflowDockerReq = getDockerRequirement(itemMap)
+					break
+				}
+			}
+		}
+
+		// Propagate DockerRequirement to tools that don't have one.
+		if workflowDockerReq != nil {
+			for _, item := range graphItems {
+				if itemMap, ok := item.(map[string]any); ok {
+					class, _ := itemMap["class"].(string)
+					if class == "CommandLineTool" || class == "ExpressionTool" {
+						if !hasDockerRequirement(itemMap) {
+							injectDockerRequirement(itemMap, workflowDockerReq)
+						}
+					}
+				}
+			}
+		}
+
+		packed, err := yaml.Marshal(doc)
+		if err != nil {
+			return nil, fmt.Errorf("marshal packed document: %w", err)
+		}
+		return &Result{Packed: packed, Name: nameFromPath(workflowPath), ProcessID: processID}, nil
 	}
 
 	class, _ := doc["class"].(string)
 	if class == "CommandLineTool" || class == "ExpressionTool" {
 		// Wrap bare tool in a synthetic single-step workflow
-		return bundleBareTool(doc, workflowPath)
+		return bundleBareTool(doc, workflowPath, processID)
 	}
 	if class != "Workflow" {
 		return nil, fmt.Errorf("expected class: Workflow, CommandLineTool, or ExpressionTool, got %q", class)
 	}
 
+	// Extract workflow-level DockerRequirement to propagate to tools.
+	workflowDockerReq := getDockerRequirement(doc)
+
 	// Collect all tools referenced by steps
 	graph := []any{}
 	toolIDs := map[string]string{} // original ref → assigned ID
 
-	steps, ok := doc["steps"].(map[string]any)
-	if !ok {
+	// Steps can be a map or an array (including empty array for pass-through workflows).
+	var steps map[string]any
+	switch s := doc["steps"].(type) {
+	case map[string]any:
+		steps = s
+	case []any:
+		// Convert array-style steps to map, or handle empty array.
+		steps = make(map[string]any)
+		for _, item := range s {
+			if stepMap, ok := item.(map[string]any); ok {
+				if id, ok := stepMap["id"].(string); ok {
+					// Strip any prefix like "#main/"
+					id = strings.TrimPrefix(id, "#")
+					if idx := strings.LastIndex(id, "/"); idx >= 0 {
+						id = id[idx+1:]
+					}
+					steps[id] = stepMap
+				}
+			}
+		}
+	default:
 		return nil, fmt.Errorf("workflow has no steps")
 	}
 
@@ -62,6 +131,26 @@ func Bundle(workflowPath string) (*Result, error) {
 		if !ok {
 			continue
 		}
+
+		// Resolve file paths in step input defaults.
+		if stepIn, ok := step["in"].(map[string]any); ok {
+			for _, inputVal := range stepIn {
+				if inputMap, ok := inputVal.(map[string]any); ok {
+					if def, ok := inputMap["default"]; ok {
+						inputMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		} else if stepInArr, ok := step["in"].([]any); ok {
+			for _, inputItem := range stepInArr {
+				if inputMap, ok := inputItem.(map[string]any); ok {
+					if def, ok := inputMap["default"]; ok {
+						inputMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		}
+
 		runRef, ok := step["run"].(string)
 		if !ok {
 			continue
@@ -98,6 +187,11 @@ func Bundle(workflowPath string) (*Result, error) {
 		// Remove cwlVersion from individual tools (it's at the top level)
 		delete(toolDoc, "cwlVersion")
 
+		// Propagate workflow's DockerRequirement to tool if tool doesn't have one.
+		if workflowDockerReq != nil && !hasDockerRequirement(toolDoc) {
+			injectDockerRequirement(toolDoc, workflowDockerReq)
+		}
+
 		graph = append(graph, toolDoc)
 
 		// Replace run: with fragment reference
@@ -121,14 +215,41 @@ func Bundle(workflowPath string) (*Result, error) {
 		"$graph":     graph,
 	}
 
+	// Extract and merge $namespaces from document and all tools.
+	allNamespaces := make(map[string]string)
+	if ns, ok := doc["$namespaces"].(map[string]any); ok {
+		for k, v := range ns {
+			if s, ok := v.(string); ok {
+				allNamespaces[k] = s
+			}
+		}
+	}
+	for _, item := range graph {
+		if itemMap, ok := item.(map[string]any); ok {
+			if ns, ok := itemMap["$namespaces"].(map[string]any); ok {
+				for k, v := range ns {
+					if s, ok := v.(string); ok {
+						allNamespaces[k] = s
+					}
+				}
+				// Remove from tool itself (it belongs at root level).
+				delete(itemMap, "$namespaces")
+			}
+		}
+	}
+	if len(allNamespaces) > 0 {
+		packed["$namespaces"] = allNamespaces
+	}
+
 	out, err := yaml.Marshal(packed)
 	if err != nil {
 		return nil, fmt.Errorf("marshal packed document: %w", err)
 	}
 
 	return &Result{
-		Packed: out,
-		Name:   nameFromPath(workflowPath),
+		Packed:    out,
+		Name:      nameFromPath(workflowPath),
+		ProcessID: processID,
 	}, nil
 }
 
@@ -141,9 +262,16 @@ func nameFromPath(path string) string {
 
 // bundleBareTool wraps a bare CommandLineTool or ExpressionTool in a synthetic
 // single-step workflow, producing a packed $graph document.
-func bundleBareTool(toolDoc map[string]any, toolPath string) (*Result, error) {
+func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (*Result, error) {
 	toolID := "tool"
 	cwlVersion := toolDoc["cwlVersion"]
+
+	// Get the base directory for resolving relative paths.
+	absPath, err := filepath.Abs(toolPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve path: %w", err)
+	}
+	baseDir := filepath.Dir(absPath)
 
 	// Parse tool inputs
 	inputs := normalizeToMap(toolDoc["inputs"])
@@ -160,9 +288,10 @@ func bundleBareTool(toolDoc map[string]any, toolPath string) (*Result, error) {
 			inputType = v
 		case map[string]any:
 			inputType = v["type"]
-			// Copy default if present
+			// Copy default if present, resolving File/Directory locations.
 			if def, ok := v["default"]; ok {
-				wfInputs[id] = map[string]any{"type": inputType, "default": def}
+				resolvedDef := ResolveFilePaths(def, baseDir)
+				wfInputs[id] = map[string]any{"type": inputType, "default": resolvedDef}
 				stepIn[id] = id
 				continue
 			}
@@ -204,20 +333,41 @@ func bundleBareTool(toolDoc map[string]any, toolPath string) (*Result, error) {
 		},
 	}
 
-	// Prepare tool for graph (remove cwlVersion, add id)
+	// Prepare tool for graph (remove cwlVersion, add id, resolve paths).
 	toolForGraph := make(map[string]any)
 	for k, v := range toolDoc {
 		if k == "cwlVersion" {
 			continue
 		}
-		toolForGraph[k] = v
+		// Resolve file paths in inputs (for default Files/Directories).
+		if k == "inputs" {
+			toolForGraph[k] = ResolveFilePaths(v, baseDir)
+		} else {
+			toolForGraph[k] = v
+		}
 	}
 	toolForGraph["id"] = toolID
+
+	// Extract $namespaces from the tool (it belongs at root level).
+	var namespaces map[string]string
+	if ns, ok := toolDoc["$namespaces"].(map[string]any); ok {
+		namespaces = make(map[string]string)
+		for k, v := range ns {
+			if s, ok := v.(string); ok {
+				namespaces[k] = s
+			}
+		}
+		// Remove from tool copy (it's at root level).
+		delete(toolForGraph, "$namespaces")
+	}
 
 	// Build packed document
 	packed := map[string]any{
 		"cwlVersion": cwlVersion,
 		"$graph":     []any{toolForGraph, workflow},
+	}
+	if len(namespaces) > 0 {
+		packed["$namespaces"] = namespaces
 	}
 
 	out, err := yaml.Marshal(packed)
@@ -226,9 +376,126 @@ func bundleBareTool(toolDoc map[string]any, toolPath string) (*Result, error) {
 	}
 
 	return &Result{
-		Packed: out,
-		Name:   nameFromPath(toolPath),
+		Packed:    out,
+		Name:      nameFromPath(toolPath),
+		ProcessID: processID,
 	}, nil
+}
+
+// ResolveFilePaths resolves relative File/Directory locations to absolute paths.
+// For File/Directory objects, it also ensures that the 'path' property is set
+// from 'location' if not already present, which is required for CWL expressions
+// like $(inputs.file1.path) to work correctly.
+func ResolveFilePaths(v any, baseDir string) any {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			// Make a copy and resolve the location.
+			result := make(map[string]any)
+			for k, v := range val {
+				result[k] = v
+			}
+
+			// Resolve location to absolute path.
+			// URL-decode the location first (handle %23 -> # etc).
+			var absLocation string
+			if loc, ok := result["location"].(string); ok {
+				// Decode URL-encoded characters in the location.
+				loc = cwl.DecodeLocation(loc)
+
+				if strings.HasPrefix(loc, "file://") {
+					// Strip file:// prefix and resolve.
+					localPath := strings.TrimPrefix(loc, "file://")
+					if !filepath.IsAbs(localPath) {
+						localPath = filepath.Join(baseDir, localPath)
+					}
+					absLocation = localPath
+					result["location"] = "file://" + localPath
+				} else if !strings.HasPrefix(loc, "http://") && !strings.HasPrefix(loc, "https://") {
+					// Relative local path.
+					if !filepath.IsAbs(loc) {
+						absLocation = filepath.Join(baseDir, loc)
+					} else {
+						absLocation = loc
+					}
+					result["location"] = absLocation
+				}
+			}
+
+			// Resolve path to absolute, or set from location if not present.
+			var resolvedPath string
+			if path, ok := result["path"].(string); ok {
+				// Decode URL-encoded characters in the path.
+				path = cwl.DecodePath(path)
+				if !filepath.IsAbs(path) && !strings.HasPrefix(path, "file://") {
+					resolvedPath = filepath.Join(baseDir, path)
+				} else {
+					resolvedPath = path
+				}
+				result["path"] = resolvedPath
+			} else if absLocation != "" {
+				// Set path from resolved location (required for CWL expressions).
+				resolvedPath = absLocation
+				result["path"] = absLocation
+			}
+
+			// For File objects, compute basename, nameroot, and nameext from path.
+			if class == "File" && resolvedPath != "" {
+				basename := filepath.Base(resolvedPath)
+				if _, ok := result["basename"]; !ok {
+					result["basename"] = basename
+				}
+				ext := filepath.Ext(basename)
+				if _, ok := result["nameext"]; !ok {
+					result["nameext"] = ext
+				}
+				if _, ok := result["nameroot"]; !ok {
+					result["nameroot"] = strings.TrimSuffix(basename, ext)
+				}
+			}
+
+			// For Directory objects, compute basename from path.
+			if class == "Directory" && resolvedPath != "" {
+				if _, ok := result["basename"]; !ok {
+					result["basename"] = filepath.Base(resolvedPath)
+				}
+			}
+
+			// Recursively resolve secondary files.
+			if sf, ok := result["secondaryFiles"].([]any); ok {
+				resolved := make([]any, len(sf))
+				for i, item := range sf {
+					resolved[i] = ResolveFilePaths(item, baseDir)
+				}
+				result["secondaryFiles"] = resolved
+			}
+
+			// Recursively resolve listing entries for directories.
+			if listing, ok := result["listing"].([]any); ok {
+				resolved := make([]any, len(listing))
+				for i, item := range listing {
+					resolved[i] = ResolveFilePaths(item, baseDir)
+				}
+				result["listing"] = resolved
+			}
+			return result
+		}
+		// For other maps, recursively process.
+		result := make(map[string]any)
+		for k, v := range val {
+			result[k] = ResolveFilePaths(v, baseDir)
+		}
+		return result
+	case []any:
+		result := make([]any, len(val))
+		for i, item := range val {
+			result[i] = ResolveFilePaths(item, baseDir)
+		}
+		return result
+	default:
+		return v
+	}
 }
 
 // normalizeToMap converts array-style CWL definitions to map-style.
@@ -253,4 +520,160 @@ func normalizeToMap(v any) map[string]any {
 		return result
 	}
 	return make(map[string]any)
+}
+
+// getDockerRequirement extracts DockerRequirement from a workflow's requirements or hints.
+// Returns the DockerRequirement map if found, nil otherwise.
+func getDockerRequirement(doc map[string]any) map[string]any {
+	// Check requirements first (higher priority).
+	if reqs, ok := doc["requirements"].([]any); ok {
+		for _, req := range reqs {
+			if reqMap, ok := req.(map[string]any); ok {
+				if reqMap["class"] == "DockerRequirement" {
+					return reqMap
+				}
+			}
+		}
+	}
+	if reqs, ok := doc["requirements"].(map[string]any); ok {
+		if dr, ok := reqs["DockerRequirement"].(map[string]any); ok {
+			return dr
+		}
+	}
+
+	// Check hints.
+	if hints, ok := doc["hints"].([]any); ok {
+		for _, hint := range hints {
+			if hintMap, ok := hint.(map[string]any); ok {
+				if hintMap["class"] == "DockerRequirement" {
+					return hintMap
+				}
+			}
+		}
+	}
+	if hints, ok := doc["hints"].(map[string]any); ok {
+		if dr, ok := hints["DockerRequirement"].(map[string]any); ok {
+			return dr
+		}
+	}
+
+	return nil
+}
+
+// hasDockerRequirement checks if a tool already has a DockerRequirement.
+func hasDockerRequirement(toolDoc map[string]any) bool {
+	// Check requirements.
+	if reqs, ok := toolDoc["requirements"].([]any); ok {
+		for _, req := range reqs {
+			if reqMap, ok := req.(map[string]any); ok {
+				if reqMap["class"] == "DockerRequirement" {
+					return true
+				}
+			}
+		}
+	}
+	if reqs, ok := toolDoc["requirements"].(map[string]any); ok {
+		if _, ok := reqs["DockerRequirement"]; ok {
+			return true
+		}
+	}
+
+	// Check hints.
+	if hints, ok := toolDoc["hints"].([]any); ok {
+		for _, hint := range hints {
+			if hintMap, ok := hint.(map[string]any); ok {
+				if hintMap["class"] == "DockerRequirement" {
+					return true
+				}
+			}
+		}
+	}
+	if hints, ok := toolDoc["hints"].(map[string]any); ok {
+		if _, ok := hints["DockerRequirement"]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// injectDockerRequirement adds a DockerRequirement to a tool's hints.
+// The requirement is added as a hint (not requirement) to preserve CWL semantics.
+func injectDockerRequirement(toolDoc map[string]any, dockerReq map[string]any) {
+	// Create the hint to inject (copy to avoid mutating original).
+	hint := map[string]any{"class": "DockerRequirement"}
+	if pull, ok := dockerReq["dockerPull"]; ok {
+		hint["dockerPull"] = pull
+	}
+	if outputDir, ok := dockerReq["dockerOutputDirectory"]; ok {
+		hint["dockerOutputDirectory"] = outputDir
+	}
+
+	// Add to existing hints or create new hints array.
+	switch hints := toolDoc["hints"].(type) {
+	case []any:
+		toolDoc["hints"] = append(hints, hint)
+	case map[string]any:
+		hints["DockerRequirement"] = hint
+	default:
+		toolDoc["hints"] = []any{hint}
+	}
+}
+
+// resolveImports recursively resolves $import directives in a CWL document.
+// It loads referenced files and replaces the $import directive with the file contents.
+func resolveImports(v any, baseDir string) (any, error) {
+	switch val := v.(type) {
+	case map[string]any:
+		// Check if this is an $import directive.
+		if importPath, ok := val["$import"].(string); ok && len(val) == 1 {
+			// Resolve the import path relative to baseDir.
+			fullPath := importPath
+			if !filepath.IsAbs(importPath) {
+				fullPath = filepath.Join(baseDir, importPath)
+			}
+
+			// Read and parse the imported file.
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				return nil, fmt.Errorf("read import %q: %w", importPath, err)
+			}
+
+			var imported any
+			if err := yaml.Unmarshal(data, &imported); err != nil {
+				return nil, fmt.Errorf("parse import %q: %w", importPath, err)
+			}
+
+			// Recursively resolve imports in the imported content.
+			importDir := filepath.Dir(fullPath)
+			return resolveImports(imported, importDir)
+		}
+
+		// Recursively process all values in the map.
+		result := make(map[string]any)
+		for k, v := range val {
+			resolved, err := resolveImports(v, baseDir)
+			if err != nil {
+				return nil, err
+			}
+			result[k] = resolved
+		}
+		return result, nil
+
+	case []any:
+		// Recursively process all elements in the array.
+		result := make([]any, len(val))
+		for i, item := range val {
+			resolved, err := resolveImports(item, baseDir)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = resolved
+		}
+		return result, nil
+
+	default:
+		// Primitive values are returned as-is.
+		return v, nil
+	}
 }
