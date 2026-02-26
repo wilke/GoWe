@@ -13,6 +13,7 @@ import (
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/iwdr"
+	"github.com/me/gowe/internal/loadcontents"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 )
@@ -89,7 +90,11 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	}
 
 	// Apply tool input defaults for any inputs not provided in the job.
-	mergedInputs := applyToolDefaults(tool, inputs, e.cwlDir)
+	// Also processes loadContents with 64KB limit enforcement.
+	mergedInputs, err := applyToolDefaults(tool, inputs, e.cwlDir)
+	if err != nil {
+		return nil, &ExecutionError{Phase: "process_inputs", Err: err}
+	}
 
 	e.logger.Debug("merged inputs", "tool_inputs_count", len(tool.Inputs), "job_inputs_count", len(inputs), "merged_count", len(mergedInputs))
 	for k, v := range mergedInputs {
@@ -320,22 +325,35 @@ func hasStderrOutput(tool *cwl.CommandLineTool) bool {
 
 // applyToolDefaults merges tool input defaults with provided inputs.
 // Returns a new map with defaults applied for any missing or nil inputs.
-func applyToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) map[string]any {
+// Also processes loadContents for File inputs (with 64KB limit per CWL spec).
+func applyToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) (map[string]any, error) {
 	result := make(map[string]any)
 
 	// Only include inputs that are declared in the tool's inputs.
 	// Undeclared inputs are ignored per CWL v1.2 spec.
 	for inputID, inputDef := range tool.Inputs {
-		if val, exists := inputs[inputID]; exists {
-			result[inputID] = val
+		var val any
+		if v, exists := inputs[inputID]; exists {
+			val = v
 		} else if inputDef.Default != nil {
 			// Use default value if input not provided.
 			// Resolve File/Directory locations relative to CWL directory.
-			result[inputID] = resolveDefaultValue(inputDef.Default, cwlDir)
+			val = resolveDefaultValue(inputDef.Default, cwlDir)
 		}
+
+		// Process loadContents for File inputs (with 64KB limit).
+		if val != nil && inputDef.LoadContents {
+			processedVal, err := loadcontents.Process(val, cwlDir)
+			if err != nil {
+				return nil, fmt.Errorf("input %q: %w", inputID, err)
+			}
+			val = processedVal
+		}
+
+		result[inputID] = val
 	}
 
-	return result
+	return result, nil
 }
 
 // resolveDefaultValue resolves a default value, handling File/Directory objects specially.

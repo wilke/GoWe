@@ -19,6 +19,7 @@ import (
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/iwdr"
+	"github.com/me/gowe/internal/loadcontents"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
@@ -1632,9 +1633,9 @@ func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 			val = resolveDefaultValue(inputDef.Default, cwlDir)
 		}
 
-		// Process loadContents for File inputs.
+		// Process loadContents for File inputs (with 64KB limit).
 		if val != nil && inputDef.LoadContents {
-			processedVal, err := processLoadContents(val, cwlDir)
+			processedVal, err := loadcontents.Process(val, cwlDir)
 			if err != nil {
 				return nil, fmt.Errorf("input %q: %w", inputID, err)
 			}
@@ -1833,70 +1834,8 @@ func computeSecondaryFileName(basename, pattern string, fileObj map[string]any, 
 	return basename + pattern
 }
 
-// processLoadContents loads file contents into a File object (with 64KB limit).
-func processLoadContents(val any, cwlDir string) (any, error) {
-	const maxLoadContentsSize = 64 * 1024 // 64KB
-
-	switch v := val.(type) {
-	case map[string]any:
-		if class, ok := v["class"].(string); ok && class == "File" {
-			// Get the file path.
-			path := ""
-			if p, ok := v["path"].(string); ok {
-				path = p
-			} else if loc, ok := v["location"].(string); ok {
-				path = strings.TrimPrefix(loc, "file://")
-			}
-			if path == "" {
-				return nil, fmt.Errorf("File object has no path or location")
-			}
-
-			// Resolve relative paths.
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(cwlDir, path)
-			}
-
-			// Check file size.
-			info, err := os.Stat(path)
-			if err != nil {
-				return nil, fmt.Errorf("stat file: %w", err)
-			}
-			if info.Size() > maxLoadContentsSize {
-				return nil, fmt.Errorf("loadContents: file %q is %d bytes, exceeds 64KB limit", path, info.Size())
-			}
-
-			// Read contents.
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("read file contents: %w", err)
-			}
-
-			// Create a copy of the map with contents added.
-			result := make(map[string]any)
-			for k, val := range v {
-				result[k] = val
-			}
-			result["contents"] = string(content)
-			return result, nil
-		}
-		return val, nil
-
-	case []any:
-		// Process array of Files.
-		result := make([]any, len(v))
-		for i, item := range v {
-			processed, err := processLoadContents(item, cwlDir)
-			if err != nil {
-				return nil, err
-			}
-			result[i] = processed
-		}
-		return result, nil
-
-	default:
-		return val, nil
-	}
-}
+// Note: loadContents processing is now in internal/loadcontents package
+// as loadcontents.Process to be shared with the execution engine.
 
 // resolveDefaultValue resolves a default value, handling File objects specially.
 func resolveDefaultValue(v any, cwlDir string) any {
