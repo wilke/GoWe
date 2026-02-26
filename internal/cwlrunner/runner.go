@@ -16,6 +16,7 @@ import (
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/cwloutput"
+	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/internal/parser"
@@ -744,39 +745,14 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[string]any, graph *cwl.GraphDocument) (map[string]any, error) {
 	r.logger.Info("executing expression tool", "id", tool.ID)
 
-	// Apply loadContents for inputs that have it enabled.
-	processedInputs := make(map[string]any)
-	for inputID, val := range inputs {
-		processedInputs[inputID] = val
-	}
-	for inputID, inputDef := range tool.Inputs {
-		if inputDef.LoadContents {
-			if val, exists := processedInputs[inputID]; exists && val != nil {
-				processedInputs[inputID] = applyLoadContents(val, r.cwlDir)
-			}
-		}
-	}
-
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
-	// Create expression context with processed inputs (with contents loaded).
-	ctx := cwlexpr.NewContext(processedInputs)
-	evaluator := cwlexpr.NewEvaluator(expressionLib)
-
-	// Evaluate the expression.
-	result, err := evaluator.Evaluate(tool.Expression, ctx)
-	if err != nil {
-		return nil, fmt.Errorf("evaluate expression: %w", err)
-	}
-
-	// The expression should return an object with output field names.
-	outputs, ok := result.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("expression did not return an object, got %T", result)
-	}
-
-	return outputs, nil
+	// Use shared exprtool package for execution.
+	return exprtool.Execute(tool, inputs, exprtool.ExecuteOptions{
+		ExpressionLib: expressionLib,
+		CWLDir:        r.cwlDir,
+	})
 }
 
 // executeWorkflow executes a workflow.
