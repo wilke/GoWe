@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/iwdr"
@@ -165,23 +166,25 @@ func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, c
 	}
 
 	// Mount working directory.
-	absWorkDir := resolveSymlinks(workDir)
+	// For Docker-in-Docker, translate container paths to host paths.
+	absWorkDir := e.translateDockerPath(resolveSymlinks(workDir))
 	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/var/spool/cwl", absWorkDir))
 	dockerArgs = append(dockerArgs, "-w", "/var/spool/cwl")
 
 	// Mount tmp directory.
-	absTmpDir := resolveSymlinks(tmpDir)
+	absTmpDir := e.translateDockerPath(resolveSymlinks(tmpDir))
 	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/tmp", absTmpDir))
 
 	// Mount input files that are outside working directory.
 	mounts := collectInputMounts(inputs)
 	for hostPath, containerPath := range mounts {
-		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", hostPath, containerPath))
+		translatedPath := e.translateDockerPath(hostPath)
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", translatedPath, containerPath))
 	}
 
 	// Mount files from InitialWorkDirRequirement with absolute entrynames.
 	for _, cm := range containerMounts {
-		resolved := resolveSymlinks(cm.HostPath)
+		resolved := e.translateDockerPath(resolveSymlinks(cm.HostPath))
 		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", resolved, cm.ContainerPath))
 	}
 
@@ -269,4 +272,23 @@ func (e *Engine) executeDocker(ctx context.Context, tool *cwl.CommandLineTool, c
 		Stdout:   stdoutBuf.String(),
 		Stderr:   stderrBuf.String(),
 	}, nil
+}
+
+// translateDockerPath translates a container path to the Docker host path.
+// This is needed for Docker-in-Docker scenarios where the worker container
+// uses the host's Docker socket. Paths in docker run commands must be valid
+// on the host, not inside the worker container.
+func (e *Engine) translateDockerPath(path string) string {
+	if e.dockerHostPathMap == nil || len(e.dockerHostPathMap) == 0 {
+		return path
+	}
+
+	// Try each mapping prefix.
+	for containerPrefix, hostPrefix := range e.dockerHostPathMap {
+		if strings.HasPrefix(path, containerPrefix) {
+			return hostPrefix + strings.TrimPrefix(path, containerPrefix)
+		}
+	}
+
+	return path
 }

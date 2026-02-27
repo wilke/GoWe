@@ -37,6 +37,26 @@ func Materialize(contents string, basename string) (string, error) {
 	return tempPath, nil
 }
 
+// MaterializeInDir creates a file from contents in the specified directory.
+// Unlike Materialize, this uses a custom base directory instead of the system temp dir.
+func MaterializeInDir(contents string, basename string, baseDir string) (string, error) {
+	if basename == "" {
+		basename = "cwl_literal"
+	}
+
+	litDir := filepath.Join(baseDir, "cwl-literals")
+	if err := os.MkdirAll(litDir, 0755); err != nil {
+		return "", err
+	}
+
+	filePath := filepath.Join(litDir, basename)
+	if err := os.WriteFile(filePath, []byte(contents), 0644); err != nil {
+		return "", err
+	}
+
+	return filePath, nil
+}
+
 // MaterializeFileObject materializes a file literal if the File object has
 // "contents" but no "path" or "location". Returns true if the object was
 // modified (file literal was materialized).
@@ -66,6 +86,99 @@ func MaterializeFileObject(obj map[string]any) (bool, error) {
 	obj["path"] = tempFile
 	obj["location"] = "file://" + tempFile
 	return true, nil
+}
+
+// RematerializeFileObject re-materializes a file from its "contents" field
+// if the file has "contents" but the "path" doesn't exist on the local filesystem.
+// This is needed for distributed execution where files are materialized on one
+// machine but need to be re-created on another.
+func RematerializeFileObject(obj map[string]any, baseDir string) (bool, error) {
+	contents, hasContents := obj["contents"].(string)
+	if !hasContents {
+		return false, nil
+	}
+
+	// Check if path exists.
+	if path, ok := obj["path"].(string); ok && path != "" {
+		if _, err := os.Stat(path); err == nil {
+			return false, nil // Path exists, no need to rematerialize
+		}
+	}
+
+	// Path doesn't exist or not set - rematerialize from contents.
+	basename := ""
+	if b, ok := obj["basename"].(string); ok {
+		basename = b
+	}
+
+	var newPath string
+	var err error
+	if baseDir != "" {
+		newPath, err = MaterializeInDir(contents, basename, baseDir)
+	} else {
+		newPath, err = Materialize(contents, basename)
+	}
+	if err != nil {
+		return false, err
+	}
+
+	obj["path"] = newPath
+	obj["location"] = "file://" + newPath
+	return true, nil
+}
+
+// RematerializeRecursive re-materializes file literals in job inputs if their
+// paths don't exist locally. This handles distributed execution where file
+// literals were materialized on the server but need to be re-created on the worker.
+func RematerializeRecursive(value any, baseDir string) (any, error) {
+	switch v := value.(type) {
+	case map[string]any:
+		class, _ := v["class"].(string)
+
+		// Handle File objects.
+		if class == "File" {
+			if _, err := RematerializeFileObject(v, baseDir); err != nil {
+				return nil, err
+			}
+		}
+
+		// Handle Directory listings.
+		if listing, ok := v["listing"].([]any); ok {
+			for i, item := range listing {
+				resolved, err := RematerializeRecursive(item, baseDir)
+				if err != nil {
+					return nil, err
+				}
+				listing[i] = resolved
+			}
+		}
+
+		// Handle secondaryFiles.
+		if secFiles, ok := v["secondaryFiles"].([]any); ok {
+			for i, item := range secFiles {
+				resolved, err := RematerializeRecursive(item, baseDir)
+				if err != nil {
+					return nil, err
+				}
+				secFiles[i] = resolved
+			}
+		}
+
+		return v, nil
+
+	case []any:
+		for i, item := range v {
+			resolved, err := RematerializeRecursive(item, baseDir)
+			if err != nil {
+				return nil, err
+			}
+			v[i] = resolved
+		}
+		return v, nil
+
+	default:
+		return value, nil
+	}
 }
 
 // MaterializeRecursive materializes file literals in a value, handling

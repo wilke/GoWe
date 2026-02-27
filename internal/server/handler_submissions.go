@@ -118,14 +118,27 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	for _, step := range wf.Steps {
 		execType := model.ExecutorTypeLocal
 		bvbrcAppID := ""
+		var runtimeHints *model.RuntimeHints
+
 		if step.Hints != nil {
-			if step.Hints.ExecutorType != "" {
-				execType = step.Hints.ExecutorType
+			// Capture runtime hints for worker matching (docker image requirement).
+			if step.Hints.DockerImage != "" {
+				runtimeHints = &model.RuntimeHints{
+					DockerImage: step.Hints.DockerImage,
+				}
 			}
 			bvbrcAppID = step.Hints.BVBRCAppID
+
+			// Only use step hint executor if no server default is set.
+			// Server default takes precedence to enable distributed mode.
+			if step.Hints.ExecutorType != "" && s.config.DefaultExecutor == "" {
+				execType = step.Hints.ExecutorType
+			}
 		}
-		// Apply server-wide default executor if no hint specified and default is set.
-		if (step.Hints == nil || step.Hints.ExecutorType == "") && s.config.DefaultExecutor != "" {
+
+		// Apply server-wide default executor when set (overrides CWL hints).
+		// This enables distributed mode where all tasks go to workers.
+		if s.config.DefaultExecutor != "" {
 			execType = model.ExecutorType(s.config.DefaultExecutor)
 		}
 
@@ -136,6 +149,7 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 			State:        model.TaskStatePending,
 			ExecutorType: execType,
 			BVBRCAppID:   bvbrcAppID,
+			RuntimeHints: runtimeHints,
 			Inputs:       map[string]any{},
 			Outputs:      map[string]any{},
 			DependsOn:    step.DependsOn,
@@ -325,12 +339,11 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 
 	for _, step := range wf.Steps {
 		execType := model.ExecutorTypeLocal
-		if step.Hints != nil && step.Hints.ExecutorType != "" {
-			execType = step.Hints.ExecutorType
-		}
-		// Apply server-wide default executor if no hint specified and default is set.
-		if (step.Hints == nil || step.Hints.ExecutorType == "") && s.config.DefaultExecutor != "" {
+		// Server default takes precedence over CWL hints to enable distributed mode.
+		if s.config.DefaultExecutor != "" {
 			execType = model.ExecutorType(s.config.DefaultExecutor)
+		} else if step.Hints != nil && step.Hints.ExecutorType != "" {
+			execType = step.Hints.ExecutorType
 		}
 		executorSet[execType] = true
 
@@ -445,12 +458,11 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 
 	for _, step := range wf.Steps {
 		execType := model.ExecutorTypeLocal
-		if step.Hints != nil && step.Hints.ExecutorType != "" {
-			execType = step.Hints.ExecutorType
-		}
-		// Apply server-wide default executor if no hint specified.
-		if (step.Hints == nil || step.Hints.ExecutorType == "") && s.config.DefaultExecutor != "" {
+		// Server default takes precedence over CWL hints to enable distributed mode.
+		if s.config.DefaultExecutor != "" {
 			execType = model.ExecutorType(s.config.DefaultExecutor)
+		} else if step.Hints != nil && step.Hints.ExecutorType != "" {
+			execType = step.Hints.ExecutorType
 		}
 
 		if !s.anonConfig.IsExecutorAllowed(execType) {

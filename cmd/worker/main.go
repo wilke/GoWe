@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,10 @@ func main() {
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://upload.example.com)")
 	flag.DurationVar(&cfg.Poll, "poll", 5*time.Second, "Poll interval")
+
+	// Docker-in-Docker path mapping (also reads DOCKER_HOST_PATH_MAP env var).
+	var dockerHostPathMapStr string
+	flag.StringVar(&dockerHostPathMapStr, "docker-host-path-map", "", "Path mapping for DinD: 'container1=host1:container2=host2' (or DOCKER_HOST_PATH_MAP env)")
 
 	// GPU flags.
 	flag.BoolVar(&cfg.GPU.Enabled, "gpu", false, "Enable GPU support (passes --nv to Apptainer, --gpus to Docker)")
@@ -61,6 +66,14 @@ func main() {
 	}
 
 	logger := logging.NewLogger(logging.ParseLevel(*logLevel), *logFormat)
+
+	// Parse Docker host path map from flag or environment variable.
+	if dockerHostPathMapStr == "" {
+		dockerHostPathMapStr = os.Getenv("DOCKER_HOST_PATH_MAP")
+	}
+	if dockerHostPathMapStr != "" {
+		cfg.DockerHostPathMap = parsePathMap(dockerHostPathMapStr)
+	}
 
 	// Default worker name to hostname.
 	if cfg.Name == "" {
@@ -121,4 +134,19 @@ func main() {
 	}
 
 	logger.Info("worker stopped")
+}
+
+// parsePathMap parses a path mapping string in the format "src1=dst1:src2=dst2".
+func parsePathMap(s string) map[string]string {
+	result := make(map[string]string)
+	if s == "" {
+		return result
+	}
+	for _, pair := range strings.Split(s, ":") {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) == 2 {
+			result[parts[0]] = parts[1]
+		}
+	}
+	return result
 }

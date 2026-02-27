@@ -620,6 +620,94 @@ func injectDockerRequirement(toolDoc map[string]any, dockerReq map[string]any) {
 	}
 }
 
+// RemapPaths rewrites file paths in inputs using the provided path mappings.
+// pathMap is a map from source prefix to destination prefix.
+// For example: {"/Users/me/project/testdata": "/testdata"}
+// This is useful for distributed execution where host paths need to be
+// translated to container paths.
+func RemapPaths(v any, pathMap map[string]string) any {
+	if len(pathMap) == 0 {
+		return v
+	}
+
+	switch val := v.(type) {
+	case map[string]any:
+		result := make(map[string]any)
+		for k, v := range val {
+			result[k] = RemapPaths(v, pathMap)
+		}
+
+		// Remap location and path fields for File/Directory objects.
+		class, _ := result["class"].(string)
+		if class == "File" || class == "Directory" {
+			if loc, ok := result["location"].(string); ok {
+				result["location"] = remapPath(loc, pathMap)
+			}
+			if path, ok := result["path"].(string); ok {
+				result["path"] = remapPath(path, pathMap)
+			}
+		}
+		return result
+
+	case []any:
+		result := make([]any, len(val))
+		for i, item := range val {
+			result[i] = RemapPaths(item, pathMap)
+		}
+		return result
+
+	case string:
+		// Check if this looks like an absolute path that should be remapped.
+		if filepath.IsAbs(val) {
+			return remapPath(val, pathMap)
+		}
+		return val
+
+	default:
+		return v
+	}
+}
+
+// remapPath applies path mappings to a single path string.
+func remapPath(path string, pathMap map[string]string) string {
+	// Handle file:// URLs.
+	hasFilePrefix := strings.HasPrefix(path, "file://")
+	if hasFilePrefix {
+		path = strings.TrimPrefix(path, "file://")
+	}
+
+	// Apply mappings (longest match first for correctness).
+	for src, dst := range pathMap {
+		if strings.HasPrefix(path, src) {
+			path = dst + strings.TrimPrefix(path, src)
+			break
+		}
+	}
+
+	if hasFilePrefix {
+		return "file://" + path
+	}
+	return path
+}
+
+// ParsePathMap parses a GOWE_PATH_MAP environment variable value.
+// Format: "src1=dst1:src2=dst2" (colon-separated key=value pairs)
+// Example: "/Users/me/project/testdata=/testdata"
+func ParsePathMap(s string) map[string]string {
+	if s == "" {
+		return nil
+	}
+
+	result := make(map[string]string)
+	for _, pair := range strings.Split(s, ":") {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) == 2 {
+			result[parts[0]] = parts[1]
+		}
+	}
+	return result
+}
+
 // resolveImports recursively resolves $import directives in a CWL document.
 // It loads referenced files and replaces the $import directive with the file contents.
 func resolveImports(v any, baseDir string) (any, error) {

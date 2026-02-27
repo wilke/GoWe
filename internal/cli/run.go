@@ -57,6 +57,15 @@ testing tool. It follows the same interface as cwl-runner.`,
 				if resolved, ok := bundle.ResolveFilePaths(inputs, jobDir).(map[string]any); ok {
 					inputs = resolved
 				}
+
+				// Apply path remapping for distributed execution.
+				// GOWE_PATH_MAP format: "src1=dst1:src2=dst2"
+				if pathMapStr := os.Getenv("GOWE_PATH_MAP"); pathMapStr != "" {
+					pathMap := bundle.ParsePathMap(pathMapStr)
+					if remapped, ok := bundle.RemapPaths(inputs, pathMap).(map[string]any); ok {
+						inputs = remapped
+					}
+				}
 			}
 
 			return runCWL(cwlPath, inputs, outDir, quiet, timeout)
@@ -81,6 +90,20 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, ti
 		return fmt.Errorf("bundle CWL: %w", err)
 	}
 
+	// Apply path remapping to packed CWL if GOWE_PATH_MAP is set.
+	// This remaps absolute host paths to container paths for distributed execution.
+	packedCWL := result.Packed
+	if pathMapStr := os.Getenv("GOWE_PATH_MAP"); pathMapStr != "" {
+		pathMap := bundle.ParsePathMap(pathMapStr)
+		var doc any
+		if err := yaml.Unmarshal(result.Packed, &doc); err == nil {
+			remapped := bundle.RemapPaths(doc, pathMap)
+			if remappedBytes, err := yaml.Marshal(remapped); err == nil {
+				packedCWL = remappedBytes
+			}
+		}
+	}
+
 	// 2. Create workflow via API.
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "Creating workflow %s...\n", result.Name)
@@ -88,7 +111,7 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, ti
 
 	wfReq := map[string]any{
 		"name": result.Name,
-		"cwl":  string(result.Packed),
+		"cwl":  string(packedCWL),
 	}
 	wfResp, err := client.Post("/api/v1/workflows/", wfReq)
 	if err != nil {
@@ -184,7 +207,13 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, ti
 	}
 
 	// 6. Collect outputs and format as CWL JSON.
-	outputs, err := collectOutputs(subData, outDir)
+	// Parse output path map for distributed execution.
+	// This maps container output paths back to host paths.
+	var outputPathMap map[string]string
+	if pathMapStr := os.Getenv("GOWE_OUTPUT_PATH_MAP"); pathMapStr != "" {
+		outputPathMap = bundle.ParsePathMap(pathMapStr)
+	}
+	outputs, err := collectOutputs(subData, outDir, outputPathMap)
 	if err != nil {
 		return fmt.Errorf("collect outputs: %w", err)
 	}
@@ -202,7 +231,8 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, ti
 
 // collectOutputs extracts workflow outputs from the completed submission
 // and formats them as CWL File/Directory objects.
-func collectOutputs(sub model.Submission, outDir string) (map[string]any, error) {
+// outputPathMap translates container paths to host paths for distributed execution.
+func collectOutputs(sub model.Submission, outDir string, outputPathMap map[string]string) (map[string]any, error) {
 	outputs := make(map[string]any)
 
 	// Create output directory if specified.
@@ -226,7 +256,7 @@ func collectOutputs(sub model.Submission, outDir string) (map[string]any, error)
 
 	// Process submission-level outputs (which reference task outputs).
 	for outID, outVal := range sub.Outputs {
-		outputs[outID] = formatCWLOutput(outVal, outDir)
+		outputs[outID] = formatCWLOutput(outVal, outDir, outputPathMap)
 	}
 
 	// If submission.Outputs is empty, try to derive from final task outputs.
@@ -236,7 +266,7 @@ func collectOutputs(sub model.Submission, outDir string) (map[string]any, error)
 		for _, task := range sub.Tasks {
 			if task.State == model.TaskStateSuccess {
 				for outID, outVal := range task.Outputs {
-					outputs[outID] = formatCWLOutput(outVal, outDir)
+					outputs[outID] = formatCWLOutput(outVal, outDir, outputPathMap)
 				}
 			}
 		}
@@ -246,7 +276,8 @@ func collectOutputs(sub model.Submission, outDir string) (map[string]any, error)
 }
 
 // formatCWLOutput formats a value as a CWL File or Directory object.
-func formatCWLOutput(val any, outDir string) any {
+// outputPathMap translates container paths to host paths for distributed execution.
+func formatCWLOutput(val any, outDir string, outputPathMap map[string]string) any {
 	if val == nil {
 		return nil
 	}
@@ -256,10 +287,10 @@ func formatCWLOutput(val any, outDir string) any {
 		class, _ := v["class"].(string)
 
 		if class == "File" {
-			return formatFileOutput(v, outDir)
+			return formatFileOutput(v, outDir, outputPathMap)
 		}
 		if class == "Directory" {
-			return formatDirectoryOutput(v, outDir)
+			return formatDirectoryOutput(v, outDir, outputPathMap)
 		}
 
 		// Check if it's an untyped file reference.
@@ -267,20 +298,20 @@ func formatCWLOutput(val any, outDir string) any {
 			return formatFileOutput(map[string]any{
 				"class":    "File",
 				"location": loc,
-			}, outDir)
+			}, outDir, outputPathMap)
 		}
 
 		// Nested structure - recurse.
 		result := make(map[string]any)
 		for k, innerVal := range v {
-			result[k] = formatCWLOutput(innerVal, outDir)
+			result[k] = formatCWLOutput(innerVal, outDir, outputPathMap)
 		}
 		return result
 
 	case []any:
 		result := make([]any, len(v))
 		for i, item := range v {
-			result[i] = formatCWLOutput(item, outDir)
+			result[i] = formatCWLOutput(item, outDir, outputPathMap)
 		}
 		return result
 
@@ -290,7 +321,7 @@ func formatCWLOutput(val any, outDir string) any {
 			return formatFileOutput(map[string]any{
 				"class":    "File",
 				"location": v,
-			}, outDir)
+			}, outDir, outputPathMap)
 		}
 		return v
 
@@ -300,7 +331,8 @@ func formatCWLOutput(val any, outDir string) any {
 }
 
 // formatFileOutput creates a CWL File object with checksum and size.
-func formatFileOutput(fileMap map[string]any, outDir string) map[string]any {
+// outputPathMap translates container paths to host paths for distributed execution.
+func formatFileOutput(fileMap map[string]any, outDir string, outputPathMap map[string]string) map[string]any {
 	location, _ := fileMap["location"].(string)
 	if location == "" {
 		return fileMap
@@ -312,26 +344,29 @@ func formatFileOutput(fileMap map[string]any, outDir string) map[string]any {
 		filePath = strings.TrimPrefix(filePath, "file://")
 	}
 
+	// Translate container path to host path for distributed execution.
+	localPath := translateOutputPath(filePath, outputPathMap)
+
 	result := map[string]any{
 		"class":    "File",
-		"location": "file://" + filePath,
-		"path":     filePath,
-		"basename": filepath.Base(filePath),
+		"location": "file://" + localPath,
+		"path":     localPath,
+		"basename": filepath.Base(localPath),
 	}
 
 	// Get file info if the file exists locally.
-	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+	if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
 		result["size"] = info.Size()
 
 		// Compute SHA1 checksum.
-		if checksum, err := computeFileChecksum(filePath); err == nil {
+		if checksum, err := computeFileChecksum(localPath); err == nil {
 			result["checksum"] = "sha1$" + checksum
 		}
 
 		// Copy to output directory if different from source.
-		destPath := filepath.Join(outDir, filepath.Base(filePath))
-		if destPath != filePath {
-			if err := copyFile(filePath, destPath); err == nil {
+		destPath := filepath.Join(outDir, filepath.Base(localPath))
+		if destPath != localPath {
+			if err := copyFile(localPath, destPath); err == nil {
 				result["location"] = "file://" + destPath
 				result["path"] = destPath
 			}
@@ -348,7 +383,7 @@ func formatFileOutput(fileMap map[string]any, outDir string) map[string]any {
 		formatted := make([]any, 0, len(secondaryFiles))
 		for _, sf := range secondaryFiles {
 			if sfMap, ok := sf.(map[string]any); ok {
-				formatted = append(formatted, formatFileOutput(sfMap, outDir))
+				formatted = append(formatted, formatFileOutput(sfMap, outDir, outputPathMap))
 			}
 		}
 		if len(formatted) > 0 {
@@ -360,7 +395,8 @@ func formatFileOutput(fileMap map[string]any, outDir string) map[string]any {
 }
 
 // formatDirectoryOutput creates a CWL Directory object with listing.
-func formatDirectoryOutput(dirMap map[string]any, outDir string) map[string]any {
+// outputPathMap translates container paths to host paths for distributed execution.
+func formatDirectoryOutput(dirMap map[string]any, outDir string, outputPathMap map[string]string) map[string]any {
 	location, _ := dirMap["location"].(string)
 	if location == "" {
 		return dirMap
@@ -372,11 +408,14 @@ func formatDirectoryOutput(dirMap map[string]any, outDir string) map[string]any 
 		dirPath = strings.TrimPrefix(dirPath, "file://")
 	}
 
+	// Translate container path to host path for distributed execution.
+	localPath := translateOutputPath(dirPath, outputPathMap)
+
 	result := map[string]any{
 		"class":    "Directory",
-		"location": "file://" + dirPath,
-		"path":     dirPath,
-		"basename": filepath.Base(dirPath),
+		"location": "file://" + localPath,
+		"path":     localPath,
+		"basename": filepath.Base(localPath),
 	}
 
 	// Include listing if present, recursively formatting each entry.
@@ -384,22 +423,23 @@ func formatDirectoryOutput(dirMap map[string]any, outDir string) map[string]any 
 		formattedListing := make([]any, 0, len(listing))
 		for _, item := range listing {
 			if itemMap, ok := item.(map[string]any); ok {
-				formattedListing = append(formattedListing, formatCWLOutput(itemMap, outDir))
+				formattedListing = append(formattedListing, formatCWLOutput(itemMap, outDir, outputPathMap))
 			} else {
 				formattedListing = append(formattedListing, item)
 			}
 		}
 		result["listing"] = formattedListing
-	} else if info, err := os.Stat(dirPath); err == nil && info.IsDir() {
+	} else if info, err := os.Stat(localPath); err == nil && info.IsDir() {
 		// If no listing in server response but directory exists, populate it.
-		result["listing"] = buildDirectoryListing(dirPath, outDir)
+		result["listing"] = buildDirectoryListing(localPath, outDir, outputPathMap)
 	}
 
 	return result
 }
 
 // buildDirectoryListing recursively lists directory contents.
-func buildDirectoryListing(dirPath string, outDir string) []any {
+// outputPathMap translates container paths to host paths for distributed execution.
+func buildDirectoryListing(dirPath string, outDir string, outputPathMap map[string]string) []any {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return []any{}
@@ -412,15 +452,33 @@ func buildDirectoryListing(dirPath string, outDir string) []any {
 			listing = append(listing, formatDirectoryOutput(map[string]any{
 				"class":    "Directory",
 				"location": "file://" + entryPath,
-			}, outDir))
+			}, outDir, outputPathMap))
 		} else {
 			listing = append(listing, formatFileOutput(map[string]any{
 				"class":    "File",
 				"location": "file://" + entryPath,
-			}, outDir))
+			}, outDir, outputPathMap))
 		}
 	}
 	return listing
+}
+
+// translateOutputPath translates a container path to a host path.
+// This is used for distributed execution where output files are on a shared
+// filesystem mounted at different paths in containers vs the host.
+func translateOutputPath(path string, pathMap map[string]string) string {
+	if pathMap == nil || len(pathMap) == 0 {
+		return path
+	}
+
+	// Try each mapping prefix.
+	for containerPrefix, hostPrefix := range pathMap {
+		if strings.HasPrefix(path, containerPrefix) {
+			return hostPrefix + strings.TrimPrefix(path, containerPrefix)
+		}
+	}
+
+	return path
 }
 
 // computeFileChecksum calculates the SHA1 checksum of a file.

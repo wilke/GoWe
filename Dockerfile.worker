@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 go build -o /gowe-worker ./cmd/worker
 
 # Runtime stage
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates docker-cli bash coreutils
 WORKDIR /app
 COPY --from=builder /gowe-worker /usr/local/bin/gowe-worker
 ENTRYPOINT ["gowe-worker"]

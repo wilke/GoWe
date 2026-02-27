@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/execution"
+	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -18,16 +19,17 @@ import (
 // Worker is the core work loop that polls the server for tasks, executes
 // them using the configured runtime, and reports results back.
 type Worker struct {
-	client      *Client
-	runtime     Runtime
-	stager      execution.Stager
-	httpStager  *execution.HTTPStager // Base HTTP stager for creating per-task overrides
-	workDir     string
-	stageOut    string
-	stagerCfg   StagerConfig
-	poll        time.Duration
-	gpu         GPUWorkerConfig // GPU configuration
-	logger      *slog.Logger
+	client            *Client
+	runtime           Runtime
+	stager            execution.Stager
+	httpStager        *execution.HTTPStager // Base HTTP stager for creating per-task overrides
+	workDir           string
+	stageOut          string
+	stagerCfg         StagerConfig
+	poll              time.Duration
+	gpu               GPUWorkerConfig   // GPU configuration
+	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
+	logger            *slog.Logger
 }
 
 // Config holds worker configuration.
@@ -43,6 +45,12 @@ type Config struct {
 	Poll      time.Duration
 	Stager    StagerConfig
 	GPU       GPUWorkerConfig // GPU configuration
+
+	// DockerHostPathMap maps container paths to Docker host paths.
+	// Needed for Docker-in-Docker scenarios where the worker container
+	// uses the host's Docker socket.
+	// Format: container_path -> host_path
+	DockerHostPathMap map[string]string
 }
 
 // GPUWorkerConfig holds GPU settings for the worker.
@@ -126,16 +134,17 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	}
 
 	return &Worker{
-		client:     client,
-		runtime:    rt,
-		stager:     stager,
-		httpStager: httpStager,
-		workDir:    cfg.WorkDir,
-		stageOut:   cfg.StageOut,
-		stagerCfg:  cfg.Stager,
-		poll:       cfg.Poll,
-		gpu:        cfg.GPU,
-		logger:     logger.With("component", "worker"),
+		client:            client,
+		runtime:           rt,
+		stager:            stager,
+		httpStager:        httpStager,
+		workDir:           cfg.WorkDir,
+		stageOut:          cfg.StageOut,
+		stagerCfg:         cfg.Stager,
+		poll:              cfg.Poll,
+		gpu:               cfg.GPU,
+		dockerHostPathMap: cfg.DockerHostPathMap,
+		logger:            logger.With("component", "worker"),
 	}, nil
 }
 
@@ -250,6 +259,17 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDir string) error {
 	w.logger.Debug("executing with engine", "task_id", task.ID, "has_tool", true)
 
+	// Rematerialize file literals in job inputs if paths don't exist locally.
+	// This handles distributed execution where file literals were materialized
+	// on the server but the paths are not accessible to this worker.
+	for k, v := range task.Job {
+		if rematerialized, err := fileliteral.RematerializeRecursive(v, taskDir); err != nil {
+			w.logger.Warn("rematerialize file literal", "input", k, "error", err)
+		} else {
+			task.Job[k] = rematerialized
+		}
+	}
+
 	// Convert task.Tool (map[string]any) to *cwl.CommandLineTool.
 	tool, err := parseToolFromMap(task.Tool)
 	if err != nil {
@@ -274,11 +294,12 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 
 	// Create the execution engine with the (possibly overridden) stager and GPU config.
 	engine := execution.NewEngine(execution.Config{
-		Logger:        w.logger,
-		Stager:        stager,
-		ExpressionLib: expressionLib,
-		Namespaces:    namespaces,
-		CWLDir:        cwlDir,
+		Logger:            w.logger,
+		Stager:            stager,
+		ExpressionLib:     expressionLib,
+		Namespaces:        namespaces,
+		CWLDir:            cwlDir,
+		DockerHostPathMap: w.dockerHostPathMap,
 		GPU: execution.GPUConfig{
 			Enabled:  w.gpu.Enabled,
 			DeviceID: w.gpu.DeviceID,
@@ -310,14 +331,10 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task.ID)
 	}
 
-	// Determine state from exit code.
-	state := model.TaskStateSuccess
-	if result.ExitCode != 0 {
-		state = model.TaskStateFailed
-	}
-
+	// The engine handles successCodes/permanentFailCodes, so if we reach here
+	// without an error, the task succeeded (even if exit code is non-zero).
 	return w.client.ReportComplete(ctx, task.ID, TaskResult{
-		State:    state,
+		State:    model.TaskStateSuccess,
 		ExitCode: &result.ExitCode,
 		Stdout:   result.Stdout,
 		Stderr:   result.Stderr,

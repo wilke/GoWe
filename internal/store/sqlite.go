@@ -968,12 +968,20 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// Filter by runtime capability and worker group.
 	var selected *model.Task
 	for _, task := range candidates {
-		// Check runtime capability.
-		hasImage := false
-		if img, ok := task.Inputs["_docker_image"].(string); ok && img != "" {
-			hasImage = true
+		// Check runtime capability: does the task require Docker?
+		requiresDocker := false
+		// Check RuntimeHints.DockerImage (new approach)
+		if task.RuntimeHints != nil && task.RuntimeHints.DockerImage != "" {
+			requiresDocker = true
 		}
-		if runtime == model.RuntimeNone && hasImage {
+		// Also check legacy _docker_image in Inputs for backward compatibility
+		if img, ok := task.Inputs["_docker_image"].(string); ok && img != "" {
+			requiresDocker = true
+		}
+
+		// Workers with runtime=none can only run tasks that don't require Docker.
+		// Workers with runtime=docker can run any task.
+		if runtime == model.RuntimeNone && requiresDocker {
 			continue // Worker can't run container tasks
 		}
 

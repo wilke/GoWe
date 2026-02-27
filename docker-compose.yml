@@ -57,6 +57,7 @@ services:
       - "-debug"
     volumes:
       - ./tmp/workdir:/workdir
+      - ./testdata/cwl-v1.2:/testdata:ro
     networks:
       - gowe-net
 
@@ -83,6 +84,7 @@ services:
       - "-debug"
     volumes:
       - ./tmp/workdir:/workdir
+      - ./testdata/cwl-v1.2:/testdata:ro
     networks:
       - gowe-net
 
@@ -107,9 +109,16 @@ services:
       - "-poll"
       - "500ms"
       - "-debug"
+    environment:
+      # Docker-in-Docker path mapping: container paths -> host paths.
+      # Required because docker commands run on the host Docker daemon,
+      # so mount paths must be valid on the host, not inside this container.
+      # Note: /testdata maps to cwl-v1.2 subdirectory for conformance tests.
+      - DOCKER_HOST_PATH_MAP=/workdir=${PWD}/tmp/workdir:/testdata=${PWD}/testdata/cwl-v1.2
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./tmp/workdir:/workdir
+      - ./testdata/cwl-v1.2:/testdata:ro
     networks:
       - gowe-net
 
