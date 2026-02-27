@@ -401,6 +401,9 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 		return nil, fmt.Errorf("tool %s not found", job.step.Run)
 	}
 
+	// Merge step requirements into tool (step requirements override tool hints).
+	mergeStepRequirements(tool, &job.step)
+
 	// Handle scatter if present
 	if len(job.step.Scatter) > 0 {
 		if pe.config.Enabled && pe.config.MaxWorkers > 1 {

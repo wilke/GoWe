@@ -327,6 +327,9 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, inputs map[string]any, resolveSecondary bool, stepID string) (map[string]any, error) {
 	r.logger.Info("executing tool", "id", tool.ID)
 
+	// Merge workflow requirements into tool (workflow requirements override tool hints).
+	mergeWorkflowRequirements(tool, graph.Workflow)
+
 	// Resolve secondaryFiles for tool inputs if requested (direct tool execution).
 	resolvedInputs := inputs
 	if resolveSecondary {
@@ -853,6 +856,9 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 		if tool == nil {
 			return fmt.Errorf("step %s: tool %s not found", stepID, step.Run)
 		}
+
+		// Merge step requirements into tool (step requirements override tool hints).
+		mergeStepRequirements(tool, &step)
 
 		// Handle scatter if present.
 		// Note: 'when' condition is evaluated per-iteration inside executeScatter.
@@ -1554,6 +1560,83 @@ func getResourceRequirement(tool *cwl.CommandLineTool) map[string]any {
 		}
 	}
 	return nil
+}
+
+// mergeWorkflowRequirements merges workflow-level requirements into the tool.
+// Workflow requirements override tool hints, but tool requirements take precedence.
+// This ensures proper requirement inheritance per CWL spec.
+func mergeWorkflowRequirements(tool *cwl.CommandLineTool, wf *cwl.Workflow) {
+	if wf == nil {
+		return
+	}
+
+	// Merge workflow requirements into tool requirements.
+	// Workflow requirements override tool hints but not tool requirements.
+	if wf.Requirements != nil {
+		if tool.Requirements == nil {
+			tool.Requirements = make(map[string]any)
+		}
+		for key, val := range wf.Requirements {
+			// Only add if not already in tool requirements.
+			if _, exists := tool.Requirements[key]; !exists {
+				tool.Requirements[key] = val
+			}
+		}
+	}
+
+	// Merge workflow hints into tool hints (lowest priority).
+	if wf.Hints != nil {
+		if tool.Hints == nil {
+			tool.Hints = make(map[string]any)
+		}
+		for key, val := range wf.Hints {
+			// Only add if not already in tool requirements or hints.
+			if _, exists := tool.Requirements[key]; !exists {
+				if _, exists := tool.Hints[key]; !exists {
+					tool.Hints[key] = val
+				}
+			}
+		}
+	}
+}
+
+// mergeStepRequirements merges step-level requirements into the tool.
+// Step requirements override tool hints, but tool requirements take precedence.
+// This is called before mergeWorkflowRequirements for proper CWL priority:
+// tool requirements > step requirements > workflow requirements > tool hints > step hints > workflow hints
+func mergeStepRequirements(tool *cwl.CommandLineTool, step *cwl.Step) {
+	if step == nil {
+		return
+	}
+
+	// Merge step requirements into tool requirements.
+	// Step requirements override tool hints but not tool requirements.
+	if step.Requirements != nil {
+		if tool.Requirements == nil {
+			tool.Requirements = make(map[string]any)
+		}
+		for key, val := range step.Requirements {
+			// Only add if not already in tool requirements.
+			if _, exists := tool.Requirements[key]; !exists {
+				tool.Requirements[key] = val
+			}
+		}
+	}
+
+	// Merge step hints into tool hints.
+	if step.Hints != nil {
+		if tool.Hints == nil {
+			tool.Hints = make(map[string]any)
+		}
+		for key, val := range step.Hints {
+			// Only add if not already in tool requirements or hints.
+			if _, exists := tool.Requirements[key]; !exists {
+				if _, exists := tool.Hints[key]; !exists {
+					tool.Hints[key] = val
+				}
+			}
+		}
+	}
 }
 
 // buildRuntimeContext creates a RuntimeContext from tool requirements.

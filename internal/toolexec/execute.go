@@ -251,6 +251,12 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
 	}
 
+	// Set environment variables from EnvVarRequirement.
+	envVars := extractEnvVars(tool, inputs)
+	for name, value := range envVars {
+		dockerArgs = append(dockerArgs, "-e", name+"="+value)
+	}
+
 	// Add image.
 	dockerArgs = append(dockerArgs, dockerImage)
 
@@ -428,6 +434,12 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	for _, m := range containerMounts {
 		absHostPath := ResolveSymlinks(m.HostPath)
 		apptainerArgs = append(apptainerArgs, "--bind", absHostPath+":"+m.ContainerPath)
+	}
+
+	// Set environment variables from EnvVarRequirement.
+	envVars := extractEnvVars(tool, inputs)
+	for name, value := range envVars {
+		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
 
 	// Add image with docker:// prefix for pulling from Docker registries.

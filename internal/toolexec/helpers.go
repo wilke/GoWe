@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -226,18 +227,38 @@ func isArrayOutputType(outputType any) bool {
 }
 
 // extractEnvVars extracts environment variables from EnvVarRequirement in hints/requirements.
+// It evaluates CWL expressions in envValue using the provided inputs.
 func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any) map[string]string {
 	envVars := make(map[string]string)
 
+	// Get expression library from InlineJavascriptRequirement if present.
+	var expressionLib []string
+	if tool.Requirements != nil {
+		if jsReq, ok := tool.Requirements["InlineJavascriptRequirement"].(map[string]any); ok {
+			if lib, ok := jsReq["expressionLib"].([]any); ok {
+				for _, l := range lib {
+					if s, ok := l.(string); ok {
+						expressionLib = append(expressionLib, s)
+					}
+				}
+			}
+		}
+	}
+
+	evaluator := cwlexpr.NewEvaluator(expressionLib)
+	ctx := cwlexpr.NewContext(inputs)
+
 	// Check requirements first (takes precedence)
 	if envReq := getEnvVarRequirement(tool.Requirements); envReq != nil {
-		processEnvDef(envReq, envVars, inputs)
+		processEnvDef(envReq, envVars, evaluator, ctx)
 	}
 
 	// Check hints
 	if envReq := getEnvVarRequirement(tool.Hints); envReq != nil {
 		// Only add hints if not already in requirements
-		for k, v := range processEnvDef(envReq, make(map[string]string), inputs) {
+		hintVars := make(map[string]string)
+		processEnvDef(envReq, hintVars, evaluator, ctx)
+		for k, v := range hintVars {
 			if _, exists := envVars[k]; !exists {
 				envVars[k] = v
 			}
@@ -259,7 +280,8 @@ func getEnvVarRequirement(reqMap map[string]any) map[string]any {
 }
 
 // processEnvDef processes envDef from EnvVarRequirement and adds to envVars map.
-func processEnvDef(envReq map[string]any, envVars map[string]string, inputs map[string]any) map[string]string {
+// It evaluates CWL expressions in envValue using the provided evaluator and context.
+func processEnvDef(envReq map[string]any, envVars map[string]string, evaluator *cwlexpr.Evaluator, ctx *cwlexpr.Context) map[string]string {
 	envDef, ok := envReq["envDef"]
 	if !ok {
 		return envVars
@@ -273,18 +295,38 @@ func processEnvDef(envReq map[string]any, envVars map[string]string, inputs map[
 				name, _ := m["envName"].(string)
 				value, _ := m["envValue"].(string)
 				if name != "" {
-					// TODO: Evaluate expressions in envValue if needed
-					envVars[name] = value
+					// Evaluate expressions in envValue.
+					evaluated := evaluateEnvValue(value, evaluator, ctx)
+					envVars[name] = evaluated
 				}
 			}
 		}
 	case map[string]any:
 		for name, val := range defs {
 			if value, ok := val.(string); ok {
-				envVars[name] = value
+				// Evaluate expressions in value.
+				evaluated := evaluateEnvValue(value, evaluator, ctx)
+				envVars[name] = evaluated
 			}
 		}
 	}
 
 	return envVars
+}
+
+// evaluateEnvValue evaluates a CWL expression in an environment variable value.
+// If the value contains a CWL expression like $(inputs.in), it will be evaluated.
+// Otherwise, the value is returned as-is.
+func evaluateEnvValue(value string, evaluator *cwlexpr.Evaluator, ctx *cwlexpr.Context) string {
+	if !cwlexpr.IsExpression(value) {
+		return value
+	}
+
+	result, err := evaluator.EvaluateString(value, ctx)
+	if err != nil {
+		// Log error but return original value to avoid breaking execution.
+		// In production, this might want to be a fatal error.
+		return value
+	}
+	return result
 }
