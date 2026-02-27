@@ -29,6 +29,11 @@ type BuildResult struct {
 	// Command is the full command line as an array of strings.
 	Command []string
 
+	// ShellQuote indicates whether each command element should be shell-quoted.
+	// Only relevant when ShellCommandRequirement is in effect.
+	// True means the argument should be quoted (default), false means literal.
+	ShellQuote []bool
+
 	// Stdin is the file path for standard input (if specified).
 	Stdin string
 
@@ -39,8 +44,72 @@ type BuildResult struct {
 	Stderr string
 }
 
+// JoinForShell joins the command for shell execution, applying quoting as needed.
+func (r *BuildResult) JoinForShell() string {
+	var parts []string
+	for i, arg := range r.Command {
+		// Check if this argument should be quoted.
+		shouldQuote := true
+		if i < len(r.ShellQuote) {
+			shouldQuote = r.ShellQuote[i]
+		}
+		if shouldQuote {
+			parts = append(parts, shellQuote(arg))
+		} else {
+			parts = append(parts, arg)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// shellQuote quotes a string for safe use in shell commands.
+// Uses single quotes and escapes embedded single quotes.
+func shellQuote(s string) string {
+	// If the string is simple (no special chars), return as-is.
+	if isSimpleShellArg(s) {
+		return s
+	}
+	// Use single quotes and escape any embedded single quotes.
+	// 'foo' -> 'foo'
+	// foo's -> 'foo'\''s'
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// isSimpleShellArg returns true if the string doesn't need quoting.
+func isSimpleShellArg(s string) bool {
+	for _, c := range s {
+		if !isSimpleShellChar(c) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// isSimpleShellChar returns true if the character is safe without quoting.
+func isSimpleShellChar(c rune) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' || c == '-' || c == '.' || c == '/' || c == ':'
+}
+
+// BuildOptions contains options for building the command line.
+type BuildOptions struct {
+	// ShellCommand indicates ShellCommandRequirement is in effect.
+	// When true, arguments are shell-quoted by default.
+	ShellCommand bool
+}
+
 // Build constructs the command line for a CommandLineTool with the given inputs.
 func (b *Builder) Build(tool *cwl.CommandLineTool, inputs map[string]any, runtime *cwlexpr.RuntimeContext) (*BuildResult, error) {
+	return b.BuildWithOptions(tool, inputs, runtime, nil)
+}
+
+// BuildWithOptions constructs the command line with additional options.
+func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]any, runtime *cwlexpr.RuntimeContext, opts *BuildOptions) (*BuildResult, error) {
+	if opts == nil {
+		opts = &BuildOptions{}
+	}
 	var cmd []string
 
 	// Start with baseCommand.
@@ -90,12 +159,22 @@ func (b *Builder) Build(tool *cwl.CommandLineTool, inputs map[string]any, runtim
 		return parts[i].name < parts[j].name
 	})
 
-	// Append sorted parts to command.
+	// Append sorted parts to command, tracking shell quoting.
+	var shellQuote []bool
 	for _, part := range parts {
 		cmd = append(cmd, part.args...)
+		// If part has shellQuote info, use it; otherwise default to true (quote).
+		if len(part.shellQuote) > 0 {
+			shellQuote = append(shellQuote, part.shellQuote...)
+		} else {
+			// Default: quote all args when ShellCommandRequirement is in effect.
+			for range part.args {
+				shellQuote = append(shellQuote, true)
+			}
+		}
 	}
 
-	result := &BuildResult{Command: cmd}
+	result := &BuildResult{Command: cmd, ShellQuote: shellQuote}
 
 	// Evaluate stdin/stdout/stderr expressions.
 	ctx := cwlexpr.NewContext(inputs)
@@ -136,6 +215,7 @@ type cmdPart struct {
 	isArgument bool     // arguments come before inputs at same position
 	name       string   // for stable sorting when positions are equal
 	args       []string // the actual command-line arguments
+	shellQuote []bool   // whether each arg should be shell-quoted (parallel to args)
 }
 
 // buildArgument builds a command-line part from a CWL ArgumentEntry.
@@ -149,6 +229,7 @@ func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[str
 
 	if arg.IsString {
 		// Simple string argument - may contain expressions.
+		// Default shellQuote is true (quote the argument).
 		value, err := b.evaluator.Evaluate(arg.StringValue, ctx)
 		if err != nil {
 			return nil, err
@@ -160,6 +241,7 @@ func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[str
 			isArgument: true,
 			name:       fmt.Sprintf("arg_%d", index),
 			args:       []string{strValue},
+			shellQuote: []bool{true}, // default: quote string arguments
 		}, nil
 	}
 
@@ -180,12 +262,23 @@ func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[str
 		return nil, err
 	}
 
+	// Determine shellQuote - default is true.
+	shouldQuote := true
+	if a.ShellQuote != nil {
+		shouldQuote = *a.ShellQuote
+	}
+
 	args := buildPrefixedArgs(a.Prefix, value, a.Separate)
+	shellQuotes := make([]bool, len(args))
+	for i := range shellQuotes {
+		shellQuotes[i] = shouldQuote
+	}
 	return &cmdPart{
 		position:   pos,
 		isArgument: true,
 		name:       fmt.Sprintf("arg_%d", index),
 		args:       args,
+		shellQuote: shellQuotes,
 	}, nil
 }
 
@@ -212,6 +305,12 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 		return nil, err
 	}
 
+	// Determine shellQuote - default is true.
+	shouldQuote := true
+	if binding.ShellQuote != nil {
+		shouldQuote = *binding.ShellQuote
+	}
+
 	// Special handling for boolean values.
 	if boolVal, ok := value.(bool); ok {
 		if !boolVal {
@@ -221,9 +320,10 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 		// True booleans with prefix: output just the prefix.
 		if binding.Prefix != "" {
 			return &cmdPart{
-				position: pos,
-				name:     name,
-				args:     []string{binding.Prefix},
+				position:   pos,
+				name:       name,
+				args:       []string{binding.Prefix},
+				shellQuote: []bool{shouldQuote},
 			}, nil
 		}
 		// True boolean without prefix and empty inputBinding: omit entirely.
@@ -243,10 +343,15 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 			return nil, nil
 		}
 		args := buildPrefixedArgs(binding.Prefix, strValue, binding.Separate)
+		shellQuotes := make([]bool, len(args))
+		for i := range shellQuotes {
+			shellQuotes[i] = shouldQuote
+		}
 		return &cmdPart{
-			position: pos,
-			name:     name,
-			args:     args,
+			position:   pos,
+			name:       name,
+			args:       args,
+			shellQuote: shellQuotes,
 		}, nil
 	}
 
@@ -271,10 +376,15 @@ func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, valu
 	}
 
 	args := buildPrefixedArgs(binding.Prefix, strValue, binding.Separate)
+	shellQuotes := make([]bool, len(args))
+	for i := range shellQuotes {
+		shellQuotes[i] = shouldQuote
+	}
 	return &cmdPart{
-		position: pos,
-		name:     name,
-		args:     args,
+		position:   pos,
+		name:       name,
+		args:       args,
+		shellQuote: shellQuotes,
 	}, nil
 }
 

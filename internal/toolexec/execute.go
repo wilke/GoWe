@@ -41,8 +41,8 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	// Check for ShellCommandRequirement - run through shell if present.
 	var cmd *exec.Cmd
 	if hasShellCommandRequirement(tool) {
-		// Join command parts and run through shell.
-		cmdStr := strings.Join(cmdResult.Command, " ")
+		// Join command parts with proper shell quoting.
+		cmdStr := cmdResult.JoinForShell()
 		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
 	} else {
 		cmd = exec.CommandContext(ctx, cmdResult.Command[0], cmdResult.Command[1:]...)
@@ -262,7 +262,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 	// Add tool command. For ShellCommandRequirement, wrap in /bin/sh -c.
 	if hasShellCommandRequirement(tool) {
-		cmdStr := strings.Join(cmdResult.Command, " ")
+		cmdStr := cmdResult.JoinForShell()
 		dockerArgs = append(dockerArgs, "/bin/sh", "-c", cmdStr)
 	} else {
 		dockerArgs = append(dockerArgs, cmdResult.Command...)
@@ -447,7 +447,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 
 	// Add tool command. For ShellCommandRequirement, wrap in /bin/sh -c.
 	if hasShellCommandRequirement(tool) {
-		cmdStr := strings.Join(cmdResult.Command, " ")
+		cmdStr := cmdResult.JoinForShell()
 		apptainerArgs = append(apptainerArgs, "/bin/sh", "-c", cmdStr)
 	} else {
 		apptainerArgs = append(apptainerArgs, cmdResult.Command...)
