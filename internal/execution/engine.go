@@ -15,17 +15,19 @@ import (
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/internal/loadcontents"
 	"github.com/me/gowe/internal/secondaryfiles"
+	"github.com/me/gowe/internal/toolexec"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 )
 
 // Engine executes CWL CommandLineTools.
 type Engine struct {
-	logger  *slog.Logger
-	stager  Stager
-	runtime Runtime
-	gpu     GPUConfig // GPU configuration for container execution
-	cwlDir  string    // Directory containing the CWL file
+	logger            *slog.Logger
+	stager            Stager
+	runtime           Runtime
+	gpu               GPUConfig         // GPU configuration for container execution
+	cwlDir            string            // Directory containing the CWL file
+	dockerHostPathMap map[string]string // Container path -> host path mapping for DinD
 
 	// ExpressionLib contains JavaScript library code from InlineJavascriptRequirement.
 	ExpressionLib []string
@@ -43,6 +45,13 @@ type Config struct {
 	Namespaces    map[string]string
 	GPU           GPUConfig // GPU configuration for container execution
 	CWLDir        string    // Directory containing the CWL file
+
+	// DockerHostPathMap maps container paths to Docker host paths.
+	// This is needed for Docker-in-Docker scenarios where the worker runs
+	// in a container but uses the host's Docker socket. Paths passed to
+	// the Docker daemon must be valid on the host, not inside the worker container.
+	// Format: container_path -> host_path (e.g., "/workdir" -> "/host/path/to/workdir")
+	DockerHostPathMap map[string]string
 }
 
 // NewEngine creates a new execution engine.
@@ -63,13 +72,14 @@ func NewEngine(cfg Config) *Engine {
 	}
 
 	return &Engine{
-		logger:        logger,
-		stager:        stager,
-		runtime:       runtime,
-		gpu:           cfg.GPU,
-		cwlDir:        cfg.CWLDir,
-		ExpressionLib: cfg.ExpressionLib,
-		Namespaces:    cfg.Namespaces,
+		logger:            logger,
+		stager:            stager,
+		runtime:           runtime,
+		gpu:               cfg.GPU,
+		cwlDir:            cfg.CWLDir,
+		dockerHostPathMap: cfg.DockerHostPathMap,
+		ExpressionLib:     cfg.ExpressionLib,
+		Namespaces:        cfg.Namespaces,
 	}
 }
 
@@ -168,8 +178,9 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 		}
 	}
 
-	// Collect outputs.
-	outputs, err := e.collectOutputs(tool, workDir, mergedInputs, runResult.ExitCode)
+	// Collect outputs using the shared toolexec package.
+	executor := toolexec.NewExecutor(e.logger)
+	outputs, err := executor.CollectOutputs(tool, workDir, mergedInputs, runResult.ExitCode, workDir, e.Namespaces)
 	if err != nil {
 		return nil, &ExecutionError{Phase: "collect_outputs", Err: err}
 	}

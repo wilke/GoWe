@@ -2,6 +2,8 @@ package cwlrunner
 
 import (
 	"testing"
+
+	"github.com/me/gowe/internal/toolexec"
 )
 
 func TestCollectInputMounts(t *testing.T) {
@@ -23,7 +25,7 @@ func TestCollectInputMounts(t *testing.T) {
 		},
 	}
 
-	mounts := collectInputMounts(inputs)
+	mounts := toolexec.CollectInputMounts(inputs)
 
 	// All absolute File paths should be collected as mounts.
 	if _, ok := mounts["/data/reference.fasta"]; !ok {
@@ -100,7 +102,7 @@ func TestContainerRuntimeDispatch(t *testing.T) {
 
 func TestResolveSymlinks(t *testing.T) {
 	// resolveSymlinks should return an absolute path even for nonexistent paths.
-	result := resolveSymlinks("/tmp")
+	result := toolexec.ResolveSymlinks("/tmp")
 	if result == "" {
 		t.Error("resolveSymlinks returned empty string")
 	}
