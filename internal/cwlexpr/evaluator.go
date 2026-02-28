@@ -106,11 +106,14 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 				remaining = expr[originalIdx+1:]
 			}
 
-			if remaining == "" {
+			// Trim trailing whitespace from remaining - YAML often adds trailing newlines.
+			// Only consider it "content" if there's non-whitespace after the code block.
+			remainingTrimmed := strings.TrimSpace(remaining)
+			if remainingTrimmed == "" {
 				// Sole code block — return typed result.
 				return e.evaluateCodeBlock(vm, trimmedLeft[:idx+1])
 			}
-			// Code block followed by literal text (e.g., ${...}\n from YAML |).
+			// Code block followed by literal text (e.g., ${...}suffix).
 			// Evaluate the code block, convert result to string, append rest.
 			codeBlock := trimmedLeft[:idx+1]
 			result, err := e.evaluateCodeBlock(vm, codeBlock)

@@ -28,11 +28,14 @@ var (
 	collectMetrics   bool
 )
 
+const version = "1.2.1-dev"
+
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "cwl-runner [flags] <cwl-file> [job-file]",
-		Short: "CWL v1.2 reference runner",
-		Long: `cwl-runner executes CWL v1.2 tools and workflows.
+		Use:     "cwl-runner [flags] <cwl-file> [job-file]",
+		Short:   "CWL v1.2 reference runner",
+		Version: version,
+		Long:    `cwl-runner executes CWL v1.2 tools and workflows.
 
 Examples:
   # Execute a tool with inputs

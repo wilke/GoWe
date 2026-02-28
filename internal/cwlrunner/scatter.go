@@ -274,13 +274,26 @@ func mergeScatterOutputsNested(results []map[string]any, tool *cwl.CommandLineTo
 
 // nestResults recursively builds nested arrays from flat results.
 func nestResults(results []map[string]any, dims []int, dimIdx int, outputID string) any {
-	if dimIdx >= len(dims) || len(results) == 0 {
+	if dimIdx >= len(dims) {
 		return nil
 	}
 
 	outerSize := dims[dimIdx]
+
+	// Check if any remaining dimension is 0 - if so, all nested arrays will be empty.
+	hasZeroDim := false
+	for _, d := range dims[dimIdx:] {
+		if d == 0 {
+			hasZeroDim = true
+			break
+		}
+	}
+
 	if dimIdx == len(dims)-1 {
 		// Base case: innermost dimension, return flat array.
+		if hasZeroDim || len(results) == 0 {
+			return make([]any, outerSize)
+		}
 		arr := make([]any, min(outerSize, len(results)))
 		for i := range arr {
 			if results[i] != nil {
@@ -299,15 +312,21 @@ func nestResults(results []map[string]any, dims []int, dimIdx int, outputID stri
 	// Build outer array with nested inner arrays.
 	arr := make([]any, outerSize)
 	for i := 0; i < outerSize; i++ {
-		start := i * innerSize
-		end := start + innerSize
-		if end > len(results) {
-			end = len(results)
+		if hasZeroDim || innerSize == 0 {
+			// When inner dimensions are zero, create empty arrays.
+			arr[i] = nestResults(nil, dims, dimIdx+1, outputID)
+		} else {
+			start := i * innerSize
+			end := start + innerSize
+			if end > len(results) {
+				end = len(results)
+			}
+			if start >= len(results) {
+				arr[i] = nestResults(nil, dims, dimIdx+1, outputID)
+			} else {
+				arr[i] = nestResults(results[start:end], dims, dimIdx+1, outputID)
+			}
 		}
-		if start >= len(results) {
-			break
-		}
-		arr[i] = nestResults(results[start:end], dims, dimIdx+1, outputID)
 	}
 
 	return arr

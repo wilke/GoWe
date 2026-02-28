@@ -61,6 +61,7 @@ type StepInput struct {
 	Default      any
 	ValueFrom    string // Expression to transform input (requires StepInputExpressionRequirement)
 	LoadContents bool   // Read file contents into the contents field before valueFrom
+	LinkMerge    string // "merge_nested" (default) or "merge_flattened" for multi-source inputs
 }
 
 // GoWeHint holds GoWe-specific hints extracted from CWL hints.

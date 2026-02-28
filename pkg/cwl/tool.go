@@ -53,6 +53,11 @@ type ToolInputParam struct {
 	// This is parsed from the inputBinding inside the array type definition.
 	ItemInputBinding *InputBinding `json:"itemInputBinding,omitempty"`
 
+	// ArrayItemTypes contains the item type name(s) for array types.
+	// For arrays referencing SchemaDefRequirement types, this contains the type names
+	// (e.g., ["#Stage"] or ["#Map1", "#Map2"] for union types).
+	ArrayItemTypes []string `json:"arrayItemTypes,omitempty"`
+
 	// RecordFields contains field definitions for record types.
 	// Each field may have its own inputBinding for command line generation.
 	RecordFields []RecordField `json:"recordFields,omitempty"`

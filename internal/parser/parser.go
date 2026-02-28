@@ -552,6 +552,14 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 		switch val := v.(type) {
 		case string:
 			wf.Inputs[id] = cwl.InputParam{Type: val}
+		case []any:
+			// Type is an array - this is a union type expressed directly as the input value.
+			// CWL allows input definitions like:
+			//   file1:
+			//     - type: array
+			//       items: File
+			// Serialize the entire array as the type.
+			wf.Inputs[id] = cwl.InputParam{Type: serializeCWLType(val)}
 		case map[string]any:
 			// Type can be a string or complex type (record, array, etc.)
 			typeVal := stringField(val, "type")
@@ -803,6 +811,7 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 				Default:      val["default"],
 				ValueFrom:    stringField(val, "valueFrom"),
 				LoadContents: boolField(val, "loadContents"),
+				LinkMerge:    stringField(val, "linkMerge"),
 			}
 		}
 	}
@@ -1030,6 +1039,8 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 			if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
 				inp.ItemInputBinding = parseInputBinding(itemIB)
 			}
+			// Extract item type name(s) for schema type lookup.
+			inp.ArrayItemTypes = extractArrayItemTypes(typeMap["items"])
 		}
 		// Parse record field definitions.
 		// Example: type: { type: record, fields: [{name: a, type: int, inputBinding: {prefix: -a}}] }
@@ -1042,6 +1053,25 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 	inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
 
 	return inp
+}
+
+// extractArrayItemTypes extracts item type name(s) from array type items field.
+// Returns type names for schema type lookup (e.g., ["#Stage"] or ["#Map1", "#Map2"]).
+func extractArrayItemTypes(items any) []string {
+	switch it := items.(type) {
+	case string:
+		return []string{it}
+	case []any:
+		// Union of types.
+		var types []string
+		for _, item := range it {
+			if s, ok := item.(string); ok {
+				types = append(types, s)
+			}
+		}
+		return types
+	}
+	return nil
 }
 
 // parseToolOutput parses a single tool output parameter from a raw map.

@@ -4,6 +4,9 @@
 package fileliteral
 
 import (
+	"crypto/sha1"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -232,4 +235,235 @@ func MaterializeRecursive(value any) (any, error) {
 	default:
 		return value, nil
 	}
+}
+
+// MaterializeOutputs processes ExpressionTool outputs to materialize file/directory
+// literals and add required metadata (checksum, size, location).
+// outDir is where materialized files should be written.
+func MaterializeOutputs(outputs map[string]any, outDir string) (map[string]any, error) {
+	result := make(map[string]any)
+	for k, v := range outputs {
+		materialized, err := materializeOutputValue(v, outDir)
+		if err != nil {
+			return nil, fmt.Errorf("output %s: %w", k, err)
+		}
+		result[k] = materialized
+	}
+	return result, nil
+}
+
+// materializeOutputValue recursively materializes output values.
+func materializeOutputValue(value any, outDir string) (any, error) {
+	switch v := value.(type) {
+	case map[string]any:
+		class, _ := v["class"].(string)
+
+		if class == "File" {
+			return materializeFileOutput(v, outDir)
+		}
+		if class == "Directory" {
+			return materializeDirOutput(v, outDir)
+		}
+
+		// Recursively process other map values.
+		result := make(map[string]any)
+		for key, val := range v {
+			processed, err := materializeOutputValue(val, outDir)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = processed
+		}
+		return result, nil
+
+	case []any:
+		result := make([]any, len(v))
+		for i, item := range v {
+			processed, err := materializeOutputValue(item, outDir)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = processed
+		}
+		return result, nil
+
+	default:
+		return value, nil
+	}
+}
+
+// materializeFileOutput materializes a File output.
+func materializeFileOutput(obj map[string]any, outDir string) (map[string]any, error) {
+	result := make(map[string]any)
+	for k, v := range obj {
+		result[k] = v
+	}
+	result["class"] = "File"
+
+	// If file has contents but no path, write it to disk.
+	contents, hasContents := result["contents"].(string)
+	_, hasPath := result["path"].(string)
+	_, hasLocation := result["location"].(string)
+
+	if hasContents && !hasPath && !hasLocation {
+		basename := "cwl_file"
+		if b, ok := result["basename"].(string); ok && b != "" {
+			basename = b
+		}
+
+		filePath := filepath.Join(outDir, basename)
+		if err := os.WriteFile(filePath, []byte(contents), 0644); err != nil {
+			return nil, fmt.Errorf("write file literal: %w", err)
+		}
+
+		result["path"] = filePath
+		result["location"] = basename
+		result["size"] = int64(len(contents))
+		result["checksum"] = computeSHA1String(contents)
+
+		// Remove contents from output (it's now on disk).
+		delete(result, "contents")
+	} else if hasPath {
+		// File exists on disk - add metadata if missing.
+		path := result["path"].(string)
+		if err := addFileMetadata(result, path); err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
+}
+
+// materializeDirOutput materializes a Directory output.
+func materializeDirOutput(obj map[string]any, outDir string) (map[string]any, error) {
+	result := make(map[string]any)
+	for k, v := range obj {
+		result[k] = v
+	}
+	result["class"] = "Directory"
+
+	// Get directory name.
+	basename := "cwl_dir"
+	if b, ok := result["basename"].(string); ok && b != "" {
+		basename = b
+	}
+
+	_, hasPath := result["path"].(string)
+	_, hasLocation := result["location"].(string)
+
+	// If directory has no path but has listing, create it.
+	listing, hasListing := result["listing"].([]any)
+	if !hasPath && !hasLocation && hasListing {
+		dirPath := filepath.Join(outDir, basename)
+		if err := os.MkdirAll(dirPath, 0755); err != nil {
+			return nil, fmt.Errorf("create directory: %w", err)
+		}
+
+		// Process listing items and symlink them into the directory.
+		newListing := make([]any, 0, len(listing))
+		for _, item := range listing {
+			fileObj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			// Materialize each item.
+			processed, err := materializeOutputValue(item, dirPath)
+			if err != nil {
+				return nil, err
+			}
+			processedObj, ok := processed.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			class, _ := processedObj["class"].(string)
+			if class == "File" {
+				// If file has a source path, symlink it into directory.
+				srcPath := ""
+				if p, ok := fileObj["path"].(string); ok {
+					srcPath = p
+				}
+
+				itemBasename := "file"
+				if b, ok := processedObj["basename"].(string); ok {
+					itemBasename = b
+				}
+
+				if srcPath != "" {
+					// Create symlink.
+					linkPath := filepath.Join(dirPath, itemBasename)
+					_ = os.Remove(linkPath)
+					if err := os.Symlink(srcPath, linkPath); err != nil {
+						// Fallback to copy.
+						data, err := os.ReadFile(srcPath)
+						if err != nil {
+							return nil, fmt.Errorf("read source file: %w", err)
+						}
+						if err := os.WriteFile(linkPath, data, 0644); err != nil {
+							return nil, fmt.Errorf("copy file: %w", err)
+						}
+					}
+
+					// Update processed object with new location.
+					processedObj["location"] = itemBasename
+					if err := addFileMetadata(processedObj, srcPath); err != nil {
+						return nil, err
+					}
+				}
+			}
+
+			newListing = append(newListing, processedObj)
+		}
+
+		result["listing"] = newListing
+		result["path"] = dirPath
+		result["location"] = basename
+	}
+
+	return result, nil
+}
+
+// addFileMetadata adds checksum and size to a file object if missing.
+func addFileMetadata(obj map[string]any, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil // File doesn't exist, skip metadata
+	}
+
+	if _, hasSize := obj["size"]; !hasSize {
+		obj["size"] = info.Size()
+	}
+
+	if _, hasChecksum := obj["checksum"]; !hasChecksum {
+		checksum, err := computeSHA1File(path)
+		if err == nil {
+			obj["checksum"] = checksum
+		}
+	}
+
+	return nil
+}
+
+// computeSHA1String computes SHA1 checksum of a string.
+func computeSHA1String(s string) string {
+	h := sha1.New()
+	h.Write([]byte(s))
+	return fmt.Sprintf("sha1$%x", h.Sum(nil))
+}
+
+// computeSHA1File computes SHA1 checksum of a file.
+func computeSHA1File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("sha1$%x", h.Sum(nil)), nil
 }

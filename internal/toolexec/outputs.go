@@ -332,6 +332,14 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 		}
 
 		for _, match := range matches {
+			// Per CWL spec, outputs must be captured from within the output directory.
+			// Files outside the working directory should be rejected.
+			absMatch, _ := filepath.Abs(match)
+			absWorkDir, _ := filepath.Abs(workDir)
+			if !strings.HasPrefix(absMatch, absWorkDir+string(filepath.Separator)) && absMatch != absWorkDir {
+				return nil, fmt.Errorf("output glob %q matched path %q which is outside the output directory", pattern, match)
+			}
+
 			info, statErr := os.Stat(match)
 			if statErr != nil {
 				return nil, statErr

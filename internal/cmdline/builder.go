@@ -14,14 +14,39 @@ import (
 
 // Builder constructs command lines from CWL CommandLineTool definitions.
 type Builder struct {
-	evaluator *cwlexpr.Evaluator
+	evaluator   *cwlexpr.Evaluator
+	schemaTypes map[string]map[string]any // type name -> type definition
 }
 
 // NewBuilder creates a new command line builder with the given expression library.
 func NewBuilder(expressionLib []string) *Builder {
 	return &Builder{
-		evaluator: cwlexpr.NewEvaluator(expressionLib),
+		evaluator:   cwlexpr.NewEvaluator(expressionLib),
+		schemaTypes: make(map[string]map[string]any),
 	}
+}
+
+// SetSchemaTypes sets the schema type definitions from SchemaDefRequirement.
+// Types are stored by name (with and without '#' prefix) for lookup.
+func (b *Builder) SetSchemaTypes(types []any) {
+	for _, t := range types {
+		typeDef, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, ok := typeDef["name"].(string)
+		if !ok {
+			continue
+		}
+		// Store with and without '#' prefix for flexible lookup.
+		b.schemaTypes[name] = typeDef
+		b.schemaTypes["#"+name] = typeDef
+	}
+}
+
+// getSchemaType looks up a type definition by name.
+func (b *Builder) getSchemaType(typeName string) map[string]any {
+	return b.schemaTypes[typeName]
 }
 
 // BuildResult contains the constructed command line and related information.
@@ -110,6 +135,19 @@ func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]
 	if opts == nil {
 		opts = &BuildOptions{}
 	}
+
+	// Load schema types from SchemaDefRequirement if present.
+	if req, ok := tool.Requirements["SchemaDefRequirement"].(map[string]any); ok {
+		if types, ok := req["types"].([]any); ok {
+			b.SetSchemaTypes(types)
+		}
+	}
+	if hint, ok := tool.Hints["SchemaDefRequirement"].(map[string]any); ok {
+		if types, ok := hint["types"].([]any); ok {
+			b.SetSchemaTypes(types)
+		}
+	}
+
 	var cmd []string
 
 	// Start with baseCommand.
@@ -162,8 +200,9 @@ func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]
 		}
 	}
 
-	// Sort parts by position, then arguments before inputs, then by name (for stability).
-	sort.Slice(parts, func(i, j int) bool {
+	// Sort parts by position, then arguments before inputs.
+	// Use SliceStable to preserve declaration order within the same position.
+	sort.SliceStable(parts, func(i, j int) bool {
 		if parts[i].position != parts[j].position {
 			return parts[i].position < parts[j].position
 		}
@@ -171,7 +210,8 @@ func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]
 		if parts[i].isArgument != parts[j].isArgument {
 			return parts[i].isArgument
 		}
-		return parts[i].name < parts[j].name
+		// Within same position and same type, preserve original order.
+		return false
 	})
 
 	// Append sorted parts to command, tracking shell quoting.
@@ -203,6 +243,19 @@ func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]
 			return nil, fmt.Errorf("stdin: %w", err)
 		}
 		result.Stdin = stdin
+	} else {
+		// Check for inputs with type: stdin (CWL shortcut for stdin input).
+		for inputID, inputDef := range tool.Inputs {
+			if inputDef.Type == "stdin" {
+				// Get the file path from this input.
+				if fileObj, ok := inputs[inputID].(map[string]any); ok {
+					if path, ok := fileObj["path"].(string); ok {
+						result.Stdin = path
+						break
+					}
+				}
+			}
+		}
 	}
 
 	if tool.Stdout != "" {
@@ -271,8 +324,8 @@ func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[str
 		return nil, err
 	}
 
-	// Evaluate valueFrom.
-	value, err := b.evaluator.EvaluateString(a.ValueFrom, ctx)
+	// Evaluate valueFrom - use Evaluate to preserve type for special handling.
+	value, err := b.evaluator.Evaluate(a.ValueFrom, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +336,48 @@ func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[str
 		shouldQuote = *a.ShellQuote
 	}
 
-	args := buildPrefixedArgs(a.Prefix, value, a.Separate)
+	// Handle special value types.
+	var args []string
+
+	switch v := value.(type) {
+	case bool:
+		// Boolean true: output just the prefix.
+		// Boolean false: omit the argument entirely.
+		if v {
+			if a.Prefix != "" {
+				args = []string{a.Prefix}
+			}
+		}
+		// If false or no prefix with true, args remains empty (omit argument).
+
+	case []any:
+		// Array: each element becomes a separate argument.
+		// Prefix applies to first element only (per CWL spec for arguments).
+		if a.Prefix != "" {
+			args = append(args, a.Prefix)
+		}
+		for _, item := range v {
+			s := inputValueToString(item, "")
+			if s != "" {
+				args = append(args, s)
+			}
+		}
+
+	case nil:
+		// Null value: omit the argument.
+
+	default:
+		// String or number: standard prefix handling.
+		strValue := inputValueToString(value, "")
+		if strValue != "" {
+			args = buildPrefixedArgs(a.Prefix, strValue, a.Separate)
+		}
+	}
+
+	if len(args) == 0 {
+		return nil, nil
+	}
+
 	shellQuotes := make([]bool, len(args))
 	for i := range shellQuotes {
 		shellQuotes[i] = shouldQuote
@@ -430,6 +524,16 @@ func (b *Builder) buildArrayInputBinding(name string, input *cwl.ToolInputParam,
 		}, nil
 	}
 
+	// Check if items are schema-typed records that need recursive processing.
+	itemTypes := input.ArrayItemTypes
+	hasSchemaTypes := false
+	for _, itemType := range itemTypes {
+		if b.getSchemaType(itemType) != nil {
+			hasSchemaTypes = true
+			break
+		}
+	}
+
 	// Build arguments for the array.
 	var args []string
 
@@ -438,19 +542,44 @@ func (b *Builder) buildArrayInputBinding(name string, input *cwl.ToolInputParam,
 		args = append(args, binding.Prefix)
 	}
 
-	// Each array element gets item-level binding (if present) or no prefix.
+	// Each array element gets processed.
 	for _, item := range values {
-		s := inputValueToString(item, "")
-		if s == "" {
-			continue
-		}
-		if itemBinding != nil && itemBinding.Prefix != "" {
-			// Item-level prefix for each element.
-			itemArgs := buildPrefixedArgs(itemBinding.Prefix, s, itemBinding.Separate)
-			args = append(args, itemArgs...)
+		if hasSchemaTypes {
+			// Try to match item to one of the schema types and build args recursively.
+			matched := false
+			for _, itemType := range itemTypes {
+				itemTypeDef := b.getSchemaType(itemType)
+				if itemTypeDef != nil && b.valueMatchesType(item, itemTypeDef) {
+					itemArgs, err := b.buildSchemaTypedArgs(item, itemType, ctx)
+					if err != nil {
+						return nil, err
+					}
+					args = append(args, itemArgs...)
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				// Fallback to string conversion.
+				s := inputValueToString(item, "")
+				if s != "" {
+					args = append(args, s)
+				}
+			}
 		} else {
-			// No item-level prefix.
-			args = append(args, s)
+			// Simple array items - convert to string.
+			s := inputValueToString(item, "")
+			if s == "" {
+				continue
+			}
+			if itemBinding != nil && itemBinding.Prefix != "" {
+				// Item-level prefix for each element.
+				itemArgs := buildPrefixedArgs(itemBinding.Prefix, s, itemBinding.Separate)
+				args = append(args, itemArgs...)
+			} else {
+				// No item-level prefix.
+				args = append(args, s)
+			}
 		}
 	}
 
@@ -615,6 +744,232 @@ func (b *Builder) buildRecordFieldParts(name string, input *cwl.ToolInputParam, 
 	}
 
 	return parts, nil
+}
+
+// extractArrayItemTypes extracts the item type(s) from an array type definition.
+// Returns a slice of type names (to handle union types like [#Map1, #Map2, ...]).
+func (b *Builder) extractArrayItemTypes(inputType any) []string {
+	// Handle string type (e.g., "string[]" or simple type).
+	if typeStr, ok := inputType.(string); ok {
+		if strings.HasSuffix(typeStr, "[]") {
+			return []string{strings.TrimSuffix(typeStr, "[]")}
+		}
+		return nil
+	}
+
+	// Handle complex type object.
+	typeObj, ok := inputType.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	typeType, _ := typeObj["type"].(string)
+	if typeType != "array" {
+		return nil
+	}
+
+	items := typeObj["items"]
+	switch it := items.(type) {
+	case string:
+		return []string{it}
+	case []any:
+		// Union of types.
+		var types []string
+		for _, item := range it {
+			if s, ok := item.(string); ok {
+				types = append(types, s)
+			}
+		}
+		return types
+	}
+
+	return nil
+}
+
+// buildSchemaTypedArgs builds command line arguments from a value using schema type definitions.
+// This recursively processes nested records and arrays with inputBindings.
+func (b *Builder) buildSchemaTypedArgs(value any, typeName string, ctx *cwlexpr.Context) ([]string, error) {
+	// Look up the schema type definition.
+	typeDef := b.getSchemaType(typeName)
+	if typeDef == nil {
+		// Not a schema type - convert to string.
+		return []string{inputValueToString(value, "")}, nil
+	}
+
+	typeType, _ := typeDef["type"].(string)
+	if typeType != "record" {
+		// Enum or other non-record type.
+		return []string{inputValueToString(value, "")}, nil
+	}
+
+	// Process record fields.
+	recordVal, ok := value.(map[string]any)
+	if !ok {
+		return []string{inputValueToString(value, "")}, nil
+	}
+
+	fields, _ := typeDef["fields"].([]any)
+	if len(fields) == 0 {
+		return nil, nil
+	}
+
+	// Collect field parts for sorting.
+	type fieldPart struct {
+		position int
+		name     string
+		args     []string
+	}
+	var fieldParts []fieldPart
+
+	for _, fieldRaw := range fields {
+		field, ok := fieldRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		fieldName, _ := field["name"].(string)
+		fieldValue, exists := recordVal[fieldName]
+		if !exists || fieldValue == nil {
+			continue
+		}
+
+		// Get inputBinding for this field.
+		bindingRaw := field["inputBinding"]
+		if bindingRaw == nil {
+			continue
+		}
+		binding, ok := bindingRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Create context with field value as self.
+		fieldCtx := ctx.WithSelf(fieldValue)
+
+		// Evaluate position.
+		fieldPos := 0
+		if posRaw := binding["position"]; posRaw != nil {
+			pos, err := b.evaluatePosition(posRaw, fieldCtx)
+			if err != nil {
+				return nil, fmt.Errorf("field %s position: %w", fieldName, err)
+			}
+			fieldPos = pos
+		}
+
+		prefix, _ := binding["prefix"].(string)
+		separate := true
+		if sep, ok := binding["separate"].(bool); ok {
+			separate = sep
+		}
+
+		// Check if field has a nested type that needs recursion.
+		fieldType := field["type"]
+		var args []string
+
+		// Check for array of nested types.
+		if itemTypes := b.extractArrayItemTypes(fieldType); len(itemTypes) > 0 {
+			if arrVal, ok := fieldValue.([]any); ok {
+				for _, item := range arrVal {
+					// Try each possible item type.
+					for _, itemType := range itemTypes {
+						itemTypeDef := b.getSchemaType(itemType)
+						if itemTypeDef != nil && b.valueMatchesType(item, itemTypeDef) {
+							itemArgs, err := b.buildSchemaTypedArgs(item, itemType, fieldCtx)
+							if err != nil {
+								return nil, err
+							}
+							args = append(args, itemArgs...)
+							break
+						}
+					}
+				}
+			}
+		} else {
+			// Simple value - convert to string.
+			strValue := inputValueToString(fieldValue, "")
+			if strValue != "" {
+				args = buildPrefixedArgs(prefix, strValue, &separate)
+			}
+		}
+
+		if len(args) > 0 {
+			fieldParts = append(fieldParts, fieldPart{
+				position: fieldPos,
+				name:     fieldName,
+				args:     args,
+			})
+		}
+	}
+
+	// Sort field parts by position, then by name.
+	sort.Slice(fieldParts, func(i, j int) bool {
+		if fieldParts[i].position != fieldParts[j].position {
+			return fieldParts[i].position < fieldParts[j].position
+		}
+		return fieldParts[i].name < fieldParts[j].name
+	})
+
+	// Collect all args.
+	var result []string
+	for _, fp := range fieldParts {
+		result = append(result, fp.args...)
+	}
+
+	return result, nil
+}
+
+// valueMatchesType checks if a value matches a record type definition.
+// Used to determine which union type member to use.
+func (b *Builder) valueMatchesType(value any, typeDef map[string]any) bool {
+	// If value is not a map, can't match a record.
+	recordVal, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	// Check for distinguishing field (e.g., "algo" field with enum type).
+	fields, _ := typeDef["fields"].([]any)
+	for _, fieldRaw := range fields {
+		field, ok := fieldRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		fieldName, _ := field["name"].(string)
+		fieldType := field["type"]
+
+		// Check if this field has an enum type.
+		enumType, ok := fieldType.(map[string]any)
+		if !ok {
+			continue
+		}
+		if enumType["type"] != "enum" {
+			continue
+		}
+
+		// Get the enum symbols.
+		symbols, _ := enumType["symbols"].([]any)
+		if len(symbols) == 0 {
+			continue
+		}
+
+		// Check if the value's field matches one of the enum symbols.
+		// If an enum field exists, the value MUST match one of its symbols.
+		if fieldVal, ok := recordVal[fieldName].(string); ok {
+			matched := false
+			for _, sym := range symbols {
+				if symStr, ok := sym.(string); ok && symStr == fieldVal {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false // Enum field exists but value doesn't match any symbol.
+			}
+		}
+	}
+
+	// All enum fields matched (or no enum fields exist).
+	return true
 }
 
 // buildPrefixedArgs builds the argument array with optional prefix.

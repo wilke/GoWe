@@ -27,7 +27,40 @@ func ToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
 		}
 
 		// Check for null values on non-optional inputs.
+		// Exception: type "Any" with a default value - null means "use the default".
 		if value == nil && !isOptional {
+			if inputDef.Type == "Any" && inputDef.Default != nil {
+				continue // null is allowed for Any with default - it will use the default.
+			}
+			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
+		}
+	}
+	return nil
+}
+
+// ExpressionToolInputs validates that inputs match the ExpressionTool's input schema.
+// Returns an error if required inputs are missing or null is provided for non-optional types.
+func ExpressionToolInputs(tool *cwl.ExpressionTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		value, exists := inputs[inputID]
+
+		// Check if input is optional (type ends with ? or is a union with null).
+		isOptional := IsOptionalType(inputDef.Type)
+
+		// Check for missing required inputs.
+		if !exists {
+			if inputDef.Default == nil && !isOptional {
+				return fmt.Errorf("missing required input: %s", inputID)
+			}
+			continue
+		}
+
+		// Check for null values on non-optional inputs.
+		// Exception: type "Any" with a default value - null means "use the default".
+		if value == nil && !isOptional {
+			if inputDef.Type == "Any" && inputDef.Default != nil {
+				continue // null is allowed for Any with default - it will use the default.
+			}
 			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
 		}
 	}

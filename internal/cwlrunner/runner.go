@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,8 +170,8 @@ func (r *Runner) PrintCommandLine(ctx context.Context, cwlPath, jobPath string, 
 			return fmt.Errorf("process inputs for %s: %w", toolID, err)
 		}
 
-		// Build runtime context from tool requirements.
-		runtime := buildRuntimeContext(tool, r.OutDir)
+		// Build runtime context from tool requirements (with inputs for dynamic resource expressions).
+		runtime := buildRuntimeContextWithInputs(tool, r.OutDir, mergedInputs, expressionLib)
 
 		builder := cmdline.NewBuilder(expressionLib)
 		result, err := builder.Build(tool, mergedInputs, runtime)
@@ -444,7 +445,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		if dockerOutputDir != "" {
 			containerWorkDir = dockerOutputDir
 		}
-		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
@@ -463,7 +464,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		if dockerOutputDir != "" {
 			containerWorkDir = dockerOutputDir
 		}
-		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
@@ -473,7 +474,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		result, execErr = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	default:
 		// Build runtime context using actual work directory for local execution.
-		runtime := buildRuntimeContext(tool, workDir)
+		runtime := buildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
@@ -792,7 +793,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if dockerOutputDir != "" {
 			containerWorkDir = dockerOutputDir
 		}
-		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
@@ -810,7 +811,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if dockerOutputDir != "" {
 			containerWorkDir = dockerOutputDir
 		}
-		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
@@ -819,7 +820,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	default:
 		// Build runtime context using actual work directory for local execution.
-		runtime := buildRuntimeContext(tool, workDir)
+		runtime := buildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
@@ -832,14 +833,25 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[string]any, graph *cwl.GraphDocument) (map[string]any, error) {
 	r.logger.Info("executing expression tool", "id", tool.ID)
 
+	// Validate inputs against tool schema.
+	if err := validate.ExpressionToolInputs(tool, inputs); err != nil {
+		return nil, err
+	}
+
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
-	// Use shared exprtool package for execution.
-	return exprtool.Execute(tool, inputs, exprtool.ExecuteOptions{
+	// Execute the expression.
+	outputs, err := exprtool.Execute(tool, inputs, exprtool.ExecuteOptions{
 		ExpressionLib: expressionLib,
 		CWLDir:        r.cwlDir,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Materialize file/directory literals in outputs.
+	return fileliteral.MaterializeOutputs(outputs, r.OutDir)
 }
 
 // executeSubWorkflow executes a nested workflow and returns its outputs.
@@ -876,6 +888,16 @@ func (r *Runner) executeSubWorkflow(ctx context.Context, subGraph *cwl.GraphDocu
 		// Check if this is an ExpressionTool.
 		toolRef := stripHash(step.Run)
 		if exprTool, ok := subGraph.ExpressionTools[toolRef]; ok {
+			// Handle scatter if present.
+			if len(step.Scatter) > 0 {
+				outputs, err := r.executeScatterExpressionTool(ctx, subGraph, exprTool, step, stepInputs, evaluator)
+				if err != nil {
+					return nil, fmt.Errorf("step %s: %w", stepID, err)
+				}
+				stepOutputs[stepID] = outputs
+				continue
+			}
+
 			// Handle conditional execution.
 			if step.When != "" {
 				evalCtx := cwlexpr.NewContext(stepInputs)
@@ -1069,6 +1091,105 @@ func (r *Runner) executeScatterSubWorkflow(ctx context.Context, subGraph *cwl.Gr
 	return outputs, nil
 }
 
+// executeScatterExpressionTool executes a scatter over an ExpressionTool.
+func (r *Runner) executeScatterExpressionTool(ctx context.Context, graph *cwl.GraphDocument,
+	exprTool *cwl.ExpressionTool, step cwl.Step, inputs map[string]any,
+	evaluator *cwlexpr.Evaluator) (map[string]any, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Determine scatter method.
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over.
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Generate input combinations.
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	r.logger.Info("executing scatter over expression tool", "tool", exprTool.ID, "iterations", len(combinations))
+
+	// Execute each scatter iteration.
+	results := make([]map[string]any, len(combinations))
+	for i, iterInputs := range combinations {
+		// Evaluate valueFrom for this iteration if evaluator is provided.
+		if evaluator != nil {
+			for inputID, stepInput := range step.In {
+				if stepInput.ValueFrom != "" {
+					self := iterInputs[inputID]
+					ctx := cwlexpr.NewContext(iterInputs).WithSelf(self)
+					evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, ctx)
+					if err != nil {
+						return nil, fmt.Errorf("iteration %d input %s valueFrom: %w", i, inputID, err)
+					}
+					iterInputs[inputID] = evaluated
+				}
+			}
+		}
+
+		// Check 'when' condition for this iteration.
+		if step.When != "" && evaluator != nil {
+			evalCtx := cwlexpr.NewContext(iterInputs)
+			shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+			if err != nil {
+				return nil, fmt.Errorf("iteration %d when expression: %w", i, err)
+			}
+			if !shouldRun {
+				r.logger.Debug("skipping scatter iteration (when condition false)", "iteration", i)
+				results[i] = nil
+				continue
+			}
+		}
+
+		// Execute the expression tool for this iteration.
+		outputs, err := r.executeExpressionTool(exprTool, iterInputs, graph)
+		if err != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, err)
+		}
+		results[i] = outputs
+	}
+
+	// Aggregate outputs: merge results into output arrays.
+	outputs := make(map[string]any)
+	for _, outID := range step.Out {
+		arr := make([]any, len(results))
+		for i, result := range results {
+			if result != nil {
+				arr[i] = result[outID]
+			}
+		}
+		outputs[outID] = arr
+	}
+	return outputs, nil
+}
+
 // executeWorkflow executes a workflow.
 func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, inputs map[string]any, w io.Writer) error {
 	r.logger.Info("executing workflow", "id", graph.Workflow.ID, "parallel", r.Parallel.Enabled)
@@ -1129,6 +1250,17 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 		// Check if this is an ExpressionTool.
 		toolRef := stripHash(step.Run)
 		if exprTool, ok := graph.ExpressionTools[toolRef]; ok {
+			// Handle scatter if present.
+			if len(step.Scatter) > 0 {
+				outputs, err := r.executeScatterExpressionTool(ctx, graph, exprTool, step, stepInputs, evaluator)
+				if err != nil {
+					r.finalizeAndPrintMetrics(w)
+					return fmt.Errorf("step %s: %w", stepID, err)
+				}
+				stepOutputs[stepID] = outputs
+				continue
+			}
+
 			// Handle conditional execution.
 			if step.When != "" {
 				evalCtx := cwlexpr.NewContext(stepInputs)
@@ -1450,6 +1582,16 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 			resolved["nameroot"] = nameroot
 			resolved["nameext"] = nameext
 		}
+
+		// Step 5b: Populate size for File objects if not already set.
+		class, _ := resolved["class"].(string)
+		if class == "File" {
+			if _, hasSize := resolved["size"]; !hasSize {
+				if info, err := os.Stat(path); err == nil && !info.IsDir() {
+					resolved["size"] = info.Size()
+				}
+			}
+		}
 	}
 
 	// Step 6: For Directory objects, resolve listing entries.
@@ -1508,7 +1650,8 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 			for i, src := range stepInput.Sources {
 				values[i] = resolveSource(src, workflowInputs, stepOutputs)
 			}
-			value = values
+			// Apply linkMerge to combine values.
+			value = cwloutput.ApplyLinkMerge(values, stepInput.LinkMerge)
 		}
 		if value == nil && stepInput.Default != nil {
 			// Resolve File/Directory objects in defaults relative to CWL directory.
@@ -1577,9 +1720,24 @@ func evaluateValueFrom(step cwl.Step, resolved map[string]any, evaluator *cwlexp
 }
 
 // populateDirectoryListings adds listing entries to Directory inputs based on loadListing.
+// It checks both per-input loadListing and the LoadListingRequirement at tool level.
 func populateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any) {
+	// Get default loadListing from LoadListingRequirement.
+	defaultLoadListing := ""
+	if tool.Requirements != nil {
+		if llr, ok := tool.Requirements["LoadListingRequirement"].(map[string]any); ok {
+			if ll, ok := llr["loadListing"].(string); ok {
+				defaultLoadListing = ll
+			}
+		}
+	}
+
 	for inputID, inp := range tool.Inputs {
+		// Per-input loadListing overrides the default.
 		loadListing := inp.LoadListing
+		if loadListing == "" {
+			loadListing = defaultLoadListing
+		}
 		if loadListing == "" || loadListing == "no_listing" {
 			continue
 		}
@@ -1589,9 +1747,20 @@ func populateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any)
 			continue
 		}
 
+		// Handle single Directory input.
 		if dirObj, ok := inputVal.(map[string]any); ok {
 			if class, _ := dirObj["class"].(string); class == "Directory" {
 				populateDirListing(dirObj, loadListing)
+			}
+		}
+		// Handle array of Directories.
+		if arr, ok := inputVal.([]any); ok {
+			for _, item := range arr {
+				if dirObj, ok := item.(map[string]any); ok {
+					if class, _ := dirObj["class"].(string); class == "Directory" {
+						populateDirListing(dirObj, loadListing)
+					}
+				}
 			}
 		}
 	}
@@ -2060,48 +2229,74 @@ func mergeStepRequirements(tool *cwl.CommandLineTool, step *cwl.Step) {
 
 // buildRuntimeContext creates a RuntimeContext from tool requirements.
 func buildRuntimeContext(tool *cwl.CommandLineTool, outDir string) *cwlexpr.RuntimeContext {
+	return buildRuntimeContextWithInputs(tool, outDir, nil, nil)
+}
+
+// buildRuntimeContextWithInputs creates a RuntimeContext, evaluating expressions if inputs are provided.
+func buildRuntimeContextWithInputs(tool *cwl.CommandLineTool, outDir string, inputs map[string]any, expressionLib []string) *cwlexpr.RuntimeContext {
 	runtime := cwlexpr.DefaultRuntimeContext()
 	runtime.OutDir = outDir
-	runtime.TmpDir = filepath.Join(outDir, "tmp")
+	runtime.TmpDir = outDir + "_tmp" // Must match what executeLocal creates
 
 	// Apply ResourceRequirement if present.
 	rr := getResourceRequirement(tool)
 	if rr != nil {
+		// Create evaluator if we have inputs and expressions.
+		var evaluator *cwlexpr.Evaluator
+		if inputs != nil {
+			evaluator = cwlexpr.NewEvaluator(expressionLib)
+		}
+		ctx := cwlexpr.NewContext(inputs)
+
 		// CWL allows coresMin/coresMax - use coresMin if present.
 		if coresMin, ok := rr["coresMin"]; ok {
-			switch v := coresMin.(type) {
-			case int:
-				runtime.Cores = v
-			case float64:
-				runtime.Cores = int(v)
-			}
+			runtime.Cores = evalResourceInt(coresMin, evaluator, ctx)
 		}
 		// If no coresMin, try cores.
 		if runtime.Cores == 1 {
 			if cores, ok := rr["cores"]; ok {
-				switch v := cores.(type) {
-				case int:
-					runtime.Cores = v
-				case float64:
-					runtime.Cores = int(v)
-				}
+				runtime.Cores = evalResourceInt(cores, evaluator, ctx)
 			}
 		}
 
 		// Apply RAM requirements.
 		if ramMin, ok := rr["ramMin"]; ok {
-			switch v := ramMin.(type) {
-			case int:
-				runtime.Ram = int64(v)
-			case int64:
-				runtime.Ram = v
-			case float64:
-				runtime.Ram = int64(v)
-			}
+			runtime.Ram = int64(evalResourceInt(ramMin, evaluator, ctx))
+		}
+
+		// Apply tmpdir size requirements.
+		if tmpdirMin, ok := rr["tmpdirMin"]; ok {
+			runtime.TmpdirSize = int64(evalResourceInt(tmpdirMin, evaluator, ctx))
+		}
+
+		// Apply outdir size requirements.
+		if outdirMin, ok := rr["outdirMin"]; ok {
+			runtime.OutdirSize = int64(evalResourceInt(outdirMin, evaluator, ctx))
 		}
 	}
 
 	return runtime
+}
+
+// evalResourceInt evaluates a resource value that may be int, float, or expression.
+func evalResourceInt(value any, evaluator *cwlexpr.Evaluator, ctx *cwlexpr.Context) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(math.Ceil(v)) // CWL spec: float cores are rounded up
+	case string:
+		// Expression - evaluate it if we have an evaluator.
+		if evaluator != nil && ctx != nil && (strings.HasPrefix(v, "$(") || strings.HasPrefix(v, "${")) {
+			result, err := evaluator.Evaluate(v, ctx)
+			if err == nil {
+				return evalResourceInt(result, nil, nil) // Recursively convert result
+			}
+		}
+	}
+	return 1 // Default fallback
 }
 
 // stripHash removes the leading "#" from a tool reference and converts
@@ -2129,11 +2324,15 @@ func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 	// Only include inputs that are declared in the tool's inputs.
 	for inputID, inputDef := range tool.Inputs {
 		var val any
-		if v, exists := inputs[inputID]; exists {
+		if v, exists := inputs[inputID]; exists && v != nil {
+			// Use provided value if it's not null.
 			val = v
 		} else if inputDef.Default != nil {
-			// Use default value if input not provided.
+			// Use default value if input not provided or is null.
 			val = resolveDefaultValue(inputDef.Default, cwlDir)
+		} else if v, exists := inputs[inputID]; exists {
+			// Explicitly provided null with no default - keep null.
+			val = v
 		}
 
 		// Process loadContents for File inputs (with 64KB limit).

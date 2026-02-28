@@ -25,11 +25,31 @@ type ExecuteOptions struct {
 // Execute evaluates a CWL ExpressionTool and returns its outputs.
 // ExpressionTools are pure JavaScript computations that don't run external commands.
 func Execute(tool *cwl.ExpressionTool, inputs map[string]any, opts ExecuteOptions) (map[string]any, error) {
-	// Apply loadContents for inputs that have it enabled.
+	// Merge input defaults with provided inputs.
 	processedInputs := make(map[string]any)
+
+	// First, apply defaults for inputs not provided.
+	for inputID, inputDef := range tool.Inputs {
+		if inputDef.Default != nil {
+			processedInputs[inputID] = inputDef.Default
+		}
+	}
+
+	// Then, override with user-provided inputs.
+	// For Any type inputs, null means "use default" per CWL spec.
 	for inputID, val := range inputs {
+		if val == nil {
+			// Check if this is an Any type with a default - if so, keep the default.
+			if inputDef, ok := tool.Inputs[inputID]; ok {
+				if inputDef.Type == "Any" && inputDef.Default != nil {
+					continue // Keep the default value.
+				}
+			}
+		}
 		processedInputs[inputID] = val
 	}
+
+	// Apply loadContents for inputs that have it enabled.
 	for inputID, inputDef := range tool.Inputs {
 		if inputDef.LoadContents {
 			if val, exists := processedInputs[inputID]; exists && val != nil {
