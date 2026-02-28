@@ -270,6 +270,9 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 	// Initialize expression tools map with any inline expression tools from steps.
 	exprTools := wfResult.InlineExpressionTools
 
+	// Initialize subworkflows map with any inline workflows from steps.
+	subWorkflows := wfResult.InlineWorkflows
+
 	// Load external tool files referenced by steps.
 	for stepID, step := range wfResult.Workflow.Steps {
 		if step.Run == "" || strings.HasPrefix(step.Run, "#") {
@@ -289,6 +292,11 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 			}
 			if exprTools != nil {
 				if _, exists := exprTools[toolID]; exists {
+					continue
+				}
+			}
+			if subWorkflows != nil {
+				if _, exists := subWorkflows[toolID]; exists {
 					continue
 				}
 			}
@@ -313,7 +321,8 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 			toolRaw = resolved.(map[string]any)
 
 			class := stringField(toolRaw, "class")
-			if class == "ExpressionTool" {
+			switch class {
+			case "ExpressionTool":
 				exprTool, err := p.parseExpressionTool(toolRaw)
 				if err != nil {
 					return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
@@ -326,7 +335,24 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 				}
 				exprTools[exprTool.ID] = exprTool
 				p.logger.Debug("loaded external expression tool", "path", step.Run, "id", exprTool.ID)
-			} else {
+
+			case "Workflow":
+				// Recursively parse the subworkflow.
+				subParser := &Parser{logger: p.logger, baseDir: toolBaseDir}
+				subGraph, err := subParser.parseBareWorkflow(toolRaw, stringField(toolRaw, "cwlVersion"))
+				if err != nil {
+					return nil, fmt.Errorf("parse external workflow %s: %w", step.Run, err)
+				}
+				if subGraph.Workflow.ID == "" {
+					subGraph.Workflow.ID = toolID
+				}
+				if subWorkflows == nil {
+					subWorkflows = make(map[string]*cwl.GraphDocument)
+				}
+				subWorkflows[toolID] = subGraph
+				p.logger.Debug("loaded external workflow", "path", step.Run, "id", toolID)
+
+			default:
 				tool, err := p.parseTool(toolRaw)
 				if err != nil {
 					return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
@@ -346,6 +372,7 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 		Workflow:        wfResult.Workflow,
 		Tools:           tools,
 		ExpressionTools: exprTools,
+		SubWorkflows:    subWorkflows,
 	}, nil
 }
 
@@ -353,44 +380,98 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cwl.GraphDocument, error) {
 	class := stringField(toolRaw, "class")
 
-	// Parse the tool.
-	tool, err := p.parseTool(toolRaw)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", class, err)
-	}
+	var toolID string
+	var toolDoc string
+	var toolHints map[string]any
+	var cmdTool *cwl.CommandLineTool
+	var exprTool *cwl.ExpressionTool
+	var wfInputs map[string]cwl.InputParam
+	var wfOutputs map[string]cwl.OutputParam
+	var stepOutIDs []string
+	var stepIn map[string]cwl.StepInput
 
-	// Generate tool ID if not present.
-	toolID := tool.ID
-	if toolID == "" {
-		toolID = "tool"
-		tool.ID = toolID
-	}
-
-	// Build synthetic workflow inputs (same as tool inputs).
-	wfInputs := make(map[string]cwl.InputParam)
-	for id, inp := range tool.Inputs {
-		wfInputs[id] = cwl.InputParam{
-			Type:    inp.Type,
-			Doc:     inp.Doc,
-			Default: inp.Default,
+	if class == "ExpressionTool" {
+		// Parse as ExpressionTool.
+		var err error
+		exprTool, err = p.parseExpressionTool(toolRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", class, err)
 		}
-	}
-
-	// Build synthetic workflow outputs (same as tool outputs, with outputSource).
-	wfOutputs := make(map[string]cwl.OutputParam)
-	stepOutIDs := make([]string, 0, len(tool.Outputs))
-	for id, out := range tool.Outputs {
-		wfOutputs[id] = cwl.OutputParam{
-			Type:         out.Type,
-			OutputSource: "run_tool/" + id,
+		toolID = exprTool.ID
+		if toolID == "" {
+			toolID = "tool"
+			exprTool.ID = toolID
 		}
-		stepOutIDs = append(stepOutIDs, id)
-	}
+		toolDoc = exprTool.Doc
+		toolHints = exprTool.Hints
 
-	// Build step inputs (map workflow inputs to step inputs).
-	stepIn := make(map[string]cwl.StepInput)
-	for id := range tool.Inputs {
-		stepIn[id] = cwl.StepInput{Sources: []string{id}}
+		// Build workflow inputs.
+		wfInputs = make(map[string]cwl.InputParam)
+		for id, inp := range exprTool.Inputs {
+			wfInputs[id] = cwl.InputParam{
+				Type:    inp.Type,
+				Doc:     inp.Doc,
+				Default: inp.Default,
+			}
+		}
+
+		// Build workflow outputs.
+		wfOutputs = make(map[string]cwl.OutputParam)
+		stepOutIDs = make([]string, 0, len(exprTool.Outputs))
+		for id, out := range exprTool.Outputs {
+			wfOutputs[id] = cwl.OutputParam{
+				Type:         out.Type,
+				OutputSource: "run_tool/" + id,
+			}
+			stepOutIDs = append(stepOutIDs, id)
+		}
+
+		// Build step inputs.
+		stepIn = make(map[string]cwl.StepInput)
+		for id := range exprTool.Inputs {
+			stepIn[id] = cwl.StepInput{Sources: []string{id}}
+		}
+	} else {
+		// Parse as CommandLineTool.
+		var err error
+		cmdTool, err = p.parseTool(toolRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", class, err)
+		}
+		toolID = cmdTool.ID
+		if toolID == "" {
+			toolID = "tool"
+			cmdTool.ID = toolID
+		}
+		toolDoc = cmdTool.Doc
+		toolHints = cmdTool.Hints
+
+		// Build workflow inputs.
+		wfInputs = make(map[string]cwl.InputParam)
+		for id, inp := range cmdTool.Inputs {
+			wfInputs[id] = cwl.InputParam{
+				Type:    inp.Type,
+				Doc:     inp.Doc,
+				Default: inp.Default,
+			}
+		}
+
+		// Build workflow outputs.
+		wfOutputs = make(map[string]cwl.OutputParam)
+		stepOutIDs = make([]string, 0, len(cmdTool.Outputs))
+		for id, out := range cmdTool.Outputs {
+			wfOutputs[id] = cwl.OutputParam{
+				Type:         out.Type,
+				OutputSource: "run_tool/" + id,
+			}
+			stepOutIDs = append(stepOutIDs, id)
+		}
+
+		// Build step inputs.
+		stepIn = make(map[string]cwl.StepInput)
+		for id := range cmdTool.Inputs {
+			stepIn[id] = cwl.StepInput{Sources: []string{id}}
+		}
 	}
 
 	// Create synthetic workflow with single step.
@@ -398,7 +479,7 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 		ID:         "main",
 		Class:      "Workflow",
 		CWLVersion: version,
-		Doc:        tool.Doc,
+		Doc:        toolDoc,
 		Inputs:     wfInputs,
 		Outputs:    wfOutputs,
 		Steps: map[string]cwl.Step{
@@ -411,23 +492,31 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 	}
 
 	// Copy hints from tool to step if present.
-	if tool.Hints != nil {
+	if toolHints != nil {
 		wf.Steps["run_tool"] = cwl.Step{
 			Run:   "#" + toolID,
 			In:    stepIn,
 			Out:   stepOutIDs,
-			Hints: tool.Hints,
+			Hints: toolHints,
 		}
 	}
 
 	p.logger.Debug("auto-wrapped tool as workflow", "tool_id", toolID, "class", class)
 
-	return &cwl.GraphDocument{
+	graph := &cwl.GraphDocument{
 		CWLVersion:    version,
 		OriginalClass: class,
 		Workflow:      wf,
-		Tools:         map[string]*cwl.CommandLineTool{toolID: tool},
-	}, nil
+		Tools:         make(map[string]*cwl.CommandLineTool),
+	}
+
+	if exprTool != nil {
+		graph.ExpressionTools = map[string]*cwl.ExpressionTool{toolID: exprTool}
+	} else {
+		graph.Tools[toolID] = cmdTool
+	}
+
+	return graph, nil
 }
 
 // workflowParseResult holds the result of parsing a workflow.
@@ -435,6 +524,7 @@ type workflowParseResult struct {
 	Workflow               *cwl.Workflow
 	InlineTools            map[string]*cwl.CommandLineTool
 	InlineExpressionTools  map[string]*cwl.ExpressionTool
+	InlineWorkflows        map[string]*cwl.GraphDocument
 }
 
 // parseWorkflow parses a single CWL Workflow from a raw map.
@@ -535,6 +625,13 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 				toolID := stepResult.InlineExpressionTool.ID
 				result.InlineExpressionTools[toolID] = stepResult.InlineExpressionTool
 			}
+			if stepResult.InlineWorkflow != nil {
+				wfID := stepResult.InlineWorkflow.Workflow.ID
+				if result.InlineWorkflows == nil {
+					result.InlineWorkflows = make(map[string]*cwl.GraphDocument)
+				}
+				result.InlineWorkflows[wfID] = stepResult.InlineWorkflow
+			}
 		}
 	}
 
@@ -606,6 +703,7 @@ type stepParseResult struct {
 	Step                 cwl.Step
 	InlineTool           *cwl.CommandLineTool   // non-nil if step has inline CommandLineTool
 	InlineExpressionTool *cwl.ExpressionTool    // non-nil if step has inline ExpressionTool
+	InlineWorkflow       *cwl.GraphDocument     // non-nil if step has inline Workflow
 }
 
 // parseStep parses a single CWL workflow step from a raw map.
@@ -641,11 +739,12 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 	case string:
 		step.Run = runVal
 	case map[string]any:
-		// Inline tool - check class to determine type.
+		// Inline tool/workflow - check class to determine type.
 		class := stringField(runVal, "class")
 		inlineID := stepID + "_inline"
 
-		if class == "ExpressionTool" {
+		switch class {
+		case "ExpressionTool":
 			// Parse as ExpressionTool.
 			exprTool, err := p.parseExpressionTool(runVal)
 			if err != nil {
@@ -658,7 +757,22 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 			}
 			step.Run = "#" + inlineID
 			result.InlineExpressionTool = exprTool
-		} else {
+
+		case "Workflow":
+			// Parse as embedded Workflow.
+			subGraph, err := p.parseBareWorkflow(runVal, "")
+			if err != nil {
+				return result, fmt.Errorf("parse inline workflow: %w", err)
+			}
+			if subGraph.Workflow.ID == "" {
+				subGraph.Workflow.ID = inlineID
+			} else {
+				inlineID = subGraph.Workflow.ID
+			}
+			step.Run = "#" + inlineID
+			result.InlineWorkflow = subGraph
+
+		default:
 			// Parse as CommandLineTool (default).
 			tool, err := p.parseTool(runVal)
 			if err != nil {

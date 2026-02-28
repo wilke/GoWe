@@ -229,17 +229,19 @@ func (v *Validator) validateToolRefs(graph *cwl.GraphDocument) []model.FieldErro
 		// Check if tool exists with the reference as-is (for packed documents with .cwl IDs).
 		_, inTools := graph.Tools[ref]
 		_, inExprTools := graph.ExpressionTools[ref]
+		_, inSubWorkflows := graph.SubWorkflows[ref]
 
 		// If not found, try stripping .cwl extension (for external file references).
-		if !inTools && !inExprTools && strings.HasSuffix(ref, ".cwl") {
+		if !inTools && !inExprTools && !inSubWorkflows && strings.HasSuffix(ref, ".cwl") {
 			// External file reference - tool ID is filename without extension.
 			base := filepath.Base(ref)
 			strippedRef := strings.TrimSuffix(base, ".cwl")
 			_, inTools = graph.Tools[strippedRef]
 			_, inExprTools = graph.ExpressionTools[strippedRef]
+			_, inSubWorkflows = graph.SubWorkflows[strippedRef]
 		}
 
-		if !inTools && !inExprTools {
+		if !inTools && !inExprTools && !inSubWorkflows {
 			errs = append(errs, model.FieldError{
 				Field:   fmt.Sprintf("steps.%s.run", stepID),
 				Message: fmt.Sprintf("run reference %q not found in $graph", step.Run),
@@ -269,12 +271,15 @@ func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldEr
 			ref = ref[1:]
 		}
 
-		// Get the tool's declared inputs.
+		// Get the tool's declared inputs (from CommandLineTool, ExpressionTool, or SubWorkflow).
 		var toolInputs map[string]cwl.ToolInputParam
+		var wfInputs map[string]cwl.InputParam
 		if tool, ok := graph.Tools[ref]; ok {
 			toolInputs = tool.Inputs
 		} else if exprTool, ok := graph.ExpressionTools[ref]; ok {
 			toolInputs = exprTool.Inputs
+		} else if subWf, ok := graph.SubWorkflows[ref]; ok && subWf.Workflow != nil {
+			wfInputs = subWf.Workflow.Inputs
 		} else if strings.HasSuffix(ref, ".cwl") {
 			// Try stripping .cwl extension (for external file references).
 			base := filepath.Base(ref)
@@ -283,21 +288,32 @@ func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldEr
 				toolInputs = tool.Inputs
 			} else if exprTool, ok := graph.ExpressionTools[strippedRef]; ok {
 				toolInputs = exprTool.Inputs
+			} else if subWf, ok := graph.SubWorkflows[strippedRef]; ok && subWf.Workflow != nil {
+				wfInputs = subWf.Workflow.Inputs
 			}
 		}
 
-		if toolInputs == nil {
+		if toolInputs == nil && wfInputs == nil {
 			// Tool not found - already reported by validateToolRefs.
 			continue
 		}
 
 		// Check each step input against the tool's declared inputs.
 		for inID := range step.In {
-			if _, declared := toolInputs[inID]; !declared {
-				errs = append(errs, model.FieldError{
-					Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
-					Message: fmt.Sprintf("step %q input %q is not declared in the tool's inputs", stepID, inID),
-				})
+			if toolInputs != nil {
+				if _, declared := toolInputs[inID]; !declared {
+					errs = append(errs, model.FieldError{
+						Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
+						Message: fmt.Sprintf("step %q input %q is not declared in the tool's inputs", stepID, inID),
+					})
+				}
+			} else if wfInputs != nil {
+				if _, declared := wfInputs[inID]; !declared {
+					errs = append(errs, model.FieldError{
+						Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
+						Message: fmt.Sprintf("step %q input %q is not declared in the subworkflow's inputs", stepID, inID),
+					})
+				}
 			}
 		}
 	}

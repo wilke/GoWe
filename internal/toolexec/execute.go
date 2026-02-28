@@ -49,8 +49,19 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	}
 	cmd.Dir = workDir
 
-	// Set environment variables from EnvVarRequirement.
-	cmd.Env = os.Environ() // Start with current environment
+	// Set environment variables.
+	// Start with current environment, then override with CWL required vars.
+	cmd.Env = os.Environ()
+
+	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
+	tmpDir := workDir + "_tmp"
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return nil, fmt.Errorf("create tmp dir: %w", err)
+	}
+	cmd.Env = append(cmd.Env, "HOME="+workDir)
+	cmd.Env = append(cmd.Env, "TMPDIR="+tmpDir)
+
+	// Add environment variables from EnvVarRequirement.
 	envVars := extractEnvVars(tool, inputs)
 	for name, value := range envVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
@@ -251,6 +262,10 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
 	}
 
+	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
+	dockerArgs = append(dockerArgs, "-e", "HOME="+containerWorkDir)
+	dockerArgs = append(dockerArgs, "-e", "TMPDIR=/tmp")
+
 	// Set environment variables from EnvVarRequirement.
 	envVars := extractEnvVars(tool, inputs)
 	for name, value := range envVars {
@@ -435,6 +450,10 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		absHostPath := ResolveSymlinks(m.HostPath)
 		apptainerArgs = append(apptainerArgs, "--bind", absHostPath+":"+m.ContainerPath)
 	}
+
+	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
+	apptainerArgs = append(apptainerArgs, "--env", "HOME="+containerWorkDir)
+	apptainerArgs = append(apptainerArgs, "--env", "TMPDIR=/tmp")
 
 	// Set environment variables from EnvVarRequirement.
 	envVars := extractEnvVars(tool, inputs)

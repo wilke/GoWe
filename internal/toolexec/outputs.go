@@ -543,17 +543,36 @@ func processOutputValue(v any, workDir string) any {
 // processFileOutput processes a File object from cwl.output.json.
 // Resolves relative paths and adds metadata.
 func processFileOutput(obj map[string]any, workDir string) map[string]any {
-	// Resolve path if relative.
-	if path, ok := obj["path"].(string); ok {
-		if !filepath.IsAbs(path) {
-			obj["path"] = filepath.Join(workDir, path)
+	// Translate container paths to host paths.
+	// Standard CWL container working directory is /var/spool/cwl.
+	containerWorkDir := "/var/spool/cwl"
+
+	translatePath := func(p string) string {
+		if strings.HasPrefix(p, containerWorkDir+"/") {
+			return filepath.Join(workDir, strings.TrimPrefix(p, containerWorkDir+"/"))
 		}
+		if strings.HasPrefix(p, containerWorkDir) && len(p) == len(containerWorkDir) {
+			return workDir
+		}
+		if !filepath.IsAbs(p) {
+			return filepath.Join(workDir, p)
+		}
+		return p
 	}
 
-	// Resolve location if relative.
+	// Resolve path (may be container path or relative path).
+	if path, ok := obj["path"].(string); ok {
+		obj["path"] = translatePath(path)
+	}
+
+	// Resolve location (may be container path, file:// URL, or relative path).
 	if loc, ok := obj["location"].(string); ok {
-		if !filepath.IsAbs(loc) && !strings.Contains(loc, "://") {
-			obj["location"] = filepath.Join(workDir, loc)
+		if strings.HasPrefix(loc, "file://") {
+			// Handle file:// URLs with container paths.
+			filePath := strings.TrimPrefix(loc, "file://")
+			obj["location"] = "file://" + translatePath(filePath)
+		} else if !strings.Contains(loc, "://") {
+			obj["location"] = translatePath(loc)
 		}
 	}
 
@@ -602,17 +621,35 @@ func processFileOutput(obj map[string]any, workDir string) map[string]any {
 
 // processDirectoryOutput processes a Directory object from cwl.output.json.
 func processDirectoryOutput(obj map[string]any, workDir string) map[string]any {
-	// Resolve path if relative.
-	if path, ok := obj["path"].(string); ok {
-		if !filepath.IsAbs(path) {
-			obj["path"] = filepath.Join(workDir, path)
+	// Translate container paths to host paths.
+	containerWorkDir := "/var/spool/cwl"
+
+	translatePath := func(p string) string {
+		if strings.HasPrefix(p, containerWorkDir+"/") {
+			return filepath.Join(workDir, strings.TrimPrefix(p, containerWorkDir+"/"))
 		}
+		if strings.HasPrefix(p, containerWorkDir) && len(p) == len(containerWorkDir) {
+			return workDir
+		}
+		if !filepath.IsAbs(p) {
+			return filepath.Join(workDir, p)
+		}
+		return p
 	}
 
-	// Resolve location if relative.
+	// Resolve path (may be container path or relative path).
+	if path, ok := obj["path"].(string); ok {
+		obj["path"] = translatePath(path)
+	}
+
+	// Resolve location (may be container path, file:// URL, or relative path).
 	if loc, ok := obj["location"].(string); ok {
-		if !filepath.IsAbs(loc) && !strings.Contains(loc, "://") {
-			obj["location"] = filepath.Join(workDir, loc)
+		if strings.HasPrefix(loc, "file://") {
+			// Handle file:// URLs with container paths.
+			filePath := strings.TrimPrefix(loc, "file://")
+			obj["location"] = "file://" + translatePath(filePath)
+		} else if !strings.Contains(loc, "://") {
+			obj["location"] = translatePath(loc)
 		}
 	}
 

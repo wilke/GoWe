@@ -273,15 +273,28 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 	}
 
 	// Execute based on document type.
-	if graph.OriginalClass == "Workflow" || len(graph.Tools) > 1 {
+	totalTools := len(graph.Tools) + len(graph.ExpressionTools)
+	if graph.OriginalClass == "Workflow" || totalTools > 1 {
 		return r.executeWorkflow(ctx, graph, resolvedInputs, w)
 	}
 
-	// Single tool execution.
+	// Single CommandLineTool execution.
 	for _, tool := range graph.Tools {
 		r.metrics.SetWorkflowID(tool.ID)
 		r.metrics.SetTotalSteps(1)
 		outputs, err := r.executeTool(ctx, graph, tool, resolvedInputs, true)
+		if err != nil {
+			r.finalizeAndPrintMetrics(w)
+			return err
+		}
+		return r.writeOutputsWithMetrics(outputs, w)
+	}
+
+	// Single ExpressionTool execution.
+	for _, exprTool := range graph.ExpressionTools {
+		r.metrics.SetWorkflowID(exprTool.ID)
+		r.metrics.SetTotalSteps(1)
+		outputs, err := r.executeExpressionTool(exprTool, resolvedInputs, graph)
 		if err != nil {
 			r.finalizeAndPrintMetrics(w)
 			return err
@@ -401,19 +414,24 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		iwdr.UpdateInputPaths(mergedInputs, workDir, iwdResult.StagedPaths)
 	}
 
-	// Build runtime context using the actual work directory.
-	runtime := buildRuntimeContext(tool, workDir)
-
-	// Build command line.
-	builder := cmdline.NewBuilder(expressionLib)
-	cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-	if err != nil {
-		return nil, fmt.Errorf("build command: %w", err)
+	// Apply ToolTimeLimit if specified.
+	// Wrap context with timeout to enforce the time limit.
+	timeLimit := getToolTimeLimit(tool, mergedInputs)
+	if timeLimit < 0 {
+		return nil, fmt.Errorf("invalid ToolTimeLimit: timelimit must be non-negative, got %d", timeLimit)
+	}
+	if timeLimit > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeLimit)*time.Second)
+		defer cancel()
 	}
 
-	r.logger.Debug("built command", "cmd", cmdResult.Command)
+	// Build command line with runtime context appropriate for the execution environment.
+	// For containers, use container paths; for local execution, use host paths.
+	builder := cmdline.NewBuilder(expressionLib)
 
 	var result *ExecutionResult
+	var execErr error
 	switch containerRuntime {
 	case "docker":
 		dockerImage := getDockerImage(tool, graph.Workflow)
@@ -421,19 +439,50 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
 		dockerOutputDir := getDockerOutputDirectory(tool)
-		result, err = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
+		// Build runtime context with container paths.
+		containerWorkDir := "/var/spool/cwl"
+		if dockerOutputDir != "" {
+			containerWorkDir = dockerOutputDir
+		}
+		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime.TmpDir = "/tmp"
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
+		}
+		r.logger.Debug("built command", "cmd", cmdResult.Command)
+		result, execErr = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
 			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
 		}
 		dockerOutputDir := getDockerOutputDirectory(tool)
-		result, err = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
+		// Build runtime context with container paths.
+		containerWorkDir := "/var/spool/cwl"
+		if dockerOutputDir != "" {
+			containerWorkDir = dockerOutputDir
+		}
+		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime.TmpDir = "/tmp"
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
+		}
+		r.logger.Debug("built command", "cmd", cmdResult.Command)
+		result, execErr = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	default:
-		result, err = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
+		// Build runtime context using actual work directory for local execution.
+		runtime := buildRuntimeContext(tool, workDir)
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
+		}
+		r.logger.Debug("built command", "cmd", cmdResult.Command)
+		result, execErr = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
 
-	if err != nil {
+	if execErr != nil {
 		// Record failed step metrics if enabled
 		if r.metrics != nil && r.metrics.Enabled() {
 			metricsStepID := stepID
@@ -447,7 +496,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 				ExitCode: -1,
 			})
 		}
-		return nil, err
+		return nil, execErr
 	}
 
 	// Record successful step metrics if enabled
@@ -716,14 +765,18 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		iwdr.UpdateInputPaths(mergedInputs, workDir, iwdResult.StagedPaths)
 	}
 
-	// Build runtime context.
-	runtime := buildRuntimeContext(tool, workDir)
-
-	// Build command line.
+	// Build command line with runtime context appropriate for the execution environment.
 	builder := cmdline.NewBuilder(expressionLib)
-	cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-	if err != nil {
-		return nil, fmt.Errorf("build command: %w", err)
+
+	// Apply ToolTimeLimit if specified.
+	timeLimit := getToolTimeLimit(tool, mergedInputs)
+	if timeLimit < 0 {
+		return nil, fmt.Errorf("invalid ToolTimeLimit: timelimit must be non-negative, got %d", timeLimit)
+	}
+	if timeLimit > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeLimit)*time.Second)
+		defer cancel()
 	}
 
 	// Execute based on container runtime
@@ -734,6 +787,17 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
 		dockerOutputDir := getDockerOutputDirectory(tool)
+		// Build runtime context with container paths.
+		containerWorkDir := "/var/spool/cwl"
+		if dockerOutputDir != "" {
+			containerWorkDir = dockerOutputDir
+		}
+		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime.TmpDir = "/tmp"
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
+		}
 		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
@@ -741,8 +805,25 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
 		}
 		dockerOutputDir := getDockerOutputDirectory(tool)
+		// Build runtime context with container paths.
+		containerWorkDir := "/var/spool/cwl"
+		if dockerOutputDir != "" {
+			containerWorkDir = dockerOutputDir
+		}
+		runtime := buildRuntimeContext(tool, containerWorkDir)
+		runtime.TmpDir = "/tmp"
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
+		}
 		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
 	default:
+		// Build runtime context using actual work directory for local execution.
+		runtime := buildRuntimeContext(tool, workDir)
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
+		}
 		return r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
 	}
 }
@@ -759,6 +840,233 @@ func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[stri
 		ExpressionLib: expressionLib,
 		CWLDir:        r.cwlDir,
 	})
+}
+
+// executeSubWorkflow executes a nested workflow and returns its outputs.
+func (r *Runner) executeSubWorkflow(ctx context.Context, subGraph *cwl.GraphDocument, inputs map[string]any) (map[string]any, error) {
+	// Merge workflow input defaults with provided inputs.
+	mergedInputs := mergeWorkflowInputDefaults(subGraph.Workflow, inputs, r.cwlDir)
+
+	// Build execution order using DAG.
+	dag, err := parser.BuildDAG(subGraph.Workflow)
+	if err != nil {
+		return nil, fmt.Errorf("build DAG: %w", err)
+	}
+
+	// Track outputs from completed steps.
+	stepOutputs := make(map[string]map[string]any)
+
+	// Create evaluator for expressions (valueFrom, when).
+	evaluator := cwlexpr.NewEvaluator(extractExpressionLib(subGraph, r.cwlDir))
+
+	// Execute steps in topological order.
+	for _, stepID := range dag.Order {
+		step := subGraph.Workflow.Steps[stepID]
+
+		// Resolve step inputs.
+		var stepEvaluator *cwlexpr.Evaluator
+		if len(step.Scatter) == 0 {
+			stepEvaluator = evaluator
+		}
+		stepInputs, err := resolveStepInputs(step, mergedInputs, stepOutputs, r.cwlDir, stepEvaluator)
+		if err != nil {
+			return nil, fmt.Errorf("step %s: %w", stepID, err)
+		}
+
+		// Check if this is an ExpressionTool.
+		toolRef := stripHash(step.Run)
+		if exprTool, ok := subGraph.ExpressionTools[toolRef]; ok {
+			// Handle conditional execution.
+			if step.When != "" {
+				evalCtx := cwlexpr.NewContext(stepInputs)
+				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+				if err != nil {
+					return nil, fmt.Errorf("step %s when expression: %w", stepID, err)
+				}
+				if !shouldRun {
+					r.logger.Info("skipping step (when condition false)", "step", stepID)
+					stepOutputs[stepID] = make(map[string]any)
+					continue
+				}
+			}
+
+			outputs, err := r.executeExpressionTool(exprTool, stepInputs, subGraph)
+			if err != nil {
+				return nil, fmt.Errorf("step %s: %w", stepID, err)
+			}
+			stepOutputs[stepID] = outputs
+			continue
+		}
+
+		// Check if this is a nested SubWorkflow.
+		if nestedGraph, ok := subGraph.SubWorkflows[toolRef]; ok {
+			// Handle conditional execution.
+			if step.When != "" {
+				evalCtx := cwlexpr.NewContext(stepInputs)
+				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+				if err != nil {
+					return nil, fmt.Errorf("step %s when expression: %w", stepID, err)
+				}
+				if !shouldRun {
+					r.logger.Info("skipping step (when condition false)", "step", stepID)
+					stepOutputs[stepID] = make(map[string]any)
+					continue
+				}
+			}
+
+			r.logger.Info("executing nested subworkflow", "step", stepID, "workflow", toolRef)
+			outputs, err := r.executeSubWorkflow(ctx, nestedGraph, stepInputs)
+			if err != nil {
+				return nil, fmt.Errorf("step %s: %w", stepID, err)
+			}
+			stepOutputs[stepID] = outputs
+			continue
+		}
+
+		// Otherwise it's a CommandLineTool.
+		tool := subGraph.Tools[toolRef]
+		if tool == nil {
+			return nil, fmt.Errorf("step %s: tool %s not found", stepID, step.Run)
+		}
+
+		// Merge step requirements into tool.
+		mergeStepRequirements(tool, &step)
+
+		// Handle scatter if present.
+		if len(step.Scatter) > 0 {
+			outputs, err := r.executeScatterWithMetrics(ctx, subGraph, tool, step, stepInputs, stepID, evaluator)
+			if err != nil {
+				return nil, fmt.Errorf("step %s: %w", stepID, err)
+			}
+			stepOutputs[stepID] = outputs
+		} else {
+			// Handle conditional execution for non-scattered steps.
+			if step.When != "" {
+				evalCtx := cwlexpr.NewContext(stepInputs)
+				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+				if err != nil {
+					return nil, fmt.Errorf("step %s when expression: %w", stepID, err)
+				}
+				if !shouldRun {
+					r.logger.Info("skipping step (when condition false)", "step", stepID)
+					stepOutputs[stepID] = make(map[string]any)
+					continue
+				}
+			}
+
+			outputs, err := r.executeToolWithStepID(ctx, subGraph, tool, stepInputs, false, stepID)
+			if err != nil {
+				return nil, fmt.Errorf("step %s: %w", stepID, err)
+			}
+			stepOutputs[stepID] = outputs
+		}
+	}
+
+	// Collect workflow outputs (pass inputs for passthrough workflows).
+	workflowOutputs, err := collectWorkflowOutputs(subGraph.Workflow, mergedInputs, stepOutputs)
+	if err != nil {
+		return nil, fmt.Errorf("collect outputs: %w", err)
+	}
+
+	return workflowOutputs, nil
+}
+
+// executeScatterSubWorkflow executes a scatter over a subworkflow.
+func (r *Runner) executeScatterSubWorkflow(ctx context.Context, subGraph *cwl.GraphDocument,
+	step cwl.Step, inputs map[string]any, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
+
+	if len(step.Scatter) == 0 {
+		return nil, fmt.Errorf("no scatter inputs specified")
+	}
+
+	// Determine scatter method.
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Get the arrays to scatter over.
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := inputs[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			return nil, fmt.Errorf("scatter input %q is not an array", scatterInput)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Generate input combinations.
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = dotProduct(inputs, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		combinations = nestedCrossProduct(inputs, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = flatCrossProduct(inputs, step.Scatter, scatterArrays)
+	default:
+		return nil, fmt.Errorf("unknown scatter method: %s", method)
+	}
+
+	r.logger.Info("executing scatter over subworkflow", "workflow", subGraph.Workflow.ID, "iterations", len(combinations))
+
+	// Execute each scatter iteration.
+	results := make([]map[string]any, len(combinations))
+	for i, iterInputs := range combinations {
+		// Evaluate valueFrom for this iteration if evaluator is provided.
+		if evaluator != nil {
+			for inputID, stepInput := range step.In {
+				if stepInput.ValueFrom != "" {
+					self := iterInputs[inputID]
+					ctx := cwlexpr.NewContext(iterInputs).WithSelf(self)
+					evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, ctx)
+					if err != nil {
+						return nil, fmt.Errorf("iteration %d input %s valueFrom: %w", i, inputID, err)
+					}
+					iterInputs[inputID] = evaluated
+				}
+			}
+		}
+
+		// Check 'when' condition for this iteration.
+		if step.When != "" && evaluator != nil {
+			evalCtx := cwlexpr.NewContext(iterInputs)
+			shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+			if err != nil {
+				return nil, fmt.Errorf("iteration %d when expression: %w", i, err)
+			}
+			if !shouldRun {
+				r.logger.Debug("skipping scatter iteration (when condition false)", "iteration", i)
+				results[i] = nil
+				continue
+			}
+		}
+
+		// Execute the subworkflow for this iteration.
+		outputs, err := r.executeSubWorkflow(ctx, subGraph, iterInputs)
+		if err != nil {
+			return nil, fmt.Errorf("iteration %d: %w", i, err)
+		}
+		results[i] = outputs
+	}
+
+	// Aggregate outputs: merge results into output arrays.
+	outputs := make(map[string]any)
+	for _, outID := range step.Out {
+		arr := make([]any, len(results))
+		for i, result := range results {
+			if result != nil {
+				arr[i] = result[outID]
+			}
+		}
+		outputs[outID] = arr
+	}
+	return outputs, nil
 }
 
 // executeWorkflow executes a workflow.
@@ -844,6 +1152,44 @@ func (r *Runner) executeWorkflowSequential(ctx context.Context, graph *cwl.Graph
 			}
 
 			outputs, err := r.executeExpressionTool(exprTool, stepInputs, graph)
+			if err != nil {
+				return fmt.Errorf("step %s: %w", stepID, err)
+			}
+			stepOutputs[stepID] = outputs
+			continue
+		}
+
+		// Check if this is a SubWorkflow.
+		if subGraph, ok := graph.SubWorkflows[toolRef]; ok {
+			// Handle scatter if present.
+			if len(step.Scatter) > 0 {
+				outputs, err := r.executeScatterSubWorkflow(ctx, subGraph, step, stepInputs, evaluator)
+				if err != nil {
+					r.finalizeAndPrintMetrics(w)
+					return fmt.Errorf("step %s: %w", stepID, err)
+				}
+				stepOutputs[stepID] = outputs
+				continue
+			}
+
+			// Handle conditional execution.
+			if step.When != "" {
+				evalCtx := cwlexpr.NewContext(stepInputs)
+				shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+				if err != nil {
+					return fmt.Errorf("step %s when expression: %w", stepID, err)
+				}
+				if !shouldRun {
+					r.logger.Info("skipping step (when condition false)", "step", stepID)
+					stepOutputs[stepID] = make(map[string]any)
+					continue
+				}
+			}
+
+			r.logger.Info("executing subworkflow", "step", stepID, "workflow", toolRef)
+
+			// Execute the subworkflow recursively.
+			outputs, err := r.executeSubWorkflow(ctx, subGraph, stepInputs)
 			if err != nil {
 				return fmt.Errorf("step %s: %w", stepID, err)
 			}
@@ -1457,6 +1803,28 @@ func extractExpressionLib(graph *cwl.GraphDocument, cwlDir string) []string {
 	return nil
 }
 
+// extractExpressionLibFromTool extracts expression library from a single tool.
+func extractExpressionLibFromTool(tool *cwl.CommandLineTool) []string {
+	if tool.Requirements == nil {
+		return nil
+	}
+	ijsReq, ok := tool.Requirements["InlineJavascriptRequirement"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	lib, ok := ijsReq["expressionLib"].([]any)
+	if !ok {
+		return nil
+	}
+	var result []string
+	for _, item := range lib {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
 // hasDockerRequirement checks if a tool or workflow has a DockerRequirement.
 // It checks tool requirements, tool hints, workflow requirements, and workflow hints.
 func hasDockerRequirement(tool *cwl.CommandLineTool, wf *cwl.Workflow) bool {
@@ -1560,6 +1928,57 @@ func getResourceRequirement(tool *cwl.CommandLineTool) map[string]any {
 		}
 	}
 	return nil
+}
+
+// getToolTimeLimit extracts the ToolTimeLimit timelimit value in seconds.
+// Returns 0 if not specified or if value is <= 0 (meaning no limit).
+// Supports expression evaluation for dynamic timelimit values.
+func getToolTimeLimit(tool *cwl.CommandLineTool, inputs map[string]any) int {
+	// Check requirements first (ToolTimeLimit is a requirement, not a hint).
+	if tool.Requirements == nil {
+		return 0
+	}
+	ttl, ok := tool.Requirements["ToolTimeLimit"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	limit, ok := ttl["timelimit"]
+	if !ok {
+		return 0
+	}
+
+	var result int
+	switch v := limit.(type) {
+	case int:
+		result = v
+	case float64:
+		result = int(v)
+	case string:
+		// Handle expression like $(1+2)
+		if cwlexpr.IsExpression(v) {
+			expressionLib := extractExpressionLibFromTool(tool)
+			evaluator := cwlexpr.NewEvaluator(expressionLib)
+			ctx := cwlexpr.NewContext(inputs)
+			evaluated, err := evaluator.Evaluate(v, ctx)
+			if err != nil {
+				return 0
+			}
+			switch ev := evaluated.(type) {
+			case int:
+				result = ev
+			case int64:
+				result = int(ev)
+			case float64:
+				result = int(ev)
+			default:
+				return 0
+			}
+		}
+	}
+
+	// Return the result (negative values will be handled by caller)
+	return result
+	return 0
 }
 
 // mergeWorkflowRequirements merges workflow-level requirements into the tool.

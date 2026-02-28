@@ -134,10 +134,25 @@ func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]
 	inputNames := sortedKeys(tool.Inputs)
 	for _, name := range inputNames {
 		input := tool.Inputs[name]
+		inputValue := inputs[name]
+
+		// Handle record inputs with field bindings but no top-level binding.
+		// Each field generates its own cmdPart at its own position.
+		if input.InputBinding == nil && len(input.RecordFields) > 0 && hasRecordFieldInputBindings(input.RecordFields) {
+			if recordVal, ok := inputValue.(map[string]any); ok {
+				fieldParts, err := b.buildRecordFieldParts(name, &input, recordVal, inputs, runtime)
+				if err != nil {
+					return nil, fmt.Errorf("input %q: %w", name, err)
+				}
+				parts = append(parts, fieldParts...)
+			}
+			continue
+		}
+
 		if input.InputBinding == nil {
 			continue
 		}
-		inputValue := inputs[name]
+
 		part, err := b.buildInputBinding(name, &input, inputValue, inputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("input %q: %w", name, err)
@@ -516,7 +531,7 @@ func (b *Builder) buildRecordInputBinding(name string, input *cwl.ToolInputParam
 
 	// Build the final args: record prefix followed by sorted field args.
 	var args []string
-	if binding.Prefix != "" {
+	if binding != nil && binding.Prefix != "" {
 		args = append(args, binding.Prefix)
 	}
 	for _, fp := range fieldParts {
@@ -532,6 +547,74 @@ func (b *Builder) buildRecordInputBinding(name string, input *cwl.ToolInputParam
 		name:     name,
 		args:     args,
 	}, nil
+}
+
+// buildRecordFieldParts builds individual cmdParts for each record field with an inputBinding.
+// This is used when a record input has no top-level inputBinding, but its fields have their own bindings.
+// Each field generates a separate cmdPart at the field's own position.
+func (b *Builder) buildRecordFieldParts(name string, input *cwl.ToolInputParam, recordVal map[string]any, inputs map[string]any, runtime *cwlexpr.RuntimeContext) ([]cmdPart, error) {
+	var parts []cmdPart
+
+	ctx := cwlexpr.NewContext(inputs)
+	if runtime != nil {
+		ctx = ctx.WithRuntime(runtime)
+	}
+
+	for _, field := range input.RecordFields {
+		if field.InputBinding == nil {
+			continue
+		}
+
+		fieldValue, exists := recordVal[field.Name]
+		if !exists || fieldValue == nil {
+			continue
+		}
+
+		// Create context with field value as self.
+		fieldCtx := ctx.WithSelf(fieldValue)
+
+		fieldPos, err := b.evaluatePosition(field.InputBinding.Position, fieldCtx)
+		if err != nil {
+			return nil, fmt.Errorf("field %s position: %w", field.Name, err)
+		}
+
+		// Determine shellQuote - default is true.
+		shouldQuote := true
+		if field.InputBinding.ShellQuote != nil {
+			shouldQuote = *field.InputBinding.ShellQuote
+		}
+
+		// Convert field value to string.
+		var strValue string
+		if field.InputBinding.ValueFrom != "" {
+			evaluated, err := b.evaluator.Evaluate(field.InputBinding.ValueFrom, fieldCtx)
+			if err != nil {
+				return nil, err
+			}
+			strValue = valueToString(evaluated)
+		} else {
+			strValue = inputValueToString(fieldValue, field.InputBinding.ItemSeparator)
+		}
+
+		if strValue == "" {
+			continue
+		}
+
+		args := buildPrefixedArgs(field.InputBinding.Prefix, strValue, field.InputBinding.Separate)
+		shellQuotes := make([]bool, len(args))
+		for i := range shellQuotes {
+			shellQuotes[i] = shouldQuote
+		}
+
+		parts = append(parts, cmdPart{
+			position:   fieldPos,
+			name:       name + "." + field.Name,
+			args:       args,
+			shellQuote: shellQuotes,
+		})
+	}
+
+	return parts, nil
 }
 
 // buildPrefixedArgs builds the argument array with optional prefix.
@@ -655,6 +738,16 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// hasRecordFieldInputBindings checks if any record field has an inputBinding.
+func hasRecordFieldInputBindings(fields []cwl.RecordField) bool {
+	for _, field := range fields {
+		if field.InputBinding != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // evaluatePosition evaluates a position value that may be an expression.
