@@ -223,6 +223,12 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		}
 	}
 
+	// Network isolation: disable network access unless NetworkAccess requirement enables it.
+	// CWL spec: NetworkAccess defaults to false (no network access).
+	if !hasNetworkAccess(tool) {
+		dockerArgs = append(dockerArgs, "--network", "none")
+	}
+
 	// Determine container working directory.
 	containerWorkDir := "/var/spool/cwl"
 	if dockerOutputDir != "" {

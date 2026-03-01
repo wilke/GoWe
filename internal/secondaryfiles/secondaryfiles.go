@@ -161,10 +161,11 @@ func resolveForFile(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, c
 
 // ValidateInput checks that required secondary files are present for a tool input.
 // It handles both direct file inputs and record fields with secondaryFiles requirements.
-func ValidateInput(inputID string, inputDef cwl.ToolInputParam, val any) error {
+// allInputs is passed to evaluate expressions that reference $(inputs.xxx).
+func ValidateInput(inputID string, inputDef cwl.ToolInputParam, val any, allInputs map[string]any) error {
 	// Check if input parameter has secondaryFiles requirements.
 	if len(inputDef.SecondaryFiles) > 0 {
-		if err := checkFileHasSecondaryFiles(inputID, val, inputDef.SecondaryFiles); err != nil {
+		if err := checkFileHasSecondaryFiles(inputID, val, inputDef.SecondaryFiles, allInputs); err != nil {
 			return err
 		}
 	}
@@ -187,7 +188,7 @@ func ValidateInput(inputID string, inputDef cwl.ToolInputParam, val any) error {
 			}
 
 			fieldPath := inputID + "." + field.Name
-			if err := checkFileHasSecondaryFiles(fieldPath, fieldVal, field.SecondaryFiles); err != nil {
+			if err := checkFileHasSecondaryFiles(fieldPath, fieldVal, field.SecondaryFiles, allInputs); err != nil {
 				return err
 			}
 		}
@@ -197,12 +198,12 @@ func ValidateInput(inputID string, inputDef cwl.ToolInputParam, val any) error {
 }
 
 // checkFileHasSecondaryFiles validates that a File value has the required secondary files.
-func checkFileHasSecondaryFiles(path string, val any, required []cwl.SecondaryFileSchema) error {
+func checkFileHasSecondaryFiles(path string, val any, required []cwl.SecondaryFileSchema, allInputs map[string]any) error {
 	switch v := val.(type) {
 	case map[string]any:
 		// Single File object.
 		if class, ok := v["class"].(string); ok && class == "File" {
-			return validateFileSecondaryFiles(path, v, required)
+			return validateFileSecondaryFiles(path, v, required, allInputs)
 		}
 		return nil
 
@@ -210,7 +211,7 @@ func checkFileHasSecondaryFiles(path string, val any, required []cwl.SecondaryFi
 		// Array of Files.
 		for i, item := range v {
 			itemPath := fmt.Sprintf("%s[%d]", path, i)
-			if err := checkFileHasSecondaryFiles(itemPath, item, required); err != nil {
+			if err := checkFileHasSecondaryFiles(itemPath, item, required, allInputs); err != nil {
 				return err
 			}
 		}
@@ -222,7 +223,7 @@ func checkFileHasSecondaryFiles(path string, val any, required []cwl.SecondaryFi
 }
 
 // validateFileSecondaryFiles checks that a single File object has the required secondary files.
-func validateFileSecondaryFiles(path string, fileObj map[string]any, required []cwl.SecondaryFileSchema) error {
+func validateFileSecondaryFiles(path string, fileObj map[string]any, required []cwl.SecondaryFileSchema, allInputs map[string]any) error {
 	// Get the list of secondary files attached to this file.
 	existingSecondary := make(map[string]bool)
 	if secFiles, ok := fileObj["secondaryFiles"].([]any); ok {
@@ -249,13 +250,43 @@ func validateFileSecondaryFiles(path string, fileObj map[string]any, required []
 
 	// Check each required secondary file.
 	for _, schema := range required {
-		// Skip if required is explicitly false.
-		if req, ok := schema.Required.(bool); ok && !req {
+		// Skip if required is explicitly false or evaluates to false.
+		isRequired := true
+		switch req := schema.Required.(type) {
+		case bool:
+			isRequired = req
+		case nil:
+			// nil means required (default behavior)
+			isRequired = true
+		case string:
+			// Expression - evaluate it.
+			if cwlexpr.IsExpression(req) {
+				evaluator := cwlexpr.NewEvaluator(nil)
+				ctx := cwlexpr.NewContext(allInputs).WithSelf(fileObj)
+				result, err := evaluator.Evaluate(req, ctx)
+				if err == nil {
+					switch v := result.(type) {
+					case bool:
+						isRequired = v
+					case nil:
+						// Undefined/null result means not required
+						isRequired = false
+					default:
+						// Treat truthy/falsy: only explicit false or nil means not required
+						isRequired = result != nil && result != false
+					}
+				} else {
+					// Expression evaluation failed - treat as not required
+					isRequired = false
+				}
+			}
+		}
+		if !isRequired {
 			continue
 		}
 
 		// Compute the expected secondary file name.
-		expectedName := ComputeSecondaryFileName(basename, schema.Pattern, fileObj, nil)
+		expectedName := ComputeSecondaryFileName(basename, schema.Pattern, fileObj, allInputs)
 
 		// Skip empty names (expression evaluation failed or returned nil).
 		if expectedName == "" {

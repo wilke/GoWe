@@ -1659,16 +1659,13 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 	}
 
 	// Step 7: For File objects, resolve secondaryFiles entries.
+	// Secondary file locations from job files are relative to the job file's baseDir,
+	// not the primary file's directory. This matches CWL spec behavior.
 	if secFiles, ok := resolved["secondaryFiles"].([]any); ok {
-		// Use the file's directory for resolving relative paths in secondaryFiles.
-		dirPath := baseDir
-		if path, ok := resolved["path"].(string); ok && path != "" {
-			dirPath = filepath.Dir(path)
-		}
 		resolvedSecFiles := make([]any, len(secFiles))
 		for i, item := range secFiles {
 			if itemMap, ok := item.(map[string]any); ok {
-				resolvedSecFiles[i] = resolveFileObject(itemMap, dirPath)
+				resolvedSecFiles[i] = resolveFileObject(itemMap, baseDir)
 			} else {
 				resolvedSecFiles[i] = item
 			}
@@ -2472,7 +2469,7 @@ func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 
 		// Validate secondaryFiles requirements.
 		if val != nil {
-			if err := secondaryfiles.ValidateInput(inputID, inputDef, val); err != nil {
+			if err := secondaryfiles.ValidateInput(inputID, inputDef, val, merged); err != nil {
 				return nil, err
 			}
 		}
@@ -2639,19 +2636,23 @@ func stageRenamedFileOrDirectory(obj map[string]any, stageDir string) error {
 	basename, hasBasename := obj["basename"].(string)
 	path, hasPath := obj["path"].(string)
 
-	// Get dirname for this file - used for staging secondary files relative to primary.
-	dirname := stageDir
+	// Get the directory for staging secondary files.
+	// For primary files, this is derived from dirname or path.
+	// For secondary files, we use stageDir (the primary file's dirname).
+	primaryDirname := stageDir
 	if d, ok := obj["dirname"].(string); ok && d != "" {
-		dirname = d
+		primaryDirname = d
 	} else if hasPath && path != "" {
-		dirname = filepath.Dir(path)
+		primaryDirname = filepath.Dir(path)
 	}
 
 	// Process secondary files - they should be staged relative to this file's directory.
 	if secFiles, ok := obj["secondaryFiles"].([]any); ok {
 		for _, sf := range secFiles {
 			if sfMap, ok := sf.(map[string]any); ok {
-				if err := stageRenamedFileOrDirectory(sfMap, dirname); err != nil {
+				// Secondary files should be staged in the same directory as this file
+				// (which is primaryDirname for this file).
+				if err := stageRenamedFileOrDirectory(sfMap, primaryDirname); err != nil {
 					return err
 				}
 			}
@@ -2672,12 +2673,20 @@ func stageRenamedFileOrDirectory(obj map[string]any, stageDir string) error {
 	// Create symlink with the new basename in stageDir.
 	linkPath := filepath.Join(stageDir, basename)
 
-	// Skip if link already exists.
+	// Check if link already exists.
 	if _, err := os.Lstat(linkPath); err == nil {
-		// Link exists, just update path.
-		obj["path"] = linkPath
-		obj["dirname"] = stageDir
-		return nil
+		// Link exists - verify it points to the correct target.
+		existingTarget, readErr := os.Readlink(linkPath)
+		if readErr == nil && existingTarget == path {
+			// Link exists and points to the correct target.
+			obj["path"] = linkPath
+			obj["dirname"] = stageDir
+			return nil
+		}
+		// Link exists but points to wrong target - remove and recreate.
+		if err := os.Remove(linkPath); err != nil {
+			return fmt.Errorf("remove stale symlink %s: %w", linkPath, err)
+		}
 	}
 
 	// Create the symlink.

@@ -157,6 +157,41 @@ func hasShellCommandRequirement(tool *cwl.CommandLineTool) bool {
 	return false
 }
 
+// hasNetworkAccess checks if a tool has NetworkAccessRequirement with networkAccess: true.
+// CWL spec: Network access is disabled by default in containers.
+func hasNetworkAccess(tool *cwl.CommandLineTool) bool {
+	// Check requirements first.
+	if tool.Requirements != nil {
+		// Check both "NetworkAccessRequirement" and "NetworkAccess" keys.
+		for _, key := range []string{"NetworkAccessRequirement", "NetworkAccess"} {
+			if req, ok := tool.Requirements[key]; ok {
+				if reqMap, ok := req.(map[string]any); ok {
+					if na, ok := reqMap["networkAccess"]; ok {
+						if b, ok := na.(bool); ok {
+							return b
+						}
+					}
+				}
+			}
+		}
+	}
+	// Check hints.
+	if tool.Hints != nil {
+		for _, key := range []string{"NetworkAccessRequirement", "NetworkAccess"} {
+			if req, ok := tool.Hints[key]; ok {
+				if reqMap, ok := req.(map[string]any); ok {
+					if na, ok := reqMap["networkAccess"]; ok {
+						if b, ok := na.(bool); ok {
+							return b
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // hasStdoutOutput checks if the tool has any output of type "stdout".
 func hasStdoutOutput(tool *cwl.CommandLineTool) bool {
 	for _, output := range tool.Outputs {
