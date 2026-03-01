@@ -1307,6 +1307,7 @@ func parseArgument(a map[string]any) cwl.Argument {
 }
 
 // parseSecondaryFiles parses the secondaryFiles field.
+// Handles the CWL shorthand: ".bai?" means {pattern: ".bai", required: false}
 func parseSecondaryFiles(v any) []cwl.SecondaryFileSchema {
 	if v == nil {
 		return nil
@@ -1317,12 +1318,12 @@ func parseSecondaryFiles(v any) []cwl.SecondaryFileSchema {
 	switch sf := v.(type) {
 	case string:
 		// Single pattern string.
-		result = append(result, cwl.SecondaryFileSchema{Pattern: sf})
+		result = append(result, parseSecondaryFilePattern(sf))
 	case []any:
 		for _, item := range sf {
 			switch s := item.(type) {
 			case string:
-				result = append(result, cwl.SecondaryFileSchema{Pattern: s})
+				result = append(result, parseSecondaryFilePattern(s))
 			case map[string]any:
 				result = append(result, cwl.SecondaryFileSchema{
 					Pattern:  stringField(s, "pattern"),
@@ -1339,6 +1340,21 @@ func parseSecondaryFiles(v any) []cwl.SecondaryFileSchema {
 	}
 
 	return result
+}
+
+// parseSecondaryFilePattern parses a string pattern, handling the ? suffix for optional.
+// ".bai" -> {pattern: ".bai", required: nil (defaults to true)}
+// ".bai?" -> {pattern: ".bai", required: false}
+func parseSecondaryFilePattern(pattern string) cwl.SecondaryFileSchema {
+	// Check for trailing ? which means optional (but not inside expressions).
+	// Don't strip ? from expressions like $(...) or ${...}
+	if strings.HasSuffix(pattern, "?") && !strings.Contains(pattern, "$(") && !strings.Contains(pattern, "${") {
+		return cwl.SecondaryFileSchema{
+			Pattern:  pattern[:len(pattern)-1],
+			Required: false,
+		}
+	}
+	return cwl.SecondaryFileSchema{Pattern: pattern}
 }
 
 // ToModel converts a typed CWL GraphDocument to a domain model Workflow.
