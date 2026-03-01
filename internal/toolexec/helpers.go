@@ -228,7 +228,8 @@ func isArrayOutputType(outputType any) bool {
 
 // extractEnvVars extracts environment variables from EnvVarRequirement in hints/requirements.
 // It evaluates CWL expressions in envValue using the provided inputs.
-func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any) map[string]string {
+// jobRequirements are cwl:requirements from the job file, which take highest precedence.
+func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any) map[string]string {
 	envVars := make(map[string]string)
 
 	// Get expression library from InlineJavascriptRequirement if present.
@@ -248,20 +249,25 @@ func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any) map[string
 	evaluator := cwlexpr.NewEvaluator(expressionLib)
 	ctx := cwlexpr.NewContext(inputs)
 
-	// Check requirements first (takes precedence)
+	// Check hints first (lowest precedence)
+	if envReq := getEnvVarRequirement(tool.Hints); envReq != nil {
+		processEnvDef(envReq, envVars, evaluator, ctx)
+	}
+
+	// Check requirements (overrides hints)
 	if envReq := getEnvVarRequirement(tool.Requirements); envReq != nil {
 		processEnvDef(envReq, envVars, evaluator, ctx)
 	}
 
-	// Check hints
-	if envReq := getEnvVarRequirement(tool.Hints); envReq != nil {
-		// Only add hints if not already in requirements
-		hintVars := make(map[string]string)
-		processEnvDef(envReq, hintVars, evaluator, ctx)
-		for k, v := range hintVars {
-			if _, exists := envVars[k]; !exists {
-				envVars[k] = v
-			}
+	// Check job requirements (highest precedence, overrides tool requirements)
+	for _, req := range jobRequirements {
+		reqMap, ok := req.(map[string]any)
+		if !ok {
+			continue
+		}
+		class, _ := reqMap["class"].(string)
+		if class == "EnvVarRequirement" {
+			processEnvDef(reqMap, envVars, evaluator, ctx)
 		}
 	}
 

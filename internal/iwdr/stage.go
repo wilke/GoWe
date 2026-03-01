@@ -55,7 +55,8 @@ func resolveIWDListing(listingRaw any, inputs map[string]any, evaluator *cwlexpr
 // a string expression that evaluates to File/Directory/array, or null.
 // Returns ContainerMounts for items with absolute entryname paths.
 // allowAbsoluteEntryname controls whether absolute paths in entryname are permitted.
-func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
 	switch v := item.(type) {
 	case map[string]any:
 		// Check if this is a File or Directory object (has "class" field).
@@ -63,14 +64,14 @@ func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cw
 			switch class {
 			case "File":
 				resolveIWDObjectPaths(v, cwlDir)
-				return stageIWDFile(v, "", false, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+				return stageIWDFile(v, "", false, workDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			case "Directory":
 				resolveIWDObjectPaths(v, cwlDir)
-				return stageIWDDirectory(v, "", false, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+				return stageIWDDirectory(v, "", false, workDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			}
 		}
 		// Otherwise treat as Dirent.
-		return stageIWDDirent(v, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+		return stageIWDDirent(v, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 
 	case []any:
 		// An array in listing — flatten and stage each item.
@@ -79,7 +80,7 @@ func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cw
 			if sub == nil {
 				continue
 			}
-			subMounts, err := stageIWDItem(sub, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			subMounts, err := stageIWDItem(sub, inputs, workDir, evaluator, cwlDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			if err != nil {
 				return nil, err
 			}
@@ -95,7 +96,7 @@ func stageIWDItem(item any, inputs map[string]any, workDir string, evaluator *cw
 			if err != nil {
 				return nil, fmt.Errorf("evaluate listing item: %w", err)
 			}
-			return stageIWDEvaluatedResult(result, "", false, workDir, inputs, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+			return stageIWDEvaluatedResult(result, "", false, workDir, inputs, evaluator, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 		}
 		return nil, nil
 
@@ -137,7 +138,8 @@ func resolveIWDObjectPaths(obj map[string]any, cwlDir string) {
 // stageIWDDirent stages a Dirent entry (map with entry, optional entryname and writable).
 // Returns ContainerMounts for items with absolute entryname paths.
 // allowAbsoluteEntryname controls whether absolute paths in entryname are permitted.
-func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, cwlDir string, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
 	entryname, _ := dirent["entryname"].(string)
 	entryRaw := dirent["entry"]
 	writable, _ := dirent["writable"].(bool)
@@ -174,15 +176,15 @@ func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string
 	// Evaluate entry.
 	switch v := entryRaw.(type) {
 	case string:
-		return stageIWDStringEntry(v, entryname, writable, inputs, workDir, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+		return stageIWDStringEntry(v, entryname, writable, inputs, workDir, evaluator, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 	case map[string]any:
 		// File/Directory object literal.
 		if class, ok := v["class"].(string); ok {
 			switch class {
 			case "File":
-				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			case "Directory":
-				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			}
 		}
 		return nil, nil
@@ -193,7 +195,8 @@ func stageIWDDirent(dirent map[string]any, inputs map[string]any, workDir string
 
 // stageIWDStringEntry handles a Dirent entry that is a string (literal or expression).
 // Returns ContainerMounts for items with absolute entryname paths.
-func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[string]any, workDir string, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
 	if !cwlexpr.IsExpression(entry) {
 		// Pure literal string content — unescape \$( to $(.
 		content := strings.ReplaceAll(entry, "\\$(", "$(")
@@ -218,11 +221,31 @@ func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[stri
 
 	if isSoleExpr {
 		// Single expression — result could be File, Directory, array, string, number, etc.
-		return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+		return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 	}
 
-	// String interpolation — result is always string content.
-	content := fmt.Sprintf("%v", evaluated)
+	// String interpolation — result is usually string content.
+	// However, if the expression returns an array or object (e.g., YAML pipe block with
+	// trailing newline makes IsSoleExpression return false), we should JSON serialize it.
+	// Per CWL spec test iwd-jsondump*-nl, JSON output should include trailing newline.
+	var content string
+	switch v := evaluated.(type) {
+	case []any:
+		// Array result — serialize to JSON with trailing newline.
+		content = iwdResultToString(v) + "\n"
+	case map[string]any:
+		// Object result — check if it's a File/Directory.
+		if class, ok := v["class"].(string); ok && (class == "File" || class == "Directory") {
+			return stageIWDEvaluatedResult(evaluated, entryname, writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
+		}
+		content = iwdResultToString(v) + "\n"
+	case string:
+		// String result — use as-is (includes any trailing text from original expression).
+		content = v
+	default:
+		// Number, boolean, etc. — serialize with trailing newline (for YAML pipe blocks).
+		content = iwdResultToString(v) + "\n"
+	}
 	if entryname == "" {
 		return nil, nil
 	}
@@ -232,7 +255,8 @@ func stageIWDStringEntry(entry, entryname string, writable bool, inputs map[stri
 // stageIWDEvaluatedResult stages the result of evaluating an expression.
 // The result can be a File, Directory, array, string, number, null, etc.
 // Returns ContainerMounts for items with absolute entryname paths.
-func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDir string, inputs map[string]any, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDir string, inputs map[string]any, evaluator *cwlexpr.Evaluator, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
 	if result == nil {
 		return nil, nil
 	}
@@ -242,9 +266,9 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 		if class, ok := v["class"].(string); ok {
 			switch class {
 			case "File":
-				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+				return stageIWDFile(v, entryname, writable, workDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			case "Directory":
-				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+				return stageIWDDirectory(v, entryname, writable, workDir, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 			}
 		}
 		// Object that isn't File/Directory — serialize to JSON.
@@ -261,7 +285,7 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 					// Array of File/Directory objects — stage each.
 					var mounts []ContainerMount
 					for _, item := range v {
-						itemMounts, err := stageIWDEvaluatedResult(item, "", writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+						itemMounts, err := stageIWDEvaluatedResult(item, "", writable, workDir, inputs, evaluator, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 						if err != nil {
 							return nil, err
 						}
@@ -296,7 +320,8 @@ func stageIWDEvaluatedResult(result any, entryname string, writable bool, workDi
 // When copyForContainer is true, files are copied instead of symlinked (for Docker/Apptainer).
 // If entryname is an absolute path and copyForContainer is true, returns a ContainerMount
 // for the file to be mounted at that path inside the container.
-func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
 	// Handle file literals: File objects with "contents" but no path/location.
 	// These need to be materialized as actual files before staging.
 	if _, err := fileliteral.MaterializeFileObject(fileObj); err != nil {
@@ -356,15 +381,17 @@ func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workD
 		stagedPaths[absSrc] = destPath
 	}
 
-	// Copy files when writable or when executing in container (symlinks don't work in containers).
-	if writable || copyForContainer {
+	// Copy files when writable (unless inplaceUpdate) or when executing in container.
+	// With InplaceUpdateRequirement: writable files are symlinked so modifications affect original.
+	shouldCopy := (writable && !inplaceUpdate) || copyForContainer
+	if shouldCopy {
 		if err := copyFile(srcPath, destPath); err != nil {
 			return nil, err
 		}
-		stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer)
+		stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer, inplaceUpdate)
 		return nil, nil
 	}
-	// Non-writable, local execution: symlink.
+	// Non-writable or inplaceUpdate: symlink.
 	absSrc, err := filepath.Abs(srcPath)
 	if err != nil {
 		absSrc = srcPath
@@ -372,12 +399,13 @@ func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workD
 	if err := os.Symlink(absSrc, destPath); err != nil {
 		return nil, err
 	}
-	stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer)
+	stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer, inplaceUpdate)
 	return nil, nil
 }
 
 // stageIWDSecondaryFiles stages secondaryFiles alongside a staged file.
-func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, writable bool, stagedPaths map[string]string, copyForContainer bool) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, writable bool, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool) {
 	secFiles, ok := fileObj["secondaryFiles"].([]any)
 	if !ok {
 		return
@@ -399,8 +427,9 @@ func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, wr
 		sfBasename := filepath.Base(sfPath)
 		sfDest := filepath.Join(workDir, sfBasename)
 		// If the primary file was renamed with entryname, don't rename secondaryFiles.
-		// Copy when writable or executing in container.
-		if writable || copyForContainer {
+		// Copy when writable (unless inplaceUpdate) or executing in container.
+		shouldCopy := (writable && !inplaceUpdate) || copyForContainer
+		if shouldCopy {
 			_ = copyFile(sfPath, sfDest)
 		} else {
 			absSf, _ := filepath.Abs(sfPath)
@@ -412,7 +441,8 @@ func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, wr
 // stageIWDDirectory stages a CWL Directory object into the work directory.
 // When copyForContainer is true, directories are copied instead of symlinked (for Docker/Apptainer).
 // If entryname is an absolute path and copyForContainer is true, returns a ContainerMount.
-func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
+// inplaceUpdate: if true, writable entries are symlinked instead of copied (InplaceUpdateRequirement).
+func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, workDir string, stagedPaths map[string]string, copyForContainer bool, inplaceUpdate bool, allowAbsoluteEntryname bool) ([]ContainerMount, error) {
 	// Get source path.
 	srcPath := ""
 	if p, ok := dirObj["path"].(string); ok {
@@ -457,13 +487,13 @@ func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, w
 			for _, item := range listing {
 				if fileObj, ok := item.(map[string]any); ok {
 					if class, _ := fileObj["class"].(string); class == "File" {
-						itemMounts, err := stageIWDFile(fileObj, "", writable, destPath, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+						itemMounts, err := stageIWDFile(fileObj, "", writable, destPath, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 						if err != nil {
 							return nil, err
 						}
 						mounts = append(mounts, itemMounts...)
 					} else if class == "Directory" {
-						itemMounts, err := stageIWDDirectory(fileObj, "", writable, destPath, stagedPaths, copyForContainer, allowAbsoluteEntryname)
+						itemMounts, err := stageIWDDirectory(fileObj, "", writable, destPath, stagedPaths, copyForContainer, inplaceUpdate, allowAbsoluteEntryname)
 						if err != nil {
 							return nil, err
 						}
@@ -475,12 +505,14 @@ func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, w
 		return mounts, nil
 	}
 
-	// Copy when writable or executing in container (symlinks don't work in containers).
-	if writable || copyForContainer {
+	// Copy when writable (unless inplaceUpdate) or executing in container.
+	// With InplaceUpdateRequirement: writable dirs are symlinked so modifications affect original.
+	shouldCopy := (writable && !inplaceUpdate) || copyForContainer
+	if shouldCopy {
 		return nil, copyDir(srcPath, destPath)
 	}
 
-	// Non-writable, local execution: symlink.
+	// Non-writable or inplaceUpdate: symlink.
 	absSrc, err := filepath.Abs(srcPath)
 	if err != nil {
 		absSrc = srcPath

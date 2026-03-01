@@ -89,14 +89,40 @@ func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 			}
 		}
 
-		// Handle record type with field-level outputBindings.
-		if output.Type == "record" && len(output.OutputRecordFields) > 0 {
-			recordOutput, err := e.collectRecordOutput(output.OutputRecordFields, workDir, inputs, tool, exitCode, outDir, namespaces)
-			if err != nil {
-				return nil, fmt.Errorf("output %s: %w", outputID, err)
+		// Handle record type.
+		// If the record has an outputBinding (with outputEval), use that.
+		// Otherwise, fall back to field-level outputBindings.
+		if output.Type == "record" {
+			if output.OutputBinding != nil && output.OutputBinding.OutputEval != "" {
+				// Record-level outputEval - evaluate it to get the whole record.
+				collected, err := e.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool, exitCode, outDir)
+				if err != nil {
+					return nil, fmt.Errorf("output %s: %w", outputID, err)
+				}
+				// Process File objects in the record to add checksum, size, etc.
+				if recordMap, ok := collected.(map[string]any); ok {
+					for fieldName, fieldValue := range recordMap {
+						if fileMap, ok := fieldValue.(map[string]any); ok {
+							if class, _ := fileMap["class"].(string); class == "File" {
+								processedFile, err := processOutputFileObject(fileMap)
+								if err == nil {
+									recordMap[fieldName] = processedFile
+								}
+							}
+						}
+					}
+				}
+				outputs[outputID] = collected
+				continue
 			}
-			outputs[outputID] = recordOutput
-			continue
+			if len(output.OutputRecordFields) > 0 {
+				recordOutput, err := e.collectRecordOutput(output.OutputRecordFields, workDir, inputs, tool, exitCode, outDir, namespaces)
+				if err != nil {
+					return nil, fmt.Errorf("output %s: %w", outputID, err)
+				}
+				outputs[outputID] = recordOutput
+				continue
+			}
 		}
 
 		// Handle standard outputBinding
@@ -141,6 +167,11 @@ func (e *Executor) collectRecordOutput(fields []cwl.OutputRecordField, workDir s
 		// Add secondaryFiles to collected File objects.
 		if len(field.SecondaryFiles) > 0 {
 			collected = e.addSecondaryFilesToOutput(collected, field.SecondaryFiles, workDir, inputs)
+		}
+
+		// Apply format to collected File objects.
+		if field.Format != nil {
+			applyFormatToOutput(collected, field.Format, inputs, namespaces)
 		}
 
 		record[field.Name] = collected
@@ -293,7 +324,9 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 			ctx := cwlexpr.NewContext(inputs)
 			ctx = ctx.WithSelf(nil)
 			runtime := cwlexpr.DefaultRuntimeContext()
-			runtime.OutDir = outDir
+			// Per CWL spec, runtime.outdir is the designated output directory where
+			// the command writes its outputs - this is workDir, not the top-level outDir.
+			runtime.OutDir = workDir
 			runtime.ExitCode = exitCode
 			ctx = ctx.WithRuntime(runtime)
 			ctx = ctx.WithOutputEval() // Enable exitCode access
@@ -346,17 +379,25 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 			}
 
 			// Type checking: raise error if types don't match.
-			if expectFile && info.IsDir() {
-				return nil, fmt.Errorf("type error: output type is File but glob matched directory %q", match)
-			}
-			if expectDirectory && !info.IsDir() {
-				return nil, fmt.Errorf("type error: output type is Directory but glob matched file %q", match)
+			// Skip type check when outputEval is present, as the expression can transform the type.
+			if binding.OutputEval == "" {
+				if expectFile && info.IsDir() {
+					return nil, fmt.Errorf("type error: output type is File but glob matched directory %q", match)
+				}
+				if expectDirectory && !info.IsDir() {
+					return nil, fmt.Errorf("type error: output type is Directory but glob matched file %q", match)
+				}
 			}
 
 			var obj map[string]any
 			var err error
 			if info.IsDir() {
-				obj, err = createDirectoryObject(match)
+				// Use loadListing from outputBinding if specified.
+				loadListing := binding.LoadListing
+				if loadListing == "" {
+					loadListing = "deep_listing" // Default to deep_listing for directories.
+				}
+				obj, err = createDirectoryObjectWithListing(match, loadListing)
 			} else {
 				obj, err = createFileObject(match, binding.LoadContents)
 			}
@@ -372,7 +413,8 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 		ctx := cwlexpr.NewContext(inputs)
 		ctx = ctx.WithSelf(collected)
 		runtime := cwlexpr.DefaultRuntimeContext()
-		runtime.OutDir = outDir
+		// Per CWL spec, runtime.outdir is the designated output directory.
+		runtime.OutDir = workDir
 		runtime.ExitCode = exitCode
 		ctx = ctx.WithRuntime(runtime)
 		ctx = ctx.WithOutputEval() // Enable exitCode access
@@ -486,6 +528,59 @@ func computeChecksum(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("sha1$%x", h.Sum(nil)), nil
+}
+
+// processOutputFileObject processes a File object (e.g., from outputEval) to add missing fields.
+// It adds checksum, size, location, etc. based on the path field.
+func processOutputFileObject(fileObj map[string]any) (map[string]any, error) {
+	// Get the file path.
+	path, _ := fileObj["path"].(string)
+	if path == "" {
+		if loc, ok := fileObj["location"].(string); ok {
+			path = strings.TrimPrefix(loc, "file://")
+		}
+	}
+	if path == "" {
+		return fileObj, nil // No path to process.
+	}
+
+	// Stat the file.
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	absPath, _ := filepath.Abs(path)
+	basename := filepath.Base(path)
+	nameroot, nameext := splitNameExtension(basename)
+
+	// Compute checksum.
+	checksum, err := computeChecksum(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the complete file object.
+	result := map[string]any{
+		"class":    "File",
+		"location": "file://" + absPath,
+		"path":     absPath,
+		"basename": basename,
+		"dirname":  filepath.Dir(absPath),
+		"nameroot": nameroot,
+		"nameext":  nameext,
+		"size":     info.Size(),
+		"checksum": checksum,
+	}
+
+	// Preserve any existing fields like format, secondaryFiles, etc.
+	for k, v := range fileObj {
+		if _, exists := result[k]; !exists {
+			result[k] = v
+		}
+	}
+
+	return result, nil
 }
 
 // splitNameExtension splits a filename into nameroot and nameext.
@@ -672,7 +767,16 @@ func processDirectoryOutput(obj map[string]any, workDir string) map[string]any {
 }
 
 // createDirectoryObject creates a CWL Directory object from a path.
+// loadListing controls whether to populate the listing field:
+// - "no_listing" or "": don't include listing
+// - "shallow_listing": include only immediate children without recursive directory listings
+// - "deep_listing": include full recursive listing
 func createDirectoryObject(path string) (map[string]any, error) {
+	return createDirectoryObjectWithListing(path, "deep_listing")
+}
+
+// createDirectoryObjectWithListing creates a CWL Directory object with specified loadListing behavior.
+func createDirectoryObjectWithListing(path string, loadListing string) (map[string]any, error) {
 	absPath, _ := filepath.Abs(path)
 	basename := filepath.Base(path)
 
@@ -681,6 +785,11 @@ func createDirectoryObject(path string) (map[string]any, error) {
 		"location": "file://" + absPath,
 		"path":     absPath,
 		"basename": basename,
+	}
+
+	// Handle loadListing behavior.
+	if loadListing == "" || loadListing == "no_listing" {
+		return obj, nil
 	}
 
 	// Build listing of directory contents.
@@ -693,7 +802,15 @@ func createDirectoryObject(path string) (map[string]any, error) {
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
 		if entry.IsDir() {
-			dirObj, err := createDirectoryObject(entryPath)
+			var dirObj map[string]any
+			var err error
+			if loadListing == "deep_listing" {
+				// Recursive listing for deep_listing.
+				dirObj, err = createDirectoryObjectWithListing(entryPath, loadListing)
+			} else {
+				// shallow_listing: don't recurse into subdirectories.
+				dirObj, err = createDirectoryObjectWithListing(entryPath, "no_listing")
+			}
 			if err == nil {
 				listing = append(listing, dirObj)
 			}
@@ -705,7 +822,7 @@ func createDirectoryObject(path string) (map[string]any, error) {
 		}
 	}
 
-	// Always include listing (empty array if no contents).
+	// Include listing (empty array if no contents).
 	obj["listing"] = listing
 
 	return obj, nil

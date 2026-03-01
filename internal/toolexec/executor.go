@@ -79,6 +79,10 @@ type Options struct {
 
 	// GPU configuration for container execution.
 	GPU GPUConfig
+
+	// JobRequirements are cwl:requirements from the job file.
+	// These can add or override tool requirements.
+	JobRequirements []any
 }
 
 // Executor executes CWL CommandLineTools.

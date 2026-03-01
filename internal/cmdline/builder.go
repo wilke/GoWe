@@ -713,6 +713,25 @@ func (b *Builder) buildRecordFieldParts(name string, input *cwl.ToolInputParam, 
 			shouldQuote = *field.InputBinding.ShellQuote
 		}
 
+		// Special handling for boolean values.
+		if boolVal, ok := fieldValue.(bool); ok {
+			if !boolVal {
+				// False booleans are omitted entirely.
+				continue
+			}
+			// True booleans with prefix: output just the prefix.
+			if field.InputBinding.Prefix != "" {
+				parts = append(parts, cmdPart{
+					position:   fieldPos,
+					name:       name + "." + field.Name,
+					args:       []string{field.InputBinding.Prefix},
+					shellQuote: []bool{shouldQuote},
+				})
+			}
+			// True boolean without prefix: omit entirely (per CWL spec).
+			continue
+		}
+
 		// Convert field value to string.
 		var strValue string
 		if field.InputBinding.ValueFrom != "" {

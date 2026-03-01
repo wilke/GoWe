@@ -35,13 +35,14 @@ func toExecutionResult(r *toolexec.Result) *ExecutionResult {
 func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, workDir string) (*ExecutionResult, error) {
 	executor := toolexec.NewExecutor(r.logger)
 	result, err := executor.Execute(ctx, &toolexec.Options{
-		Tool:       tool,
-		Command:    cmdResult,
-		Inputs:     inputs,
-		WorkDir:    workDir,
-		OutDir:     r.OutDir,
-		Mode:       toolexec.ModeLocal,
-		Namespaces: r.namespaces,
+		Tool:            tool,
+		Command:         cmdResult,
+		Inputs:          inputs,
+		WorkDir:         workDir,
+		OutDir:          r.OutDir,
+		Mode:            toolexec.ModeLocal,
+		Namespaces:      r.namespaces,
+		JobRequirements: r.jobRequirements,
 	})
 	if err != nil {
 		return nil, err
@@ -67,6 +68,7 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 		ContainerMounts: containerMounts,
 		DockerOutputDir: dockerOutputDir,
 		Namespaces:      r.namespaces,
+		JobRequirements: r.jobRequirements,
 	})
 	if err != nil {
 		return nil, err
@@ -92,6 +94,7 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 		ContainerMounts: containerMounts,
 		DockerOutputDir: dockerOutputDir,
 		Namespaces:      r.namespaces,
+		JobRequirements: r.jobRequirements,
 	})
 	if err != nil {
 		return nil, err

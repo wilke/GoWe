@@ -49,10 +49,11 @@ type Runner struct {
 	metrics        *MetricsCollector // Internal metrics collector
 
 	// Internal state.
-	cwlDir     string            // directory of CWL file, for resolving relative paths in defaults
-	stepCount  int               // counter for unique step directories
-	stepMu     sync.Mutex        // protects stepCount for parallel execution
-	namespaces map[string]string // namespace prefix -> URI mappings
+	cwlDir          string            // directory of CWL file, for resolving relative paths in defaults
+	stepCount       int               // counter for unique step directories
+	stepMu          sync.Mutex        // protects stepCount for parallel execution
+	namespaces      map[string]string // namespace prefix -> URI mappings
+	jobRequirements []any             // cwl:requirements from job file
 }
 
 // NewRunner creates a new CWL runner.
@@ -89,8 +90,10 @@ func (r *Runner) LoadDocument(cwlPath string) (*cwl.GraphDocument, error) {
 }
 
 // LoadInputs loads and parses a job input file.
+// Also extracts cwl:requirements from the job file and stores them in the runner.
 func (r *Runner) LoadInputs(jobPath string) (map[string]any, error) {
 	if jobPath == "" {
+		r.jobRequirements = nil
 		return make(map[string]any), nil
 	}
 
@@ -102,6 +105,16 @@ func (r *Runner) LoadInputs(jobPath string) (map[string]any, error) {
 	var inputs map[string]any
 	if err := yaml.Unmarshal(data, &inputs); err != nil {
 		return nil, fmt.Errorf("parse job YAML: %w", err)
+	}
+
+	// Extract cwl:requirements from job file.
+	if reqs, ok := inputs["cwl:requirements"]; ok {
+		if reqsList, ok := reqs.([]any); ok {
+			r.jobRequirements = reqsList
+		}
+		delete(inputs, "cwl:requirements")
+	} else {
+		r.jobRequirements = nil
 	}
 
 	return inputs, nil
@@ -361,6 +374,11 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		return nil, err
 	}
 
+	// Validate file formats.
+	if err := validate.ValidateFileFormat(tool, mergedInputs, r.namespaces); err != nil {
+		return nil, err
+	}
+
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
@@ -400,11 +418,15 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 
 	// Stage files from InitialWorkDirRequirement.
 	// For container execution, copy files instead of symlinking (symlinks point to host paths).
+	// Check for InplaceUpdateRequirement - if enabled, writable files should be symlinked
+	// so modifications affect the original (required for workflows that depend on side effects).
 	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"
+	inplaceUpdate := hasInplaceUpdateRequirement(tool)
 	iwdResult, err := iwdr.Stage(tool, mergedInputs, workDir, iwdr.StageOptions{
 		CopyForContainer: useContainer,
 		CWLDir:           r.cwlDir,
 		ExpressionLib:    expressionLib,
+		InplaceUpdate:    inplaceUpdate,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
@@ -413,6 +435,13 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	if iwdResult != nil {
 		containerMounts = iwdResult.ContainerMounts
 		iwdr.UpdateInputPaths(mergedInputs, workDir, iwdResult.StagedPaths)
+	}
+
+	// Stage files with renamed basenames (e.g., from ExpressionTool modifications).
+	// When a File has basename != filepath.Base(path), we need to symlink it with
+	// the new basename so that $(inputs.x.path) returns the correct path.
+	if err := stageRenamedInputs(mergedInputs, workDir); err != nil {
+		return nil, fmt.Errorf("stage renamed inputs: %w", err)
 	}
 
 	// Apply ToolTimeLimit if specified.
@@ -720,6 +749,11 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		return nil, err
 	}
 
+	// Validate file formats.
+	if err := validate.ValidateFileFormat(tool, mergedInputs, r.namespaces); err != nil {
+		return nil, err
+	}
+
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
@@ -751,11 +785,15 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	}
 
 	// Stage files from InitialWorkDirRequirement.
+	// Check for InplaceUpdateRequirement - if enabled, writable files should be symlinked
+	// so modifications affect the original (required for workflows that depend on side effects).
 	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"
+	inplaceUpdate := hasInplaceUpdateRequirement(tool)
 	iwdResult, err := iwdr.Stage(tool, mergedInputs, workDir, iwdr.StageOptions{
 		CopyForContainer: useContainer,
 		CWLDir:           r.cwlDir,
 		ExpressionLib:    expressionLib,
+		InplaceUpdate:    inplaceUpdate,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
@@ -764,6 +802,11 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	if iwdResult != nil {
 		containerMounts = iwdResult.ContainerMounts
 		iwdr.UpdateInputPaths(mergedInputs, workDir, iwdResult.StagedPaths)
+	}
+
+	// Stage files with renamed basenames (e.g., from ExpressionTool modifications).
+	if err := stageRenamedInputs(mergedInputs, workDir); err != nil {
+		return nil, fmt.Errorf("stage renamed inputs: %w", err)
 	}
 
 	// Build command line with runtime context appropriate for the execution environment.
@@ -837,6 +880,9 @@ func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[stri
 	if err := validate.ExpressionToolInputs(tool, inputs); err != nil {
 		return nil, err
 	}
+
+	// Populate directory listings for inputs with loadListing.
+	populateExpressionToolDirectoryListings(tool, inputs)
 
 	// Get expression library from requirements.
 	expressionLib := extractExpressionLib(graph, r.cwlDir)
@@ -1612,6 +1658,24 @@ func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
 		resolved["listing"] = resolvedListing
 	}
 
+	// Step 7: For File objects, resolve secondaryFiles entries.
+	if secFiles, ok := resolved["secondaryFiles"].([]any); ok {
+		// Use the file's directory for resolving relative paths in secondaryFiles.
+		dirPath := baseDir
+		if path, ok := resolved["path"].(string); ok && path != "" {
+			dirPath = filepath.Dir(path)
+		}
+		resolvedSecFiles := make([]any, len(secFiles))
+		for i, item := range secFiles {
+			if itemMap, ok := item.(map[string]any); ok {
+				resolvedSecFiles[i] = resolveFileObject(itemMap, dirPath)
+			} else {
+				resolvedSecFiles[i] = item
+			}
+		}
+		resolved["secondaryFiles"] = resolvedSecFiles
+	}
+
 	return resolved
 }
 
@@ -1809,6 +1873,53 @@ func populateDirListing(dirObj map[string]any, depth string) {
 		}
 	}
 	dirObj["listing"] = listing
+}
+
+// populateExpressionToolDirectoryListings adds listing entries to Directory inputs for ExpressionTools.
+// It checks both per-input loadListing and the LoadListingRequirement at tool level.
+func populateExpressionToolDirectoryListings(tool *cwl.ExpressionTool, inputs map[string]any) {
+	// Get default loadListing from LoadListingRequirement.
+	defaultLoadListing := ""
+	if tool.Requirements != nil {
+		if llr, ok := tool.Requirements["LoadListingRequirement"].(map[string]any); ok {
+			if ll, ok := llr["loadListing"].(string); ok {
+				defaultLoadListing = ll
+			}
+		}
+	}
+
+	for inputID, inp := range tool.Inputs {
+		// Per-input loadListing overrides the default.
+		loadListing := inp.LoadListing
+		if loadListing == "" {
+			loadListing = defaultLoadListing
+		}
+		if loadListing == "" || loadListing == "no_listing" {
+			continue
+		}
+
+		inputVal, ok := inputs[inputID]
+		if !ok || inputVal == nil {
+			continue
+		}
+
+		// Handle single Directory input.
+		if dirObj, ok := inputVal.(map[string]any); ok {
+			if class, _ := dirObj["class"].(string); class == "Directory" {
+				populateDirListing(dirObj, loadListing)
+			}
+		}
+		// Handle array of Directories.
+		if arr, ok := inputVal.([]any); ok {
+			for _, item := range arr {
+				if dirObj, ok := item.(map[string]any); ok {
+					if class, _ := dirObj["class"].(string); class == "Directory" {
+						populateDirListing(dirObj, loadListing)
+					}
+				}
+			}
+		}
+	}
 }
 
 // resolveSource resolves a source reference to its value.
@@ -2097,6 +2208,21 @@ func getResourceRequirement(tool *cwl.CommandLineTool) map[string]any {
 		}
 	}
 	return nil
+}
+
+// hasInplaceUpdateRequirement checks if InplaceUpdateRequirement is enabled.
+// When enabled, writable files in InitialWorkDirRequirement should be symlinked
+// rather than copied, allowing modifications to affect the original files.
+func hasInplaceUpdateRequirement(tool *cwl.CommandLineTool) bool {
+	if tool.Requirements == nil {
+		return false
+	}
+	iur, ok := tool.Requirements["InplaceUpdateRequirement"].(map[string]any)
+	if !ok {
+		return false
+	}
+	inplaceUpdate, _ := iur["inplaceUpdate"].(bool)
+	return inplaceUpdate
 }
 
 // getToolTimeLimit extracts the ToolTimeLimit timelimit value in seconds.
@@ -2468,3 +2594,100 @@ func resolveInputSecondaryFiles(val any, inputDef cwl.InputParam, cwlDir string)
 
 // Note: Input validation is now in internal/validate package as validate.ToolInputs
 // to be shared with the execution engine.
+
+// stageRenamedInputs creates symlinks for File inputs where basename differs from the
+// actual filename. This happens when ExpressionTools modify the basename property.
+// For each such file, a symlink is created in workDir with the new basename, and the
+// path property is updated to point to the symlink.
+func stageRenamedInputs(inputs map[string]any, workDir string) error {
+	for _, v := range inputs {
+		if err := stageRenamedValue(v, workDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stageRenamedValue recursively processes a value, staging renamed files.
+func stageRenamedValue(v any, workDir string) error {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			return stageRenamedFileOrDirectory(val, workDir)
+		}
+		// Recursively handle nested maps (e.g., record fields).
+		for _, nested := range val {
+			if err := stageRenamedValue(nested, workDir); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if err := stageRenamedValue(item, workDir); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// stageRenamedFileOrDirectory handles a single File or Directory with renamed basename.
+// stageDir is the directory where symlinks should be created (workDir for primary files,
+// primaryDirname for secondaryFiles).
+func stageRenamedFileOrDirectory(obj map[string]any, stageDir string) error {
+	basename, hasBasename := obj["basename"].(string)
+	path, hasPath := obj["path"].(string)
+
+	// Get dirname for this file - used for staging secondary files relative to primary.
+	dirname := stageDir
+	if d, ok := obj["dirname"].(string); ok && d != "" {
+		dirname = d
+	} else if hasPath && path != "" {
+		dirname = filepath.Dir(path)
+	}
+
+	// Process secondary files - they should be staged relative to this file's directory.
+	if secFiles, ok := obj["secondaryFiles"].([]any); ok {
+		for _, sf := range secFiles {
+			if sfMap, ok := sf.(map[string]any); ok {
+				if err := stageRenamedFileOrDirectory(sfMap, dirname); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// If no path or no basename, nothing to do for this file.
+	if !hasPath || !hasBasename || path == "" || basename == "" {
+		return nil
+	}
+
+	// Check if basename differs from the actual filename.
+	actualBasename := filepath.Base(path)
+	if basename == actualBasename {
+		return nil // No rename needed
+	}
+
+	// Create symlink with the new basename in stageDir.
+	linkPath := filepath.Join(stageDir, basename)
+
+	// Skip if link already exists.
+	if _, err := os.Lstat(linkPath); err == nil {
+		// Link exists, just update path.
+		obj["path"] = linkPath
+		obj["dirname"] = stageDir
+		return nil
+	}
+
+	// Create the symlink.
+	if err := os.Symlink(path, linkPath); err != nil {
+		return fmt.Errorf("symlink %s -> %s: %w", linkPath, path, err)
+	}
+
+	// Update path to point to the staged symlink.
+	obj["path"] = linkPath
+	obj["dirname"] = stageDir
+
+	return nil
+}

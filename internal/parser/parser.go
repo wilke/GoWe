@@ -1156,6 +1156,9 @@ func parseOutputRecordField(m map[string]any) cwl.OutputRecordField {
 	// Parse secondaryFiles.
 	field.SecondaryFiles = parseSecondaryFiles(m["secondaryFiles"])
 
+	// Parse format (can be string or expression).
+	field.Format = m["format"]
+
 	return field
 }
 
@@ -1244,6 +1247,9 @@ func parseRecordField(m map[string]any) cwl.RecordField {
 
 	// Parse secondaryFiles for this field.
 	field.SecondaryFiles = parseSecondaryFiles(m["secondaryFiles"])
+
+	// Parse format for this field.
+	field.Format = m["format"]
 
 	return field
 }

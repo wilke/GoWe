@@ -179,6 +179,9 @@ type RecordField struct {
 	// SecondaryFiles specifies additional files associated with this field (for File types).
 	SecondaryFiles []SecondaryFileSchema `json:"secondaryFiles,omitempty"`
 
+	// Format specifies the file format (for File types).
+	Format any `json:"format,omitempty"`
+
 	// Doc is documentation for this field.
 	Doc string `json:"doc,omitempty"`
 
@@ -200,6 +203,9 @@ type OutputRecordField struct {
 
 	// SecondaryFiles specifies additional files associated with this field.
 	SecondaryFiles []SecondaryFileSchema `json:"secondaryFiles,omitempty"`
+
+	// Format specifies the file format for File outputs.
+	Format any `json:"format,omitempty"`
 
 	// Doc is documentation for this field.
 	Doc string `json:"doc,omitempty"`

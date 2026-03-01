@@ -79,10 +79,8 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 
 	// Check if this is a pure literal (no unescaped expressions)
 	if !containsExpression(expr) {
-		// Unescape \$( to $( per CWL spec.
-		result := strings.ReplaceAll(expr, "\\$(", "$(")
-		result = strings.ReplaceAll(result, "\\${", "${")
-		return result, nil
+		// Unescape per CWL spec: \\ → \, \$( → $(, \${ → ${
+		return unescapeString(expr), nil
 	}
 
 	vm, err := e.setupVM(ctx)
@@ -106,12 +104,20 @@ func (e *Evaluator) Evaluate(expr string, ctx *Context) (any, error) {
 				remaining = expr[originalIdx+1:]
 			}
 
-			// Trim trailing whitespace from remaining - YAML often adds trailing newlines.
-			// Only consider it "content" if there's non-whitespace after the code block.
+			// Check if there's non-whitespace content after the code block.
 			remainingTrimmed := strings.TrimSpace(remaining)
 			if remainingTrimmed == "" {
 				// Sole code block — return typed result.
-				return e.evaluateCodeBlock(vm, trimmedLeft[:idx+1])
+				result, err := e.evaluateCodeBlock(vm, trimmedLeft[:idx+1])
+				if err != nil {
+					return nil, err
+				}
+				// For string results, preserve trailing whitespace (from YAML | blocks).
+				// Non-string results (objects, arrays) should be returned as-is.
+				if str, ok := result.(string); ok && remaining != "" {
+					return str + remaining, nil
+				}
+				return result, nil
 			}
 			// Code block followed by literal text (e.g., ${...}suffix).
 			// Evaluate the code block, convert result to string, append rest.
@@ -146,74 +152,144 @@ func (e *Evaluator) evaluateCodeBlock(vm *goja.Runtime, expr string) (any, error
 }
 
 // evaluateInterpolated evaluates a string with embedded $(expr) expressions.
+// CWL escape rules:
+//   - \\ → \ (double backslash collapses to single)
+//   - \$( or \${ → $( or ${ literal (escapes parameter reference)
+//
+// For backslashes before $( or ${:
+//   - Count consecutive backslashes
+//   - Output floor(N/2) backslashes (each \\ collapses to \)
+//   - If N is odd: last \ escapes the expression, output literal $(...)
+//   - If N is even: evaluate the expression
 func (e *Evaluator) evaluateInterpolated(vm *goja.Runtime, expr string) (any, error) {
-	// Find all $(expr) patterns using balanced parenthesis matching
-	matches := findExpressions(expr)
-
-	if len(matches) == 0 {
-		// No unescaped expressions found — unescape \$( to $( per CWL spec.
-		result := strings.ReplaceAll(expr, "\\$(", "$(")
-		result = strings.ReplaceAll(result, "\\${", "${")
-		return result, nil
-	}
-
-	// If the entire string is a single expression, return the evaluated value directly
-	if len(matches) == 1 && matches[0].start == 0 && matches[0].end == len(expr) {
-		exprCode := matches[0].expr
-		// If the expression starts with {, it's an object literal and needs parentheses.
-		if strings.HasPrefix(strings.TrimSpace(exprCode), "{") {
-			exprCode = "(" + exprCode + ")"
-		}
-
-		// CWL validation: Check .length access on non-array/non-string values.
-		if err := validateLengthAccess(vm, exprCode); err != nil {
-			return nil, err
-		}
-
-		val, err := vm.RunString(exprCode)
-		if err != nil {
-			return nil, fmt.Errorf("expression error in $(%s): %w", matches[0].expr, err)
-		}
-		// CWL validation: undefined values indicate invalid property access.
-		if val == goja.Undefined() {
-			return nil, fmt.Errorf("expression $(%s) returned undefined (invalid property access)", matches[0].expr)
-		}
-		return val.Export(), nil
-	}
-
-	// Build result string with interpolated values
 	var result strings.Builder
-	lastEnd := 0
-	for _, match := range matches {
-		// Append text before this expression
-		result.WriteString(expr[lastEnd:match.start])
+	i := 0
 
-		// CWL validation: Check .length access on non-array/non-string values.
-		if err := validateLengthAccess(vm, match.expr); err != nil {
-			return nil, err
+	// Track if the entire string is a sole expression for type preservation
+	isSole := false
+	var soleValue any
+
+	for i < len(expr) {
+		// Count consecutive backslashes
+		backslashStart := i
+		backslashCount := 0
+		for i < len(expr) && expr[i] == '\\' {
+			backslashCount++
+			i++
 		}
 
-		// Evaluate the expression
-		val, err := vm.RunString(match.expr)
-		if err != nil {
-			return nil, fmt.Errorf("expression error in $(%s): %w", match.expr, err)
-		}
-		// CWL validation: undefined values indicate invalid property access.
-		if val == goja.Undefined() {
-			return nil, fmt.Errorf("expression $(%s) returned undefined (invalid property access)", match.expr)
-		}
+		// Check what follows the backslashes
+		if i < len(expr)-1 && expr[i] == '$' && (expr[i+1] == '(' || expr[i+1] == '{') {
+			// Output floor(N/2) backslashes (each \\ collapses to \)
+			for j := 0; j < backslashCount/2; j++ {
+				result.WriteByte('\\')
+			}
 
-		// Convert to string and append
-		result.WriteString(toString(val.Export()))
-		lastEnd = match.end
+			if backslashCount%2 == 1 {
+				// Odd backslashes - expression is escaped, output literal
+				result.WriteByte('$')
+				openBracket := expr[i+1]
+				closeBracket := byte(')')
+				if openBracket == '{' {
+					closeBracket = '}'
+				}
+				result.WriteByte(openBracket)
+				i += 2
+
+				// Copy until matching close bracket
+				depth := 1
+				for i < len(expr) && depth > 0 {
+					if expr[i] == openBracket {
+						depth++
+					} else if expr[i] == closeBracket {
+						depth--
+					}
+					result.WriteByte(expr[i])
+					i++
+				}
+			} else {
+				// Even backslashes - evaluate expression
+				if expr[i+1] == '(' {
+					// Find matching ) and evaluate
+					start := i
+					depth := 1
+					j := i + 2
+					for j < len(expr) && depth > 0 {
+						if expr[j] == '(' {
+							depth++
+						} else if expr[j] == ')' {
+							depth--
+						}
+						j++
+					}
+					if depth != 0 {
+						// Unbalanced parens - treat as literal
+						result.WriteByte('$')
+						result.WriteByte('(')
+						i += 2
+						continue
+					}
+
+					exprCode := expr[start+2 : j-1]
+
+					// If the expression starts with {, it's an object literal.
+					if strings.HasPrefix(strings.TrimSpace(exprCode), "{") {
+						exprCode = "(" + exprCode + ")"
+					}
+
+					// CWL validation: Check .length access.
+					if err := validateLengthAccess(vm, exprCode); err != nil {
+						return nil, err
+					}
+
+					val, err := vm.RunString(exprCode)
+					if err != nil {
+						return nil, fmt.Errorf("expression error in $(%s): %w", expr[start+2:j-1], err)
+					}
+					if val == goja.Undefined() {
+						return nil, fmt.Errorf("expression $(%s) returned undefined (invalid property access)", expr[start+2:j-1])
+					}
+
+					// Check if this is a sole expression (entire string)
+					if backslashStart == 0 && j == len(expr) && result.Len() == 0 {
+						isSole = true
+						soleValue = val.Export()
+					}
+
+					result.WriteString(toString(val.Export()))
+					i = j
+				} else {
+					// Code block ${...} - handled by Evaluate() before this
+					// This shouldn't happen, but handle it gracefully
+					result.WriteByte('$')
+					result.WriteByte('{')
+					i += 2
+				}
+			}
+		} else {
+			// Backslashes NOT followed by $( or ${
+			// Also collapse \\ to \, but \ alone stays as \
+			// Note: \$ where $ is not followed by ( or { is literal \$
+			for j := 0; j < backslashCount/2; j++ {
+				result.WriteByte('\\')
+			}
+			if backslashCount%2 == 1 {
+				result.WriteByte('\\')
+			}
+
+			if i < len(expr) {
+				result.WriteByte(expr[i])
+				i++
+			}
+		}
 	}
-	// Append remaining text
-	result.WriteString(expr[lastEnd:])
 
-	// Unescape \$( to $( per CWL spec.
-	out := strings.ReplaceAll(result.String(), "\\$(", "$(")
-	out = strings.ReplaceAll(out, "\\${", "${")
-	return out, nil
+	// Return typed value for sole expressions
+	if isSole {
+		return soleValue, nil
+	}
+
+	return result.String(), nil
 }
 
 // findMatchingBrace finds the index of the closing brace for a ${...} code block.
@@ -234,46 +310,6 @@ func findMatchingBrace(s string) int {
 		}
 	}
 	return -1
-}
-
-// exprMatch represents a matched CWL expression.
-type exprMatch struct {
-	start int    // start index of "$(" in the string
-	end   int    // end index (after closing ")")
-	expr  string // the expression content (without $( and ))
-}
-
-// findExpressions finds all $(expr) patterns in a string, handling nested parentheses.
-func findExpressions(s string) []exprMatch {
-	var matches []exprMatch
-	i := 0
-	for i < len(s)-1 {
-		if s[i] == '$' && s[i+1] == '(' && (i == 0 || s[i-1] != '\\') {
-			start := i
-			// Find matching closing paren
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				if s[j] == '(' {
-					depth++
-				} else if s[j] == ')' {
-					depth--
-				}
-				j++
-			}
-			if depth == 0 {
-				matches = append(matches, exprMatch{
-					start: start,
-					end:   j,
-					expr:  s[start+2 : j-1],
-				})
-				i = j
-				continue
-			}
-		}
-		i++
-	}
-	return matches
 }
 
 // EvaluateBool evaluates an expression that should return a boolean.
@@ -365,19 +401,91 @@ func validateLengthAccess(vm *goja.Runtime, exprCode string) error {
 }
 
 // containsExpression checks if a string contains CWL expression syntax.
+// An expression is unescaped if preceded by an even number of backslashes.
 func containsExpression(s string) bool {
-	if strings.HasPrefix(s, "${") {
-		return true
+	// Check for ${ code block (count preceding backslashes)
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == '$' && s[i+1] == '{' {
+			// Count preceding backslashes
+			backslashCount := 0
+			for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+				backslashCount++
+			}
+			// Even count (including 0) means unescaped expression
+			if backslashCount%2 == 0 {
+				return true
+			}
+		}
 	}
-	// Check for unescaped $( — CWL spec says \$( is a literal $(, not an expression.
+	// Check for $( parameter reference
 	for i := 0; i < len(s)-1; i++ {
 		if s[i] == '$' && s[i+1] == '(' {
-			if i == 0 || s[i-1] != '\\' {
+			// Count preceding backslashes
+			backslashCount := 0
+			for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+				backslashCount++
+			}
+			// Even count (including 0) means unescaped expression
+			if backslashCount%2 == 0 {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// unescapeString handles CWL backslash escape sequences:
+//   - \\ → \ (double backslash collapses to single)
+//   - \$( → $( (escaped parameter reference)
+//   - \${ → ${ (escaped code block)
+//
+// This function is for strings that contain no actual expressions.
+func unescapeString(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		// Count consecutive backslashes
+		backslashCount := 0
+		for i < len(s) && s[i] == '\\' {
+			backslashCount++
+			i++
+		}
+
+		if backslashCount > 0 {
+			// Check what follows the backslashes
+			if i < len(s)-1 && s[i] == '$' && (s[i+1] == '(' || s[i+1] == '{') {
+				// Backslashes before $( or ${
+				// Output floor(N/2) backslashes
+				for j := 0; j < backslashCount/2; j++ {
+					result.WriteByte('\\')
+				}
+				// If odd, the last \ escapes the $(/${, so output literal $
+				if backslashCount%2 == 1 {
+					result.WriteByte('$')
+					result.WriteByte(s[i+1])
+					i += 2
+				}
+				// If even, the $( or ${ should have been parsed as expression
+				// but we're in unescapeString for non-expression strings
+			} else {
+				// Backslashes not before $( or ${
+				// Output floor(N/2) backslashes (each \\ → \)
+				for j := 0; j < backslashCount/2; j++ {
+					result.WriteByte('\\')
+				}
+				// If odd, output the remaining single backslash
+				if backslashCount%2 == 1 {
+					result.WriteByte('\\')
+				}
+			}
+		}
+
+		if i < len(s) && s[i] != '\\' {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
 }
 
 // IsExpression returns true if the string is a CWL expression.
