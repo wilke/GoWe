@@ -239,8 +239,45 @@ func (e *Executor) addSecondaryFiles(fileObj map[string]any, schemas []cwl.Secon
 				continue
 			}
 
-			// Extract the secondary file path(s) from the result.
-			pathsToAdd = extractSecondaryPaths(result, filepath.Dir(path))
+			// Extract the secondary file results from the expression.
+			sfResults := extractSecondaryFileResults(result, filepath.Dir(path))
+			for _, sfr := range sfResults {
+				if sfr.path == "" {
+					continue
+				}
+
+				// Check if secondary file/directory exists.
+				info, err := os.Stat(sfr.path)
+				if err != nil {
+					continue // Skip missing secondary files.
+				}
+
+				// Create File or Directory object.
+				var secObj map[string]any
+				if info.IsDir() {
+					secObj, err = createDirectoryObject(sfr.path)
+				} else {
+					secObj, err = createFileObject(sfr.path, false)
+				}
+				if err != nil {
+					continue
+				}
+
+				// Apply custom basename if specified.
+				if sfr.basename != "" && sfr.basename != filepath.Base(sfr.path) {
+					secObj["basename"] = sfr.basename
+					// Update location to use the custom basename.
+					dir := filepath.Dir(sfr.path)
+					secObj["location"] = "file://" + filepath.Join(dir, sfr.basename)
+					// Update nameroot and nameext based on custom basename.
+					ext := filepath.Ext(sfr.basename)
+					secObj["nameext"] = ext
+					secObj["nameroot"] = strings.TrimSuffix(sfr.basename, ext)
+				}
+
+				secondaryFiles = append(secondaryFiles, secObj)
+			}
+			continue
 		} else {
 			// Apply pattern to derive secondary file path.
 			// Pattern starting with ^ means remove extension first.
@@ -288,31 +325,60 @@ func (e *Executor) addSecondaryFiles(fileObj map[string]any, schemas []cwl.Secon
 	}
 }
 
-// extractSecondaryPaths extracts file paths from an expression result.
+// secondaryFileResult represents a secondary file from an expression result.
+// It contains the path to the actual file and optionally a custom basename.
+type secondaryFileResult struct {
+	path     string // The actual file path on disk.
+	basename string // Custom basename (if different from path's basename).
+}
+
+// extractSecondaryFileResults extracts secondary file info from an expression result.
 // The result can be a string, File object, or array of strings/File objects.
-func extractSecondaryPaths(result any, baseDir string) []string {
-	var paths []string
+func extractSecondaryFileResults(result any, baseDir string) []secondaryFileResult {
+	var results []secondaryFileResult
 
 	switch v := result.(type) {
 	case string:
 		// Result is a filename - construct full path in same directory.
-		paths = append(paths, filepath.Join(baseDir, v))
+		results = append(results, secondaryFileResult{
+			path: filepath.Join(baseDir, v),
+		})
 	case map[string]any:
-		// Result is a File object - extract path or construct from basename.
+		// Result is a File object - extract path and basename.
+		var filePath string
 		if p, ok := v["path"].(string); ok {
-			paths = append(paths, p)
+			filePath = p
 		} else if loc, ok := v["location"].(string); ok {
-			paths = append(paths, loc)
+			filePath = strings.TrimPrefix(loc, "file://")
 		} else if bn, ok := v["basename"].(string); ok {
-			paths = append(paths, filepath.Join(baseDir, bn))
+			filePath = filepath.Join(baseDir, bn)
+		}
+		if filePath != "" {
+			sfr := secondaryFileResult{path: filePath}
+			// Preserve custom basename if different from derived basename.
+			if bn, ok := v["basename"].(string); ok {
+				sfr.basename = bn
+			}
+			results = append(results, sfr)
 		}
 	case []any:
 		// Array of results - process each element.
 		for _, item := range v {
-			paths = append(paths, extractSecondaryPaths(item, baseDir)...)
+			results = append(results, extractSecondaryFileResults(item, baseDir)...)
 		}
 	}
 
+	return results
+}
+
+// extractSecondaryPaths extracts file paths from an expression result.
+// The result can be a string, File object, or array of strings/File objects.
+// Deprecated: Use extractSecondaryFileResults for full File object support.
+func extractSecondaryPaths(result any, baseDir string) []string {
+	var paths []string
+	for _, sfr := range extractSecondaryFileResults(result, baseDir) {
+		paths = append(paths, sfr.path)
+	}
 	return paths
 }
 
