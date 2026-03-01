@@ -31,7 +31,8 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 
 		// Handle secondaryFiles at the input level.
 		if len(inputDef.SecondaryFiles) > 0 {
-			result[inputID] = ResolveForValue(val, inputDef.SecondaryFiles, cwlDir)
+			// Pass all inputs so expressions can reference other inputs.
+			result[inputID] = ResolveForValueWithInputs(val, inputDef.SecondaryFiles, cwlDir, result)
 			continue
 		}
 
@@ -54,7 +55,7 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 					continue
 				}
 				if fieldVal, exists := resolvedRecord[field.Name]; exists && fieldVal != nil {
-					resolvedRecord[field.Name] = ResolveForValue(fieldVal, field.SecondaryFiles, cwlDir)
+					resolvedRecord[field.Name] = ResolveForValueWithInputs(fieldVal, field.SecondaryFiles, cwlDir, result)
 				}
 			}
 			result[inputID] = resolvedRecord
@@ -67,17 +68,23 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 // ResolveForValue resolves secondary files for a File or array of Files.
 // This can be used for both tool inputs and workflow inputs.
 func ResolveForValue(val any, schemas []cwl.SecondaryFileSchema, cwlDir string) any {
+	return ResolveForValueWithInputs(val, schemas, cwlDir, nil)
+}
+
+// ResolveForValueWithInputs resolves secondary files with access to all inputs.
+// This is needed for expressions that reference $(inputs.xxx).
+func ResolveForValueWithInputs(val any, schemas []cwl.SecondaryFileSchema, cwlDir string, inputs map[string]any) any {
 	switch v := val.(type) {
 	case map[string]any:
 		if class, ok := v["class"].(string); ok && class == "File" {
-			return resolveForFile(v, schemas, cwlDir)
+			return resolveForFileWithInputs(v, schemas, cwlDir, inputs)
 		}
 		return v
 
 	case []any:
 		result := make([]any, len(v))
 		for i, item := range v {
-			result[i] = ResolveForValue(item, schemas, cwlDir)
+			result[i] = ResolveForValueWithInputs(item, schemas, cwlDir, inputs)
 		}
 		return result
 
@@ -88,6 +95,17 @@ func ResolveForValue(val any, schemas []cwl.SecondaryFileSchema, cwlDir string) 
 
 // resolveForFile adds secondary files to a File object based on patterns.
 func resolveForFile(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, cwlDir string) map[string]any {
+	return resolveForFileWithInputs(fileObj, schemas, cwlDir, nil)
+}
+
+// ResolveForFileWithInputs adds secondary files to a File object based on patterns.
+// The inputs parameter is used for expressions that reference $(inputs.xxx).
+func ResolveForFileWithInputs(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, cwlDir string, inputs map[string]any) map[string]any {
+	return resolveForFileWithInputs(fileObj, schemas, cwlDir, inputs)
+}
+
+// resolveForFileWithInputs is the internal implementation.
+func resolveForFileWithInputs(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, cwlDir string, inputs map[string]any) map[string]any {
 	// Create a copy to avoid modifying the original.
 	result := make(map[string]any)
 	for k, v := range fileObj {
@@ -121,7 +139,21 @@ func resolveForFile(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, c
 	dir := filepath.Dir(filePath)
 
 	for _, schema := range schemas {
-		secFileName := ComputeSecondaryFileName(basename, schema.Pattern, result, nil)
+		// Try to evaluate the pattern as an expression that returns File objects.
+		if cwlexpr.IsExpression(schema.Pattern) {
+			evaluator := cwlexpr.NewEvaluator(nil)
+			ctx := cwlexpr.NewContext(inputs).WithSelf(result)
+			exprResult, err := evaluator.Evaluate(schema.Pattern, ctx)
+			if err == nil {
+				// Handle expression results that return File objects.
+				fileObjs := extractFileObjects(exprResult, cwlDir)
+				secondaryFiles = append(secondaryFiles, fileObjs...)
+				continue
+			}
+			// Fall through to standard pattern handling if expression fails.
+		}
+
+		secFileName := ComputeSecondaryFileName(basename, schema.Pattern, result, inputs)
 
 		// Skip empty names (expression evaluation failed or returned nil).
 		if secFileName == "" {
@@ -154,6 +186,72 @@ func resolveForFile(fileObj map[string]any, schemas []cwl.SecondaryFileSchema, c
 
 	if len(secondaryFiles) > 0 {
 		result["secondaryFiles"] = secondaryFiles
+	}
+
+	return result
+}
+
+// extractFileObjects extracts File objects from an expression result.
+// The result can be a single File object, an array of File objects, or nil.
+func extractFileObjects(result any, cwlDir string) []any {
+	var files []any
+
+	switch v := result.(type) {
+	case nil:
+		// Null result - no secondary files.
+		return nil
+	case map[string]any:
+		// Single File object.
+		if class, ok := v["class"].(string); ok && class == "File" {
+			files = append(files, resolveFileObj(v, cwlDir))
+		}
+	case []any:
+		// Array of File objects.
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				if class, ok := m["class"].(string); ok && class == "File" {
+					files = append(files, resolveFileObj(m, cwlDir))
+				}
+			}
+		}
+	}
+
+	return files
+}
+
+// resolveFileObj resolves paths in a File object and adds metadata.
+func resolveFileObj(fileObj map[string]any, cwlDir string) map[string]any {
+	result := make(map[string]any)
+	for k, v := range fileObj {
+		result[k] = v
+	}
+
+	// Resolve location to path.
+	var filePath string
+	if loc, ok := result["location"].(string); ok {
+		filePath = strings.TrimPrefix(loc, "file://")
+	} else if p, ok := result["path"].(string); ok {
+		filePath = p
+	}
+
+	// Resolve relative paths.
+	if filePath != "" && !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(cwlDir, filePath)
+	}
+
+	if filePath != "" {
+		result["path"] = filePath
+		result["location"] = "file://" + filePath
+
+		// Use basename from object if provided, otherwise derive from path.
+		if _, ok := result["basename"].(string); !ok {
+			result["basename"] = filepath.Base(filePath)
+		}
+
+		// Add file metadata.
+		if info, err := os.Stat(filePath); err == nil {
+			result["size"] = info.Size()
+		}
 	}
 
 	return result
@@ -225,11 +323,15 @@ func checkFileHasSecondaryFiles(path string, val any, required []cwl.SecondaryFi
 // validateFileSecondaryFiles checks that a single File object has the required secondary files.
 func validateFileSecondaryFiles(path string, fileObj map[string]any, required []cwl.SecondaryFileSchema, allInputs map[string]any) error {
 	// Get the list of secondary files attached to this file.
+	// Prefer explicit "basename" property over derived basename from location/path.
 	existingSecondary := make(map[string]bool)
 	if secFiles, ok := fileObj["secondaryFiles"].([]any); ok {
 		for _, sf := range secFiles {
 			if sfMap, ok := sf.(map[string]any); ok {
-				if loc, ok := sfMap["location"].(string); ok {
+				// Check for explicit basename first (expression-generated files may rename).
+				if bn, ok := sfMap["basename"].(string); ok {
+					existingSecondary[bn] = true
+				} else if loc, ok := sfMap["location"].(string); ok {
 					existingSecondary[filepath.Base(loc)] = true
 				} else if p, ok := sfMap["path"].(string); ok {
 					existingSecondary[filepath.Base(p)] = true

@@ -2444,7 +2444,8 @@ func stripHash(ref string) string {
 func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) (map[string]any, error) {
 	merged := make(map[string]any)
 
-	// Only include inputs that are declared in the tool's inputs.
+	// First pass: Merge all input values without validation.
+	// This ensures all inputs are available for expressions that reference other inputs.
 	for inputID, inputDef := range tool.Inputs {
 		var val any
 		if v, exists := inputs[inputID]; exists && v != nil {
@@ -2467,14 +2468,18 @@ func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 			val = processedVal
 		}
 
-		// Validate secondaryFiles requirements.
+		merged[inputID] = val
+	}
+
+	// Second pass: Validate secondaryFiles requirements.
+	// This is done after all inputs are merged so expressions can reference any input.
+	for inputID, inputDef := range tool.Inputs {
+		val := merged[inputID]
 		if val != nil {
 			if err := secondaryfiles.ValidateInput(inputID, inputDef, val, merged); err != nil {
 				return nil, err
 			}
 		}
-
-		merged[inputID] = val
 	}
 
 	return merged, nil
@@ -2631,28 +2636,27 @@ func stageRenamedValue(v any, workDir string) error {
 
 // stageRenamedFileOrDirectory handles a single File or Directory with renamed basename.
 // stageDir is the directory where symlinks should be created (workDir for primary files,
-// primaryDirname for secondaryFiles).
+// the same stageDir for secondaryFiles so they appear alongside the primary file).
 func stageRenamedFileOrDirectory(obj map[string]any, stageDir string) error {
 	basename, hasBasename := obj["basename"].(string)
 	path, hasPath := obj["path"].(string)
 
-	// Get the directory for staging secondary files.
-	// For primary files, this is derived from dirname or path.
-	// For secondary files, we use stageDir (the primary file's dirname).
-	primaryDirname := stageDir
-	if d, ok := obj["dirname"].(string); ok && d != "" {
-		primaryDirname = d
-	} else if hasPath && path != "" {
-		primaryDirname = filepath.Dir(path)
-	}
+	// Track if any secondary file needs staging.
+	secondaryStaged := false
 
-	// Process secondary files - they should be staged relative to this file's directory.
+	// Process secondary files - they should be staged in stageDir, the same directory
+	// where the primary file will be staged. This ensures $(inputs.file.dirname)/secondary
+	// resolves correctly.
 	if secFiles, ok := obj["secondaryFiles"].([]any); ok {
 		for _, sf := range secFiles {
 			if sfMap, ok := sf.(map[string]any); ok {
-				// Secondary files should be staged in the same directory as this file
-				// (which is primaryDirname for this file).
-				if err := stageRenamedFileOrDirectory(sfMap, primaryDirname); err != nil {
+				// Check if this secondary file needs staging.
+				sfBasename, _ := sfMap["basename"].(string)
+				sfPath, _ := sfMap["path"].(string)
+				if sfBasename != "" && sfPath != "" && sfBasename != filepath.Base(sfPath) {
+					secondaryStaged = true
+				}
+				if err := stageRenamedFileOrDirectory(sfMap, stageDir); err != nil {
 					return err
 				}
 			}
@@ -2666,8 +2670,39 @@ func stageRenamedFileOrDirectory(obj map[string]any, stageDir string) error {
 
 	// Check if basename differs from the actual filename.
 	actualBasename := filepath.Base(path)
-	if basename == actualBasename {
-		return nil // No rename needed
+	needsRename := basename != actualBasename
+
+	// If this file doesn't need renaming AND no secondary files were staged,
+	// nothing to do.
+	if !needsRename && !secondaryStaged {
+		return nil
+	}
+
+	// If secondary files were staged but this file doesn't need renaming,
+	// we still need to create a symlink so dirname is consistent.
+	if !needsRename && secondaryStaged {
+		// Create symlink with the same basename in stageDir.
+		linkPath := filepath.Join(stageDir, basename)
+
+		// Check if link already exists.
+		if _, err := os.Lstat(linkPath); err == nil {
+			existingTarget, readErr := os.Readlink(linkPath)
+			if readErr == nil && existingTarget == path {
+				obj["path"] = linkPath
+				obj["dirname"] = stageDir
+				return nil
+			}
+			if err := os.Remove(linkPath); err != nil {
+				return fmt.Errorf("remove stale symlink %s: %w", linkPath, err)
+			}
+		}
+
+		if err := os.Symlink(path, linkPath); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", linkPath, path, err)
+		}
+		obj["path"] = linkPath
+		obj["dirname"] = stageDir
+		return nil
 	}
 
 	// Create symlink with the new basename in stageDir.
