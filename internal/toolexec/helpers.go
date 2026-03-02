@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/requirements"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -143,53 +143,15 @@ func isSuccessCode(code int, successCodes []int) bool {
 }
 
 // hasShellCommandRequirement checks if a tool has ShellCommandRequirement.
+// Delegates to the shared requirements package.
 func hasShellCommandRequirement(tool *cwl.CommandLineTool) bool {
-	if tool.Requirements != nil {
-		if _, ok := tool.Requirements["ShellCommandRequirement"]; ok {
-			return true
-		}
-	}
-	if tool.Hints != nil {
-		if _, ok := tool.Hints["ShellCommandRequirement"]; ok {
-			return true
-		}
-	}
-	return false
+	return requirements.HasShellCommand(tool)
 }
 
 // hasNetworkAccess checks if a tool has NetworkAccessRequirement with networkAccess: true.
-// CWL spec: Network access is disabled by default in containers.
+// Delegates to the shared requirements package.
 func hasNetworkAccess(tool *cwl.CommandLineTool) bool {
-	// Check requirements first.
-	if tool.Requirements != nil {
-		// Check both "NetworkAccessRequirement" and "NetworkAccess" keys.
-		for _, key := range []string{"NetworkAccessRequirement", "NetworkAccess"} {
-			if req, ok := tool.Requirements[key]; ok {
-				if reqMap, ok := req.(map[string]any); ok {
-					if na, ok := reqMap["networkAccess"]; ok {
-						if b, ok := na.(bool); ok {
-							return b
-						}
-					}
-				}
-			}
-		}
-	}
-	// Check hints.
-	if tool.Hints != nil {
-		for _, key := range []string{"NetworkAccessRequirement", "NetworkAccess"} {
-			if req, ok := tool.Hints[key]; ok {
-				if reqMap, ok := req.(map[string]any); ok {
-					if na, ok := reqMap["networkAccess"]; ok {
-						if b, ok := na.(bool); ok {
-							return b
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
+	return requirements.HasNetworkAccess(tool)
 }
 
 // hasStdoutOutput checks if the tool has any output of type "stdout".
@@ -261,113 +223,8 @@ func isArrayOutputType(outputType any) bool {
 	return false
 }
 
-// extractEnvVars extracts environment variables from EnvVarRequirement in hints/requirements.
-// It evaluates CWL expressions in envValue using the provided inputs.
-// jobRequirements are cwl:requirements from the job file, which take highest precedence.
+// extractEnvVars extracts environment variables from EnvVarRequirement.
+// Delegates to the shared requirements package.
 func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any) map[string]string {
-	envVars := make(map[string]string)
-
-	// Get expression library from InlineJavascriptRequirement if present.
-	var expressionLib []string
-	if tool.Requirements != nil {
-		if jsReq, ok := tool.Requirements["InlineJavascriptRequirement"].(map[string]any); ok {
-			if lib, ok := jsReq["expressionLib"].([]any); ok {
-				for _, l := range lib {
-					if s, ok := l.(string); ok {
-						expressionLib = append(expressionLib, s)
-					}
-				}
-			}
-		}
-	}
-
-	evaluator := cwlexpr.NewEvaluator(expressionLib)
-	ctx := cwlexpr.NewContext(inputs)
-
-	// Check hints first (lowest precedence)
-	if envReq := getEnvVarRequirement(tool.Hints); envReq != nil {
-		processEnvDef(envReq, envVars, evaluator, ctx)
-	}
-
-	// Check requirements (overrides hints)
-	if envReq := getEnvVarRequirement(tool.Requirements); envReq != nil {
-		processEnvDef(envReq, envVars, evaluator, ctx)
-	}
-
-	// Check job requirements (highest precedence, overrides tool requirements)
-	for _, req := range jobRequirements {
-		reqMap, ok := req.(map[string]any)
-		if !ok {
-			continue
-		}
-		class, _ := reqMap["class"].(string)
-		if class == "EnvVarRequirement" {
-			processEnvDef(reqMap, envVars, evaluator, ctx)
-		}
-	}
-
-	return envVars
-}
-
-// getEnvVarRequirement extracts EnvVarRequirement from hints or requirements map.
-func getEnvVarRequirement(reqMap map[string]any) map[string]any {
-	if reqMap == nil {
-		return nil
-	}
-	if req, ok := reqMap["EnvVarRequirement"].(map[string]any); ok {
-		return req
-	}
-	return nil
-}
-
-// processEnvDef processes envDef from EnvVarRequirement and adds to envVars map.
-// It evaluates CWL expressions in envValue using the provided evaluator and context.
-func processEnvDef(envReq map[string]any, envVars map[string]string, evaluator *cwlexpr.Evaluator, ctx *cwlexpr.Context) map[string]string {
-	envDef, ok := envReq["envDef"]
-	if !ok {
-		return envVars
-	}
-
-	// envDef can be an array or map
-	switch defs := envDef.(type) {
-	case []any:
-		for _, def := range defs {
-			if m, ok := def.(map[string]any); ok {
-				name, _ := m["envName"].(string)
-				value, _ := m["envValue"].(string)
-				if name != "" {
-					// Evaluate expressions in envValue.
-					evaluated := evaluateEnvValue(value, evaluator, ctx)
-					envVars[name] = evaluated
-				}
-			}
-		}
-	case map[string]any:
-		for name, val := range defs {
-			if value, ok := val.(string); ok {
-				// Evaluate expressions in value.
-				evaluated := evaluateEnvValue(value, evaluator, ctx)
-				envVars[name] = evaluated
-			}
-		}
-	}
-
-	return envVars
-}
-
-// evaluateEnvValue evaluates a CWL expression in an environment variable value.
-// If the value contains a CWL expression like $(inputs.in), it will be evaluated.
-// Otherwise, the value is returned as-is.
-func evaluateEnvValue(value string, evaluator *cwlexpr.Evaluator, ctx *cwlexpr.Context) string {
-	if !cwlexpr.IsExpression(value) {
-		return value
-	}
-
-	result, err := evaluator.EvaluateString(value, ctx)
-	if err != nil {
-		// Log error but return original value to avoid breaking execution.
-		// In production, this might want to be a fatal error.
-		return value
-	}
-	return result
+	return requirements.ExtractEnvVars(tool, inputs, jobRequirements)
 }
