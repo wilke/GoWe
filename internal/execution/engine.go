@@ -371,7 +371,7 @@ func applyToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 	for inputID, inputDef := range tool.Inputs {
 		val := result[inputID]
 		if val != nil {
-			if err := secondaryfiles.ValidateInput(inputID, inputDef, val); err != nil {
+			if err := secondaryfiles.ValidateInput(inputID, inputDef, val, result); err != nil {
 				return nil, err
 			}
 		}
