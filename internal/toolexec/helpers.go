@@ -7,6 +7,7 @@ import (
 
 	"github.com/me/gowe/internal/requirements"
 	"github.com/me/gowe/pkg/cwl"
+	"github.com/me/gowe/pkg/staging"
 )
 
 // stageInputFiles stages input files in the working directory.
@@ -79,54 +80,9 @@ func stageFileOrDir(obj map[string]any, workDir string) error {
 }
 
 // CollectInputMounts collects input files that need to be mounted in Docker.
+// Delegates to the shared staging package.
 func CollectInputMounts(inputs map[string]any) map[string]string {
-	mounts := make(map[string]string)
-	for _, v := range inputs {
-		collectInputMountsValue(v, mounts)
-	}
-	return mounts
-}
-
-// collectInputMountsValue collects mount points from a value.
-// It returns a map of hostPath -> containerPath.
-// The host path is resolved (symlinks evaluated) for Docker mounting,
-// but the container path uses the original path so commands work as expected.
-func collectInputMountsValue(v any, mounts map[string]string) {
-	switch val := v.(type) {
-	case map[string]any:
-		if class, ok := val["class"].(string); ok {
-			if class == "File" || class == "Directory" {
-				if path, ok := val["path"].(string); ok {
-					if filepath.IsAbs(path) {
-						// Resolve symlinks for Docker mount source,
-						// but use original path as container target.
-						resolved := ResolveSymlinks(path)
-						mounts[resolved] = path
-					}
-				}
-				// Also collect secondary files for File objects.
-				if class == "File" {
-					if secFiles, ok := val["secondaryFiles"].([]any); ok {
-						for _, sf := range secFiles {
-							collectInputMountsValue(sf, mounts)
-						}
-					}
-				}
-				// Collect listing for Directory objects.
-				if class == "Directory" {
-					if listing, ok := val["listing"].([]any); ok {
-						for _, item := range listing {
-							collectInputMountsValue(item, mounts)
-						}
-					}
-				}
-			}
-		}
-	case []any:
-		for _, item := range val {
-			collectInputMountsValue(item, mounts)
-		}
-	}
+	return staging.CollectInputMounts(inputs)
 }
 
 // isSuccessCode checks if an exit code is in the success codes list.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/iwdr"
+	"github.com/me/gowe/pkg/staging"
 )
 
 // executeLocal executes a tool locally without Docker in the specified work directory.
@@ -595,20 +596,9 @@ func moveFile(src, dst string) error {
 }
 
 // ResolveSymlinks resolves symlinks in a path for Docker mounts.
-// On macOS, /tmp is a symlink to /private/tmp which can cause issues with Docker.
-// Always returns an absolute path.
+// Delegates to the shared staging package.
 func ResolveSymlinks(path string) string {
-	// First make absolute.
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		absPath = path
-	}
-	// Then resolve symlinks.
-	resolved, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		return absPath
-	}
-	return resolved
+	return staging.ResolveSymlinks(path)
 }
 
 // translateDockerPath translates a container path to the Docker host path.
