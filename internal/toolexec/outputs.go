@@ -265,10 +265,24 @@ func (e *Executor) addSecondaryFiles(fileObj map[string]any, schemas []cwl.Secon
 
 				// Apply custom basename if specified.
 				if sfr.basename != "" && sfr.basename != filepath.Base(sfr.path) {
-					secObj["basename"] = sfr.basename
-					// Update location to use the custom basename.
 					dir := filepath.Dir(sfr.path)
-					secObj["location"] = "file://" + filepath.Join(dir, sfr.basename)
+					renamedPath := filepath.Join(dir, sfr.basename)
+
+					// Create symlink with the renamed basename pointing to the actual file.
+					// This ensures the file exists at the declared location.
+					if _, err := os.Lstat(renamedPath); os.IsNotExist(err) {
+						// Create symlink: renamedPath -> actual file
+						if err := os.Symlink(filepath.Base(sfr.path), renamedPath); err != nil {
+							e.logger.Debug("failed to create symlink for renamed secondary file",
+								"from", renamedPath, "to", sfr.path, "error", err)
+						}
+					}
+
+					// Update the object to use the renamed path.
+					secObj["basename"] = sfr.basename
+					secObj["path"] = renamedPath
+					secObj["location"] = "file://" + renamedPath
+					secObj["dirname"] = dir
 					// Update nameroot and nameext based on custom basename.
 					ext := filepath.Ext(sfr.basename)
 					secObj["nameext"] = ext

@@ -644,7 +644,44 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 	}
 
 	result.Workflow = wf
+
+	// Validate version constraints.
+	if err := validateWorkflowVersion(wf); err != nil {
+		return result, err
+	}
+
 	return result, nil
+}
+
+// validateWorkflowVersion checks that the workflow doesn't use features beyond its declared version.
+func validateWorkflowVersion(wf *cwl.Workflow) error {
+	version := wf.CWLVersion
+	if version == "" {
+		return nil // No version specified, skip validation
+	}
+
+	// Check v1.2-only features
+	isV12 := version == "v1.2"
+	isV11OrLater := isV12 || version == "v1.1"
+
+	for stepID, step := range wf.Steps {
+		// 'when' is a v1.2 feature (ConditionalFeatureRequirement)
+		if step.When != "" && !isV12 {
+			return fmt.Errorf("step %q: 'when' clause requires cwlVersion v1.2 or later (document is %s)", stepID, version)
+		}
+
+	}
+
+	// Check secondaryFiles with 'required' field (v1.1+ feature)
+	for inputID, input := range wf.Inputs {
+		for _, sf := range input.SecondaryFiles {
+			if sf.Required != nil && !isV11OrLater {
+				return fmt.Errorf("input %q: secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is %s)", inputID, version)
+			}
+		}
+	}
+
+	return nil
 }
 
 // normalizeToMap converts array-style CWL definitions to map-style.
@@ -960,7 +997,47 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 		}
 	}
 
+	// Validate version constraints.
+	if err := validateToolVersion(tool); err != nil {
+		return nil, err
+	}
+
 	return tool, nil
+}
+
+// validateToolVersion checks that the tool doesn't use features beyond its declared version.
+func validateToolVersion(tool *cwl.CommandLineTool) error {
+	version := tool.CWLVersion
+	if version == "" {
+		return nil // No version specified, skip validation
+	}
+
+	isV12 := version == "v1.2"
+	isV11OrLater := isV12 || version == "v1.1"
+
+	// Check secondaryFiles with 'required' field (v1.1+ feature)
+	for inputID, input := range tool.Inputs {
+		for _, sf := range input.SecondaryFiles {
+			if sf.Required != nil && !isV11OrLater {
+				return fmt.Errorf("input %q: secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is %s)", inputID, version)
+			}
+		}
+	}
+
+	// ResourceRequirement coresMin/coresMax can be non-integer in v1.2+
+	if tool.Requirements != nil {
+		if resReq, ok := tool.Requirements["ResourceRequirement"].(map[string]any); ok {
+			for _, field := range []string{"coresMin", "coresMax"} {
+				if val, exists := resReq[field]; exists {
+					if f, ok := val.(float64); ok && f != float64(int(f)) && !isV12 {
+						return fmt.Errorf("ResourceRequirement %s: non-integer values require cwlVersion v1.2 or later (document is %s)", field, version)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // parseExpressionTool parses a CWL ExpressionTool from a raw map.
