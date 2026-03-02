@@ -19,22 +19,23 @@ import (
 
 // Server is the GoWe REST API server.
 type Server struct {
-	router          chi.Router
-	logger          *slog.Logger
-	config          config.ServerConfig
-	startTime       time.Time
-	parser          *parser.Parser
-	validator       *parser.Validator
-	store           store.Store
-	scheduler       scheduler.Scheduler
-	registry        *executor.Registry // optional; used by dry-run to check executor availability
-	bvbrcCaller     bvbrc.RPCCaller    // optional; AppService caller, nil when no BV-BRC token
-	workspaceCaller bvbrc.RPCCaller    // optional; Workspace service caller
-	testApps        []map[string]any   // optional; static app list for testing without BV-BRC
-	ui              *ui.UI             // UI handler for web interface
-	adminConfig     *AdminConfig       // optional; admin role configuration
-	anonConfig      *AnonymousConfig   // optional; anonymous access configuration
-	workerKeyConfig *WorkerKeyConfig   // optional; worker key authentication
+	router           chi.Router
+	logger           *slog.Logger
+	config           config.ServerConfig
+	startTime        time.Time
+	parser           *parser.Parser
+	validator        *parser.Validator
+	store            store.Store
+	scheduler        scheduler.Scheduler
+	registry         *executor.Registry  // optional; used by dry-run to check executor availability
+	bvbrcCaller      bvbrc.RPCCaller     // optional; AppService caller, nil when no BV-BRC token
+	workspaceCaller  bvbrc.RPCCaller     // optional; Workspace service caller
+	testApps         []map[string]any    // optional; static app list for testing without BV-BRC
+	ui               *ui.UI              // UI handler for web interface
+	adminConfig      *AdminConfig        // optional; admin role configuration
+	anonConfig       *AnonymousConfig    // optional; anonymous access configuration
+	workerKeyConfig  *WorkerKeyConfig    // optional; worker key authentication
+	fileUploadConfig *FileUploadConfig   // optional; file upload proxy configuration
 }
 
 // Option configures optional Server dependencies.
@@ -225,6 +226,9 @@ func (s *Server) routes() {
 
 			// Workspace (BV-BRC proxy)
 			r.Get("/workspace", s.handleListWorkspace)
+
+			// File upload proxy
+			r.Post("/files", s.handleUploadFile)
 
 			// SSE endpoints for real-time updates
 			r.Route("/sse", func(r chi.Router) {

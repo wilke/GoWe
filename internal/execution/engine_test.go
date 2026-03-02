@@ -192,7 +192,7 @@ func TestFileStager_StageIn(t *testing.T) {
 	stager := NewFileStager("local")
 	dstFile := filepath.Join(dstDir, "test.txt")
 
-	err := stager.StageIn(context.Background(), "file://"+srcFile, dstFile)
+	err := stager.StageIn(context.Background(), "file://"+srcFile, dstFile, StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}

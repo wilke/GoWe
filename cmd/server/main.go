@@ -41,6 +41,28 @@ func main() {
 	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
 
+	// File upload proxy options
+	uploadBackend := flag.String("upload-backend", "", "Enable file upload proxy with backend: shock, s3, local")
+	uploadMaxSize := flag.Int64("upload-max-size", 1<<30, "Maximum upload size in bytes (default: 1GB)")
+
+	// Shock upload options
+	uploadShockHost := flag.String("upload-shock-host", "", "Shock server host for uploads (e.g., localhost:7445)")
+	uploadShockHTTP := flag.Bool("upload-shock-http", false, "Use HTTP instead of HTTPS for Shock uploads")
+	uploadShockToken := flag.String("upload-shock-token", "", "Shock authentication token for uploads")
+
+	// S3 upload options
+	uploadS3Endpoint := flag.String("upload-s3-endpoint", "", "S3 endpoint for uploads (empty = AWS)")
+	uploadS3Region := flag.String("upload-s3-region", "us-east-1", "S3 region for uploads")
+	uploadS3Bucket := flag.String("upload-s3-bucket", "", "S3 bucket for uploads")
+	uploadS3Prefix := flag.String("upload-s3-prefix", "uploads/", "S3 key prefix for uploads")
+	uploadS3AccessKey := flag.String("upload-s3-access-key", "", "S3 access key (or AWS_ACCESS_KEY_ID env)")
+	uploadS3SecretKey := flag.String("upload-s3-secret-key", "", "S3 secret key (or AWS_SECRET_ACCESS_KEY env)")
+	uploadS3PathStyle := flag.Bool("upload-s3-path-style", false, "Use path-style S3 addressing")
+	uploadS3DisableSSL := flag.Bool("upload-s3-disable-ssl", false, "Disable SSL for S3 uploads")
+
+	// Local upload options
+	uploadLocalDir := flag.String("upload-local-dir", "", "Local directory for file uploads")
+
 	flag.Parse()
 
 	if *debug {
@@ -123,6 +145,45 @@ func main() {
 	if workerKeyConfig.IsEnabled() {
 		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
 		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
+	}
+
+	// Configure file upload proxy.
+	if *uploadBackend != "" {
+		// Resolve S3 credentials from env if not provided
+		s3AccessKey := *uploadS3AccessKey
+		s3SecretKey := *uploadS3SecretKey
+		if s3AccessKey == "" {
+			s3AccessKey = os.Getenv("AWS_ACCESS_KEY_ID")
+		}
+		if s3SecretKey == "" {
+			s3SecretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+		}
+
+		uploadCfg := &server.FileUploadConfig{
+			Enabled: true,
+			Backend: *uploadBackend,
+			MaxSize: *uploadMaxSize,
+			Shock: server.ShockUploadConfig{
+				Host:    *uploadShockHost,
+				UseHTTP: *uploadShockHTTP,
+				Token:   *uploadShockToken,
+			},
+			S3: server.S3UploadConfig{
+				Endpoint:        *uploadS3Endpoint,
+				Region:          *uploadS3Region,
+				Bucket:          *uploadS3Bucket,
+				Prefix:          *uploadS3Prefix,
+				AccessKeyID:     s3AccessKey,
+				SecretAccessKey: s3SecretKey,
+				UsePathStyle:    *uploadS3PathStyle,
+				DisableSSL:      *uploadS3DisableSSL,
+			},
+			Local: server.LocalUploadConfig{
+				Dir: *uploadLocalDir,
+			},
+		}
+		serverOpts = append(serverOpts, server.WithFileUploadConfig(uploadCfg))
+		logger.Info("file upload proxy enabled", "backend", *uploadBackend)
 	}
 
 	// Set up BV-BRC callers.

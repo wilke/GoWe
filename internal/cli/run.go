@@ -21,6 +21,7 @@ import (
 func newRunCmd() *cobra.Command {
 	var outDir string
 	var quiet bool
+	var verbose bool // Accepted for compatibility but currently ignored
 	var timeout time.Duration
 
 	cmd := &cobra.Command{
@@ -74,7 +75,11 @@ testing tool. It follows the same interface as cwl-runner.`,
 
 	cmd.Flags().StringVar(&outDir, "outdir", "", "Output directory for result files (default: temporary directory)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress progress messages")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose output (for cwltest compatibility)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "Execution timeout")
+
+	// Mark verbose as hidden since it's mainly for cwltest compatibility.
+	_ = cmd.Flags().MarkHidden("verbose")
 
 	return cmd
 }

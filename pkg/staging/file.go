@@ -21,12 +21,28 @@ func NewFileStager(mode string) *FileStager {
 }
 
 // StageIn copies a file from a file:// location to destPath.
-func (s *FileStager) StageIn(_ context.Context, location string, destPath string) error {
+// Respects StageOptions.Mode for symlink vs copy behavior.
+func (s *FileStager) StageIn(_ context.Context, location string, destPath string, opts StageOptions) error {
 	scheme, path := ParseLocationScheme(location)
 
 	switch scheme {
 	case "file", "":
-		return CopyFile(path, destPath)
+		// Check if source exists
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("file stager: source not found: %w", err)
+		}
+
+		switch opts.Mode {
+		case StageModeReference:
+			// Reference mode: file is already accessible, nothing to do.
+			// The caller should update the path in the input object.
+			return nil
+		case StageModeSymlink:
+			return Symlink(path, destPath)
+		default:
+			// Default to copy mode
+			return CopyFile(path, destPath)
+		}
 	default:
 		return fmt.Errorf("file stager: unsupported scheme %q for stage-in (use CompositeStager for remote schemes)", scheme)
 	}
@@ -35,7 +51,7 @@ func (s *FileStager) StageIn(_ context.Context, location string, destPath string
 // StageOut returns a file:// URI for the given source path.
 // In "local" mode, returns a URI pointing directly to srcPath.
 // In file:// mode, copies to the shared directory.
-func (s *FileStager) StageOut(_ context.Context, srcPath string, taskID string) (string, error) {
+func (s *FileStager) StageOut(_ context.Context, srcPath string, taskID string, _ StageOptions) (string, error) {
 	if s.mode == "local" {
 		absPath, err := filepath.Abs(srcPath)
 		if err != nil {
@@ -61,6 +77,11 @@ func (s *FileStager) StageOut(_ context.Context, srcPath string, taskID string) 
 	}
 
 	return BuildLocation("file", destPath), nil
+}
+
+// Supports returns true for file and empty schemes.
+func (s *FileStager) Supports(scheme string) bool {
+	return scheme == "file" || scheme == ""
 }
 
 // Verify interface compliance.

@@ -1,0 +1,204 @@
+version: "3.9"
+
+# Docker Compose file for running integration tests with MinIO and Shock services.
+# Usage:
+#   docker-compose -f docker-compose.test.yml up -d
+#   go test ./pkg/staging/... -v -tags=integration
+#   docker-compose -f docker-compose.test.yml down -v
+
+services:
+  # MinIO - S3-compatible object storage
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-net
+
+  # MinIO setup - creates test bucket
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/test-bucket --ignore-existing;
+      /usr/bin/mc anonymous set public myminio/test-bucket;
+      exit 0;
+      "
+    networks:
+      - test-net
+
+  # MongoDB for Shock
+  shock-mongo:
+    image: mongo:4.4
+    volumes:
+      - shock-mongo-data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-net
+
+  # Shock server (using a mock/simple implementation for testing)
+  # Note: For real Shock testing, you'd need the actual Shock image.
+  # This uses a simple HTTP file server for basic testing.
+  shock-mock:
+    image: python:3.11-slim
+    ports:
+      - "7445:7445"
+    working_dir: /shock
+    command: >
+      python -c "
+      import http.server
+      import socketserver
+      import json
+      import os
+      import uuid
+      from urllib.parse import urlparse, parse_qs
+
+      os.makedirs('/shock/data', exist_ok=True)
+
+      class ShockHandler(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              parsed = urlparse(self.path)
+              path = parsed.path
+              query = parse_qs(parsed.query)
+
+              # Health check
+              if path == '/':
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(json.dumps({'status': 'ok'}).encode())
+                  return
+
+              # Download node data
+              if path.startswith('/node/') and 'download' in query:
+                  node_id = path.split('/')[2]
+                  data_path = f'/shock/data/{node_id}'
+                  if os.path.exists(data_path):
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/octet-stream')
+                      self.end_headers()
+                      with open(data_path, 'rb') as f:
+                          self.wfile.write(f.read())
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+                  return
+
+              # Get node metadata
+              if path.startswith('/node/'):
+                  node_id = path.split('/')[2]
+                  data_path = f'/shock/data/{node_id}'
+                  if os.path.exists(data_path):
+                      size = os.path.getsize(data_path)
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      resp = {'status': 200, 'data': {'id': node_id, 'file': {'size': size, 'name': node_id}}}
+                      self.wfile.write(json.dumps(resp).encode())
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+                  return
+
+              self.send_response(404)
+              self.end_headers()
+
+          def do_POST(self):
+              # Create node with file upload
+              if self.path == '/node':
+                  content_type = self.headers.get('Content-Type', '')
+                  content_length = int(self.headers.get('Content-Length', 0))
+
+                  node_id = str(uuid.uuid4())
+                  data_path = f'/shock/data/{node_id}'
+
+                  # Simple parsing - in real Shock, this handles multipart
+                  body = self.rfile.read(content_length)
+
+                  # Find file content in multipart data (simplified)
+                  if b'upload' in body:
+                      # Extract file content after headers
+                      parts = body.split(b'\\r\\n\\r\\n')
+                      if len(parts) > 1:
+                          file_content = parts[1].rsplit(b'\\r\\n--', 1)[0]
+                          with open(data_path, 'wb') as f:
+                              f.write(file_content)
+
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  resp = {'status': 200, 'data': {'id': node_id, 'file': {'name': node_id}}}
+                  self.wfile.write(json.dumps(resp).encode())
+                  return
+
+              self.send_response(404)
+              self.end_headers()
+
+          def do_DELETE(self):
+              if self.path.startswith('/node/'):
+                  node_id = self.path.split('/')[2]
+                  data_path = f'/shock/data/{node_id}'
+                  if os.path.exists(data_path):
+                      os.remove(data_path)
+                  self.send_response(200)
+                  self.end_headers()
+                  return
+
+              self.send_response(404)
+              self.end_headers()
+
+          def do_PUT(self):
+              # ACL updates
+              if '/acl/' in self.path:
+                  self.send_response(200)
+                  self.end_headers()
+                  return
+
+              self.send_response(404)
+              self.end_headers()
+
+          def log_message(self, format, *args):
+              pass  # Suppress logging
+
+      with socketserver.TCPServer(('', 7445), ShockHandler) as httpd:
+          print('Shock mock server running on port 7445')
+          httpd.serve_forever()
+      "
+    volumes:
+      - shock-data:/shock/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7445/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - test-net
+
+volumes:
+  minio-data:
+  shock-mongo-data:
+  shock-data:
+
+networks:
+  test-net:
+    driver: bridge

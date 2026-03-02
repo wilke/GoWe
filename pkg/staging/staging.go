@@ -1,6 +1,6 @@
 // Package staging provides file staging interfaces and implementations for CWL execution.
 // It supports staging files in/out of task working directories from various sources
-// (local filesystem, S3, HTTP, etc.).
+// (local filesystem, S3, HTTP, Shock, etc.).
 package staging
 
 import (
@@ -12,15 +12,74 @@ import (
 	"strings"
 )
 
+// StageMode determines how files are made accessible during staging.
+type StageMode int
+
+const (
+	// StageModeCopy copies the file to the destination (default).
+	StageModeCopy StageMode = iota
+	// StageModeSymlink creates a symlink to the original file.
+	StageModeSymlink
+	// StageModeReference just updates the path, no copy/link (shared filesystem).
+	StageModeReference
+)
+
+// String returns the string representation of the StageMode.
+func (m StageMode) String() string {
+	switch m {
+	case StageModeCopy:
+		return "copy"
+	case StageModeSymlink:
+		return "symlink"
+	case StageModeReference:
+		return "reference"
+	default:
+		return "unknown"
+	}
+}
+
+// CredentialSet holds authentication credentials for staging operations.
+type CredentialSet struct {
+	Type        string `json:"type"`                   // "bearer", "basic", "header", "s3", "shock"
+	Token       string `json:"token,omitempty"`        // for bearer/shock
+	Username    string `json:"username,omitempty"`     // for basic
+	Password    string `json:"password,omitempty"`     // for basic
+	HeaderName  string `json:"header_name,omitempty"`  // for header
+	HeaderValue string `json:"header_value,omitempty"` // for header
+	AccessKeyID string `json:"access_key_id,omitempty"`     // for S3
+	SecretKey   string `json:"secret_access_key,omitempty"` // for S3
+}
+
+// StageOptions carries per-request configuration for staging operations.
+type StageOptions struct {
+	// Token is the authentication token (job-level or config fallback).
+	Token string
+
+	// Credentials provides a full credential set if needed.
+	Credentials *CredentialSet
+
+	// Headers are additional HTTP headers for the request.
+	Headers map[string]string
+
+	// Metadata is additional metadata for uploads (e.g., S3 tags, Shock attributes).
+	Metadata map[string]string
+
+	// Mode determines how files are staged (copy, symlink, reference).
+	Mode StageMode
+}
+
 // Stager handles staging files in and out of task working directories.
 type Stager interface {
 	// StageIn downloads/copies a file from location to destPath.
-	// Supports various URI schemes: file://, s3://, http://, ws://, etc.
-	StageIn(ctx context.Context, location string, destPath string) error
+	// Supports various URI schemes: file://, s3://, http://, shock://, etc.
+	StageIn(ctx context.Context, location string, destPath string, opts StageOptions) error
 
 	// StageOut uploads/copies a file from srcPath to the configured destination.
 	// Returns the new location URI.
-	StageOut(ctx context.Context, srcPath string, taskID string) (location string, err error)
+	StageOut(ctx context.Context, srcPath string, taskID string, opts StageOptions) (location string, err error)
+
+	// Supports returns true if this stager handles the given scheme.
+	Supports(scheme string) bool
 }
 
 // ParseLocationScheme extracts the scheme from a location string.

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/me/gowe/internal/execution"
+	"github.com/me/gowe/pkg/staging"
 )
 
 func TestFileStager_StageIn_FileScheme(t *testing.T) {
@@ -23,7 +24,7 @@ func TestFileStager_StageIn_FileScheme(t *testing.T) {
 	stager := execution.NewFileStager("local")
 	dstFile := filepath.Join(dstDir, "input.txt")
 
-	err := stager.StageIn(context.Background(), "file://"+srcFile, dstFile)
+	err := stager.StageIn(context.Background(), "file://"+srcFile, dstFile, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn error: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestFileStager_StageIn_BarePath(t *testing.T) {
 	stager := execution.NewFileStager("local")
 	dstFile := filepath.Join(dstDir, "input.txt")
 
-	err := stager.StageIn(context.Background(), srcFile, dstFile)
+	err := stager.StageIn(context.Background(), srcFile, dstFile, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn error: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestFileStager_StageIn_BarePath(t *testing.T) {
 
 func TestFileStager_StageIn_UnsupportedScheme(t *testing.T) {
 	stager := execution.NewFileStager("local")
-	err := stager.StageIn(context.Background(), "ws:///user@bvbrc/path", "/tmp/dest")
+	err := stager.StageIn(context.Background(), "ws:///user@bvbrc/path", "/tmp/dest", staging.StageOptions{})
 	if err == nil {
 		t.Fatal("expected error for unsupported scheme")
 	}
@@ -79,7 +80,7 @@ func TestFileStager_StageOut_Local(t *testing.T) {
 	}
 
 	stager := execution.NewFileStager("local")
-	loc, err := stager.StageOut(context.Background(), srcFile, "task_123")
+	loc, err := stager.StageOut(context.Background(), srcFile, "task_123", staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageOut error: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestFileStager_StageOut_SharedPath(t *testing.T) {
 	}
 
 	stager := execution.NewFileStager("file://" + sharedDir)
-	loc, err := stager.StageOut(context.Background(), srcFile, "task_456")
+	loc, err := stager.StageOut(context.Background(), srcFile, "task_456", staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageOut error: %v", err)
 	}

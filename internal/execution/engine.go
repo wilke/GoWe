@@ -28,6 +28,7 @@ type Engine struct {
 	gpu               GPUConfig         // GPU configuration for container execution
 	cwlDir            string            // Directory containing the CWL file
 	dockerHostPathMap map[string]string // Container path -> host path mapping for DinD
+	inputPathMap      map[string]string // Host path -> container path mapping for inputs
 
 	// ExpressionLib contains JavaScript library code from InlineJavascriptRequirement.
 	ExpressionLib []string
@@ -52,6 +53,12 @@ type Config struct {
 	// the Docker daemon must be valid on the host, not inside the worker container.
 	// Format: container_path -> host_path (e.g., "/workdir" -> "/host/path/to/workdir")
 	DockerHostPathMap map[string]string
+
+	// InputPathMap maps host paths in task inputs to local container paths.
+	// This allows workers running in containers to access files at different
+	// paths than where they exist on the original host.
+	// Format: host_path -> container_path (e.g., "/Users/me/testdata" -> "/testdata")
+	InputPathMap map[string]string
 }
 
 // NewEngine creates a new execution engine.
@@ -78,6 +85,7 @@ func NewEngine(cfg Config) *Engine {
 		gpu:               cfg.GPU,
 		cwlDir:            cfg.CWLDir,
 		dockerHostPathMap: cfg.DockerHostPathMap,
+		inputPathMap:      cfg.InputPathMap,
 		ExpressionLib:     cfg.ExpressionLib,
 		Namespaces:        cfg.Namespaces,
 	}
@@ -100,6 +108,13 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 		return nil, &ExecutionError{Phase: "setup", Err: err}
 	}
 
+	// Apply input path mapping if configured.
+	// This translates host paths to local container paths for distributed workers.
+	if len(e.inputPathMap) > 0 {
+		inputs = e.remapInputPaths(inputs)
+		e.logger.Debug("remapped input paths", "path_map", e.inputPathMap)
+	}
+
 	// Apply tool input defaults for any inputs not provided in the job.
 	// Also processes loadContents with 64KB limit enforcement.
 	mergedInputs, err := applyToolDefaults(tool, inputs, e.cwlDir)
@@ -117,7 +132,14 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	// Build runtime context.
 	runtimeCtx := e.buildRuntimeContext(tool, workDir)
 
-	// Build command line.
+	// Stage input files into workdir BEFORE building command line.
+	// This ensures remote files (shock://, s3://, http://) are downloaded
+	// and their paths are updated in mergedInputs before command building.
+	if err := e.stageInputs(ctx, mergedInputs, workDir); err != nil {
+		return nil, &ExecutionError{Phase: "stage_in", Err: err}
+	}
+
+	// Build command line (after staging, so paths point to local files).
 	builder := cmdline.NewBuilder(e.ExpressionLib)
 	cmdResult, err := builder.Build(tool, mergedInputs, runtimeCtx)
 	if err != nil {
@@ -125,11 +147,6 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	}
 
 	e.logger.Debug("built command", "cmd", cmdResult.Command)
-
-	// Stage input files into workdir.
-	if err := e.stageInputs(ctx, mergedInputs, workDir); err != nil {
-		return nil, &ExecutionError{Phase: "stage_in", Err: err}
-	}
 
 	// Determine execution mode.
 	useDocker := hasDockerRequirement(tool)
@@ -438,4 +455,68 @@ func resolvePath(path, baseDir string) string {
 		return path
 	}
 	return filepath.Join(baseDir, path)
+}
+
+// remapInputPaths applies the engine's inputPathMap to all file paths in the inputs.
+// This translates host paths (from submitted tasks) to local container paths.
+func (e *Engine) remapInputPaths(inputs map[string]any) map[string]any {
+	if len(e.inputPathMap) == 0 {
+		return inputs
+	}
+	result, _ := remapPaths(inputs, e.inputPathMap).(map[string]any)
+	return result
+}
+
+// remapPaths recursively remaps file paths in a value using the given path map.
+func remapPaths(v any, pathMap map[string]string) any {
+	if len(pathMap) == 0 {
+		return v
+	}
+
+	switch val := v.(type) {
+	case map[string]any:
+		result := make(map[string]any)
+		for k, v := range val {
+			result[k] = remapPaths(v, pathMap)
+		}
+
+		// Remap location and path fields for File/Directory objects.
+		class, _ := result["class"].(string)
+		if class == "File" || class == "Directory" {
+			if loc, ok := result["location"].(string); ok {
+				result["location"] = remapPath(loc, pathMap)
+			}
+			if path, ok := result["path"].(string); ok {
+				result["path"] = remapPath(path, pathMap)
+			}
+		}
+		return result
+
+	case []any:
+		result := make([]any, len(val))
+		for i, item := range val {
+			result[i] = remapPaths(item, pathMap)
+		}
+		return result
+
+	case string:
+		// Check if this looks like an absolute path that should be remapped.
+		if filepath.IsAbs(val) {
+			return remapPath(val, pathMap)
+		}
+		return val
+
+	default:
+		return v
+	}
+}
+
+// remapPath applies path mapping to a single path string.
+func remapPath(path string, pathMap map[string]string) string {
+	for srcPrefix, dstPrefix := range pathMap {
+		if strings.HasPrefix(path, srcPrefix) {
+			return dstPrefix + strings.TrimPrefix(path, srcPrefix)
+		}
+	}
+	return path
 }

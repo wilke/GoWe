@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/me/gowe/pkg/staging"
 )
 
 func TestHTTPStager_StageIn(t *testing.T) {
@@ -32,7 +34,7 @@ func TestHTTPStager_StageIn(t *testing.T) {
 	destPath := filepath.Join(tmpDir, "downloaded.txt")
 
 	// Stage in.
-	err := stager.StageIn(context.Background(), server.URL+"/file.txt", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/file.txt", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -68,7 +70,7 @@ func TestHTTPStager_StageIn_Retry(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "retry.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/file.txt", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/file.txt", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestHTTPStager_StageIn_ClientError_NoRetry(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "notfound.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/notfound", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/notfound", destPath, staging.StageOptions{})
 	if err == nil {
 		t.Fatal("expected error for 404")
 	}
@@ -132,7 +134,7 @@ func TestHTTPStager_StageOut(t *testing.T) {
 	}
 
 	// Stage out.
-	location, err := stager.StageOut(context.Background(), srcPath, "task123")
+	location, err := stager.StageOut(context.Background(), srcPath, "task123", staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageOut failed: %v", err)
 	}
@@ -169,7 +171,7 @@ func TestHTTPStager_StageOut_POST(t *testing.T) {
 	srcPath := filepath.Join(tmpDir, "file.txt")
 	os.WriteFile(srcPath, []byte("data"), 0o644)
 
-	_, err := stager.StageOut(context.Background(), srcPath, "task456")
+	_, err := stager.StageOut(context.Background(), srcPath, "task456", staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageOut failed: %v", err)
 	}
@@ -204,7 +206,7 @@ func TestHTTPStager_Credentials_Bearer(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/secure", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/secure", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -239,7 +241,7 @@ func TestHTTPStager_Credentials_Basic(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/secure", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/secure", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -278,7 +280,7 @@ func TestHTTPStager_Credentials_Header(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/secure", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/secure", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -312,7 +314,7 @@ func TestHTTPStager_Credentials_Wildcard(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/file", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/file", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -344,7 +346,7 @@ func TestHTTPStager_DefaultHeaders(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/file", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/file", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -388,7 +390,7 @@ func TestHTTPStager_WithOverrides(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), server.URL+"/file", destPath)
+	err := stager.StageIn(context.Background(), server.URL+"/file", destPath, staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageIn failed: %v", err)
 	}
@@ -407,7 +409,7 @@ func TestHTTPStager_StageIn_UnsupportedScheme(t *testing.T) {
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "file.txt")
 
-	err := stager.StageIn(context.Background(), "file:///local/file", destPath)
+	err := stager.StageIn(context.Background(), "file:///local/file", destPath, staging.StageOptions{})
 	if err == nil {
 		t.Fatal("expected error for file:// scheme")
 	}
@@ -420,7 +422,7 @@ func TestHTTPStager_StageOut_NoUploadPath(t *testing.T) {
 	srcPath := filepath.Join(tmpDir, "file.txt")
 	os.WriteFile(srcPath, []byte("data"), 0o644)
 
-	_, err := stager.StageOut(context.Background(), srcPath, "task123")
+	_, err := stager.StageOut(context.Background(), srcPath, "task123", staging.StageOptions{})
 	if err == nil {
 		t.Fatal("expected error when no upload path configured")
 	}
@@ -445,7 +447,7 @@ func TestHTTPStager_URLTemplateExpansion(t *testing.T) {
 	srcPath := filepath.Join(tmpDir, "results.csv")
 	os.WriteFile(srcPath, []byte("data"), 0o644)
 
-	_, err := stager.StageOut(context.Background(), srcPath, "job-42")
+	_, err := stager.StageOut(context.Background(), srcPath, "job-42", staging.StageOptions{})
 	if err != nil {
 		t.Fatalf("StageOut failed: %v", err)
 	}

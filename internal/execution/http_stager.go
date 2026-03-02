@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/pkg/cwl"
+	"github.com/me/gowe/pkg/staging"
 )
 
 // HTTPStagerConfig contains HTTP/HTTPS stager settings.
@@ -114,7 +115,7 @@ func (s *HTTPStager) WithOverrides(o *StagerOverrides) *HTTPStager {
 }
 
 // StageIn downloads a file from an HTTP/HTTPS URL to destPath.
-func (s *HTTPStager) StageIn(ctx context.Context, location string, destPath string) error {
+func (s *HTTPStager) StageIn(ctx context.Context, location string, destPath string, opts staging.StageOptions) error {
 	scheme, _ := cwl.ParseLocationScheme(location)
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("http stager: unsupported scheme %q", scheme)
@@ -142,7 +143,7 @@ func (s *HTTPStager) StageIn(ctx context.Context, location string, destPath stri
 			}
 		}
 
-		err := s.download(ctx, location, destPath)
+		err := s.download(ctx, location, destPath, opts)
 		if err == nil {
 			return nil
 		}
@@ -158,7 +159,7 @@ func (s *HTTPStager) StageIn(ctx context.Context, location string, destPath stri
 }
 
 // StageOut uploads a file to the configured HTTP endpoint.
-func (s *HTTPStager) StageOut(ctx context.Context, srcPath string, taskID string) (string, error) {
+func (s *HTTPStager) StageOut(ctx context.Context, srcPath string, taskID string, opts staging.StageOptions) (string, error) {
 	uploadPath := s.config.UploadPath
 	if uploadPath == "" {
 		return "", fmt.Errorf("http stager: no upload path configured")
@@ -189,7 +190,7 @@ func (s *HTTPStager) StageOut(ctx context.Context, srcPath string, taskID string
 			}
 		}
 
-		err := s.upload(ctx, srcPath, uploadURL)
+		err := s.upload(ctx, srcPath, uploadURL, opts)
 		if err == nil {
 			return uploadURL, nil
 		}
@@ -204,15 +205,20 @@ func (s *HTTPStager) StageOut(ctx context.Context, srcPath string, taskID string
 	return "", fmt.Errorf("http stager: upload failed after %d attempts: %w", maxRetries, lastErr)
 }
 
+// Supports returns true for http and https schemes.
+func (s *HTTPStager) Supports(scheme string) bool {
+	return scheme == "http" || scheme == "https"
+}
+
 // download performs the actual HTTP GET.
-func (s *HTTPStager) download(ctx context.Context, url string, destPath string) error {
+func (s *HTTPStager) download(ctx context.Context, url string, destPath string, opts staging.StageOptions) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	s.applyAuth(req)
-	s.applyHeaders(req)
+	s.applyAuth(req, opts)
+	s.applyHeaders(req, opts)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -254,7 +260,7 @@ func (s *HTTPStager) download(ctx context.Context, url string, destPath string) 
 }
 
 // upload performs the actual HTTP PUT/POST.
-func (s *HTTPStager) upload(ctx context.Context, srcPath, uploadURL string) error {
+func (s *HTTPStager) upload(ctx context.Context, srcPath, uploadURL string, opts staging.StageOptions) error {
 	file, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
@@ -280,8 +286,8 @@ func (s *HTTPStager) upload(ctx context.Context, srcPath, uploadURL string) erro
 	req.ContentLength = stat.Size()
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	s.applyAuth(req)
-	s.applyHeaders(req)
+	s.applyAuth(req, opts)
+	s.applyHeaders(req, opts)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -302,7 +308,19 @@ func (s *HTTPStager) upload(ctx context.Context, srcPath, uploadURL string) erro
 }
 
 // applyAuth adds authentication to the request based on credentials.
-func (s *HTTPStager) applyAuth(req *http.Request) {
+func (s *HTTPStager) applyAuth(req *http.Request, opts staging.StageOptions) {
+	// Check for per-request token in StageOptions.
+	if opts.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+opts.Token)
+		return
+	}
+
+	// Check for per-request credential in StageOptions.
+	if opts.Credentials != nil {
+		s.applyCredFromStageOpts(req, opts.Credentials)
+		return
+	}
+
 	// Check for per-task credential override.
 	if s.overrides != nil && s.overrides.HTTPCredential != nil {
 		s.applyCred(req, *s.overrides.HTTPCredential)
@@ -313,6 +331,20 @@ func (s *HTTPStager) applyAuth(req *http.Request) {
 	cred := s.lookupCredential(req.URL.Host)
 	if cred != nil {
 		s.applyCred(req, *cred)
+	}
+}
+
+// applyCredFromStageOpts applies credentials from StageOptions.
+func (s *HTTPStager) applyCredFromStageOpts(req *http.Request, cred *staging.CredentialSet) {
+	switch cred.Type {
+	case "bearer":
+		req.Header.Set("Authorization", "Bearer "+cred.Token)
+	case "basic":
+		req.SetBasicAuth(cred.Username, cred.Password)
+	case "header":
+		if cred.HeaderName != "" {
+			req.Header.Set(cred.HeaderName, cred.HeaderValue)
+		}
 	}
 }
 
@@ -362,7 +394,7 @@ func (s *HTTPStager) lookupCredential(host string) *CredentialSet {
 }
 
 // applyHeaders adds default and override headers to the request.
-func (s *HTTPStager) applyHeaders(req *http.Request) {
+func (s *HTTPStager) applyHeaders(req *http.Request, opts staging.StageOptions) {
 	// Apply default headers.
 	for k, v := range s.config.DefaultHeaders {
 		req.Header.Set(k, v)
@@ -373,6 +405,11 @@ func (s *HTTPStager) applyHeaders(req *http.Request) {
 		for k, v := range s.overrides.HTTPHeaders {
 			req.Header.Set(k, v)
 		}
+	}
+
+	// Apply per-request headers from StageOptions.
+	for k, v := range opts.Headers {
+		req.Header.Set(k, v)
 	}
 }
 
@@ -416,3 +453,6 @@ func isClientError(err error) bool {
 	}
 	return false
 }
+
+// Verify interface compliance.
+var _ staging.Stager = (*HTTPStager)(nil)

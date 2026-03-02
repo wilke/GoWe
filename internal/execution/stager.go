@@ -14,6 +14,19 @@ import (
 // Stager is a type alias for the shared staging.Stager interface.
 type Stager = staging.Stager
 
+// StageOptions is a type alias for staging.StageOptions.
+type StageOptions = staging.StageOptions
+
+// StageMode is a type alias for staging.StageMode.
+type StageMode = staging.StageMode
+
+// StageMode constants.
+const (
+	StageModeCopy      = staging.StageModeCopy
+	StageModeSymlink   = staging.StageModeSymlink
+	StageModeReference = staging.StageModeReference
+)
+
 // FileStager is a type alias for the shared staging.FileStager.
 type FileStager = staging.FileStager
 
@@ -124,11 +137,23 @@ func (e *Engine) stageFileOrDirectory(ctx context.Context, inputID string, obj m
 
 	scheme, path := cwl.ParseLocationScheme(location)
 
-	// For local files with absolute paths, no staging needed.
-	// The command line will reference them directly.
+	// For local files with absolute paths, verify they exist.
+	// If the file exists locally, no staging is needed.
+	// If it doesn't exist, we'll try to stage it from a remote source.
 	if (scheme == cwl.SchemeFile || scheme == "") && filepath.IsAbs(path) {
-		// For Docker execution, we'll handle mounting later.
-		// For local execution, the path is already accessible.
+		if _, err := os.Stat(path); err == nil {
+			// File exists locally, no staging needed.
+			return nil
+		}
+		// File doesn't exist locally. This can happen in distributed mode
+		// where the host path in the submitted task isn't accessible here.
+		// Log a warning - the path mapping should have translated this.
+		e.logger.Warn("local file path not accessible",
+			"input", inputID,
+			"path", path,
+			"hint", "consider using INPUT_PATH_MAP to translate host paths to container paths",
+		)
+		// Continue - the execution will fail with a clear error when it tries to use the file.
 		return nil
 	}
 
@@ -139,7 +164,9 @@ func (e *Engine) stageFileOrDirectory(ctx context.Context, inputID string, obj m
 
 		e.logger.Debug("staging remote file", "location", location, "dest", destPath)
 
-		if err := e.stager.StageIn(ctx, location, destPath); err != nil {
+		// Use default stage options for now - per-task options would come from RuntimeHints.
+		opts := staging.StageOptions{}
+		if err := e.stager.StageIn(ctx, location, destPath, opts); err != nil {
 			return fmt.Errorf("stage-in %s: %w", location, err)
 		}
 

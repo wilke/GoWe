@@ -14,6 +14,7 @@ import (
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
+	"github.com/me/gowe/pkg/staging"
 )
 
 // Worker is the core work loop that polls the server for tasks, executes
@@ -29,6 +30,7 @@ type Worker struct {
 	poll              time.Duration
 	gpu               GPUWorkerConfig   // GPU configuration
 	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
+	inputPathMap      map[string]string // Input path mapping for host->container translation
 	logger            *slog.Logger
 }
 
@@ -51,6 +53,12 @@ type Config struct {
 	// uses the host's Docker socket.
 	// Format: container_path -> host_path
 	DockerHostPathMap map[string]string
+
+	// InputPathMap maps host paths in task inputs to local container paths.
+	// This allows workers running in containers to translate paths from the
+	// original host filesystem to their local mount points.
+	// Format: host_path -> container_path
+	InputPathMap map[string]string
 }
 
 // GPUWorkerConfig holds GPU settings for the worker.
@@ -118,10 +126,62 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		"https": httpStager,
 	}
 
+	// Add S3 stager if configured.
+	if cfg.Stager.S3.Endpoint != "" || cfg.Stager.S3.AccessKeyID != "" || cfg.Stager.S3.DefaultBucket != "" {
+		s3Stager, err := staging.NewS3Stager(staging.S3Config{
+			Endpoint:        cfg.Stager.S3.Endpoint,
+			Region:          cfg.Stager.S3.Region,
+			AccessKeyID:     cfg.Stager.S3.AccessKeyID,
+			SecretAccessKey: cfg.Stager.S3.SecretAccessKey,
+			UsePathStyle:    cfg.Stager.S3.UsePathStyle,
+			DisableSSL:      cfg.Stager.S3.DisableSSL,
+			DefaultBucket:   cfg.Stager.S3.DefaultBucket,
+			StageOutPrefix:  cfg.Stager.S3.StageOutPrefix,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create S3 stager: %w", err)
+		}
+		handlers["s3"] = s3Stager
+		logger.Info("S3 stager enabled", "endpoint", cfg.Stager.S3.Endpoint, "bucket", cfg.Stager.S3.DefaultBucket)
+	}
+
+	// Add Shock stager if configured.
+	if cfg.Stager.Shock.DefaultHost != "" {
+		shockStager := staging.NewShockStager(staging.ShockConfig{
+			DefaultHost: cfg.Stager.Shock.DefaultHost,
+			Token:       cfg.Stager.Shock.Token,
+			Timeout:     cfg.Stager.Shock.Timeout,
+			MaxRetries:  cfg.Stager.Shock.MaxRetries,
+			UseHTTP:     cfg.Stager.Shock.UseHTTP,
+		})
+		handlers["shock"] = shockStager
+		logger.Info("Shock stager enabled", "host", cfg.Stager.Shock.DefaultHost, "https", !cfg.Stager.Shock.UseHTTP)
+	}
+
+	// Add shared filesystem stager if configured.
+	if cfg.Stager.Shared.Enabled {
+		sharedStager := staging.NewSharedFileStager(staging.SharedFileStagerConfig{
+			PathMap:     cfg.Stager.Shared.PathMap,
+			Mode:        cfg.Stager.StageMode,
+			StageOutDir: cfg.Stager.Shared.StageOutDir,
+		})
+		// Shared stager handles file:// scheme, override the default.
+		handlers["file"] = sharedStager
+		handlers[""] = sharedStager
+		logger.Info("Shared filesystem stager enabled",
+			"mode", cfg.Stager.StageMode.String(),
+			"paths", len(cfg.Stager.Shared.PathMap),
+		)
+	}
+
 	// Determine fallback stager for stage-out based on StageOutMode.
 	var stageOutStager execution.Stager
 	if strings.HasPrefix(cfg.StageOut, "http://") || strings.HasPrefix(cfg.StageOut, "https://") {
 		stageOutStager = httpStager
+	} else if strings.HasPrefix(cfg.StageOut, "s3://") {
+		stageOutStager = handlers["s3"]
+	} else if strings.HasPrefix(cfg.StageOut, "shock://") {
+		stageOutStager = handlers["shock"]
 	} else {
 		stageOutStager = fileStager
 	}
@@ -144,6 +204,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		poll:              cfg.Poll,
 		gpu:               cfg.GPU,
 		dockerHostPathMap: cfg.DockerHostPathMap,
+		inputPathMap:      cfg.InputPathMap,
 		logger:            logger.With("component", "worker"),
 	}, nil
 }
@@ -300,6 +361,7 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		Namespaces:        namespaces,
 		CWLDir:            cwlDir,
 		DockerHostPathMap: w.dockerHostPathMap,
+		InputPathMap:      w.inputPathMap,
 		GPU: execution.GPUConfig{
 			Enabled:  w.gpu.Enabled,
 			DeviceID: w.gpu.DeviceID,
@@ -403,7 +465,8 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		// Stage-out matched files.
 		var staged []string
 		for _, m := range matches {
-			loc, err := w.stager.StageOut(ctx, m, task.ID)
+			opts := execution.StageOptions{}
+			loc, err := w.stager.StageOut(ctx, m, task.ID, opts)
 			if err != nil {
 				w.logger.Warn("stage-out failed", "file", m, "error", err)
 				continue
@@ -441,7 +504,8 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, taskID string) any
 		if class == "File" {
 			// Stage the file and update location.
 			if path, ok := val["path"].(string); ok {
-				loc, err := w.stager.StageOut(ctx, path, taskID)
+				opts := execution.StageOptions{}
+				loc, err := w.stager.StageOut(ctx, path, taskID, opts)
 				if err == nil {
 					val["location"] = loc
 				}
