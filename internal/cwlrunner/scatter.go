@@ -570,6 +570,27 @@ func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context,
 		return nil, nil, fmt.Errorf("no scatter inputs specified")
 	}
 
+	// Check 'when' condition early (before scatter validation).
+	// This handles cases where the condition depends on non-scattered variables
+	// and allows skipping the step even if scatter inputs are invalid.
+	// Skip early check if the expression references scattered variables.
+	if step.When != "" && evaluator != nil && !whenReferencesScatterVars(step.When, step.Scatter) {
+		evalCtx := cwlexpr.NewContext(inputs)
+		shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+		if err != nil {
+			// If evaluation fails (e.g., depends on scattered vars), continue to per-iteration eval.
+			r.logger.Debug("when condition pre-check failed, will evaluate per-iteration", "error", err)
+		} else if !shouldRun {
+			r.logger.Info("skipping scatter step (when condition false)", "step", step.Run)
+			// Return empty outputs for skipped scatter step.
+			outputs := make(map[string]any)
+			for _, outID := range step.Out {
+				outputs[outID] = nil
+			}
+			return outputs, nil, nil
+		}
+	}
+
 	// Determine scatter method
 	method := step.ScatterMethod
 	if method == "" {
@@ -621,6 +642,14 @@ func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context,
 
 	n := len(combinations)
 	if n == 0 {
+		// For nested_crossproduct with empty combinations, still produce nested structure.
+		if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+			dims := make([]int, len(step.Scatter))
+			for j, name := range step.Scatter {
+				dims[j] = len(scatterArrays[name])
+			}
+			return mergeScatterOutputsNested(nil, tool, dims), nil, nil
+		}
 		return mergeScatterOutputs(nil, tool), nil, nil
 	}
 
@@ -683,6 +712,51 @@ func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context,
 			}
 
 			r.logger.Debug("scatter iteration start", "index", idx)
+
+			// Evaluate 'when' condition if present (per-iteration).
+			if step.When != "" && eval != nil {
+				evalCtx := cwlexpr.NewContext(inputsCopy)
+				shouldRun, err := eval.EvaluateBool(step.When, evalCtx)
+				if err != nil {
+					results[idx] = scatterResultWithMetrics{
+						index: idx,
+						err:   fmt.Errorf("scatter iteration %d when: %w", idx, err),
+						metrics: IterationMetrics{
+							Index:       idx,
+							Duration:    time.Since(iterStart),
+							DurationStr: formatDuration(time.Since(iterStart)),
+							Status:      "failed",
+						},
+					}
+					if config.FailFast {
+						errOnce.Do(func() {
+							firstErr = fmt.Errorf("scatter iteration %d when: %w", idx, err)
+							cancel()
+						})
+					}
+					return
+				}
+				if !shouldRun {
+					// Condition is false for this iteration - output null for all outputs.
+					nullOutputs := make(map[string]any)
+					for _, outID := range step.Out {
+						nullOutputs[outID] = nil
+					}
+					results[idx] = scatterResultWithMetrics{
+						index:   idx,
+						outputs: nullOutputs,
+						metrics: IterationMetrics{
+							Index:       idx,
+							Duration:    time.Since(iterStart),
+							DurationStr: formatDuration(time.Since(iterStart)),
+							Status:      "skipped",
+						},
+						err: nil,
+					}
+					r.logger.Debug("scatter iteration skipped (when condition false)", "index", idx)
+					return
+				}
+			}
 
 			// Execute the tool using internal method
 			execResult, err := r.executeToolInternal(ctx, graph, tool, inputsCopy)

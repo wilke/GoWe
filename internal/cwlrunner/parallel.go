@@ -395,6 +395,30 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 		return pe.runner.executeExpressionTool(exprTool, job.inputs, pe.graph)
 	}
 
+	// Check if this is a SubWorkflow
+	if subGraph, ok := pe.graph.SubWorkflows[toolRef]; ok {
+		// Handle scatter over subworkflow
+		if len(job.step.Scatter) > 0 {
+			return pe.runner.executeScatterSubWorkflow(ctx, subGraph, job.step, job.inputs, pe.evaluator)
+		}
+
+		// Handle conditional execution
+		if job.step.When != "" {
+			evalCtx := cwlexpr.NewContext(job.inputs)
+			shouldRun, err := pe.evaluator.EvaluateBool(job.step.When, evalCtx)
+			if err != nil {
+				return nil, fmt.Errorf("when expression: %w", err)
+			}
+			if !shouldRun {
+				pe.runner.logger.Info("skipping step (when condition false)", "step", job.stepID)
+				return make(map[string]any), nil
+			}
+		}
+
+		pe.runner.logger.Info("executing subworkflow (parallel)", "step", job.stepID, "workflow", toolRef)
+		return pe.runner.executeSubWorkflow(ctx, subGraph, job.inputs)
+	}
+
 	// Otherwise it's a CommandLineTool
 	tool := pe.graph.Tools[toolRef]
 	if tool == nil {
