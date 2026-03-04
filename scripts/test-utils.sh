@@ -23,6 +23,49 @@ fi
 TEST_UTILS_SOURCED=1
 
 # =============================================================================
+# Environment Loading
+# =============================================================================
+
+# Determine project root (assumes test-utils.sh is in scripts/)
+_TEST_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_PROJECT_ROOT="$(dirname "$_TEST_UTILS_DIR")"
+
+# Load .env file if it exists and hasn't been loaded
+load_env() {
+    local env_file="${1:-$_PROJECT_ROOT/.env}"
+
+    if [ -f "$env_file" ]; then
+        # Export all variables from .env
+        set -a
+        # shellcheck source=/dev/null
+        source "$env_file"
+        set +a
+        return 0
+    fi
+    return 1
+}
+
+# Auto-load .env if GOWE_ENV_LOADED is not set
+if [ -z "$GOWE_ENV_LOADED" ] && [ -f "$_PROJECT_ROOT/.env" ]; then
+    load_env "$_PROJECT_ROOT/.env"
+    export GOWE_ENV_LOADED=1
+fi
+
+# Set default paths from environment or auto-detect
+GOWE_PROJECT_ROOT="${GOWE_PROJECT_ROOT:-$_PROJECT_ROOT}"
+GOWE_TESTDATA="${GOWE_TESTDATA:-$GOWE_PROJECT_ROOT/testdata}"
+GOWE_WORKDIR="${GOWE_WORKDIR:-$GOWE_PROJECT_ROOT/tmp/workdir}"
+GOWE_CONFORMANCE_DIR="${GOWE_CONFORMANCE_DIR:-$GOWE_TESTDATA/cwl-v1.2}"
+
+# Test ports (avoid conflicts with running services)
+GOWE_TEST_SERVER_LOCAL_PORT="${GOWE_TEST_SERVER_LOCAL_PORT:-8091}"
+GOWE_TEST_DISTRIBUTED_PORT="${GOWE_TEST_DISTRIBUTED_PORT:-8090}"
+
+# Export for use by child processes
+export GOWE_PROJECT_ROOT GOWE_TESTDATA GOWE_WORKDIR GOWE_CONFORMANCE_DIR
+export GOWE_TEST_SERVER_LOCAL_PORT GOWE_TEST_DISTRIBUTED_PORT
+
+# =============================================================================
 # Colors and Formatting
 # =============================================================================
 

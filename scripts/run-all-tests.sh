@@ -78,9 +78,9 @@ VERBOSE=false
 GENERATE_REPORT=false
 USE_PARALLEL=false
 
-# Ports for server modes
-SERVER_LOCAL_PORT=8091
-DISTRIBUTED_PORT=8090
+# Ports for server modes (from environment or defaults)
+SERVER_LOCAL_PORT="${GOWE_TEST_SERVER_LOCAL_PORT:-8091}"
+DISTRIBUTED_PORT="${GOWE_TEST_DISTRIBUTED_PORT:-8090}"
 
 # Results tracking - use compatibility layer for bash < 4
 if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
@@ -396,7 +396,7 @@ run_cwl_runner() {
     start_time=$(get_time)
 
     local runner="$PROJECT_DIR/bin/cwl-runner"
-    local conformance_dir="$PROJECT_DIR/testdata/cwl-v1.2"
+    local conformance_dir="${GOWE_CONFORMANCE_DIR:-${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}}"
     local output_file="$PROJECT_DIR/conformance-${mode_name}-results.txt"
 
     # Build if needed
@@ -518,7 +518,7 @@ run_server_local() {
     ensure_conformance_tests "$PROJECT_DIR" || { cleanup_server; return 1; }
 
     # Run tests
-    cd "$PROJECT_DIR/testdata/cwl-v1.2"
+    cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
 
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
     if [ -n "$TAGS" ]; then
@@ -682,7 +682,7 @@ EOF
     ensure_conformance_tests "$PROJECT_DIR" || return 1
 
     # Run tests
-    cd "$PROJECT_DIR/testdata/cwl-v1.2"
+    cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
 
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
     if [ -n "$TAGS" ]; then
