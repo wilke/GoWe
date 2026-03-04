@@ -413,11 +413,11 @@ See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration detail
 ./scripts/setup-env.sh -b
 source .env
 
-# Run all tests (required conformance tests)
+# Run all conformance tests (378 tests per mode)
 ./scripts/run-all-tests.sh
 
-# Run full conformance suite (378 tests)
-./scripts/run-all-tests.sh --full
+# Run required tests only (84 tests, faster for CI)
+./scripts/run-all-tests.sh --required
 ```
 
 ### Test Commands

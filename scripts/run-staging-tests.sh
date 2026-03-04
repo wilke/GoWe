@@ -245,19 +245,19 @@ test_s3_stager() {
     fi
 }
 
-# Start Shock mock server
+# Start Shock server
 start_shock() {
-    log_info "Starting Shock mock server..."
+    log_info "Starting Shock server..."
 
-    docker-compose -f "$COMPOSE_FILE" up -d shock-mock
+    docker-compose -f "$COMPOSE_FILE" up -d shock-server
 
     log_info "Waiting for Shock to be ready..."
-    if wait_for_url "http://localhost:7445/" 30 2; then
+    if wait_for_url "http://localhost:7445/" 60 2; then
         log_info "Shock is ready"
         return 0
     else
         log_error "Shock failed to start"
-        docker-compose -f "$COMPOSE_FILE" logs shock-mock
+        docker-compose -f "$COMPOSE_FILE" logs shock-server
         return 1
     fi
 }
