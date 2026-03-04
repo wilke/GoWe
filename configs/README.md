@@ -1,88 +1,55 @@
 # GoWe Configuration Templates
 
-This directory contains example configuration files for GoWe server and worker components.
+This directory contains **reference templates** for GoWe configuration. These YAML files document the planned configuration schema but are **not currently loaded** by the server or worker binaries.
 
-## Quick Start
+> **Current state:** All server and worker settings are configured via CLI flags. See `--help` for each binary.
+> **Planned:** Full YAML config loading via `--config`. See [docs/planned-config.md](../docs/planned-config.md).
 
-```bash
-# Run the setup script to initialize your environment
-./scripts/setup-env.sh
-
-# Or manually copy configs to ~/.gowe/
-cp configs/server.example.yaml ~/.gowe/server.yaml
-cp configs/worker.example.yaml ~/.gowe/worker.yaml
-cp configs/credentials.example.yaml ~/.gowe/credentials.yaml
-```
-
-## Configuration Files
+## Files
 
 ### server.example.yaml
 
-Server configuration including:
+Reference template for server configuration including:
 - Listen address and database path
 - Authentication settings (anonymous access, worker keys)
 - Executor configuration
 - File upload proxy settings (S3, Shock, local)
 
-**Usage:**
-```bash
-./bin/server --config ~/.gowe/server.yaml
-```
+**Current usage:** The server `--config` flag only reads an admin user list, not the full YAML schema shown here.
 
 ### worker.example.yaml
 
-Worker configuration including:
+Reference template for worker configuration including:
 - Server connection settings
 - Container runtime (Docker, Apptainer, bare)
 - Staging configuration (S3, Shock, HTTP, shared filesystem)
 - Path mappings for distributed execution
 
-**Usage:**
-```bash
-./bin/worker --config ~/.gowe/worker.yaml
-```
+**Current usage:** The worker has no `--config` flag. All settings must be passed as CLI flags.
 
 ### credentials.example.yaml
 
-Credentials for staging backends:
+Reference template for staging backend credentials:
 - HTTP authentication (bearer, basic, header)
 - S3/MinIO credentials
 - Shock tokens
 - BV-BRC authentication
 
-**Security:** Keep `~/.gowe/credentials.yaml` secure and never commit it.
+**Current usage:** The worker's `--http-credentials` flag loads credentials from a **JSON** file (not YAML). S3, Shock, and BV-BRC credentials are passed via flags or environment variables.
 
-## Environment Variables
+## Current Configuration
 
-Configuration values can reference environment variables using `${VAR_NAME}` syntax:
+All configuration is done through CLI flags and a few environment variable fallbacks:
 
-```yaml
-s3:
-  access_key_id: "${AWS_ACCESS_KEY_ID}"
-  secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+```bash
+# Server
+./bin/server --addr :8080 --db ~/.gowe/gowe.db --allow-anonymous
+
+# Worker
+./bin/worker --server http://localhost:8080 --runtime docker --stage-out local
 ```
 
-## Configuration Precedence
-
-1. CLI flags (highest priority)
-2. Environment variables
-3. Config file values
-4. Default values (lowest priority)
-
-## Directory Structure
-
-```
-~/.gowe/
-├── server.yaml         # Server configuration
-├── worker.yaml         # Worker configuration
-├── credentials.yaml    # Staging backend credentials
-├── worker-keys.json    # Worker authentication keys
-└── gowe.db            # SQLite database
-
-/etc/gowe/              # System-wide config (optional)
-├── server.yaml
-└── worker.yaml
-```
+See the main [README.md](../README.md) for complete flag documentation.
 
 ## Testing Configuration
 

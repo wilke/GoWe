@@ -1,11 +1,12 @@
-# GoWe Server Configuration
-# ==========================
-# Copy to ~/.gowe/server.yaml or specify with --config flag
+# GoWe Server Configuration — REFERENCE TEMPLATE
+# ================================================
+# This file documents the planned YAML configuration schema.
+# It is NOT currently loaded by the server binary.
 #
-# Usage:
-#   ./bin/server --config configs/server.yaml
+# Current state: All settings are configured via CLI flags (see --help).
+# The --config flag only reads an admin user list, not this full schema.
 #
-# Note: CLI flags override config file values
+# See docs/planned-config.md for the planned configuration system.
 
 # Server listen address
 addr: ":8080"

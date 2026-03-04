@@ -1,11 +1,12 @@
-# GoWe Worker Configuration
-# ==========================
-# Copy to ~/.gowe/worker.yaml or specify with --config flag
+# GoWe Worker Configuration — REFERENCE TEMPLATE
+# ================================================
+# This file documents the planned YAML configuration schema.
+# It is NOT currently loaded by the worker binary.
 #
-# Usage:
-#   ./bin/worker --config configs/worker.yaml
+# Current state: All settings are configured via CLI flags (see --help).
+# The worker has no --config flag yet.
 #
-# Note: CLI flags override config file values
+# See docs/planned-config.md for the planned configuration system.
 
 # Server connection
 server_url: "http://localhost:8080"
