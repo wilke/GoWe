@@ -410,15 +410,16 @@ run_cwl_runner() {
     # Build cwltest command
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $runner"
 
-    if [ -n "$extra_args" ]; then
-        cwltest_cmd="$cwltest_cmd --tool-arg=\"$extra_args\""
-    fi
-
     if [ -n "$TAGS" ]; then
         cwltest_cmd="$cwltest_cmd --tags $TAGS"
     fi
 
     cwltest_cmd="$cwltest_cmd --verbose"
+
+    # Add tool runner args at the end (positional args after --)
+    if [ -n "$extra_args" ]; then
+        cwltest_cmd="$cwltest_cmd -- $extra_args"
+    fi
 
     # Run tests
     cd "$conformance_dir"
@@ -440,14 +441,22 @@ run_cwl_runner() {
     # Parse results
     local summary=""
     if [ -f "$output_file" ]; then
-        # Look for "X tests passed" pattern
-        local passed
-        passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-        local failed
-        failed=$(grep -oE "[0-9]+ tests? failed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-        local total=$((passed + failed))
-        if [ $total -gt 0 ]; then
-            summary="$passed/$total passed"
+        # Check for "All tests passed" first
+        if grep -q "All tests passed" "$output_file"; then
+            # Count total tests from "Test [N/M]" pattern
+            local total
+            total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            summary="$total/$total passed"
+        else
+            # Look for "X tests passed" pattern
+            local passed
+            passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            local failed
+            failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            local total=$((passed + failed))
+            if [ $total -gt 0 ]; then
+                summary="$passed/$total passed"
+            fi
         fi
     fi
 
@@ -545,17 +554,31 @@ run_server_local() {
     duration=$(calc_duration "$start_time" "$end_time")
 
     # Parse results
-    local passed
-    passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-    local failed
-    failed=$(grep -oE "[0-9]+ tests? failed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-    local total=$((passed + failed))
-    local summary="$passed/$total passed"
+    local summary=""
+    if [ -f "$output_file" ]; then
+        # Check for "All tests passed" first
+        if grep -q "All tests passed" "$output_file"; then
+            # Count total tests from "Test [N/M]" pattern
+            local total
+            total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            summary="$total/$total passed"
+        else
+            # Look for "X tests passed" pattern
+            local passed
+            passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            local failed
+            failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            local total=$((passed + failed))
+            if [ $total -gt 0 ]; then
+                summary="$passed/$total passed"
+            fi
+        fi
+    fi
 
     if [ $result -eq 0 ]; then
-        set_mode_result "server-local" "pass" "$summary" "$duration"
+        set_mode_result "server-local" "pass" "${summary:-All tests passed}" "$duration"
     else
-        set_mode_result "server-local" "fail" "$summary" "$duration"
+        set_mode_result "server-local" "fail" "${summary:-Some tests failed}" "$duration"
         TIER2_FAILED=1
     fi
 
@@ -662,9 +685,17 @@ EOF
     fi
 
     # Set up path mapping
-    local testdata_abs
-    testdata_abs=$(cd "$PROJECT_DIR/testdata" && pwd)
-    export GOWE_PATH_MAP="${testdata_abs}=/testdata"
+    # Map conformance test directory to /testdata (matches docker-compose mount)
+    local conformance_abs
+    conformance_abs=$(cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}" && pwd)
+    local workdir_abs
+    workdir_abs=$(cd "$PROJECT_DIR/tmp/workdir" 2>/dev/null && pwd || echo "$PROJECT_DIR/tmp/workdir")
+
+    # Ensure workdir exists
+    mkdir -p "$PROJECT_DIR/tmp/workdir/outputs"
+
+    export GOWE_PATH_MAP="${conformance_abs}=/testdata"
+    export GOWE_OUTPUT_PATH_MAP="/workdir=${workdir_abs}"
     export GOWE_SERVER="http://localhost:${DISTRIBUTED_PORT}"
 
     # Create wrapper
@@ -672,7 +703,8 @@ EOF
     wrapper=$(mktemp)
     cat > "$wrapper" << EOF
 #!/bin/bash
-export GOWE_PATH_MAP="${testdata_abs}=/testdata"
+export GOWE_PATH_MAP="${conformance_abs}=/testdata"
+export GOWE_OUTPUT_PATH_MAP="/workdir=${workdir_abs}"
 export GOWE_SERVER="http://localhost:${DISTRIBUTED_PORT}"
 exec "$PROJECT_DIR/bin/gowe" run --quiet "\$@"
 EOF
@@ -710,17 +742,31 @@ EOF
     duration=$(calc_duration "$start_time" "$end_time")
 
     # Parse results
-    local passed
-    passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-    local failed
-    failed=$(grep -oE "[0-9]+ tests? failed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-    local total=$((passed + failed))
-    local summary="$passed/$total passed"
+    local summary=""
+    if [ -f "$output_file" ]; then
+        # Check for "All tests passed" first
+        if grep -q "All tests passed" "$output_file"; then
+            # Count total tests from "Test [N/M]" pattern
+            local total
+            total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            summary="$total/$total passed"
+        else
+            # Look for "X tests passed" pattern
+            local passed
+            passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            local failed
+            failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            local total=$((passed + failed))
+            if [ $total -gt 0 ]; then
+                summary="$passed/$total passed"
+            fi
+        fi
+    fi
 
     if [ $result -eq 0 ]; then
-        set_mode_result "$mode_name" "pass" "$summary" "$duration"
+        set_mode_result "$mode_name" "pass" "${summary:-All tests passed}" "$duration"
     else
-        set_mode_result "$mode_name" "fail" "$summary" "$duration"
+        set_mode_result "$mode_name" "fail" "${summary:-Some tests failed}" "$duration"
         TIER2_FAILED=1
     fi
 
