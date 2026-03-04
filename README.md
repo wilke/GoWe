@@ -214,25 +214,96 @@ steps:
 
 ## Configuration
 
-| Flag | Env | Default | Description |
-|------|-----|---------|-------------|
-| `--addr` | — | `:8080` | Listen address |
-| `--log-level` | — | `info` | Log level |
-| `--log-format` | — | `text` | Log format (`text` or `json`) |
-| `--db` | — | `~/.gowe/gowe.db` | SQLite database path |
-| `--default-executor` | — | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
-| `--debug` | — | `false` | Shorthand for `--log-level=debug` |
-| `--allow-anonymous` | — | `false` | Allow unauthenticated requests |
-| `--anonymous-executors` | — | `local,docker,worker` | Executors allowed for anonymous users |
-| `--worker-keys` | — | `""` | Path to worker keys JSON file |
-| `--config` | — | `~/.gowe/config.yaml` | Server configuration file |
+### Quick Setup
+
+For development and testing, use the setup script to initialize your environment:
+
+```bash
+# Initialize environment (creates .env with auto-detected paths)
+./scripts/setup-env.sh
+
+# Setup and build binaries
+./scripts/setup-env.sh -b
+
+# Source environment before running
+source .env
+```
+
+### Configuration Files
+
+```
+~/.gowe/                      # User configuration directory
+├── gowe.db                   # SQLite database
+└── worker-keys.json          # Worker authentication keys
+
+$PROJECT/
+├── .env                      # Local environment (gitignored)
+├── .env.example              # Environment template
+└── configs/                  # Configuration templates (reference only)
+    ├── server.example.yaml
+    ├── worker.example.yaml
+    └── credentials.example.yaml
+```
+
+> **Note:** YAML config file loading (`--config` for full server/worker configuration) is not yet implemented.
+> The example YAML files in `configs/` are design references. See [docs/planned-config.md](docs/planned-config.md) for the planned configuration system.
+
+### Server Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--addr` | `:8080` | Listen address |
+| `--log-level` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `--log-format` | `text` | Log format (`text` or `json`) |
+| `--db` | `~/.gowe/gowe.db` | SQLite database path |
+| `--default-executor` | `""` | Default executor: `local`, `docker`, `worker` |
+| `--debug` | `false` | Shorthand for `--log-level=debug` |
+| `--allow-anonymous` | `false` | Allow unauthenticated requests |
+| `--anonymous-executors` | `local,docker,worker` | Executors for anonymous users |
+| `--worker-keys` | `""` | Path to worker keys JSON file |
+| `--config` | `""` | Path to admin config file (JSON admin list only) |
+
+### Worker Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server` | `http://localhost:8080` | Server URL |
+| `--name` | hostname | Worker name |
+| `--group` | `default` | Worker group |
+| `--worker-key` | `""` | Shared secret for authentication |
+| `--runtime` | `none` | Runtime: `docker`, `apptainer`, `none` |
+| `--workdir` | `$TMPDIR/gowe-worker` | Working directory |
+| `--stage-out` | `local` | Output staging: `local`, `file://`, `s3://`, `shock://` |
+| `--poll` | `5s` | Poll interval |
+
+### Environment Variables
+
+These environment variables are actually read by the application code (not just test scripts):
+
+| Variable | Used By | Description |
+|----------|---------|-------------|
+| `GOWE_ADMINS` | Server | Comma-separated admin usernames |
+| `BVBRC_TOKEN` | Server | BV-BRC authentication token (also checks `~/.bvbrc_token` etc.) |
+| `AWS_ACCESS_KEY_ID` | Server, Worker | S3 access key (fallback when flag is empty) |
+| `AWS_SECRET_ACCESS_KEY` | Server, Worker | S3 secret key (fallback when flag is empty) |
+| `DOCKER_HOST_PATH_MAP` | Worker | Path mapping for Docker-in-Docker (fallback when flag is empty) |
+| `INPUT_PATH_MAP` | Worker | Input path translation (fallback when flag is empty) |
+| `SHOCK_TOKEN` | Worker | Shock authentication token (fallback when flag is empty) |
+
+Test script environment variables (set in `.env` via `setup-env.sh`):
+
+| Variable | Description |
+|----------|-------------|
+| `GOWE_PROJECT_ROOT` | Project root directory |
+| `GOWE_TESTDATA` | Test data directory |
+| `GOWE_CONFORMANCE_DIR` | CWL conformance tests directory |
 
 ### Admin Configuration
 
 Admins can be designated via (checked in order):
 1. **Database** — `gowe-server grant-admin alice@bvbrc`
 2. **Environment** — `GOWE_ADMINS=alice@bvbrc,bob@mgrast`
-3. **Config file** — `admins:` list in `~/.gowe/config.yaml`
+3. **Config file** — admin list in JSON file passed via `--config`
 
 ## Tools
 
@@ -341,19 +412,58 @@ See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration detail
 
 ## Testing
 
+### Quick Start
+
+```bash
+# Setup test environment
+./scripts/setup-env.sh -b
+source .env
+
+# Run all conformance tests (378 tests per mode)
+./scripts/run-all-tests.sh
+
+# Run required tests only (84 tests, faster for CI)
+./scripts/run-all-tests.sh --required
+```
+
+### Test Commands
+
 ```bash
 # Unit tests
 go test ./...
+
+# Tier 1 only (CI fast path)
+./scripts/run-all-tests.sh -t 1
+
+# Single mode
+./scripts/run-all-tests.sh -m cwl-runner
+
+# Skip Docker tests
+./scripts/run-all-tests.sh --no-docker
+
+# Staging backend tests
+./scripts/run-staging-tests.sh
 
 # With Docker integration tests
 go test ./internal/executor/ -tags=integration
 
 # With BV-BRC integration tests (requires valid token)
 BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
-
-# Distributed worker tests
-./scripts/test-distributed.sh
 ```
+
+### Test Tiers
+
+| Tier | Tests | Description |
+|------|-------|-------------|
+| 1 | `unit`, `cwl-runner`, `cwl-runner-parallel` | Core execution (must pass) |
+| 2 | `server-local`, `distributed-*` | Server modes |
+| 3 | `staging-file`, `staging-s3`, `staging-shock` | Staging backends |
+
+### CWL Conformance
+
+GoWe passes 100% of CWL v1.2 conformance tests (378/378) in cwl-runner mode.
+
+See [scripts/README.md](scripts/README.md) for detailed test documentation.
 
 ## License
 

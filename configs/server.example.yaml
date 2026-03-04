@@ -1,0 +1,78 @@
+# GoWe Server Configuration — REFERENCE TEMPLATE
+# ================================================
+# This file documents the planned YAML configuration schema.
+# It is NOT currently loaded by the server binary.
+#
+# Current state: All settings are configured via CLI flags (see --help).
+# The --config flag only reads an admin user list, not this full schema.
+#
+# See docs/planned-config.md for the planned configuration system.
+
+# Server listen address
+addr: ":8080"
+
+# Database path (use ":memory:" for testing)
+database: "~/.gowe/gowe.db"
+
+# Logging
+log_level: "info"    # debug, info, warn, error
+log_format: "text"   # text, json
+
+# Default executor for tasks without DockerRequirement hints
+# Options: local, docker, worker, or empty for hint-based selection
+default_executor: ""
+
+# Scheduler settings
+scheduler:
+  poll_interval: "2s"
+
+# Authentication
+auth:
+  # Allow unauthenticated access
+  allow_anonymous: false
+
+  # Executors available to anonymous users (when allow_anonymous=true)
+  anonymous_executors:
+    - local
+    - docker
+    - worker
+
+  # Path to worker authentication keys file
+  worker_keys_file: ""
+
+  # Admin users (can also be set via GOWE_ADMINS env var)
+  admins: []
+
+# File upload proxy (for staging inputs via server)
+upload:
+  # Enable upload proxy: shock, s3, local, or empty to disable
+  backend: ""
+
+  # Maximum upload size (default: 1GB)
+  max_size: "1GB"
+
+  # Shock backend settings
+  shock:
+    host: ""           # e.g., "p3.theseed.org"
+    use_http: false    # Use HTTP instead of HTTPS
+    token: ""          # Authentication token
+
+  # S3 backend settings
+  s3:
+    endpoint: ""       # Custom endpoint for MinIO (empty = AWS)
+    region: "us-east-1"
+    bucket: ""
+    prefix: "uploads/"
+    access_key_id: ""      # Or use AWS_ACCESS_KEY_ID env
+    secret_access_key: ""  # Or use AWS_SECRET_ACCESS_KEY env
+    path_style: false      # Required for MinIO
+    disable_ssl: false
+
+  # Local filesystem backend settings
+  local:
+    dir: ""            # Directory for uploaded files
+
+# BV-BRC integration (uses BVBRC_TOKEN env var)
+bvbrc:
+  app_service_url: "https://p3.theseed.org/services/app_service"
+  workspace_url: "https://p3.theseed.org/services/Workspace"

@@ -1,0 +1,151 @@
+# GoWe Worker Configuration — REFERENCE TEMPLATE
+# ================================================
+# This file documents the planned YAML configuration schema.
+# It is NOT currently loaded by the worker binary.
+#
+# Current state: All settings are configured via CLI flags (see --help).
+# The worker has no --config flag yet.
+#
+# See docs/planned-config.md for the planned configuration system.
+
+# Server connection
+server_url: "http://localhost:8080"
+
+# Worker identity
+name: ""           # Auto-detect hostname if empty
+group: "default"   # Worker group for task scheduling
+worker_key: ""     # Shared secret for authentication
+
+# Container runtime: docker, apptainer, none (bare/host tools)
+runtime: "docker"
+
+# Local working directory for task execution
+workdir: ""        # Default: $TMPDIR/gowe-worker
+
+# Poll interval for checking new tasks
+poll: "5s"
+
+# GPU support
+gpu:
+  enabled: false
+  device_id: ""    # Specific GPU ID, empty = all/auto
+
+# =============================================================================
+# Staging Configuration
+# =============================================================================
+
+staging:
+  # Output staging mode:
+  #   local         - Keep files in place (file:// URI)
+  #   file:///path  - Copy to shared filesystem path
+  #   s3://bucket   - Upload to S3
+  #   shock://host  - Upload to Shock
+  #   http://...    - Upload via HTTP
+  stage_out: "local"
+
+  # How to stage input files: copy, symlink, reference
+  stage_mode: "copy"
+
+# =============================================================================
+# Path Mappings
+# =============================================================================
+
+# Docker-in-Docker path mapping
+# When worker runs in a container but spawns sibling containers,
+# paths must be translated to host paths for Docker mounts.
+# Format: container_path: host_path
+docker_host_path_map: {}
+  # /workdir: /home/user/gowe/tmp/workdir
+  # /testdata: /home/user/gowe/testdata
+
+# Input path mapping
+# Translates paths in task inputs from server paths to worker paths
+input_path_map: {}
+  # /server/data: /worker/data
+
+# =============================================================================
+# TLS Configuration
+# =============================================================================
+
+tls:
+  # Path to CA certificate for internal PKI
+  ca_cert: ""
+
+  # Skip TLS verification (TESTING ONLY - never use in production)
+  insecure: false
+
+# =============================================================================
+# HTTP Stager Configuration
+# =============================================================================
+
+http:
+  timeout: "5m"
+  max_retries: 3
+  retry_delay: "1s"
+
+  # Upload settings for HTTP stage-out
+  upload_method: "PUT"    # PUT or POST
+  upload_url: ""          # URL template: https://data.example.com/{taskID}/{filename}
+
+  # Credentials file path (JSON format)
+  credentials_file: ""
+
+  # Default headers for all requests
+  headers: {}
+
+# =============================================================================
+# S3 Stager Configuration
+# =============================================================================
+
+s3:
+  # Custom endpoint for S3-compatible storage (empty = AWS S3)
+  endpoint: ""
+
+  region: "us-east-1"
+
+  # Credentials (can also use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars)
+  access_key_id: ""
+  secret_access_key: ""
+
+  # Default bucket for stage-out
+  bucket: ""
+
+  # Key prefix for staged files (supports {taskID} placeholder)
+  prefix: "outputs/{taskID}/"
+
+  # Path-style addressing (required for MinIO)
+  path_style: false
+
+  # Disable SSL (local development only)
+  disable_ssl: false
+
+# =============================================================================
+# Shock Stager Configuration
+# =============================================================================
+
+shock:
+  # Default Shock server host
+  host: ""
+
+  # Authentication token (can also use SHOCK_TOKEN env var)
+  token: ""
+
+  # Use HTTP instead of HTTPS
+  use_http: false
+
+  timeout: "5m"
+  max_retries: 3
+
+# =============================================================================
+# Shared Filesystem Stager Configuration
+# =============================================================================
+
+shared:
+  # Enable shared filesystem stager
+  enabled: false
+
+  # Path mapping: server_path -> worker_path
+  path_map: {}
+
+  # Base directory for output staging
+  stage_out_dir: ""
