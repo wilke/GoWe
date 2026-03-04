@@ -1,0 +1,74 @@
+{
+  "_comment": "Baseline test results for GoWe - used for regression detection",
+  "_updated": "2026-03-04",
+  "tier1": {
+    "unit": {
+      "status": "pass",
+      "expected": "all tests pass"
+    },
+    "cwl-runner": {
+      "status": "pass",
+      "expected": "378/378",
+      "description": "Gold standard - 100% CWL v1.2 conformance"
+    },
+    "cwl-runner-parallel": {
+      "status": "pass",
+      "expected": "378/378",
+      "description": "Parallel execution - 100% CWL v1.2 conformance"
+    }
+  },
+  "tier2": {
+    "server-local": {
+      "status": "partial",
+      "expected": "250/378",
+      "known_failures": 128,
+      "description": "Server + LocalExecutor mode"
+    },
+    "distributed-bare": {
+      "status": "unknown",
+      "expected": "TBD",
+      "description": "Server + Workers with --runtime=bare"
+    },
+    "distributed-docker": {
+      "status": "partial",
+      "expected": "~200/378",
+      "known_issues": ["docker-in-docker path mapping", "output accessibility"],
+      "description": "Server + Workers with --runtime=docker"
+    },
+    "distributed-apptainer": {
+      "status": "unknown",
+      "expected": "TBD",
+      "description": "Server + Workers with --runtime=apptainer"
+    }
+  },
+  "tier3": {
+    "staging-file": {
+      "status": "pass",
+      "description": "Local filesystem staging (file://)"
+    },
+    "staging-shared": {
+      "status": "pass",
+      "description": "SharedFS staging (symlink mode)"
+    },
+    "staging-s3": {
+      "status": "pass",
+      "requires": "docker",
+      "description": "S3/MinIO staging"
+    },
+    "staging-shock": {
+      "status": "pass",
+      "requires": "docker",
+      "description": "Shock staging (BV-BRC)"
+    }
+  },
+  "conformance": {
+    "total_tests": 378,
+    "required_tests": 84,
+    "cwl_version": "v1.2"
+  },
+  "regression_policy": {
+    "tier1": "Must pass 100% - any failure blocks merge",
+    "tier2": "Track progress toward 100%, no regressions allowed",
+    "tier3": "Custom tests must pass when backends available"
+  }
+}
