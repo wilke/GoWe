@@ -23,6 +23,7 @@ func getShockTestConfig() ShockConfig {
 		DefaultHost: host,
 		Token:       "", // Anonymous for testing
 		MaxRetries:  3,
+		UseHTTP:     true, // Local test server runs plain HTTP
 	}
 }
 
@@ -145,8 +146,13 @@ func TestShockIntegration_DeleteNode(t *testing.T) {
 }
 
 func TestShockIntegration_WithToken(t *testing.T) {
+	token := os.Getenv("SHOCK_TOKEN")
+	if token == "" {
+		t.Skip("SHOCK_TOKEN not set, skipping authenticated upload test")
+	}
+
 	cfg := getShockTestConfig()
-	cfg.Token = "test-token" // Mock server ignores tokens
+	cfg.Token = token
 	stager := NewShockStager(cfg)
 
 	ctx := context.Background()
@@ -158,7 +164,6 @@ func TestShockIntegration_WithToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This should work even with a token.
 	_, err := stager.StageOut(ctx, srcFile, "auth-task", StageOptions{})
 	if err != nil {
 		t.Fatalf("StageOut with token: %v", err)

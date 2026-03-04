@@ -22,8 +22,7 @@
 #   -m, --mode MODE     Run only specified execution mode
 #   -s, --skip MODE     Skip specified mode (can be used multiple times)
 #   -t, --tier N        Run only tier N tests (1, 2, or 3)
-#   -q, --quick         Quick mode: required tests only (84 tests)
-#   --full              Full mode: all conformance tests (378 tests)
+#   --required          Run only required tests (84 tests, faster for CI)
 #   --no-docker         Skip tests requiring Docker
 #   --parallel          Use --parallel flag for cwl-runner (tests parallel execution)
 #   -v, --verbose       Verbose output
@@ -43,14 +42,21 @@
 #   Tier 3 (Staging): file://, SharedFS, S3, Shock staging tests
 #
 # Examples:
-#   ./scripts/run-all-tests.sh                    # Full test suite, required tests
-#   ./scripts/run-all-tests.sh --full             # Full test suite, all 378 tests
-#   ./scripts/run-all-tests.sh -q                 # Quick: required tests only
+#   ./scripts/run-all-tests.sh                    # Full test suite, all 378 tests
+#   ./scripts/run-all-tests.sh --required         # Quick: required tests only (84 tests)
 #   ./scripts/run-all-tests.sh -t 1               # Tier 1 tests only (CI fast path)
 #   ./scripts/run-all-tests.sh -m cwl-runner      # Only cwl-runner mode
 #   ./scripts/run-all-tests.sh --no-docker        # Skip Docker-dependent tests
 #   ./scripts/run-all-tests.sh unit               # Go unit tests only
 #   ./scripts/run-all-tests.sh staging            # Staging tests only
+#
+# Timing Estimates (for timeout planning):
+#   Tier 1 (required, 84 tests):  ~30 seconds
+#   Tier 1 (full, 378 tests):     ~2-3 minutes
+#   Tier 2 server-local:          ~2 minutes (required), ~8 minutes (full)
+#   Tier 2 distributed-bare:      ~3 minutes (required), ~12 minutes (full)
+#   Tier 3 staging tests:         ~45 seconds
+#   Full suite (all tiers):       ~6 minutes (required), ~25 minutes (full)
 #
 
 set -e
@@ -69,7 +75,7 @@ cd "$PROJECT_DIR"
 
 # Test configuration
 TEST_TYPE="all"
-TAGS="required"
+TAGS=""  # Empty means all 378 tests; "required" for 84 tests
 TIER=""
 RUN_MODES=()
 SKIP_MODES=()
@@ -222,12 +228,8 @@ while [[ $# -gt 0 ]]; do
             TIER="$2"
             shift 2
             ;;
-        -q|--quick)
-            TAGS="required"
-            shift
-            ;;
-        --full)
-            TAGS=""  # Empty means all tests
+        --required)
+            TAGS="required"  # 84 tests (faster for CI)
             shift
             ;;
         --no-docker)
@@ -828,9 +830,9 @@ run_staging_tests() {
                 return 0
             fi
 
-            # Start Shock mock
-            docker-compose -f docker-compose.test.yml up -d shock-mock
-            if ! wait_for_url "http://localhost:7445/" 30 2; then
+            # Start real Shock server (built from MG-RAST/Shock, anonymous access)
+            docker-compose -f docker-compose.test.yml up -d shock-server
+            if ! wait_for_url "http://localhost:7445/" 60 2; then
                 docker-compose -f docker-compose.test.yml down -v 2>/dev/null || true
                 set_mode_result "$mode_name" "fail" "Shock failed to start" ""
                 return 1

@@ -11,11 +11,11 @@ This directory contains the test infrastructure for GoWe, providing comprehensiv
 # Source environment variables
 source .env
 
-# Run all tests with required tags (84 tests, fastest)
+# Run all tests (378 conformance tests per mode)
 ./scripts/run-all-tests.sh
 
-# Run full conformance suite (378 tests)
-./scripts/run-all-tests.sh --full
+# Run required tests only (84 tests, faster for CI)
+./scripts/run-all-tests.sh --required
 
 # Run only Tier 1 tests (CI fast path)
 ./scripts/run-all-tests.sh -t 1
@@ -207,8 +207,7 @@ Options:
   -m, --mode MODE     Run only specified execution mode
   -s, --skip MODE     Skip specified mode (can be used multiple times)
   -t, --tier N        Run only tier N tests (1, 2, or 3)
-  -q, --quick         Quick mode: required tests only (84 tests)
-  --full              Full mode: all conformance tests (378 tests)
+  --required          Run only required tests (84 tests, faster for CI)
   --no-docker         Skip tests requiring Docker
   --parallel          Use --parallel flag for cwl-runner
   -v, --verbose       Verbose output
@@ -219,11 +218,11 @@ Options:
 **Examples:**
 
 ```bash
-# Run required tests for all modes
+# Run all 378 conformance tests (default)
 ./scripts/run-all-tests.sh
 
-# Run full 378-test conformance suite
-./scripts/run-all-tests.sh --full
+# Run required tests only (84 tests, faster for CI)
+./scripts/run-all-tests.sh --required
 
 # Run only cwl-runner tests
 ./scripts/run-all-tests.sh -m cwl-runner
@@ -396,19 +395,52 @@ The file `testdata/expected-results.json` contains baseline test results:
 - **Tier 2**: Track progress toward 100%, no regressions allowed
 - **Tier 3**: Custom tests must pass when backends are available
 
+## Timing Estimates
+
+Use these estimates for CI timeout configuration and planning.
+
+### Measured Durations (378 tests per mode)
+
+| Mode | Duration | Target | Status |
+|------|----------|--------|--------|
+| unit | ~2s | ~2s | OK |
+| cwl-runner | ~2 min | ~2 min | OK (baseline) |
+| cwl-runner-parallel | ~2 min | ~2 min | OK (baseline) |
+| server-local | ~19 min | ~2 min | **TOO SLOW** |
+| distributed-bare | ~37 min | ~2 min | **TOO SLOW** |
+| distributed-docker | ~35 min | ~2 min | **TOO SLOW** |
+| staging (all) | ~22s | ~22s | OK |
+| **Total (all tiers)** | **~95 min** | **~10 min** | |
+
+> **Note:** Server-local and distributed modes are 10-18x slower than cwl-runner.
+> These modes execute the same CWL tests and should converge to similar runtimes.
+> The overhead comes from HTTP round-trips, submission polling, and task scheduling
+> latency — all of which are optimization targets, not inherent costs. Until resolved,
+> the long runtimes are effectively a performance bug.
+
+### Recommended Timeouts
+
+These timeouts accommodate current (slow) performance. Reduce as server modes improve.
+
+| CI Job | Timeout | Command |
+|--------|---------|---------|
+| PR checks (fast) | 10 min | `./scripts/run-all-tests.sh -t 1 --required` |
+| PR checks (full) | 30 min | `./scripts/run-all-tests.sh --required` |
+| Nightly | 120 min | `./scripts/run-all-tests.sh` |
+
 ## CI Integration
 
 For continuous integration, use these commands:
 
 ```bash
-# Fast CI check (Tier 1 only, required tests)
-./scripts/run-all-tests.sh -t 1 -q
+# Fast CI check (Tier 1 only, required tests) - ~30s
+./scripts/run-all-tests.sh -t 1 --required
 
-# Full CI check (all tiers, required tests)
-./scripts/run-all-tests.sh -q
+# Full CI check (all tiers, required tests) - ~6 min
+./scripts/run-all-tests.sh --required
 
-# Nightly full conformance (all 378 tests)
-./scripts/run-all-tests.sh --full -r
+# Nightly full conformance (all 378 tests) - ~95 min (target: ~10 min)
+./scripts/run-all-tests.sh -r
 ```
 
 ## Prerequisites
