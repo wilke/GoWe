@@ -5,6 +5,12 @@ This directory contains the test infrastructure for GoWe, providing comprehensiv
 ## Quick Start
 
 ```bash
+# First time setup - initialize environment
+./scripts/setup-env.sh -b
+
+# Source environment variables
+source .env
+
 # Run all tests with required tags (84 tests, fastest)
 ./scripts/run-all-tests.sh
 
@@ -20,6 +26,60 @@ This directory contains the test infrastructure for GoWe, providing comprehensiv
 # Run staging backend tests
 ./scripts/run-staging-tests.sh
 ```
+
+## Environment Setup
+
+Before running tests, set up your environment using the setup script:
+
+```bash
+# Basic setup (creates .env with auto-detected paths)
+./scripts/setup-env.sh
+
+# Setup with build
+./scripts/setup-env.sh -b
+
+# Setup, build, and run validation tests
+./scripts/setup-env.sh -b -t
+
+# Force regenerate .env (overwrites existing)
+./scripts/setup-env.sh -f
+```
+
+The setup script:
+1. Creates `~/.gowe/` config directory
+2. Generates `.env` file with auto-detected project paths
+3. Creates working directories (`tmp/workdir`, `tmp/outputs`)
+4. Validates prerequisites (Go, Docker, cwltest)
+5. Clones CWL conformance tests if needed
+6. Optionally builds binaries and runs tests
+
+### Environment Variables
+
+Key variables set in `.env`:
+
+| Variable | Description |
+|----------|-------------|
+| `GOWE_PROJECT_ROOT` | Project root directory |
+| `GOWE_TESTDATA` | Test data directory |
+| `GOWE_CONFORMANCE_DIR` | CWL v1.2 conformance tests |
+| `GOWE_WORKDIR` | Shared working directory |
+| `GOWE_TEST_SERVER_LOCAL_PORT` | Port for server-local tests (default: 8091) |
+| `GOWE_TEST_DISTRIBUTED_PORT` | Port for distributed tests (default: 8090) |
+| `DOCKER_HOST_PATH_MAP` | Path mapping for Docker-in-Docker |
+
+### Configuration Templates
+
+Example configuration files are in the `configs/` directory:
+
+```
+configs/
+├── server.example.yaml       # Server configuration
+├── worker.example.yaml       # Worker configuration
+├── credentials.example.yaml  # Staging backend credentials
+└── README.md                 # Configuration documentation
+```
+
+Copy these to `~/.gowe/` and customize for your environment.
 
 ## Test Architecture
 
@@ -96,6 +156,38 @@ These tests verify file staging backends used for distributed execution.
 | `staging-shock` | Shock (BV-BRC) | Docker |
 
 ## Scripts
+
+### `setup-env.sh`
+
+Initialize the development/testing environment.
+
+```bash
+Usage:
+  ./scripts/setup-env.sh [options]
+
+Options:
+  -b, --build       Build all binaries after setup
+  -f, --force       Overwrite existing .env file
+  -t, --test        Run quick validation tests after setup
+  -q, --quiet       Minimal output
+  -h, --help        Show this help message
+```
+
+**Examples:**
+
+```bash
+# Basic setup
+./scripts/setup-env.sh
+
+# Setup and build binaries
+./scripts/setup-env.sh -b
+
+# Full setup with build and validation
+./scripts/setup-env.sh -b -t
+
+# Regenerate .env file
+./scripts/setup-env.sh -f
+```
 
 ### `run-all-tests.sh`
 
@@ -229,12 +321,14 @@ Options:
 
 Shared utilities sourced by other scripts. Provides:
 
-- Color output and logging functions
-- Prerequisite checking (Go, Docker, cwltest)
-- Result tracking with bash 3.x compatibility
-- Build helpers
-- Process management utilities
-- Report generation
+- **Environment loading** - Auto-loads `.env` file if present
+- **Path variables** - Exports `GOWE_*` environment variables
+- **Color output** - Logging functions with terminal color support
+- **Prerequisite checking** - Validates Go, Docker, cwltest
+- **Result tracking** - With bash 3.x compatibility
+- **Build helpers** - Functions to build Go binaries
+- **Process management** - URL health checks, process cleanup
+- **Report generation** - Markdown report creation
 
 ## Output and Reports
 
@@ -338,6 +432,22 @@ pip install cwltest
 
 ## Troubleshooting
 
+### Environment Not Set Up
+
+If tests fail with path errors or missing variables:
+
+```bash
+# Run setup script
+./scripts/setup-env.sh
+
+# Source environment
+source .env
+
+# Verify paths are set
+echo $GOWE_PROJECT_ROOT
+echo $GOWE_CONFORMANCE_DIR
+```
+
 ### Port Already in Use
 
 If tests fail with "port in use" errors:
@@ -349,6 +459,10 @@ lsof -i :8091
 
 # Kill existing processes or use different ports
 ./scripts/run-conformance-server-local.sh -p 9091
+
+# Or set custom ports in .env
+export GOWE_TEST_SERVER_LOCAL_PORT=9091
+export GOWE_TEST_DISTRIBUTED_PORT=9090
 ```
 
 ### Docker Tests Failing
