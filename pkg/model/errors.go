@@ -16,9 +16,9 @@ const (
 
 // APIError is a structured error returned by the GoWe API.
 type APIError struct {
-	Code    ErrorCode     `json:"code"`
-	Message string        `json:"message"`
-	Details []FieldError  `json:"details,omitempty"`
+	Code    ErrorCode    `json:"code"`
+	Message string       `json:"message"`
+	Details []FieldError `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string {
@@ -63,10 +63,10 @@ func NewUnauthorizedError(msg string) *APIError {
 
 // InvalidTransitionError is returned when a state transition is invalid.
 type InvalidTransitionError struct {
-	Entity  string
-	ID      string
-	From    string
-	To      string
+	Entity string
+	ID     string
+	From   string
+	To     string
 }
 
 func (e *InvalidTransitionError) Error() string {

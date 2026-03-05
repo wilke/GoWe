@@ -4,9 +4,9 @@ import "testing"
 
 func TestListOptions_Clamp(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     ListOptions
-		wantLimit int
+		name       string
+		input      ListOptions
+		wantLimit  int
 		wantOffset int
 	}{
 		{"defaults", ListOptions{Limit: 0, Offset: 0}, 20, 0},

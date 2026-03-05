@@ -206,4 +206,3 @@ func TestFileStager_StageIn(t *testing.T) {
 		t.Errorf("content = %q, want %q", string(content), "test content")
 	}
 }
-

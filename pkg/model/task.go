@@ -33,14 +33,14 @@ type Task struct {
 	Inputs  map[string]any `json:"inputs,omitempty"`
 	Outputs map[string]any `json:"outputs,omitempty"`
 
-	DependsOn  []string   `json:"depends_on,omitempty"`
-	RetryCount int        `json:"retry_count"`
-	MaxRetries int        `json:"max_retries"`
-	Stdout     string     `json:"-"`
-	Stderr     string     `json:"-"`
-	ExitCode   *int       `json:"-"`
-	CreatedAt  time.Time  `json:"created_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
+	DependsOn   []string   `json:"depends_on,omitempty"`
+	RetryCount  int        `json:"retry_count"`
+	MaxRetries  int        `json:"max_retries"`
+	Stdout      string     `json:"-"`
+	Stderr      string     `json:"-"`
+	ExitCode    *int       `json:"-"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 

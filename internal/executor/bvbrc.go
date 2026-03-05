@@ -14,10 +14,10 @@ import (
 
 // reservedKeys are internal keys stripped from params before sending to BV-BRC.
 var reservedKeys = map[string]bool{
-	"_base_command":  true,
-	"_output_globs":  true,
-	"_docker_image":  true,
-	"_bvbrc_app_id":  true,
+	"_base_command": true,
+	"_output_globs": true,
+	"_docker_image": true,
+	"_bvbrc_app_id": true,
 }
 
 // BVBRCExecutor submits and monitors bioinformatics jobs on BV-BRC

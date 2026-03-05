@@ -100,18 +100,18 @@ func DefaultRuntimeContext() *RuntimeContext {
 // FileObject represents a CWL File object in expressions.
 // See https://www.commonwl.org/v1.2/CommandLineTool.html#File
 type FileObject struct {
-	Class          string        `json:"class"` // "File"
-	Location       string        `json:"location,omitempty"`
-	Path           string        `json:"path,omitempty"`
-	Basename       string        `json:"basename,omitempty"`
-	Dirname        string        `json:"dirname,omitempty"`
-	Nameroot       string        `json:"nameroot,omitempty"`
-	Nameext        string        `json:"nameext,omitempty"`
-	Checksum       string        `json:"checksum,omitempty"`
-	Size           int64         `json:"size,omitempty"`
-	Contents       string        `json:"contents,omitempty"`
-	Format         string        `json:"format,omitempty"`
-	SecondaryFiles []any         `json:"secondaryFiles,omitempty"`
+	Class          string `json:"class"` // "File"
+	Location       string `json:"location,omitempty"`
+	Path           string `json:"path,omitempty"`
+	Basename       string `json:"basename,omitempty"`
+	Dirname        string `json:"dirname,omitempty"`
+	Nameroot       string `json:"nameroot,omitempty"`
+	Nameext        string `json:"nameext,omitempty"`
+	Checksum       string `json:"checksum,omitempty"`
+	Size           int64  `json:"size,omitempty"`
+	Contents       string `json:"contents,omitempty"`
+	Format         string `json:"format,omitempty"`
+	SecondaryFiles []any  `json:"secondaryFiles,omitempty"`
 }
 
 // DirectoryObject represents a CWL Directory object in expressions.

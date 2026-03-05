@@ -1567,10 +1567,10 @@ func (r *Runner) writeOutputsInternal(outputs map[string]any, metricsMap map[str
 
 // DAGOutput represents the DAG structure for JSON output.
 type DAGOutput struct {
-	Workflow  string               `json:"workflow"`
-	Steps     map[string]StepInfo  `json:"steps"`
-	Order     []string             `json:"execution_order"`
-	Inputs    map[string]any       `json:"inputs"`
+	Workflow string              `json:"workflow"`
+	Steps    map[string]StepInfo `json:"steps"`
+	Order    []string            `json:"execution_order"`
+	Inputs   map[string]any      `json:"inputs"`
 }
 
 // StepInfo describes a workflow step.

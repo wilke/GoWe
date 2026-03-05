@@ -40,12 +40,12 @@ func (m StageMode) String() string {
 
 // CredentialSet holds authentication credentials for staging operations.
 type CredentialSet struct {
-	Type        string `json:"type"`                   // "bearer", "basic", "header", "s3", "shock"
-	Token       string `json:"token,omitempty"`        // for bearer/shock
-	Username    string `json:"username,omitempty"`     // for basic
-	Password    string `json:"password,omitempty"`     // for basic
-	HeaderName  string `json:"header_name,omitempty"`  // for header
-	HeaderValue string `json:"header_value,omitempty"` // for header
+	Type        string `json:"type"`                        // "bearer", "basic", "header", "s3", "shock"
+	Token       string `json:"token,omitempty"`             // for bearer/shock
+	Username    string `json:"username,omitempty"`          // for basic
+	Password    string `json:"password,omitempty"`          // for basic
+	HeaderName  string `json:"header_name,omitempty"`       // for header
+	HeaderValue string `json:"header_value,omitempty"`      // for header
 	AccessKeyID string `json:"access_key_id,omitempty"`     // for S3
 	SecretKey   string `json:"secret_access_key,omitempty"` // for S3
 }

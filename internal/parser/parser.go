@@ -521,10 +521,10 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 
 // workflowParseResult holds the result of parsing a workflow.
 type workflowParseResult struct {
-	Workflow               *cwl.Workflow
-	InlineTools            map[string]*cwl.CommandLineTool
-	InlineExpressionTools  map[string]*cwl.ExpressionTool
-	InlineWorkflows        map[string]*cwl.GraphDocument
+	Workflow              *cwl.Workflow
+	InlineTools           map[string]*cwl.CommandLineTool
+	InlineExpressionTools map[string]*cwl.ExpressionTool
+	InlineWorkflows       map[string]*cwl.GraphDocument
 }
 
 // parseWorkflow parses a single CWL Workflow from a raw map.
@@ -746,9 +746,9 @@ func normalizeHintsToMap(v any) map[string]any {
 // stepParseResult holds the result of parsing a workflow step.
 type stepParseResult struct {
 	Step                 cwl.Step
-	InlineTool           *cwl.CommandLineTool   // non-nil if step has inline CommandLineTool
-	InlineExpressionTool *cwl.ExpressionTool    // non-nil if step has inline ExpressionTool
-	InlineWorkflow       *cwl.GraphDocument     // non-nil if step has inline Workflow
+	InlineTool           *cwl.CommandLineTool // non-nil if step has inline CommandLineTool
+	InlineExpressionTool *cwl.ExpressionTool  // non-nil if step has inline ExpressionTool
+	InlineWorkflow       *cwl.GraphDocument   // non-nil if step has inline Workflow
 }
 
 // parseStep parses a single CWL workflow step from a raw map.

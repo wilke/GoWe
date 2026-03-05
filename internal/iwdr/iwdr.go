@@ -25,8 +25,8 @@ type StageOptions struct {
 
 // StageResult contains staging results.
 type StageResult struct {
-	ContainerMounts []ContainerMount      // Mounts for absolute entryname paths
-	StagedPaths     map[string]string     // Maps original path -> staged path
+	ContainerMounts []ContainerMount  // Mounts for absolute entryname paths
+	StagedPaths     map[string]string // Maps original path -> staged path
 }
 
 // Stage processes InitialWorkDirRequirement for a CWL CommandLineTool.

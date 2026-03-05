@@ -42,16 +42,16 @@ type ShockStager struct {
 
 // ShockNode represents a Shock node response.
 type ShockNode struct {
-	ID         string            `json:"id"`
-	File       ShockFile         `json:"file"`
-	Attributes map[string]any    `json:"attributes"`
-	ACL        ShockACL          `json:"acl,omitempty"`
+	ID         string         `json:"id"`
+	File       ShockFile      `json:"file"`
+	Attributes map[string]any `json:"attributes"`
+	ACL        ShockACL       `json:"acl,omitempty"`
 }
 
 // ShockFile represents file metadata in a Shock node.
 type ShockFile struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
+	Name     string            `json:"name"`
+	Size     int64             `json:"size"`
 	Checksum map[string]string `json:"checksum,omitempty"`
 }
 
@@ -70,8 +70,8 @@ type ShockACL struct {
 
 // shockResponse is the standard Shock API response wrapper.
 type shockResponse struct {
-	Status int       `json:"status"`
-	Error  []string  `json:"error"`
+	Status int        `json:"status"`
+	Error  []string   `json:"error"`
 	Data   *ShockNode `json:"data"`
 }
 

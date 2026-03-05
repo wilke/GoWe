@@ -48,25 +48,25 @@ type WorkflowOutput struct {
 
 // Step is a single node in a Workflow's DAG.
 type Step struct {
-	ID        string     `json:"id"`
-	ToolRef   string     `json:"tool_ref"`
-	ToolInline *Tool     `json:"tool_inline,omitempty"`
-	DependsOn []string   `json:"depends_on"`
-	In        []StepInput  `json:"in"`
-	Out       []string     `json:"out"`
-	Scatter   []string     `json:"scatter,omitempty"`
-	When      string       `json:"when,omitempty"`
-	Hints     *StepHints   `json:"hints,omitempty"`
+	ID         string      `json:"id"`
+	ToolRef    string      `json:"tool_ref"`
+	ToolInline *Tool       `json:"tool_inline,omitempty"`
+	DependsOn  []string    `json:"depends_on"`
+	In         []StepInput `json:"in"`
+	Out        []string    `json:"out"`
+	Scatter    []string    `json:"scatter,omitempty"`
+	When       string      `json:"when,omitempty"`
+	Hints      *StepHints  `json:"hints,omitempty"`
 }
 
 // StepInput maps a step input to its source(s).
 type StepInput struct {
 	ID           string   `json:"id"`
-	Sources      []string `json:"sources"`                  // Primary: array of sources
-	Source       string   `json:"source,omitempty"`         // Deprecated: backwards compat (comma-joined)
-	Default      any      `json:"default,omitempty"`        // Fallback value if sources resolve to nil
-	ValueFrom    string   `json:"value_from,omitempty"`     // Expression to transform input
-	LoadContents bool     `json:"load_contents,omitempty"`  // Read file contents before valueFrom
+	Sources      []string `json:"sources"`                 // Primary: array of sources
+	Source       string   `json:"source,omitempty"`        // Deprecated: backwards compat (comma-joined)
+	Default      any      `json:"default,omitempty"`       // Fallback value if sources resolve to nil
+	ValueFrom    string   `json:"value_from,omitempty"`    // Expression to transform input
+	LoadContents bool     `json:"load_contents,omitempty"` // Read file contents before valueFrom
 }
 
 // StepHints holds GoWe-specific hints extracted from a CWL step.
@@ -78,12 +78,12 @@ type StepHints struct {
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.
 type Tool struct {
-	ID          string        `json:"id"`
-	Class       string        `json:"class"` // "CommandLineTool" or "ExpressionTool"
-	BaseCommand []string      `json:"base_command,omitempty"`
-	Inputs      []ToolInput   `json:"inputs"`
-	Outputs     []ToolOutput  `json:"outputs"`
-	Hints       *StepHints    `json:"hints,omitempty"`
+	ID          string       `json:"id"`
+	Class       string       `json:"class"` // "CommandLineTool" or "ExpressionTool"
+	BaseCommand []string     `json:"base_command,omitempty"`
+	Inputs      []ToolInput  `json:"inputs"`
+	Outputs     []ToolOutput `json:"outputs"`
+	Hints       *StepHints   `json:"hints,omitempty"`
 }
 
 // ToolInput describes an input parameter of a Tool.

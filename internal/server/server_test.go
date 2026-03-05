@@ -59,12 +59,12 @@ var testAppList = []map[string]any{
 
 // envelope is used to decode the standard response envelope.
 type envelope struct {
-	Status     string           `json:"status"`
-	RequestID  string           `json:"request_id"`
-	Timestamp  string           `json:"timestamp"`
-	Data       json.RawMessage  `json:"data"`
+	Status     string            `json:"status"`
+	RequestID  string            `json:"request_id"`
+	Timestamp  string            `json:"timestamp"`
+	Data       json.RawMessage   `json:"data"`
 	Pagination *model.Pagination `json:"pagination"`
-	Error      *model.APIError  `json:"error"`
+	Error      *model.APIError   `json:"error"`
 }
 
 func doGet(t *testing.T, srv *Server, path string) envelope {

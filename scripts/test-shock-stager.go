@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 // Test script for Shock stager functionality.

@@ -55,12 +55,12 @@ type stepResult struct {
 
 // parallelExecutor manages concurrent workflow step execution.
 type parallelExecutor struct {
-	runner     *Runner
-	graph      *cwl.GraphDocument
-	dag        *parser.DAGResult
-	config     ParallelConfig
+	runner         *Runner
+	graph          *cwl.GraphDocument
+	dag            *parser.DAGResult
+	config         ParallelConfig
 	workflowInputs map[string]any
-	evaluator  *cwlexpr.Evaluator // For valueFrom and when expressions
+	evaluator      *cwlexpr.Evaluator // For valueFrom and when expressions
 
 	// Step state tracking
 	mu          sync.RWMutex

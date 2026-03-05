@@ -13,7 +13,7 @@ type Submission struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 	SubmittedBy   string            `json:"submitted_by,omitempty"`
 	Tasks         []Task            `json:"tasks,omitempty"`
-	TaskSummary   TaskSummary       `json:"task_summary,omitempty"` // Computed field, not stored
+	TaskSummary   TaskSummary       `json:"task_summary,omitempty"`   // Computed field, not stored
 	QueuePosition int               `json:"queue_position,omitempty"` // Computed field for pending submissions
 	CreatedAt     time.Time         `json:"created_at"`
 	CompletedAt   *time.Time        `json:"completed_at"`

@@ -3,16 +3,16 @@ package cwl
 // CommandLineTool is a typed representation of a CWL CommandLineTool.
 // See https://www.commonwl.org/v1.2/CommandLineTool.html
 type CommandLineTool struct {
-	ID           string                    `json:"id,omitempty"`
-	Class        string                    `json:"class,omitempty"`
-	CWLVersion   string                    `json:"cwlVersion,omitempty"`
-	Doc          string                    `json:"doc,omitempty"`
-	Label        string                    `json:"label,omitempty"`
-	BaseCommand  any                       `json:"baseCommand,omitempty"` // string or []string; normalized by parser
-	Inputs       map[string]ToolInputParam `json:"inputs,omitempty"`
+	ID           string                     `json:"id,omitempty"`
+	Class        string                     `json:"class,omitempty"`
+	CWLVersion   string                     `json:"cwlVersion,omitempty"`
+	Doc          string                     `json:"doc,omitempty"`
+	Label        string                     `json:"label,omitempty"`
+	BaseCommand  any                        `json:"baseCommand,omitempty"` // string or []string; normalized by parser
+	Inputs       map[string]ToolInputParam  `json:"inputs,omitempty"`
 	Outputs      map[string]ToolOutputParam `json:"outputs,omitempty"`
-	Hints        map[string]any            `json:"hints,omitempty"`
-	Requirements map[string]any            `json:"requirements,omitempty"`
+	Hints        map[string]any             `json:"hints,omitempty"`
+	Requirements map[string]any             `json:"requirements,omitempty"`
 
 	// Arguments are command-line arguments not tied to input parameters.
 	// Each entry can be a string, expression, or CommandLineBinding.
