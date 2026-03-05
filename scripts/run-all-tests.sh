@@ -442,24 +442,30 @@ run_cwl_runner() {
 
     # Parse results
     local summary=""
+    local passed=0
+    local failed=0
+    local total=0
     if [ -f "$output_file" ]; then
         # Check for "All tests passed" first
         if grep -q "All tests passed" "$output_file"; then
             # Count total tests from "Test [N/M]" pattern
-            local total
             total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            passed=$total
             summary="$total/$total passed"
         else
             # Look for "X tests passed" pattern
-            local passed
             passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-            local failed
             failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-            local total=$((passed + failed))
+            total=$((passed + failed))
             if [ $total -gt 0 ]; then
                 summary="$passed/$total passed"
             fi
         fi
+    fi
+
+    # Override exit code if parsed test counts show failures
+    if [ $total -gt 0 ] && [ "$passed" -lt "$total" ]; then
+        result=1
     fi
 
     if [ $result -eq 0 ]; then
@@ -557,24 +563,30 @@ run_server_local() {
 
     # Parse results
     local summary=""
+    local passed=0
+    local failed=0
+    local total=0
     if [ -f "$output_file" ]; then
         # Check for "All tests passed" first
         if grep -q "All tests passed" "$output_file"; then
             # Count total tests from "Test [N/M]" pattern
-            local total
             total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            passed=$total
             summary="$total/$total passed"
         else
             # Look for "X tests passed" pattern
-            local passed
             passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-            local failed
             failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-            local total=$((passed + failed))
+            total=$((passed + failed))
             if [ $total -gt 0 ]; then
                 summary="$passed/$total passed"
             fi
         fi
+    fi
+
+    # Override exit code if parsed test counts show failures
+    if [ $total -gt 0 ] && [ "$passed" -lt "$total" ]; then
+        result=1
     fi
 
     if [ $result -eq 0 ]; then
@@ -745,24 +757,30 @@ EOF
 
     # Parse results
     local summary=""
+    local passed=0
+    local failed=0
+    local total=0
     if [ -f "$output_file" ]; then
         # Check for "All tests passed" first
         if grep -q "All tests passed" "$output_file"; then
             # Count total tests from "Test [N/M]" pattern
-            local total
             total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            passed=$total
             summary="$total/$total passed"
         else
             # Look for "X tests passed" pattern
-            local passed
             passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-            local failed
             failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
-            local total=$((passed + failed))
+            total=$((passed + failed))
             if [ $total -gt 0 ]; then
                 summary="$passed/$total passed"
             fi
         fi
+    fi
+
+    # Override exit code if parsed test counts show failures
+    if [ $total -gt 0 ] && [ "$passed" -lt "$total" ]; then
+        result=1
     fi
 
     if [ $result -eq 0 ]; then
