@@ -190,6 +190,48 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestHealthExecutorStatus(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	t.Run("no registry", func(t *testing.T) {
+		srv := testServer()
+		env := doGet(t, srv, "/api/v1/health")
+
+		var data struct {
+			Executors map[string]string `json:"executors"`
+		}
+		json.Unmarshal(env.Data, &data)
+
+		for _, name := range []string{"local", "container", "apptainer", "bvbrc", "worker"} {
+			if data.Executors[name] != "unavailable" {
+				t.Errorf("executor %q = %q, want unavailable (no registry)", name, data.Executors[name])
+			}
+		}
+	})
+
+	t.Run("with registry", func(t *testing.T) {
+		reg := executor.NewRegistry(logger)
+		reg.Register(executor.NewLocalExecutor("", logger))
+
+		srv := testServer(WithExecutorRegistry(reg))
+		env := doGet(t, srv, "/api/v1/health")
+
+		var data struct {
+			Executors map[string]string `json:"executors"`
+		}
+		json.Unmarshal(env.Data, &data)
+
+		if data.Executors["local"] != "available" {
+			t.Errorf("executor local = %q, want available", data.Executors["local"])
+		}
+		for _, name := range []string{"container", "apptainer", "bvbrc", "worker"} {
+			if data.Executors[name] != "unavailable" {
+				t.Errorf("executor %q = %q, want unavailable", name, data.Executors[name])
+			}
+		}
+	})
+}
+
 // --- Workflow CRUD (real parsing + SQLite) ---
 
 func TestCreateWorkflow(t *testing.T) {
