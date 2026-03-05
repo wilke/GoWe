@@ -29,11 +29,11 @@ func NewClient(baseURL string, logger *slog.Logger) *Client {
 
 // apiResponse is the parsed envelope.
 type apiResponse struct {
-	Status     string          `json:"status"`
-	RequestID  string          `json:"request_id"`
-	Data       json.RawMessage `json:"data"`
+	Status     string            `json:"status"`
+	RequestID  string            `json:"request_id"`
+	Data       json.RawMessage   `json:"data"`
 	Pagination *model.Pagination `json:"pagination"`
-	Error      *model.APIError `json:"error"`
+	Error      *model.APIError   `json:"error"`
 }
 
 // do performs an HTTP request and returns the parsed envelope.

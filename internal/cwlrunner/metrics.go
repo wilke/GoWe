@@ -25,15 +25,15 @@ type IterationMetrics struct {
 
 // ScatterSummary holds aggregate statistics for scatter iterations.
 type ScatterSummary struct {
-	Count           int           `json:"count"`
-	DurationAvg     time.Duration `json:"duration_avg_ns"`
-	DurationAvgStr  string        `json:"duration_avg"`
-	DurationStddev  time.Duration `json:"duration_stddev_ns"`
-	DurationStddevStr string      `json:"duration_stddev"`
-	MemoryAvgKB     int64         `json:"memory_avg_kb"`
-	MemoryMaxKB     int64         `json:"memory_max_kb"`
-	SuccessCount    int           `json:"success_count"`
-	FailedCount     int           `json:"failed_count"`
+	Count             int           `json:"count"`
+	DurationAvg       time.Duration `json:"duration_avg_ns"`
+	DurationAvgStr    string        `json:"duration_avg"`
+	DurationStddev    time.Duration `json:"duration_stddev_ns"`
+	DurationStddevStr string        `json:"duration_stddev"`
+	MemoryAvgKB       int64         `json:"memory_avg_kb"`
+	MemoryMaxKB       int64         `json:"memory_max_kb"`
+	SuccessCount      int           `json:"success_count"`
+	FailedCount       int           `json:"failed_count"`
 }
 
 // StepMetrics holds metrics for a single step/tool execution.
@@ -403,15 +403,15 @@ func (m *WorkflowMetrics) ToMap() map[string]any {
 		if step.ScatterSummary != nil {
 			ss := step.ScatterSummary
 			stepMap["scatter_summary"] = map[string]any{
-				"count":             ss.Count,
-				"duration_avg":      ss.DurationAvgStr,
-				"duration_avg_ns":   int64(ss.DurationAvg),
-				"duration_stddev":   ss.DurationStddevStr,
+				"count":              ss.Count,
+				"duration_avg":       ss.DurationAvgStr,
+				"duration_avg_ns":    int64(ss.DurationAvg),
+				"duration_stddev":    ss.DurationStddevStr,
 				"duration_stddev_ns": int64(ss.DurationStddev),
-				"memory_avg_kb":     ss.MemoryAvgKB,
-				"memory_max_kb":     ss.MemoryMaxKB,
-				"success_count":     ss.SuccessCount,
-				"failed_count":      ss.FailedCount,
+				"memory_avg_kb":      ss.MemoryAvgKB,
+				"memory_max_kb":      ss.MemoryMaxKB,
+				"success_count":      ss.SuccessCount,
+				"failed_count":       ss.FailedCount,
 			}
 		}
 

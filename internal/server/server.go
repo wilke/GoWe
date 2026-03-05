@@ -27,15 +27,15 @@ type Server struct {
 	validator        *parser.Validator
 	store            store.Store
 	scheduler        scheduler.Scheduler
-	registry         *executor.Registry  // optional; used by dry-run to check executor availability
-	bvbrcCaller      bvbrc.RPCCaller     // optional; AppService caller, nil when no BV-BRC token
-	workspaceCaller  bvbrc.RPCCaller     // optional; Workspace service caller
-	testApps         []map[string]any    // optional; static app list for testing without BV-BRC
-	ui               *ui.UI              // UI handler for web interface
-	adminConfig      *AdminConfig        // optional; admin role configuration
-	anonConfig       *AnonymousConfig    // optional; anonymous access configuration
-	workerKeyConfig  *WorkerKeyConfig    // optional; worker key authentication
-	fileUploadConfig *FileUploadConfig   // optional; file upload proxy configuration
+	registry         *executor.Registry // optional; used by dry-run to check executor availability
+	bvbrcCaller      bvbrc.RPCCaller    // optional; AppService caller, nil when no BV-BRC token
+	workspaceCaller  bvbrc.RPCCaller    // optional; Workspace service caller
+	testApps         []map[string]any   // optional; static app list for testing without BV-BRC
+	ui               *ui.UI             // UI handler for web interface
+	adminConfig      *AdminConfig       // optional; admin role configuration
+	anonConfig       *AnonymousConfig   // optional; anonymous access configuration
+	workerKeyConfig  *WorkerKeyConfig   // optional; worker key authentication
+	fileUploadConfig *FileUploadConfig  // optional; file upload proxy configuration
 }
 
 // Option configures optional Server dependencies.

@@ -357,8 +357,8 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 
 		stepInfo := map[string]any{
 			"id":                 step.ID,
-			"executor_type":     string(execType),
-			"depends_on":        step.DependsOn,
+			"executor_type":      string(execType),
+			"depends_on":         step.DependsOn,
 			"executor_available": available,
 		}
 		if step.Hints != nil && step.Hints.BVBRCAppID != "" {
@@ -398,9 +398,9 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 	}
 
 	return map[string]any{
-		"dry_run":  true,
-		"valid":    valid,
-		"workflow": map[string]any{"id": wf.ID, "name": wf.Name, "step_count": len(wf.Steps)},
+		"dry_run":               true,
+		"valid":                 valid,
+		"workflow":              map[string]any{"id": wf.ID, "name": wf.Name, "step_count": len(wf.Steps)},
 		"inputs_valid":          inputsValid,
 		"steps":                 steps,
 		"dag_acyclic":           dagAcyclic,

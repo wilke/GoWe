@@ -334,9 +334,9 @@ func TestValidate_CommandLineTool_EmptyOutputs(t *testing.T) {
 		CWLVersion:    "v1.2",
 		OriginalClass: "CommandLineTool",
 		Workflow: &cwl.Workflow{
-			ID:     "main",
-			Class:  "Workflow",
-			Inputs: map[string]cwl.InputParam{"x": {Type: "int"}},
+			ID:      "main",
+			Class:   "Workflow",
+			Inputs:  map[string]cwl.InputParam{"x": {Type: "int"}},
 			Outputs: map[string]cwl.OutputParam{},
 			Steps: map[string]cwl.Step{
 				"run_tool": {

@@ -185,14 +185,14 @@ func (e *Engine) ExecuteTool(ctx context.Context, tool *cwl.CommandLineTool, inp
 	// Check exit code against successCodes.
 	if !isSuccessCode(runResult.ExitCode, tool.SuccessCodes) {
 		return &ExecuteResult{
-			ExitCode: runResult.ExitCode,
-			Stdout:   runResult.Stdout,
-			Stderr:   runResult.Stderr,
-		}, &ExecutionError{
-			Phase:    "execute",
-			Err:      ErrNonZeroExit,
-			ExitCode: runResult.ExitCode,
-		}
+				ExitCode: runResult.ExitCode,
+				Stdout:   runResult.Stdout,
+				Stderr:   runResult.Stderr,
+			}, &ExecutionError{
+				Phase:    "execute",
+				Err:      ErrNonZeroExit,
+				ExitCode: runResult.ExitCode,
+			}
 	}
 
 	// Collect outputs using the shared toolexec package.

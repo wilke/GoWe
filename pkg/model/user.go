@@ -30,10 +30,10 @@ const (
 // Users are created on first login from an external provider.
 type User struct {
 	ID              string           `json:"id"`
-	Username        string           `json:"username"`                    // e.g., "alice@bvbrc"
-	Provider        AuthProvider     `json:"provider"`                    // Primary auth provider
-	Role            UserRole         `json:"role"`                        // user, admin, or anonymous
-	LinkedProviders []LinkedProvider `json:"linked_providers,omitempty"`  // Optional linked provider accounts
+	Username        string           `json:"username"`                   // e.g., "alice@bvbrc"
+	Provider        AuthProvider     `json:"provider"`                   // Primary auth provider
+	Role            UserRole         `json:"role"`                       // user, admin, or anonymous
+	LinkedProviders []LinkedProvider `json:"linked_providers,omitempty"` // Optional linked provider accounts
 	CreatedAt       time.Time        `json:"created_at"`
 	LastLoginAt     time.Time        `json:"last_login_at"`
 }

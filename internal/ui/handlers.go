@@ -164,11 +164,11 @@ func (ui *UI) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Title":           "Dashboard - GoWe",
-		"Session":         sess,
-		"WorkflowCount":   workflowCount,
-		"SubmissionCount": submissionCount,
-		"RecentWorkflows": workflows,
+		"Title":             "Dashboard - GoWe",
+		"Session":           sess,
+		"WorkflowCount":     workflowCount,
+		"SubmissionCount":   submissionCount,
+		"RecentWorkflows":   workflows,
 		"RecentSubmissions": submissions,
 		"Stats": map[string]int{
 			"Pending":   pendingCount,

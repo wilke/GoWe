@@ -36,11 +36,11 @@ func respondError(w http.ResponseWriter, reqID string, status int, apiErr *model
 
 func respondJSON(w http.ResponseWriter, status int, reqID string, data any, pg *model.Pagination, apiErr *model.APIError) {
 	resp := model.Response{
-		RequestID: reqID,
-		Timestamp: time.Now().UTC(),
-		Data:      data,
+		RequestID:  reqID,
+		Timestamp:  time.Now().UTC(),
+		Data:       data,
 		Pagination: pg,
-		Error:     apiErr,
+		Error:      apiErr,
 	}
 	if apiErr != nil {
 		resp.Status = "error"
