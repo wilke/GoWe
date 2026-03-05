@@ -191,8 +191,6 @@ func TestHealth(t *testing.T) {
 }
 
 func TestHealthExecutorStatus(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
-
 	t.Run("no registry", func(t *testing.T) {
 		srv := testServer()
 		env := doGet(t, srv, "/api/v1/health")
@@ -210,6 +208,7 @@ func TestHealthExecutorStatus(t *testing.T) {
 	})
 
 	t.Run("with registry", func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
 		reg := executor.NewRegistry(logger)
 		reg.Register(executor.NewLocalExecutor("", logger))
 
