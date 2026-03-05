@@ -398,7 +398,7 @@ run_cwl_runner() {
     start_time=$(get_time)
 
     local runner="$PROJECT_DIR/bin/cwl-runner"
-    local conformance_dir="${GOWE_CONFORMANCE_DIR:-${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}}"
+    local conformance_dir="${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
     local output_file="$PROJECT_DIR/conformance-${mode_name}-results.txt"
 
     # Build if needed
