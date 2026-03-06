@@ -209,6 +209,11 @@ func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any)
 			loadListing = defaultLoadListing
 		}
 		if loadListing == "" || loadListing == "no_listing" {
+			// Per CWL spec, no_listing means listing should not be present.
+			// Remove any listing that was populated during staging/upload.
+			if loadListing == "no_listing" {
+				removeListingFromInput(inputs, inputID)
+			}
 			continue
 		}
 
@@ -228,6 +233,28 @@ func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any)
 					if class, _ := dirObj["class"].(string); class == "Directory" {
 						PopulateDirListing(dirObj, loadListing)
 					}
+				}
+			}
+		}
+	}
+}
+
+// removeListingFromInput removes the listing field from Directory inputs.
+func removeListingFromInput(inputs map[string]any, inputID string) {
+	inputVal, ok := inputs[inputID]
+	if !ok || inputVal == nil {
+		return
+	}
+	if dirObj, ok := inputVal.(map[string]any); ok {
+		if class, _ := dirObj["class"].(string); class == "Directory" {
+			delete(dirObj, "listing")
+		}
+	}
+	if arr, ok := inputVal.([]any); ok {
+		for _, item := range arr {
+			if dirObj, ok := item.(map[string]any); ok {
+				if class, _ := dirObj["class"].(string); class == "Directory" {
+					delete(dirObj, "listing")
 				}
 			}
 		}

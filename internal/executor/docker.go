@@ -201,7 +201,8 @@ func (e *DockerExecutor) submitWithCWLTool(ctx context.Context, task *model.Task
 
 	// Build cwltool configuration.
 	cfg := cwltool.Config{
-		Logger: e.logger,
+		Logger:           e.logger,
+		ResolveSecondary: true,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib

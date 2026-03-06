@@ -1414,6 +1414,8 @@ func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
 					hints.Cores = v
 				case float64:
 					hints.Cores = int(v)
+				case string:
+					// Expression — leave as 0 (evaluated at execution time)
 				}
 			}
 			if ram, ok := resReq["ramMin"]; ok {
@@ -1424,6 +1426,8 @@ func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
 					hints.RamMB = v
 				case float64:
 					hints.RamMB = int64(v)
+				case string:
+					// Expression — leave as 0 (evaluated at execution time)
 				}
 			}
 		}
@@ -1475,6 +1479,8 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 					hints.Cores = v
 				case float64:
 					hints.Cores = int(v)
+				case string:
+					// Expression — leave as 0 (evaluated at execution time)
 				}
 			}
 			if ram, ok := resReq["ramMin"]; ok {
@@ -1483,6 +1489,8 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 					hints.RamMB = int64(v)
 				case float64:
 					hints.RamMB = int64(v)
+				case string:
+					// Expression — leave as 0 (evaluated at execution time)
 				}
 			}
 		}

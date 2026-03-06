@@ -209,6 +209,17 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 			return fmt.Errorf("reload child step %s: %w", si.ID, err)
 		}
 
+		// If step is async (DISPATCHED/RUNNING), poll until all its tasks complete.
+		if si.State == model.StepStateDispatched || si.State == model.StepStateRunning {
+			if err := l.waitForStepCompletion(ctx, si, childWf); err != nil {
+				return fmt.Errorf("wait for child step %s: %w", si.ID, err)
+			}
+			si, err = l.store.GetStepInstance(ctx, si.ID)
+			if err != nil {
+				return fmt.Errorf("reload completed step %s: %w", si.ID, err)
+			}
+		}
+
 		if si.State == model.StepStateFailed {
 			l.logger.Warn("child step failed, continuing with remaining steps",
 				"si_id", si.ID, "step_id", si.StepID)
@@ -287,6 +298,113 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 		"child_sub_id", childSub.ID, "state", sub.State)
 
 	return nil
+}
+
+// waitForStepCompletion polls an async step's tasks until all are terminal,
+// then updates the step instance state. This mirrors the pollInFlight + advanceSteps
+// logic from the main scheduler loop but scoped to a single step.
+func (l *Loop) waitForStepCompletion(ctx context.Context, si *model.StepInstance, wf *model.Workflow) error {
+	ticker := time.NewTicker(l.config.PollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			tasks, err := l.store.ListTasksByStepInstance(ctx, si.ID)
+			if err != nil {
+				return fmt.Errorf("list tasks for step %s: %w", si.ID, err)
+			}
+
+			// Poll each non-terminal task via its executor.
+			for _, task := range tasks {
+				if task.State.IsTerminal() {
+					continue
+				}
+				exec, err := l.registry.Get(task.ExecutorType)
+				if err != nil {
+					l.logger.Error("get executor for child poll", "task_id", task.ID, "error", err)
+					continue
+				}
+				newState, err := exec.Status(ctx, task)
+				if err != nil {
+					l.logger.Error("poll child task status", "task_id", task.ID, "error", err)
+					continue
+				}
+				if newState == task.State {
+					continue
+				}
+				task.State = newState
+				if newState == model.TaskStateRunning && task.StartedAt == nil {
+					now := time.Now().UTC()
+					task.StartedAt = &now
+				}
+				if newState.IsTerminal() {
+					now := time.Now().UTC()
+					task.CompletedAt = &now
+					stdout, stderr, _ := exec.Logs(ctx, task)
+					task.Stdout = stdout
+					task.Stderr = stderr
+				}
+				if err := l.store.UpdateTask(ctx, task); err != nil {
+					l.logger.Error("update child polled task", "task_id", task.ID, "error", err)
+				}
+			}
+
+			// Re-fetch tasks to check terminal state.
+			tasks, err = l.store.ListTasksByStepInstance(ctx, si.ID)
+			if err != nil {
+				return fmt.Errorf("re-list tasks for step %s: %w", si.ID, err)
+			}
+
+			allTerminal := true
+			anyFailed := false
+			for _, t := range tasks {
+				if !t.State.IsTerminal() {
+					allTerminal = false
+					break
+				}
+				if t.State == model.TaskStateFailed {
+					anyFailed = true
+				}
+			}
+
+			if !allTerminal {
+				continue
+			}
+
+			// All tasks terminal — update step instance.
+			now := time.Now().UTC()
+			if anyFailed {
+				si.State = model.StepStateFailed
+			} else {
+				si.State = model.StepStateCompleted
+				// Merge outputs: scatter vs single task.
+				if si.ScatterCount > 0 {
+					step := findStep(wf, si.StepID)
+					if step != nil {
+						results := make([]map[string]any, len(tasks))
+						for _, t := range tasks {
+							if t.ScatterIndex >= 0 && t.ScatterIndex < len(results) {
+								results[t.ScatterIndex] = t.Outputs
+							}
+						}
+						si.Outputs = mergeScatterResults(results, step.Out)
+					}
+				} else if len(tasks) == 1 {
+					si.Outputs = tasks[0].Outputs
+				}
+			}
+			si.CompletedAt = &now
+			if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+				return fmt.Errorf("complete child step %s: %w", si.ID, err)
+			}
+			l.logger.Info("child step completed (poll)",
+				"si_id", si.ID, "step_id", si.StepID, "state", si.State)
+			return nil
+		}
+	}
 }
 
 // topoSortSteps returns step IDs in topological order using Kahn's algorithm.
