@@ -1,5 +1,12 @@
 package scheduler
 
+import (
+	"fmt"
+
+	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/pkg/model"
+)
+
 // Scatter combination and merge functions for the scheduler.
 // These operate on model.Step / map[string]any types rather than
 // cwl.Step / cwl.CommandLineTool types used in cwlrunner/scatter.go.
@@ -181,4 +188,45 @@ func nestResults(results []map[string]any, dims []int, dimIdx int, outputID stri
 	}
 
 	return arr
+}
+
+// hasStepValueFrom returns true if any step input has a valueFrom expression.
+func hasStepValueFrom(step *model.Step) bool {
+	for _, si := range step.In {
+		if si.ValueFrom != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// applyScatterValueFrom evaluates valueFrom expressions on a single scatter
+// iteration's inputs. This implements the CWL v1.2 requirement that valueFrom
+// is applied AFTER scatter splits the array, so `self` refers to the individual
+// element rather than the whole array.
+func applyScatterValueFrom(step *model.Step, combo map[string]any, workflowInputs map[string]any, expressionLib []string) error {
+	evaluator := cwlexpr.NewEvaluator(expressionLib)
+
+	// Build the inputs context snapshot (before valueFrom transformation).
+	inputsCtx := make(map[string]any)
+	for k, v := range workflowInputs {
+		inputsCtx[k] = v
+	}
+	for k, v := range combo {
+		inputsCtx[k] = v
+	}
+
+	for _, si := range step.In {
+		if si.ValueFrom == "" {
+			continue
+		}
+		self := combo[si.ID]
+		ctx := cwlexpr.NewContext(inputsCtx).WithSelf(self)
+		evaluated, err := evaluator.Evaluate(si.ValueFrom, ctx)
+		if err != nil {
+			return fmt.Errorf("input %s valueFrom: %w", si.ID, err)
+		}
+		combo[si.ID] = evaluated
+	}
+	return nil
 }

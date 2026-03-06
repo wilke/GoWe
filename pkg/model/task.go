@@ -4,15 +4,22 @@ import (
 	"time"
 )
 
-// Task is a concrete, schedulable unit of work created from a Step.
+// Task is a concrete, schedulable unit of work executed by a worker/executor.
+// Each Task belongs to a StepInstance. Non-scatter steps produce 1 Task;
+// scatter steps produce N Tasks (one per combination).
 type Task struct {
-	ID           string       `json:"id"`
-	SubmissionID string       `json:"submission_id"`
-	StepID       string       `json:"step_id"`
-	State        TaskState    `json:"state"`
-	ExecutorType ExecutorType `json:"executor_type"`
-	ExternalID   string       `json:"external_id,omitempty"`
-	BVBRCAppID   string       `json:"bvbrc_app_id,omitempty"`
+	ID             string       `json:"id"`
+	SubmissionID   string       `json:"submission_id"`
+	StepID         string       `json:"step_id"`
+	StepInstanceID string       `json:"step_instance_id,omitempty"`
+	State          TaskState    `json:"state"`
+	ExecutorType   ExecutorType `json:"executor_type"`
+	ExternalID     string       `json:"external_id,omitempty"`
+	BVBRCAppID     string       `json:"bvbrc_app_id,omitempty"`
+
+	// ScatterIndex is the iteration index for scatter tasks (-1 for non-scatter).
+	// Used to order outputs when merging scatter results.
+	ScatterIndex int `json:"scatter_index"`
 
 	// Tool contains the CWL CommandLineTool definition for worker execution.
 	// Stored as raw JSON to avoid circular imports with pkg/cwl.
@@ -33,6 +40,8 @@ type Task struct {
 	Inputs  map[string]any `json:"inputs,omitempty"`
 	Outputs map[string]any `json:"outputs,omitempty"`
 
+	// DependsOn is retained for backward compatibility with existing DB rows.
+	// New code should use StepInstance-level dependency tracking instead.
 	DependsOn   []string   `json:"depends_on,omitempty"`
 	RetryCount  int        `json:"retry_count"`
 	MaxRetries  int        `json:"max_retries"`

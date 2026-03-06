@@ -91,38 +91,19 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 		return nil, fmt.Errorf("store child submission: %w", err)
 	}
 
-	// Create tasks for each child workflow step.
+	// Create StepInstances for each child workflow step.
 	for _, step := range childWf.Steps {
-		task := &model.Task{
-			ID:           "task_" + uuid.New().String(),
+		si := &model.StepInstance{
+			ID:           "si_" + uuid.New().String(),
 			SubmissionID: childSub.ID,
 			StepID:       step.ID,
-			State:        model.TaskStatePending,
-			ExecutorType: model.ExecutorTypeLocal,
-			Inputs:       map[string]any{},
+			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
-			DependsOn:    step.DependsOn,
-			MaxRetries:   3,
 			CreatedAt:    now,
 		}
 
-		// Inherit executor type from step hints.
-		if step.Hints != nil {
-			if step.Hints.DockerImage != "" {
-				task.RuntimeHints = &model.RuntimeHints{
-					DockerImage: step.Hints.DockerImage,
-				}
-			}
-			if step.Hints.BVBRCAppID != "" {
-				task.BVBRCAppID = step.Hints.BVBRCAppID
-			}
-			if step.Hints.ExecutorType != "" {
-				task.ExecutorType = step.Hints.ExecutorType
-			}
-		}
-
-		if err := l.store.CreateTask(ctx, task); err != nil {
-			return nil, fmt.Errorf("store child task: %w", err)
+		if err := l.store.CreateStepInstance(ctx, si); err != nil {
+			return nil, fmt.Errorf("store child step instance: %w", err)
 		}
 	}
 
@@ -135,10 +116,9 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 	return childSub, nil
 }
 
-// executeChildSubmission synchronously processes all tasks in a child submission.
-// Instead of using the global scheduler phases (which would re-dispatch the parent
-// task still marked SCHEDULED in the DB), this processes only the child's tasks
-// directly in topological order via submitTask().
+// executeChildSubmission synchronously processes all steps in a child submission.
+// It iterates through StepInstances in topological order, dispatching each step
+// via the standard submitStep flow.
 func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submission) error {
 	// Load the child workflow for step definitions and topological order.
 	childWf, err := l.store.GetWorkflow(ctx, childSub.WorkflowID)
@@ -152,90 +132,139 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 	// Compute execution order from step dependencies.
 	order := topoSortSteps(childWf.Steps)
 
-	// Process each task in topological order.
+	// Build step dependency map for checking readiness.
+	stepDeps := make(map[string][]string)
+	for _, s := range childWf.Steps {
+		stepDeps[s.ID] = s.DependsOn
+	}
+
+	// Process each step instance in topological order.
 	for _, stepID := range order {
-		// Reload the task from the store (it may have been created fresh).
-		allTasks, err := l.store.ListTasksBySubmission(ctx, childSub.ID)
+		// Load all step instances for this submission.
+		allSteps, err := l.store.ListStepsBySubmission(ctx, childSub.ID)
 		if err != nil {
-			return fmt.Errorf("list child tasks: %w", err)
+			return fmt.Errorf("list child step instances: %w", err)
 		}
 
-		var task *model.Task
-		for _, t := range allTasks {
-			if t.StepID == stepID {
-				task = t
+		var si *model.StepInstance
+		stepByID := make(map[string]*model.StepInstance)
+		for _, s := range allSteps {
+			stepByID[s.StepID] = s
+			if s.StepID == stepID {
+				si = s
+			}
+		}
+		if si == nil {
+			return fmt.Errorf("child step instance for step %s not found", stepID)
+		}
+
+		// Check dependencies using step-level tracking.
+		blocked := false
+		for _, depStepID := range stepDeps[stepID] {
+			dep, ok := stepByID[depStepID]
+			if !ok {
+				blocked = true
+				break
+			}
+			switch dep.State {
+			case model.StepStateFailed, model.StepStateSkipped:
+				blocked = true
+			case model.StepStateCompleted:
+				continue
+			default:
+				// Should not happen in synchronous execution
+				blocked = true
+			}
+			if blocked {
 				break
 			}
 		}
-		if task == nil {
-			return fmt.Errorf("child task for step %s not found", stepID)
-		}
 
-		// Check dependencies before dispatching.
-		tasksByStep := BuildTasksByStepID(allTasks)
-		_, blocked := AreDependenciesSatisfied(task, tasksByStep)
 		if blocked {
-			// A dependency failed - skip this task.
 			now := time.Now().UTC()
-			task.State = model.TaskStateSkipped
-			task.CompletedAt = &now
-			if err := l.store.UpdateTask(ctx, task); err != nil {
-				return fmt.Errorf("skip child task %s: %w", task.ID, err)
+			si.State = model.StepStateSkipped
+			si.CompletedAt = &now
+			if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+				return fmt.Errorf("skip child step %s: %w", si.ID, err)
 			}
-			l.logger.Info("child task skipped (dependency blocked)",
-				"task_id", task.ID, "step_id", task.StepID)
+			l.logger.Info("child step skipped (dependency blocked)",
+				"si_id", si.ID, "step_id", si.StepID)
 			continue
 		}
 
-		// Mark as SCHEDULED then dispatch via submitTask().
-		task.State = model.TaskStateScheduled
-		if err := l.store.UpdateTask(ctx, task); err != nil {
-			return fmt.Errorf("schedule child task %s: %w", task.ID, err)
+		// Dispatch this step: transition WAITING → READY → dispatch.
+		si.State = model.StepStateReady
+		if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+			return fmt.Errorf("ready child step %s: %w", si.ID, err)
 		}
 
-		if err := l.submitTask(ctx, task); err != nil {
-			l.logger.Error("child submit task failed",
-				"task_id", task.ID, "step_id", task.StepID, "error", err)
-			// Task state is already updated inside submitTask on failure.
+		if err := l.dispatchStep(ctx, si, childWf, childSub); err != nil {
+			l.logger.Error("child dispatch step failed",
+				"si_id", si.ID, "step_id", si.StepID, "error", err)
 		}
 
-		// Check if task failed (abort early unless other tasks are independent).
-		if task.State == model.TaskStateFailed {
-			l.logger.Warn("child task failed, continuing with remaining tasks",
-				"task_id", task.ID, "step_id", task.StepID)
+		// Reload step instance to check final state.
+		si, err = l.store.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			return fmt.Errorf("reload child step %s: %w", si.ID, err)
+		}
+
+		if si.State == model.StepStateFailed {
+			l.logger.Warn("child step failed, continuing with remaining steps",
+				"si_id", si.ID, "step_id", si.StepID)
 		}
 	}
 
-	// Finalize the child submission: collect outputs and set terminal state.
-	// Re-load submission with all tasks to check final states.
-	sub, err := l.store.GetSubmission(ctx, childSub.ID)
+	// Finalize the child submission.
+	allSteps, err := l.store.ListStepsBySubmission(ctx, childSub.ID)
 	if err != nil {
-		return fmt.Errorf("reload child submission: %w", err)
+		return fmt.Errorf("reload child steps: %w", err)
 	}
 
 	allTerminal := true
 	anyFailed := false
-	for _, t := range sub.Tasks {
-		if !t.State.IsTerminal() {
+	for _, si := range allSteps {
+		if !si.State.IsTerminal() {
 			allTerminal = false
 		}
-		if t.State == model.TaskStateFailed {
+		if si.State == model.StepStateFailed {
 			anyFailed = true
 		}
 	}
 
 	if !allTerminal {
-		return fmt.Errorf("child submission %s has non-terminal tasks after processing", childSub.ID)
+		return fmt.Errorf("child submission %s has non-terminal steps after processing", childSub.ID)
+	}
+
+	// Collect workflow outputs from step instances.
+	stepOutputs := make(map[string]map[string]any)
+	for _, si := range allSteps {
+		if si.Outputs != nil {
+			stepOutputs[si.StepID] = si.Outputs
+		}
 	}
 
 	now := time.Now().UTC()
+	sub := &model.Submission{
+		ID:           childSub.ID,
+		WorkflowID:   childSub.WorkflowID,
+		WorkflowName: childSub.WorkflowName,
+		State:        childSub.State,
+		Inputs:       childSub.Inputs,
+		Outputs:      childSub.Outputs,
+		Labels:       childSub.Labels,
+		SubmittedBy:  childSub.SubmittedBy,
+		ParentTaskID: childSub.ParentTaskID,
+		CreatedAt:    childSub.CreatedAt,
+	}
+
 	if anyFailed {
 		sub.State = model.SubmissionStateFailed
 	} else {
 		sub.State = model.SubmissionStateCompleted
 
-		// Collect workflow outputs.
-		outputs, outErr := l.collectWorkflowOutputs(childWf, sub)
+		// Collect workflow outputs using step instance outputs.
+		outputs, outErr := l.collectWorkflowOutputsFromSteps(childWf, stepOutputs, childSub.Inputs)
 		if outErr != nil {
 			l.logger.Error("collect child workflow outputs",
 				"submission_id", sub.ID, "error", outErr)
@@ -258,211 +287,6 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 		"child_sub_id", childSub.ID, "state", sub.State)
 
 	return nil
-}
-
-// executeSubWorkflowTask handles a non-scatter sub-workflow step by creating
-// a child submission and synchronously executing it.
-func (l *Loop) executeSubWorkflowTask(ctx context.Context, task *model.Task,
-	step *model.Step, wf *model.Workflow, sub *model.Submission,
-	mergedInputs map[string]any, tasksByStep map[string]*model.Task) error {
-
-	l.logger.Info("executing sub-workflow step",
-		"task_id", task.ID, "step_id", task.StepID, "tool_ref", step.ToolRef)
-
-	// Parse the parent workflow's CWL to get the sub-workflow graph.
-	graphDoc, err := parser.New(l.logger).ParseGraph([]byte(wf.RawCWL))
-	if err != nil {
-		return fmt.Errorf("parse parent CWL: %w", err)
-	}
-
-	subGraph := graphDoc.SubWorkflows[step.ToolRef]
-	if subGraph == nil {
-		return fmt.Errorf("sub-workflow %q not found in parsed graph", step.ToolRef)
-	}
-
-	// Create and execute child submission.
-	now := time.Now().UTC()
-	task.StartedAt = &now
-
-	childSub, err := l.createChildSubmission(ctx, task, subGraph, task.Job, sub, wf)
-	if err != nil {
-		task.State = model.TaskStateFailed
-		task.Stderr = fmt.Sprintf("create child submission: %s", err)
-		completedAt := time.Now().UTC()
-		task.CompletedAt = &completedAt
-		return l.store.UpdateTask(ctx, task)
-	}
-
-	// Synchronously execute the child submission.
-	if err := l.executeChildSubmission(ctx, childSub); err != nil {
-		task.State = model.TaskStateFailed
-		task.Stderr = fmt.Sprintf("execute child submission: %s", err)
-		completedAt := time.Now().UTC()
-		task.CompletedAt = &completedAt
-		return l.store.UpdateTask(ctx, task)
-	}
-
-	// Propagate child outputs to parent task.
-	completedAt := time.Now().UTC()
-	if childSub.State == model.SubmissionStateCompleted {
-		task.State = model.TaskStateSuccess
-		task.Outputs = childSub.Outputs
-		exitCode := 0
-		task.ExitCode = &exitCode
-	} else {
-		task.State = model.TaskStateFailed
-		task.Stderr = fmt.Sprintf("child submission %s ended with state %s", childSub.ID, childSub.State)
-	}
-	task.CompletedAt = &completedAt
-	task.ExternalID = childSub.ID // Track child submission ID
-
-	l.logger.Info("sub-workflow step completed",
-		"task_id", task.ID, "step_id", task.StepID,
-		"child_sub_id", childSub.ID, "state", task.State)
-
-	return l.store.UpdateTask(ctx, task)
-}
-
-// executeScatterSubWorkflow handles a scatter step over a sub-workflow.
-// Each scatter iteration creates a separate child submission.
-func (l *Loop) executeScatterSubWorkflow(ctx context.Context, task *model.Task,
-	step *model.Step, wf *model.Workflow, sub *model.Submission,
-	mergedInputs map[string]any, tasksByStep map[string]*model.Task) error {
-
-	l.logger.Info("executing scatter over sub-workflow",
-		"task_id", task.ID, "step_id", task.StepID,
-		"scatter", step.Scatter, "method", step.ScatterMethod)
-
-	// Parse the parent workflow's CWL to get the sub-workflow graph.
-	graphDoc, err := parser.New(l.logger).ParseGraph([]byte(wf.RawCWL))
-	if err != nil {
-		return fmt.Errorf("parse parent CWL: %w", err)
-	}
-
-	subGraph := graphDoc.SubWorkflows[step.ToolRef]
-	if subGraph == nil {
-		return fmt.Errorf("sub-workflow %q not found in parsed graph", step.ToolRef)
-	}
-
-	// Determine scatter method.
-	method := step.ScatterMethod
-	if method == "" {
-		if len(step.Scatter) == 1 {
-			method = "dotproduct"
-		} else {
-			method = "nested_crossproduct"
-		}
-	}
-
-	// Extract scatter arrays from the task's resolved job inputs.
-	scatterArrays := make(map[string][]any)
-	for _, scatterInput := range step.Scatter {
-		value := task.Job[scatterInput]
-		arr, ok := toAnySlice(value)
-		if !ok {
-			now := time.Now().UTC()
-			task.State = model.TaskStateFailed
-			task.Stderr = fmt.Sprintf("scatter input %q is not an array (got %T)", scatterInput, value)
-			task.CompletedAt = &now
-			return l.store.UpdateTask(ctx, task)
-		}
-		scatterArrays[scatterInput] = arr
-	}
-
-	// Generate input combinations.
-	var combinations []map[string]any
-	switch method {
-	case "dotproduct":
-		combinations = scatterDotProduct(task.Job, step.Scatter, scatterArrays)
-	case "flat_crossproduct":
-		combinations = scatterFlatCrossProduct(task.Job, step.Scatter, scatterArrays)
-	case "nested_crossproduct":
-		combinations = scatterFlatCrossProduct(task.Job, step.Scatter, scatterArrays)
-	default:
-		now := time.Now().UTC()
-		task.State = model.TaskStateFailed
-		task.Stderr = fmt.Sprintf("unknown scatter method: %s", method)
-		task.CompletedAt = &now
-		return l.store.UpdateTask(ctx, task)
-	}
-
-	l.logger.Debug("scatter sub-workflow combinations",
-		"task_id", task.ID, "count", len(combinations))
-
-	now := time.Now().UTC()
-	task.StartedAt = &now
-
-	// Execute each scatter iteration as a child submission.
-	var results []map[string]any
-	for i, combo := range combinations {
-		// Evaluate 'when' condition per iteration if present.
-		if step.When != "" {
-			shouldRun, err := l.evaluateWhenForScatterIteration(step, combo, mergedInputs, tasksByStep)
-			if err != nil {
-				l.logger.Warn("scatter when evaluation failed",
-					"task_id", task.ID, "iteration", i, "error", err)
-			} else if !shouldRun {
-				nullOutputs := make(map[string]any)
-				for _, outID := range step.Out {
-					nullOutputs[outID] = nil
-				}
-				results = append(results, nullOutputs)
-				continue
-			}
-		}
-
-		childSub, err := l.createChildSubmission(ctx, task, subGraph, combo, sub, wf)
-		if err != nil {
-			completedAt := time.Now().UTC()
-			task.State = model.TaskStateFailed
-			task.Stderr = fmt.Sprintf("scatter iteration %d: create child: %s", i, err)
-			task.CompletedAt = &completedAt
-			return l.store.UpdateTask(ctx, task)
-		}
-
-		if err := l.executeChildSubmission(ctx, childSub); err != nil {
-			completedAt := time.Now().UTC()
-			task.State = model.TaskStateFailed
-			task.Stderr = fmt.Sprintf("scatter iteration %d: execute child: %s", i, err)
-			task.CompletedAt = &completedAt
-			return l.store.UpdateTask(ctx, task)
-		}
-
-		if childSub.State != model.SubmissionStateCompleted {
-			completedAt := time.Now().UTC()
-			task.State = model.TaskStateFailed
-			task.Stderr = fmt.Sprintf("scatter iteration %d: child ended with %s", i, childSub.State)
-			task.CompletedAt = &completedAt
-			return l.store.UpdateTask(ctx, task)
-		}
-
-		results = append(results, childSub.Outputs)
-	}
-
-	// Merge results into arrays.
-	var mergedOutputs map[string]any
-	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
-		dims := make([]int, len(step.Scatter))
-		for i, name := range step.Scatter {
-			dims[i] = len(scatterArrays[name])
-		}
-		mergedOutputs = mergeScatterResultsNested(results, step.Out, dims)
-	} else {
-		mergedOutputs = mergeScatterResults(results, step.Out)
-	}
-
-	completedAt := time.Now().UTC()
-	task.State = model.TaskStateSuccess
-	task.Outputs = mergedOutputs
-	task.CompletedAt = &completedAt
-	exitCode := 0
-	task.ExitCode = &exitCode
-
-	l.logger.Info("scatter sub-workflow completed",
-		"task_id", task.ID, "step_id", task.StepID,
-		"iterations", len(combinations))
-
-	return l.store.UpdateTask(ctx, task)
 }
 
 // topoSortSteps returns step IDs in topological order using Kahn's algorithm.

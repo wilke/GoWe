@@ -465,32 +465,18 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Create tasks for each workflow step.
+	// Create StepInstances for each workflow step (3-level state architecture).
 	for _, step := range wf.Steps {
-		var execType model.ExecutorType
-		var bvbrcAppID string
-		if step.Hints != nil {
-			if step.Hints.ExecutorType != "" {
-				execType = step.Hints.ExecutorType
-			}
-			bvbrcAppID = step.Hints.BVBRCAppID
-		}
-
-		task := &model.Task{
-			ID:           "task_" + uuid.New().String(),
+		si := &model.StepInstance{
+			ID:           "si_" + uuid.New().String(),
 			SubmissionID: sub.ID,
 			StepID:       step.ID,
-			State:        model.TaskStatePending,
-			ExecutorType: execType,
-			BVBRCAppID:   bvbrcAppID,
-			Inputs:       map[string]any{},
+			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
-			DependsOn:    step.DependsOn,
-			MaxRetries:   3,
 			CreatedAt:    now,
 		}
-		if err := ui.store.CreateTask(r.Context(), task); err != nil {
-			ui.logger.Error("create task failed", "step", step.ID, "error", err)
+		if err := ui.store.CreateStepInstance(r.Context(), si); err != nil {
+			ui.logger.Error("create step instance failed", "step", step.ID, "error", err)
 		}
 	}
 
@@ -618,10 +604,11 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset failed tasks to PENDING
+	// Reset failed tasks to QUEUED and their parent step instances to DISPATCHED.
+	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
 		if task.State == model.TaskStateFailed {
-			task.State = model.TaskStatePending
+			task.State = model.TaskStateQueued
 			task.RetryCount = 0
 			task.Stdout = ""
 			task.Stderr = ""
@@ -631,10 +618,25 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
 				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
 			}
+			if task.StepInstanceID != "" {
+				resetSteps[task.StepInstanceID] = true
+			}
+		}
+	}
+	// Reset parent step instances so scheduler re-evaluates them.
+	for siID := range resetSteps {
+		si, err := ui.store.GetStepInstance(r.Context(), siID)
+		if err != nil || si == nil {
+			continue
+		}
+		si.State = model.StepStateDispatched
+		si.CompletedAt = nil
+		if err := ui.store.UpdateStepInstance(r.Context(), si); err != nil {
+			ui.logger.Error("failed to reset step instance", "si_id", siID, "error", err)
 		}
 	}
 
-	// Set submission back to RUNNING
+	// Set submission back to RUNNING.
 	sub.State = model.SubmissionStateRunning
 	sub.CompletedAt = nil
 	if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
@@ -657,11 +659,12 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset all failed tasks
+	// Reset all failed tasks and their parent step instances.
 	recomputeCount := 0
+	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
 		if task.State == model.TaskStateFailed {
-			task.State = model.TaskStatePending
+			task.State = model.TaskStateQueued
 			task.RetryCount = 0
 			task.Stdout = ""
 			task.Stderr = ""
@@ -673,10 +676,24 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 			} else {
 				recomputeCount++
 			}
+			if task.StepInstanceID != "" {
+				resetSteps[task.StepInstanceID] = true
+			}
+		}
+	}
+	for siID := range resetSteps {
+		si, err := ui.store.GetStepInstance(r.Context(), siID)
+		if err != nil || si == nil {
+			continue
+		}
+		si.State = model.StepStateDispatched
+		si.CompletedAt = nil
+		if err := ui.store.UpdateStepInstance(r.Context(), si); err != nil {
+			ui.logger.Error("failed to reset step instance", "si_id", siID, "error", err)
 		}
 	}
 
-	// If submission was terminal, set it back to RUNNING
+	// If submission was terminal, set it back to RUNNING.
 	if sub.State.IsTerminal() && recomputeCount > 0 {
 		sub.State = model.SubmissionStateRunning
 		sub.CompletedAt = nil
@@ -706,8 +723,8 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset the task
-	task.State = model.TaskStatePending
+	// Reset the task.
+	task.State = model.TaskStateQueued
 	task.RetryCount = 0
 	task.Stdout = ""
 	task.Stderr = ""
@@ -719,7 +736,17 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set submission back to RUNNING if it was terminal
+	// Reset parent step instance so scheduler re-evaluates it.
+	if task.StepInstanceID != "" {
+		si, err := ui.store.GetStepInstance(r.Context(), task.StepInstanceID)
+		if err == nil && si != nil {
+			si.State = model.StepStateDispatched
+			si.CompletedAt = nil
+			ui.store.UpdateStepInstance(r.Context(), si)
+		}
+	}
+
+	// Set submission back to RUNNING if it was terminal.
 	sub, _ := ui.store.GetSubmission(r.Context(), subID)
 	if sub != nil && sub.State.IsTerminal() {
 		sub.State = model.SubmissionStateRunning

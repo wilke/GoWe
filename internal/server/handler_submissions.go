@@ -114,57 +114,27 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Create a Task for each workflow step.
+	// Create a StepInstance for each workflow step (3-level state architecture).
+	// StepInstances track step lifecycle; Tasks are created later by the scheduler
+	// when a step is dispatched.
 	for _, step := range wf.Steps {
-		execType := model.ExecutorTypeLocal
-		bvbrcAppID := ""
-		var runtimeHints *model.RuntimeHints
-
-		if step.Hints != nil {
-			// Capture runtime hints for worker matching (docker image requirement).
-			if step.Hints.DockerImage != "" {
-				runtimeHints = &model.RuntimeHints{
-					DockerImage: step.Hints.DockerImage,
-				}
-			}
-			bvbrcAppID = step.Hints.BVBRCAppID
-
-			// Only use step hint executor if no server default is set.
-			// Server default takes precedence to enable distributed mode.
-			if step.Hints.ExecutorType != "" && s.config.DefaultExecutor == "" {
-				execType = step.Hints.ExecutorType
-			}
-		}
-
-		// Apply server-wide default executor when set (overrides CWL hints).
-		// This enables distributed mode where all tasks go to workers.
-		if s.config.DefaultExecutor != "" {
-			execType = model.ExecutorType(s.config.DefaultExecutor)
-		}
-
-		task := &model.Task{
-			ID:           "task_" + uuid.New().String(),
+		si := &model.StepInstance{
+			ID:           "si_" + uuid.New().String(),
 			SubmissionID: sub.ID,
 			StepID:       step.ID,
-			State:        model.TaskStatePending,
-			ExecutorType: execType,
-			BVBRCAppID:   bvbrcAppID,
-			RuntimeHints: runtimeHints,
-			Inputs:       map[string]any{},
+			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
-			DependsOn:    step.DependsOn,
-			MaxRetries:   3,
 			CreatedAt:    now,
 		}
 
-		if err := s.store.CreateTask(r.Context(), task); err != nil {
+		if err := s.store.CreateStepInstance(r.Context(), si); err != nil {
 			respondError(w, reqID, http.StatusInternalServerError,
 				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 			return
 		}
 	}
 
-	s.logger.Info("submission created", "id", sub.ID, "workflow_id", wf.ID, "tasks", len(wf.Steps))
+	s.logger.Info("submission created", "id", sub.ID, "workflow_id", wf.ID, "steps", len(wf.Steps))
 
 	// Re-read to include tasks in response.
 	full, err := s.store.GetSubmission(r.Context(), sub.ID)
@@ -250,7 +220,22 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Cancel pending/scheduled tasks.
+	// Cancel non-terminal step instances.
+	stepsCancelled := 0
+	steps, _ := s.store.ListStepsBySubmission(r.Context(), sub.ID)
+	for _, si := range steps {
+		if si.State == model.StepStateCompleted || si.State == model.StepStateFailed || si.State == model.StepStateSkipped {
+			continue
+		}
+		si.State = model.StepStateSkipped
+		si.CompletedAt = &now
+		if err := s.store.UpdateStepInstance(r.Context(), si); err != nil {
+			s.logger.Error("cancel step instance", "si_id", si.ID, "error", err)
+		}
+		stepsCancelled++
+	}
+
+	// Cancel non-terminal tasks.
 	tasksCancelled := 0
 	tasksAlreadyCompleted := 0
 	for i := range sub.Tasks {
@@ -270,6 +255,7 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	respondOK(w, reqID, map[string]any{
 		"id":                      sub.ID,
 		"state":                   sub.State,
+		"steps_cancelled":         stepsCancelled,
 		"tasks_cancelled":         tasksCancelled,
 		"tasks_already_completed": tasksAlreadyCompleted,
 	})

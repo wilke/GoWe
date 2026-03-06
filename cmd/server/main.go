@@ -232,9 +232,10 @@ func main() {
 	// Register BVBRCExecutor (uses per-task tokens for job submission).
 	reg.Register(executor.NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, defaultBVBRCCaller, logger))
 
-	// Create scheduler with configurable poll interval.
+	// Create scheduler with configurable poll interval and default executor.
 	schedCfg := scheduler.DefaultConfig()
 	schedCfg.PollInterval = *schedulerPoll
+	schedCfg.DefaultExecutor = cfg.DefaultExecutor
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
 	srv := server.New(cfg, st, sched, logger, serverOpts...)

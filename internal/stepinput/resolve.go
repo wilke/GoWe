@@ -27,8 +27,9 @@ type InputDef struct {
 
 // Options configures step input resolution.
 type Options struct {
-	CWLDir        string   // Directory for resolving relative paths
-	ExpressionLib []string // JavaScript library from InlineJavascriptRequirement
+	CWLDir            string   // Directory for resolving relative paths
+	ExpressionLib     []string // JavaScript library from InlineJavascriptRequirement
+	SkipAllValueFrom  bool     // Skip all valueFrom evaluation (used for scatter steps)
 }
 
 // ResolveInputs resolves step inputs following CWL semantics:
@@ -268,6 +269,11 @@ func evaluateValueFromExpressions(
 	workflowInputs map[string]any,
 	opts Options,
 ) error {
+	// For scatter steps, skip all valueFrom — it's applied per-iteration later.
+	if opts.SkipAllValueFrom {
+		return nil
+	}
+
 	// Check if any inputs have valueFrom.
 	hasValueFrom := false
 	for _, inp := range inputs {

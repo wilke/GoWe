@@ -33,7 +33,7 @@
 #   cwl-runner          Direct CLI execution (gold standard)
 #   cwl-runner-parallel Direct CLI with --parallel flag
 #   server-local        Server + LocalExecutor
-#   distributed-bare    Server + Workers (--runtime=bare)
+#   distributed-none    Server + Workers (--runtime=none, no containers)
 #   distributed-docker  Server + Workers (--runtime=docker, Docker-in-Docker)
 #
 # Tier System:
@@ -54,7 +54,7 @@
 #   Tier 1 (required, 84 tests):  ~30 seconds
 #   Tier 1 (full, 378 tests):     ~2-3 minutes
 #   Tier 2 server-local:          ~2 minutes (required), ~8 minutes (full)
-#   Tier 2 distributed-bare:      ~3 minutes (required), ~12 minutes (full)
+#   Tier 2 distributed-none:      ~3 minutes (required), ~12 minutes (full)
 #   Tier 3 staging tests:         ~45 seconds
 #   Full suite (all tiers):       ~6 minutes (required), ~25 minutes (full)
 #
@@ -273,7 +273,7 @@ done
 
 # Define all available modes by tier
 TIER1_MODES=("unit" "cwl-runner" "cwl-runner-parallel")
-TIER2_MODES=("server-local" "distributed-bare" "distributed-docker")
+TIER2_MODES=("server-local" "distributed-none" "distributed-docker")
 TIER3_MODES=("staging-file" "staging-shared" "staging-s3" "staging-shock")
 
 # Build list of modes to run based on tier and options
@@ -410,7 +410,9 @@ run_cwl_runner() {
     ensure_conformance_tests "$PROJECT_DIR" || return 1
 
     # Build cwltest command
+    local junit_file="$PROJECT_DIR/conformance-${mode_name}-timing.xml"
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $runner"
+    cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
 
     if [ -n "$TAGS" ]; then
         cwltest_cmd="$cwltest_cmd --tags $TAGS"
@@ -523,7 +525,7 @@ run_server_local() {
 
     # Create wrapper script
     local wrapper
-    wrapper=$(create_cwltest_wrapper "$PROJECT_DIR/bin/gowe" "http://localhost:${SERVER_LOCAL_PORT}")
+    wrapper=$(create_cwltest_wrapper "$PROJECT_DIR/bin/gowe" "http://localhost:${SERVER_LOCAL_PORT}" "--no-upload")
 
     # Ensure conformance tests
     ensure_conformance_tests "$PROJECT_DIR" || { cleanup_server; return 1; }
@@ -531,7 +533,9 @@ run_server_local() {
     # Run tests
     cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
 
+    local junit_file="$PROJECT_DIR/conformance-server-local-timing.xml"
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
+    cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
     if [ -n "$TAGS" ]; then
         cwltest_cmd="$cwltest_cmd --tags $TAGS"
     fi
@@ -588,11 +592,12 @@ run_server_local() {
 }
 
 # Run distributed tests (docker-compose)
+# runtime: "none" (direct execution) or "docker" (Docker-in-Docker)
 run_distributed() {
-    local runtime="${1:-bare}"
+    local runtime="${1:-none}"
     local mode_name="distributed-$runtime"
 
-    log_subheader "Distributed Mode ($runtime)"
+    log_subheader "Distributed Mode (--runtime=$runtime)"
 
     if ! check_docker; then
         log_warn "Docker not available, skipping $mode_name"
@@ -622,7 +627,7 @@ run_distributed() {
         # Start docker-compose
         log_info "Starting docker-compose environment..."
 
-        # Create override for port
+        # Create override for port and worker runtime
         cat > docker-compose.override.yml << EOF
 services:
   gowe-server:
@@ -686,18 +691,8 @@ EOF
         log_warn "No workers registered, continuing anyway..."
     fi
 
-    # Set up path mapping
-    # Map conformance test directory to /testdata (matches docker-compose mount)
-    local conformance_abs
-    conformance_abs=$(cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}" && pwd)
-    local workdir_abs
-    workdir_abs=$(cd "$PROJECT_DIR/tmp/workdir" 2>/dev/null && pwd || echo "$PROJECT_DIR/tmp/workdir")
-
-    # Ensure workdir exists
-    mkdir -p "$PROJECT_DIR/tmp/workdir/outputs"
-
-    export GOWE_PATH_MAP="${conformance_abs}=/testdata"
-    export GOWE_OUTPUT_PATH_MAP="/workdir=${workdir_abs}"
+    # Upload mode: CLI uploads input files to server, downloads outputs.
+    # No GOWE_PATH_MAP needed — files are transferred transparently.
     export GOWE_SERVER="http://localhost:${DISTRIBUTED_PORT}"
 
     # Create wrapper
@@ -705,8 +700,6 @@ EOF
     wrapper=$(mktemp)
     cat > "$wrapper" << EOF
 #!/bin/bash
-export GOWE_PATH_MAP="${conformance_abs}=/testdata"
-export GOWE_OUTPUT_PATH_MAP="/workdir=${workdir_abs}"
 export GOWE_SERVER="http://localhost:${DISTRIBUTED_PORT}"
 exec "$PROJECT_DIR/bin/gowe" run --quiet "\$@"
 EOF
@@ -718,7 +711,9 @@ EOF
     # Run tests
     cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
 
+    local junit_file="$PROJECT_DIR/conformance-${mode_name}-timing.xml"
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
+    cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
     if [ -n "$TAGS" ]; then
         cwltest_cmd="$cwltest_cmd --tags $TAGS"
     fi
@@ -942,8 +937,8 @@ for mode in "${MODES_TO_RUN[@]}"; do
         server-local)
             run_server_local || true
             ;;
-        distributed-bare)
-            run_distributed "bare" || true
+        distributed-none)
+            run_distributed "none" || true
             ;;
         distributed-docker)
             run_distributed "docker" || true
@@ -993,7 +988,7 @@ done
 # Tier 2 summary
 echo ""
 echo -e "${CYAN}[TIER 2] Server Modes${NC}"
-for mode in server-local distributed-bare distributed-docker; do
+for mode in server-local distributed-none distributed-docker; do
     result=$(get_mode_result "$mode")
     if [ -n "$result" ]; then
         dur=$(get_mode_duration "$mode")
@@ -1016,6 +1011,17 @@ done
 
 echo ""
 echo -e "Total duration: $(format_duration "$SUITE_DURATION")"
+
+# Show timing files
+echo ""
+echo -e "${CYAN}Timing data (JUnit XML):${NC}"
+for xml_file in "$PROJECT_DIR"/conformance-*-timing.xml; do
+    if [ -f "$xml_file" ]; then
+        local_name=$(basename "$xml_file")
+        echo -e "  ${DIM}$local_name${NC}"
+    fi
+done
+echo -e "  ${DIM}Analyze with: ./scripts/parse-timing.sh [file.xml]${NC}"
 
 # Overall status
 echo ""
@@ -1078,7 +1084,7 @@ if [ "$GENERATE_REPORT" = true ]; then
         echo ""
         echo "| Mode | Status | Details |"
         echo "|------|--------|---------|"
-        for mode in server-local distributed-bare distributed-docker; do
+        for mode in server-local distributed-none distributed-docker; do
             result=$(get_mode_result "$mode")
             if [ -n "$result" ]; then
                 symbol="?"
@@ -1109,6 +1115,18 @@ if [ "$GENERATE_REPORT" = true ]; then
                 echo "| $mode | $symbol | $details |"
             fi
         done
+        echo ""
+        echo "## Timing Data"
+        echo ""
+        echo "JUnit XML files with per-test timing:"
+        echo ""
+        for xml_file in "$PROJECT_DIR"/conformance-*-timing.xml; do
+            if [ -f "$xml_file" ]; then
+                echo "- \`$(basename "$xml_file")\`"
+            fi
+        done
+        echo ""
+        echo "Analyze with: \`./scripts/parse-timing.sh [file.xml]\`"
         echo ""
         echo "---"
         echo "*Generated by GoWe test suite*"

@@ -46,10 +46,11 @@ func (r *osCommandRunner) Run(ctx context.Context, name string, args ...string) 
 
 // DockerExecutor runs tasks inside Docker containers using the Docker CLI.
 type DockerExecutor struct {
-	logger  *slog.Logger
-	parser  *parser.Parser
-	workDir string
-	runner  CommandRunner
+	logger      *slog.Logger
+	parser      *parser.Parser
+	workDir     string
+	runner      CommandRunner
+	keepWorkDir bool
 }
 
 // NewDockerExecutor creates a DockerExecutor rooted at workDir.
@@ -84,8 +85,15 @@ func (e *DockerExecutor) Type() model.ExecutorType {
 	return model.ExecutorTypeContainer
 }
 
+// SetKeepWorkDir controls whether working directories are preserved after execution.
+func (e *DockerExecutor) SetKeepWorkDir(keep bool) {
+	e.keepWorkDir = keep
+}
+
 // Submit runs the task synchronously inside a Docker container.
 // It returns the container name as the externalID.
+// Each invocation gets a unique working directory that is cleaned up
+// after outputs are collected, unless keepWorkDir is enabled.
 func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, error) {
 	taskDir := filepath.Join(e.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
@@ -106,11 +114,6 @@ func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, 
 	parts := extractBaseCommand(task.Inputs)
 	if len(parts) == 0 {
 		return "", fmt.Errorf("task %s: _base_command is missing or empty", task.ID)
-	}
-
-	taskDir = filepath.Join(e.workDir, task.ID)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return "", fmt.Errorf("task %s: create work dir: %w", task.ID, err)
 	}
 
 	// Collect Directory inputs as additional volume mounts.

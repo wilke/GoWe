@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/me/gowe/internal/loadcontents"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/internal/stepinput"
@@ -290,6 +291,43 @@ func ResolveWorkflowSecondaryFiles(wf *model.Workflow, inputs map[string]any, cw
 			}
 			result[inputID] = resolvedRecord
 		}
+	}
+
+	return result
+}
+
+// ResolveWorkflowLoadContents applies loadContents for workflow inputs that have it enabled.
+// This reads file contents into the File object's "contents" field (64KB limit per CWL spec).
+func ResolveWorkflowLoadContents(wf *model.Workflow, inputs map[string]any, cwlDir string) map[string]any {
+	if wf == nil || wf.RawCWL == "" {
+		return inputs
+	}
+
+	p := parser.New(slog.Default())
+	graphDoc, err := p.ParseGraph([]byte(wf.RawCWL))
+	if err != nil || graphDoc.Workflow == nil {
+		return inputs
+	}
+
+	result := make(map[string]any)
+	for k, v := range inputs {
+		result[k] = v
+	}
+
+	for inputID, inputDef := range graphDoc.Workflow.Inputs {
+		if !inputDef.LoadContents {
+			continue
+		}
+		val, exists := result[inputID]
+		if !exists || val == nil {
+			continue
+		}
+		processed, err := loadcontents.Process(val, cwlDir)
+		if err != nil {
+			// Log but don't fail — validation will catch issues later.
+			continue
+		}
+		result[inputID] = processed
 	}
 
 	return result
