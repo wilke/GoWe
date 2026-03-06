@@ -21,8 +21,13 @@ func stageRemoteInputs(ctx context.Context, stager execution.Stager, inputs map[
 		return fmt.Errorf("create workdir: %w", err)
 	}
 
+	// Use a staging directory OUTSIDE the workDir for top-level directory reconstruction.
+	// This prevents staging artifacts (like _inputs/) from polluting the tool's
+	// working directory and appearing in `find .` or `ls` output.
+	stagingDir := filepath.Join(filepath.Dir(workDir), filepath.Base(workDir)+"_staging")
+
 	for inputID, v := range inputs {
-		if err := stageInputValue(ctx, stager, inputID, v, workDir, logger); err != nil {
+		if err := stageInputValue(ctx, stager, inputID, v, workDir, stagingDir, logger); err != nil {
 			return fmt.Errorf("input %s: %w", inputID, err)
 		}
 	}
@@ -30,21 +35,22 @@ func stageRemoteInputs(ctx context.Context, stager execution.Stager, inputs map[
 }
 
 // stageInputValue recursively stages a single input value.
-func stageInputValue(ctx context.Context, stager execution.Stager, inputID string, v any, workDir string, logger *slog.Logger) error {
+// stagingDir is used for top-level directory reconstruction (outside workDir).
+func stageInputValue(ctx context.Context, stager execution.Stager, inputID string, v any, workDir, stagingDir string, logger *slog.Logger) error {
 	switch val := v.(type) {
 	case map[string]any:
 		class, _ := val["class"].(string)
 		if class == "File" || class == "Directory" {
-			return stageFileOrDirectory(ctx, stager, inputID, val, workDir, logger)
+			return stageFileOrDirectory(ctx, stager, inputID, val, workDir, stagingDir, logger)
 		}
 		for k, nested := range val {
-			if err := stageInputValue(ctx, stager, inputID+"."+k, nested, workDir, logger); err != nil {
+			if err := stageInputValue(ctx, stager, inputID+"."+k, nested, workDir, stagingDir, logger); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for i, item := range val {
-			if err := stageInputValue(ctx, stager, fmt.Sprintf("%s[%d]", inputID, i), item, workDir, logger); err != nil {
+			if err := stageInputValue(ctx, stager, fmt.Sprintf("%s[%d]", inputID, i), item, workDir, stagingDir, logger); err != nil {
 				return err
 			}
 		}
@@ -53,7 +59,9 @@ func stageInputValue(ctx context.Context, stager execution.Stager, inputID strin
 }
 
 // stageFileOrDirectory stages a File or Directory object.
-func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID string, obj map[string]any, workDir string, logger *slog.Logger) error {
+// stagingDir, when non-empty, is used for top-level directory reconstruction
+// (kept outside workDir to avoid polluting the tool's working directory).
+func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID string, obj map[string]any, workDir, stagingDir string, logger *slog.Logger) error {
 	// Handle file literals.
 	if _, err := fileliteral.MaterializeFileObject(obj); err != nil {
 		return fmt.Errorf("materialize file literal for %s: %w", inputID, err)
@@ -63,7 +71,7 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 	if listing, ok := obj["listing"].([]any); ok {
 		for i, item := range listing {
 			if itemMap, ok := item.(map[string]any); ok {
-				if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, workDir, logger); err != nil {
+				if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, workDir, "", logger); err != nil {
 					return err
 				}
 			}
@@ -98,9 +106,13 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 			}
 
 			if needsReconstruct {
-				// Use a dedicated _inputs subdirectory to avoid conflicts
-				// with the tool's output directory (runtime.outdir == workDir).
-				stageDir := filepath.Join(workDir, "_inputs")
+				// Use stagingDir (outside workDir) when available to avoid polluting
+				// the tool's working directory. Fall back to workDir for secondaryFile
+				// directories that need adjacency to primary files.
+				stageDir := stagingDir
+				if stageDir == "" {
+					stageDir = workDir
+				}
 				dirPath := filepath.Join(stageDir, basename)
 				if err := reconstructDirectoryFromListing(ctx, stager, inputID, obj, dirPath, logger); err != nil {
 					return err
@@ -116,21 +128,23 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 
 	scheme, path := cwl.ParseLocationScheme(location)
 
-	// For local files with absolute paths, verify they exist.
+	// For local files with absolute paths, verify they exist but don't return
+	// early — fall through to process secondaryFiles.
+	localFileExists := false
 	if (scheme == cwl.SchemeFile || scheme == "") && filepath.IsAbs(path) {
 		if _, err := os.Stat(path); err == nil {
-			return nil
+			localFileExists = true
+		} else {
+			logger.Warn("local file path not accessible",
+				"input", inputID,
+				"path", path,
+				"hint", "consider using INPUT_PATH_MAP to translate host paths to container paths",
+			)
 		}
-		logger.Warn("local file path not accessible",
-			"input", inputID,
-			"path", path,
-			"hint", "consider using INPUT_PATH_MAP to translate host paths to container paths",
-		)
-		return nil
 	}
 
 	// For remote files, stage into workdir.
-	if scheme != cwl.SchemeFile && scheme != "" {
+	if !localFileExists && scheme != cwl.SchemeFile && scheme != "" {
 		basename := filepath.Base(path)
 		destPath := filepath.Join(workDir, basename)
 
@@ -145,11 +159,17 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 		obj["location"] = cwl.BuildLocation(cwl.SchemeFile, destPath)
 	}
 
-	// Stage secondary files.
+	// Stage secondary files. Use the primary file's dirname as the staging
+	// base so reconstructed directories end up adjacent to the primary file
+	// (required for $(inputs.file.dirname)/secondary_dir references).
 	if secFiles, ok := obj["secondaryFiles"].([]any); ok {
+		primaryDir := workDir
+		if p, ok := obj["path"].(string); ok && p != "" {
+			primaryDir = filepath.Dir(p)
+		}
 		for i, sf := range secFiles {
 			if sfMap, ok := sf.(map[string]any); ok {
-				if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.secondaryFiles[%d]", inputID, i), sfMap, workDir, logger); err != nil {
+				if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.secondaryFiles[%d]", inputID, i), sfMap, primaryDir, "", logger); err != nil {
 					return err
 				}
 			}
@@ -160,9 +180,7 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 }
 
 // reconstructDirectoryFromListing creates a directory at dirPath and populates it
-// from the listing entries. Unlike stageFileOrDirectory, this function stages
-// nested subdirectories directly under dirPath (no _inputs prefix), which avoids
-// polluting the reconstructed directory with staging artifacts.
+// from the listing entries. Nested subdirectories are staged directly under dirPath.
 func reconstructDirectoryFromListing(ctx context.Context, stager execution.Stager, inputID string, obj map[string]any, dirPath string, logger *slog.Logger) error {
 	listing, _ := obj["listing"].([]any)
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {

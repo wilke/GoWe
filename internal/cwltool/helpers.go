@@ -58,6 +58,67 @@ func MergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 	return merged, nil
 }
 
+// PopulateDerivedFileProperties ensures that derived CWL properties (dirname,
+// basename, nameroot, nameext, size) are populated on all File/Directory objects
+// in the inputs map. This is needed in the distributed worker path where inputs
+// arrive from the upload pipeline without these derived properties.
+func PopulateDerivedFileProperties(inputs map[string]any) {
+	for _, v := range inputs {
+		populateDerivedProps(v)
+	}
+}
+
+func populateDerivedProps(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			if path, ok := val["path"].(string); ok && path != "" {
+				if _, has := val["basename"]; !has {
+					val["basename"] = filepath.Base(path)
+				}
+				if _, has := val["dirname"]; !has {
+					val["dirname"] = filepath.Dir(path)
+				}
+				basename := filepath.Base(path)
+				if _, has := val["nameroot"]; !has {
+					nameroot, nameext := splitBasenameExt(basename)
+					val["nameroot"] = nameroot
+					val["nameext"] = nameext
+				}
+				if class == "File" {
+					if _, has := val["size"]; !has {
+						if info, err := os.Stat(path); err == nil && !info.IsDir() {
+							val["size"] = info.Size()
+						}
+					}
+				}
+			}
+			// Recurse into secondaryFiles.
+			if secFiles, ok := val["secondaryFiles"].([]any); ok {
+				for _, sf := range secFiles {
+					populateDerivedProps(sf)
+				}
+			}
+			// Recurse into listing.
+			if listing, ok := val["listing"].([]any); ok {
+				for _, item := range listing {
+					populateDerivedProps(item)
+				}
+			}
+		} else {
+			// Generic map — recurse into values.
+			for _, nested := range val {
+				populateDerivedProps(nested)
+			}
+		}
+	case []any:
+		for _, item := range val {
+			populateDerivedProps(item)
+		}
+	}
+}
+
 // ResolveDefaultValue resolves a default value, handling File objects specially.
 func ResolveDefaultValue(v any, cwlDir string) any {
 	switch val := v.(type) {
@@ -193,7 +254,11 @@ func ResolveFileObject(obj map[string]any, baseDir string) map[string]any {
 }
 
 // PopulateDirectoryListings adds listing entries to Directory inputs based on loadListing.
-func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any) {
+// When removeDefault is true, listings are removed for the default (empty) loadListing case.
+// This should be true for worker/executor paths where inputs come from upload and may have
+// upload-created listings that need to be stripped. It should be false for cwl-runner where
+// inline directory literals must be preserved.
+func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any, removeDefault bool) {
 	defaultLoadListing := ""
 	if tool.Requirements != nil {
 		if llr, ok := tool.Requirements["LoadListingRequirement"].(map[string]any); ok {
@@ -215,10 +280,15 @@ func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any)
 			continue
 		}
 		if loadListing == "" {
-			// Default (no LoadListingRequirement) — don't auto-populate.
-			// Don't remove existing listings here; inline document-defined
-			// listings (directory literals) must be preserved. Upload-created
-			// listings are cleaned up in worker staging instead.
+			if removeDefault {
+				// In worker/executor mode, remove upload-created listings
+				// when no loadListing is specified (CWL default is no_listing).
+				// Only remove listings that were created by the upload pipeline
+				// (marked with _listing_from_upload), not job-provided listings.
+				removeUploadListingFromInput(inputs, inputID)
+			}
+			// In cwl-runner mode, don't remove existing listings;
+			// inline document-defined listings (directory literals) must be preserved.
 			continue
 		}
 
@@ -237,6 +307,36 @@ func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any)
 				if dirObj, ok := item.(map[string]any); ok {
 					if class, _ := dirObj["class"].(string); class == "Directory" {
 						PopulateDirListing(dirObj, loadListing)
+					}
+				}
+			}
+		}
+	}
+}
+
+// removeUploadListingFromInput removes the listing field from Directory inputs
+// only if it was created by the upload pipeline (marked with _listing_from_upload).
+// This preserves job-provided listings while removing upload artifacts.
+func removeUploadListingFromInput(inputs map[string]any, inputID string) {
+	inputVal, ok := inputs[inputID]
+	if !ok || inputVal == nil {
+		return
+	}
+	if dirObj, ok := inputVal.(map[string]any); ok {
+		if class, _ := dirObj["class"].(string); class == "Directory" {
+			if _, isUpload := dirObj["_listing_from_upload"]; isUpload {
+				delete(dirObj, "listing")
+				delete(dirObj, "_listing_from_upload")
+			}
+		}
+	}
+	if arr, ok := inputVal.([]any); ok {
+		for _, item := range arr {
+			if dirObj, ok := item.(map[string]any); ok {
+				if class, _ := dirObj["class"].(string); class == "Directory" {
+					if _, isUpload := dirObj["_listing_from_upload"]; isUpload {
+						delete(dirObj, "listing")
+						delete(dirObj, "_listing_from_upload")
 					}
 				}
 			}

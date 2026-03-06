@@ -216,6 +216,17 @@ var alterStatements = []struct {
 		column:   "scatter_index",
 		alterSQL: "ALTER TABLE tasks ADD COLUMN scatter_index INTEGER NOT NULL DEFAULT -1",
 	},
+	// Scatter method and dims for correct nested_crossproduct merge in async mode
+	{
+		table:    "step_instances",
+		column:   "scatter_method",
+		alterSQL: "ALTER TABLE step_instances ADD COLUMN scatter_method TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		table:    "step_instances",
+		column:   "scatter_dims",
+		alterSQL: "ALTER TABLE step_instances ADD COLUMN scatter_dims TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

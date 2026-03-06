@@ -517,6 +517,19 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				for _, outID := range step.Out {
 					nullOutputs[outID] = nil
 				}
+				// Create a terminal task so advanceSteps can find skipped iterations.
+				task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
+				task.Outputs = nullOutputs
+				task.State = model.TaskStateSuccess
+				now := time.Now().UTC()
+				task.CompletedAt = &now
+				task.Job = combo
+				if err := l.store.CreateTask(ctx, task); err != nil {
+					now := time.Now().UTC()
+					si.State = model.StepStateFailed
+					si.CompletedAt = &now
+					return l.store.UpdateStepInstance(ctx, si)
+				}
 				results = append(results, nullOutputs)
 				continue
 			}
@@ -559,6 +572,13 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		l.logger.Info("scatter step completed", "si_id", si.ID, "iterations", len(combinations))
 	} else {
 		si.State = model.StepStateDispatched
+		si.ScatterMethod = method
+		if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+			si.ScatterDims = make([]int, len(step.Scatter))
+			for i, name := range step.Scatter {
+				si.ScatterDims[i] = len(scatterArrays[name])
+			}
+		}
 	}
 
 	return l.store.UpdateStepInstance(ctx, si)
@@ -1080,7 +1100,11 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 										results[t.ScatterIndex] = t.Outputs
 									}
 								}
-								si.Outputs = mergeScatterResults(results, step.Out)
+								if si.ScatterMethod == "nested_crossproduct" && len(si.ScatterDims) > 1 {
+									si.Outputs = mergeScatterResultsNested(results, step.Out, si.ScatterDims)
+								} else {
+									si.Outputs = mergeScatterResults(results, step.Out)
+								}
 							}
 						}
 					}

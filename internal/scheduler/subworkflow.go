@@ -390,7 +390,11 @@ func (l *Loop) waitForStepCompletion(ctx context.Context, si *model.StepInstance
 								results[t.ScatterIndex] = t.Outputs
 							}
 						}
-						si.Outputs = mergeScatterResults(results, step.Out)
+						if si.ScatterMethod == "nested_crossproduct" && len(si.ScatterDims) > 1 {
+							si.Outputs = mergeScatterResultsNested(results, step.Out, si.ScatterDims)
+						} else {
+							si.Outputs = mergeScatterResults(results, step.Out)
+						}
 					}
 				} else if len(tasks) == 1 {
 					si.Outputs = tasks[0].Outputs

@@ -508,11 +508,13 @@ func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInst
 		completedAt = &v
 	}
 
+	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, outputs, created_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		si.ID, si.SubmissionID, si.StepID, string(si.State),
-		si.ScatterCount, string(outputsJSON),
+		si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON),
 		si.CreatedAt.Format(time.RFC3339Nano), completedAt,
 	)
 	return err
@@ -524,12 +526,13 @@ func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.St
 	var si model.StepInstance
 	var state, outputsJSON, createdAt string
 	var completedAt *string
+	var scatterDimsJSON string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, submission_id, step_id, state, scatter_count, outputs, created_at, completed_at
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
 		 FROM step_instances WHERE id = ?`, id,
 	).Scan(&si.ID, &si.SubmissionID, &si.StepID, &state,
-		&si.ScatterCount, &outputsJSON, &createdAt, &completedAt)
+		&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &createdAt, &completedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -540,6 +543,9 @@ func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.St
 
 	si.State = model.StepInstanceState(state)
 	json.Unmarshal([]byte(outputsJSON), &si.Outputs)
+	if scatterDimsJSON != "" {
+		json.Unmarshal([]byte(scatterDimsJSON), &si.ScatterDims)
+	}
 	si.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	if completedAt != nil {
 		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
@@ -563,9 +569,11 @@ func (s *SQLiteStore) UpdateStepInstance(ctx context.Context, si *model.StepInst
 		completedAt = &v
 	}
 
+	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE step_instances SET state=?, scatter_count=?, outputs=?, completed_at=? WHERE id=?`,
-		string(si.State), si.ScatterCount, string(outputsJSON), completedAt, si.ID,
+		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, completed_at=? WHERE id=?`,
+		string(si.State), si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), completedAt, si.ID,
 	)
 	if err != nil {
 		return err
@@ -581,7 +589,7 @@ func (s *SQLiteStore) ListStepsBySubmission(ctx context.Context, submissionID st
 	s.logger.Debug("sql", "op", "list", "table", "step_instances", "submission_id", submissionID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, scatter_count, outputs, created_at, completed_at
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
 		 FROM step_instances WHERE submission_id = ? ORDER BY created_at`, submissionID)
 	if err != nil {
 		return nil, err
@@ -595,7 +603,7 @@ func (s *SQLiteStore) ListStepsByState(ctx context.Context, state model.StepInst
 	s.logger.Debug("sql", "op", "list_by_state", "table", "step_instances", "state", state)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, scatter_count, outputs, created_at, completed_at
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
 		 FROM step_instances WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -611,14 +619,18 @@ func (s *SQLiteStore) scanStepInstances(rows *sql.Rows) ([]*model.StepInstance, 
 		var si model.StepInstance
 		var state, outputsJSON, createdAt string
 		var completedAt *string
+		var scatterDimsJSON string
 
 		if err := rows.Scan(&si.ID, &si.SubmissionID, &si.StepID, &state,
-			&si.ScatterCount, &outputsJSON, &createdAt, &completedAt); err != nil {
+			&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &createdAt, &completedAt); err != nil {
 			return nil, err
 		}
 
 		si.State = model.StepInstanceState(state)
 		json.Unmarshal([]byte(outputsJSON), &si.Outputs)
+		if scatterDimsJSON != "" {
+			json.Unmarshal([]byte(scatterDimsJSON), &si.ScatterDims)
+		}
 		si.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		if completedAt != nil {
 			t, _ := time.Parse(time.RFC3339Nano, *completedAt)

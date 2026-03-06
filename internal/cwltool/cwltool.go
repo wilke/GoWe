@@ -22,17 +22,18 @@ import (
 
 // Config holds configuration for ExecuteTool.
 type Config struct {
-	Logger           *slog.Logger
-	CWLDir           string            // Directory containing the CWL file
-	Namespaces       map[string]string  // Namespace prefix -> URI mappings
-	ExpressionLib    []string           // JavaScript library from InlineJavascriptRequirement
-	ContainerRuntime string             // "docker", "apptainer", or "" (auto-detect)
-	NoContainer      bool               // Force local execution even with DockerRequirement
-	GPU              toolexec.GPUConfig // GPU configuration
-	DockerHostPathMap map[string]string  // Container path -> host path for DinD
-	ResolveSecondary bool               // Resolve secondary files from tool definitions
-	JobRequirements  []any              // cwl:requirements from job file
-	OutDir           string             // Output directory for resolved output paths
+	Logger               *slog.Logger
+	CWLDir               string            // Directory containing the CWL file
+	Namespaces           map[string]string  // Namespace prefix -> URI mappings
+	ExpressionLib        []string           // JavaScript library from InlineJavascriptRequirement
+	ContainerRuntime     string             // "docker", "apptainer", or "" (auto-detect)
+	NoContainer          bool               // Force local execution even with DockerRequirement
+	GPU                  toolexec.GPUConfig // GPU configuration
+	DockerHostPathMap    map[string]string  // Container path -> host path for DinD
+	ResolveSecondary     bool               // Resolve secondary files from tool definitions
+	JobRequirements      []any              // cwl:requirements from job file
+	OutDir               string             // Output directory for resolved output paths
+	RemoveDefaultListings bool              // Remove listings when loadListing is default (for worker/executor mode)
 }
 
 // Result holds the result of tool execution.
@@ -71,6 +72,11 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		return nil, fmt.Errorf("process inputs: %w", err)
 	}
 
+	// Ensure derived CWL properties (dirname, basename, nameroot, nameext, size)
+	// are populated. In distributed mode, inputs from the upload pipeline may
+	// lack these properties.
+	PopulateDerivedFileProperties(mergedInputs)
+
 	// Validate inputs against tool schema.
 	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
 		return nil, err
@@ -103,7 +109,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	}
 
 	// Populate directory listings for inputs with loadListing.
-	PopulateDirectoryListings(tool, mergedInputs)
+	PopulateDirectoryListings(tool, mergedInputs, cfg.RemoveDefaultListings)
 
 	// Stage files from InitialWorkDirRequirement.
 	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"

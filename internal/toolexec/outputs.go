@@ -511,6 +511,9 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 		// Always return array for array types.
 		return collected, nil
 	}
+	if len(collected) == 0 && isOptionalType(outputType) {
+		return nil, nil
+	}
 	if len(collected) == 1 {
 		return collected[0], nil
 	}

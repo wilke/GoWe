@@ -6,14 +6,16 @@ import "time"
 // It tracks the step's lifecycle: dependency readiness, scatter fan-out/fan-in,
 // conditional evaluation, and sub-workflow coordination.
 type StepInstance struct {
-	ID           string            `json:"id"`
-	SubmissionID string            `json:"submission_id"`
-	StepID       string            `json:"step_id"`
-	State        StepInstanceState `json:"state"`
-	ScatterCount int               `json:"scatter_count"` // Number of scatter iterations (0 for non-scatter)
-	Outputs      map[string]any    `json:"outputs,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
+	ID            string            `json:"id"`
+	SubmissionID  string            `json:"submission_id"`
+	StepID        string            `json:"step_id"`
+	State         StepInstanceState `json:"state"`
+	ScatterCount  int               `json:"scatter_count"`            // Number of scatter iterations (0 for non-scatter)
+	ScatterMethod string            `json:"scatter_method,omitempty"` // dotproduct, flat_crossproduct, nested_crossproduct
+	ScatterDims   []int             `json:"scatter_dims,omitempty"`   // Size of each scatter dimension
+	Outputs       map[string]any    `json:"outputs,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
 }
 
 // StepInstanceState represents the lifecycle state of a StepInstance.

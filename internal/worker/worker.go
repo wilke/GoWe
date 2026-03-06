@@ -356,10 +356,11 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 
 	// Build cwltool configuration.
 	cfg := cwltool.Config{
-		Logger:            w.logger,
-		DockerHostPathMap: w.dockerHostPathMap,
-		GPU:               toolexecGPU(w.gpu),
-		ResolveSecondary:  true,
+		Logger:                w.logger,
+		DockerHostPathMap:     w.dockerHostPathMap,
+		GPU:                   toolexecGPU(w.gpu),
+		ResolveSecondary:      true,
+		RemoveDefaultListings: true,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
