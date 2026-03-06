@@ -227,8 +227,9 @@ func (s *Server) routes() {
 			// Workspace (BV-BRC proxy)
 			r.Get("/workspace", s.handleListWorkspace)
 
-			// File upload proxy
+			// File upload/download proxy
 			r.Post("/files", s.handleUploadFile)
+			r.Get("/files/download", s.handleDownloadFile)
 
 			// SSE endpoints for real-time updates
 			r.Route("/sse", func(r chi.Router) {

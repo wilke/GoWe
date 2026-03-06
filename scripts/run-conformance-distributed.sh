@@ -227,19 +227,17 @@ fi
 log_info "Server: ${SERVER_URL} (default-executor: worker)"
 log_info "Workers: $workers registered"
 
-# Set up path mapping for distributed execution.
-# Host paths in testdata/ are mapped to /testdata/ inside worker containers.
-TESTDATA_ABS=$(cd "$PROJECT_DIR/testdata" && pwd)
-export GOWE_PATH_MAP="${TESTDATA_ABS}=/testdata"
+# Set up server URL for distributed execution.
+# Upload mode (default): CLI uploads input files to server, downloads outputs.
+# No GOWE_PATH_MAP needed — files are transferred transparently.
 export GOWE_SERVER="${SERVER_URL}"
 
-log_info "Path mapping: ${TESTDATA_ABS} -> /testdata"
+log_info "Upload mode: CLI uploads/downloads files via server"
 
 # Create a wrapper script for cwltest (it expects a single executable)
 WRAPPER_SCRIPT=$(mktemp)
 cat > "$WRAPPER_SCRIPT" << EOF
 #!/bin/bash
-export GOWE_PATH_MAP="${TESTDATA_ABS}=/testdata"
 export GOWE_SERVER="${SERVER_URL}"
 exec "$PROJECT_DIR/bin/gowe" run --quiet "\$@"
 EOF
