@@ -22,6 +22,9 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 		result[k] = v
 	}
 
+	// Build a map of SchemaDefRequirement type names to their record fields.
+	schemaTypes := extractSchemaRecordFields(tool)
+
 	// Resolve secondaryFiles for each input based on tool's input definitions.
 	for inputID, inputDef := range tool.Inputs {
 		val, exists := result[inputID]
@@ -37,7 +40,15 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 		}
 
 		// Handle record types with field-level secondaryFiles.
-		if len(inputDef.RecordFields) > 0 {
+		recordFields := inputDef.RecordFields
+		if len(recordFields) == 0 {
+			// Look up SchemaDefRequirement types if the input references one.
+			if sf, found := schemaTypes[inputDef.Type]; found {
+				recordFields = sf
+			}
+		}
+
+		if len(recordFields) > 0 {
 			recordVal, ok := val.(map[string]any)
 			if !ok {
 				continue
@@ -50,7 +61,7 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 			}
 
 			// Resolve secondaryFiles for each field.
-			for _, field := range inputDef.RecordFields {
+			for _, field := range recordFields {
 				if len(field.SecondaryFiles) == 0 {
 					continue
 				}
@@ -63,6 +74,104 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 	}
 
 	return result
+}
+
+// extractSchemaRecordFields builds a map of type name → record fields
+// from the tool's SchemaDefRequirement.
+func extractSchemaRecordFields(tool *cwl.CommandLineTool) map[string][]cwl.RecordField {
+	schemaTypes := make(map[string][]cwl.RecordField)
+
+	reqRaw, ok := tool.Requirements["SchemaDefRequirement"]
+	if !ok {
+		return schemaTypes
+	}
+
+	reqMap, ok := reqRaw.(map[string]any)
+	if !ok {
+		return schemaTypes
+	}
+
+	types, ok := reqMap["types"].([]any)
+	if !ok {
+		return schemaTypes
+	}
+
+	for _, t := range types {
+		typeDef, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		typeName, _ := typeDef["name"].(string)
+		typeType, _ := typeDef["type"].(string)
+		if typeName == "" || typeType != "record" {
+			continue
+		}
+
+		fields, ok := typeDef["fields"].(map[string]any)
+		if !ok {
+			// Fields might be an array.
+			if fieldsArr, ok := typeDef["fields"].([]any); ok {
+				fields = make(map[string]any)
+				for _, f := range fieldsArr {
+					if fm, ok := f.(map[string]any); ok {
+						if name, ok := fm["name"].(string); ok {
+							fields[name] = fm
+						}
+					}
+				}
+			}
+		}
+		if fields == nil {
+			continue
+		}
+
+		var recordFields []cwl.RecordField
+		for fieldName, fieldDef := range fields {
+			fm, ok := fieldDef.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			var secFiles []cwl.SecondaryFileSchema
+			if sf := fm["secondaryFiles"]; sf != nil {
+				secFiles = parseSecondaryFilesRaw(sf)
+			}
+
+			if len(secFiles) > 0 {
+				recordFields = append(recordFields, cwl.RecordField{
+					Name:           fieldName,
+					SecondaryFiles: secFiles,
+				})
+			}
+		}
+
+		if len(recordFields) > 0 {
+			schemaTypes[typeName] = recordFields
+		}
+	}
+
+	return schemaTypes
+}
+
+// parseSecondaryFilesRaw parses secondaryFiles from a raw value.
+func parseSecondaryFilesRaw(v any) []cwl.SecondaryFileSchema {
+	switch sf := v.(type) {
+	case string:
+		return []cwl.SecondaryFileSchema{{Pattern: sf}}
+	case map[string]any:
+		pattern, _ := sf["pattern"].(string)
+		if pattern != "" {
+			return []cwl.SecondaryFileSchema{{Pattern: pattern}}
+		}
+	case []any:
+		var result []cwl.SecondaryFileSchema
+		for _, item := range sf {
+			result = append(result, parseSecondaryFilesRaw(item)...)
+		}
+		return result
+	}
+	return nil
 }
 
 // ResolveForInputDefs resolves secondary files using workflow InputParam definitions.

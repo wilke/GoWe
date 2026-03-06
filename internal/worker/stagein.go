@@ -67,17 +67,6 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 		return fmt.Errorf("materialize file literal for %s: %w", inputID, err)
 	}
 
-	// Handle Directory listings with file literals.
-	if listing, ok := obj["listing"].([]any); ok {
-		for i, item := range listing {
-			if itemMap, ok := item.(map[string]any); ok {
-				if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, workDir, "", logger); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
 	location := ""
 	if loc, ok := obj["location"].(string); ok {
 		location = loc
@@ -88,7 +77,9 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 	class, _ := obj["class"].(string)
 
 	// For Directories with a listing but no accessible location,
-	// reconstruct the directory from listing entries in the work directory.
+	// reconstruct the directory from listing entries.
+	// reconstructDirectoryFromListing handles everything (file literals, remote staging,
+	// local file copying), so we skip individual listing entry processing.
 	if class == "Directory" {
 		if listing, ok := obj["listing"].([]any); ok && len(listing) > 0 {
 			basename, _ := obj["basename"].(string)
@@ -118,6 +109,18 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 					return err
 				}
 				return nil
+			}
+		}
+	}
+
+	// For accessible directories, process listing entries for nested file literals
+	// and secondaryFiles. Skip this for directories being reconstructed (handled above).
+	if listing, ok := obj["listing"].([]any); ok {
+		for i, item := range listing {
+			if itemMap, ok := item.(map[string]any); ok {
+				if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, workDir, "", logger); err != nil {
+					return err
+				}
 			}
 		}
 	}
