@@ -208,12 +208,17 @@ func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any)
 		if loadListing == "" {
 			loadListing = defaultLoadListing
 		}
-		if loadListing == "" || loadListing == "no_listing" {
+		if loadListing == "no_listing" {
 			// Per CWL spec, no_listing means listing should not be present.
 			// Remove any listing that was populated during staging/upload.
-			if loadListing == "no_listing" {
-				removeListingFromInput(inputs, inputID)
-			}
+			removeListingFromInput(inputs, inputID)
+			continue
+		}
+		if loadListing == "" {
+			// Default (no LoadListingRequirement) — don't auto-populate.
+			// Don't remove existing listings here; inline document-defined
+			// listings (directory literals) must be preserved. Upload-created
+			// listings are cleaned up in worker staging instead.
 			continue
 		}
 

@@ -98,50 +98,13 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 			}
 
 			if needsReconstruct {
-				// Use a dedicated staging subdirectory to avoid conflicts
+				// Use a dedicated _inputs subdirectory to avoid conflicts
 				// with the tool's output directory (runtime.outdir == workDir).
 				stageDir := filepath.Join(workDir, "_inputs")
 				dirPath := filepath.Join(stageDir, basename)
-				if err := os.MkdirAll(dirPath, 0o755); err != nil {
-					return fmt.Errorf("create listing dir %s: %w", dirPath, err)
+				if err := reconstructDirectoryFromListing(ctx, stager, inputID, obj, dirPath, logger); err != nil {
+					return err
 				}
-				// Stage listing entries into the reconstructed directory.
-				for i, item := range listing {
-					if itemMap, ok := item.(map[string]any); ok {
-						if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, dirPath, logger); err != nil {
-							return err
-						}
-						// Copy/link the file into the directory.
-						itemLoc := ""
-						if l, ok := itemMap["path"].(string); ok {
-							itemLoc = l
-						} else if l, ok := itemMap["location"].(string); ok {
-							_, itemLoc = cwl.ParseLocationScheme(l)
-						}
-						itemBasename, _ := itemMap["basename"].(string)
-						if itemBasename == "" && itemLoc != "" {
-							itemBasename = filepath.Base(itemLoc)
-						}
-						if itemLoc != "" && itemBasename != "" {
-							destInDir := filepath.Join(dirPath, itemBasename)
-							if destInDir != itemLoc {
-								itemClass, _ := itemMap["class"].(string)
-								if itemClass == "Directory" {
-									// For subdirectories, use symlink.
-									_ = os.Symlink(itemLoc, destInDir)
-								} else {
-									_ = staging.CopyFile(itemLoc, destInDir)
-								}
-							}
-						}
-					}
-				}
-				obj["path"] = dirPath
-				obj["location"] = cwl.BuildLocation(cwl.SchemeFile, dirPath)
-				logger.Debug("reconstructed directory from listing",
-					"input", inputID,
-					"dir", dirPath,
-				)
 				return nil
 			}
 		}
@@ -193,6 +156,125 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 		}
 	}
 
+	return nil
+}
+
+// reconstructDirectoryFromListing creates a directory at dirPath and populates it
+// from the listing entries. Unlike stageFileOrDirectory, this function stages
+// nested subdirectories directly under dirPath (no _inputs prefix), which avoids
+// polluting the reconstructed directory with staging artifacts.
+func reconstructDirectoryFromListing(ctx context.Context, stager execution.Stager, inputID string, obj map[string]any, dirPath string, logger *slog.Logger) error {
+	listing, _ := obj["listing"].([]any)
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		return fmt.Errorf("create listing dir %s: %w", dirPath, err)
+	}
+
+	for i, item := range listing {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		itemClass, _ := itemMap["class"].(string)
+		itemBasename, _ := itemMap["basename"].(string)
+		childID := fmt.Sprintf("%s.listing[%d]", inputID, i)
+
+		if itemClass == "Directory" {
+			// Reconstruct subdirectory directly under dirPath (no _inputs).
+			subListing, hasListing := itemMap["listing"].([]any)
+			if hasListing && len(subListing) > 0 {
+				subDirPath := filepath.Join(dirPath, itemBasename)
+				if err := reconstructDirectoryFromListing(ctx, stager, childID, itemMap, subDirPath, logger); err != nil {
+					return err
+				}
+				continue
+			}
+			// Directory with no listing — check if location is accessible.
+			loc := ""
+			if l, ok := itemMap["location"].(string); ok {
+				loc = l
+			} else if l, ok := itemMap["path"].(string); ok {
+				loc = l
+			}
+			if loc != "" {
+				_, localPath := cwl.ParseLocationScheme(loc)
+				if _, err := os.Stat(localPath); err == nil {
+					// Symlink the accessible directory into place.
+					destInDir := filepath.Join(dirPath, itemBasename)
+					if destInDir != localPath {
+						_ = os.Symlink(localPath, destInDir)
+					}
+					itemMap["path"] = destInDir
+					itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, destInDir)
+					continue
+				}
+			}
+			// Empty directory with no accessible location — just create it.
+			subDirPath := filepath.Join(dirPath, itemBasename)
+			_ = os.MkdirAll(subDirPath, 0o755)
+			itemMap["path"] = subDirPath
+			itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, subDirPath)
+			continue
+		}
+
+		// File entry — stage it, then copy/link into the directory.
+		// Handle file literals first.
+		if _, err := fileliteral.MaterializeFileObject(itemMap); err != nil {
+			return fmt.Errorf("materialize file literal for %s: %w", childID, err)
+		}
+
+		itemLoc := ""
+		if l, ok := itemMap["path"].(string); ok {
+			itemLoc = l
+		} else if l, ok := itemMap["location"].(string); ok {
+			itemLoc = l
+		}
+
+		if itemLoc == "" {
+			continue
+		}
+
+		scheme, srcPath := cwl.ParseLocationScheme(itemLoc)
+
+		// Stage remote files first.
+		if scheme != cwl.SchemeFile && scheme != "" {
+			destPath := filepath.Join(dirPath, itemBasename)
+			logger.Debug("staging remote file in dir", "location", itemLoc, "dest", destPath)
+			opts := staging.StageOptions{}
+			if err := stager.StageIn(ctx, itemLoc, destPath, opts); err != nil {
+				return fmt.Errorf("stage-in %s: %w", itemLoc, err)
+			}
+			itemMap["path"] = destPath
+			itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, destPath)
+			continue
+		}
+
+		// Local file — verify it exists and copy into the directory.
+		if filepath.IsAbs(srcPath) {
+			if _, err := os.Stat(srcPath); err == nil {
+				if itemBasename == "" {
+					itemBasename = filepath.Base(srcPath)
+				}
+				destInDir := filepath.Join(dirPath, itemBasename)
+				if destInDir != srcPath {
+					_ = staging.CopyFile(srcPath, destInDir)
+				}
+				itemMap["path"] = destInDir
+				itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, destInDir)
+			}
+		}
+	}
+
+	obj["path"] = dirPath
+	obj["location"] = cwl.BuildLocation(cwl.SchemeFile, dirPath)
+	// Note: We intentionally preserve the listing on the object. Even though
+	// the directory has been reconstructed on disk, some tests need the listing
+	// metadata (e.g., for deep_listing). PopulateDirectoryListings will handle
+	// cleanup for no_listing cases via removeListingFromInput.
+	logger.Debug("reconstructed directory from listing",
+		"input", inputID,
+		"dir", dirPath,
+	)
 	return nil
 }
 

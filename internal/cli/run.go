@@ -657,11 +657,13 @@ func uploadFileInput(fileObj map[string]any, quiet bool) (map[string]any, error)
 	result["path"] = strings.TrimPrefix(uploadResult.Location, "file://")
 
 	// Upload secondary files if present.
+	// Use uploadInputValue (not uploadFileInput) so Directory secondaryFiles
+	// are dispatched to uploadDirectoryInput instead of trying os.Open on a dir.
 	if secondaryFiles, ok := result["secondaryFiles"].([]any); ok {
 		uploaded := make([]any, 0, len(secondaryFiles))
 		for _, sf := range secondaryFiles {
 			if sfMap, ok := sf.(map[string]any); ok {
-				uploadedSF, err := uploadFileInput(sfMap, quiet)
+				uploadedSF, err := uploadInputValue(sfMap, quiet)
 				if err != nil {
 					return nil, err
 				}
