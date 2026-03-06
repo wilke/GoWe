@@ -11,7 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/me/gowe/internal/bundle"
+	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 	"github.com/spf13/cobra"
@@ -119,8 +123,19 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 			}
 		}
 	} else {
-		// Upload mode: upload input files and remap paths to server-side locations.
+		// Upload mode: resolve secondary files and upload inputs to server.
 		if inputs != nil {
+			// Resolve secondary files before uploading so they get included.
+			// Parse the packed CWL to get input definitions with secondaryFiles patterns.
+			p := parser.New(slog.Default())
+			cwlDir := filepath.Dir(cwlPath)
+			if absDir, err := filepath.Abs(cwlDir); err == nil {
+				cwlDir = absDir
+			}
+			if graph, err := p.ParseGraphWithBase(packedCWL, cwlDir); err == nil && graph.Workflow != nil {
+				inputs = secondaryfiles.ResolveForInputDefs(graph.Workflow.Inputs, inputs, cwlDir)
+			}
+
 			if !quiet {
 				fmt.Fprintf(os.Stderr, "Uploading input files...\n")
 			}

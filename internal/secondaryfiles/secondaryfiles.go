@@ -65,6 +65,49 @@ func ResolveForTool(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir str
 	return result
 }
 
+// ResolveForInputDefs resolves secondary files using workflow InputParam definitions.
+// This is the workflow/generic equivalent of ResolveForTool.
+func ResolveForInputDefs(inputDefs map[string]cwl.InputParam, inputs map[string]any, cwlDir string) map[string]any {
+	result := make(map[string]any)
+	for k, v := range inputs {
+		result[k] = v
+	}
+
+	for inputID, inputDef := range inputDefs {
+		val, exists := result[inputID]
+		if !exists || val == nil {
+			continue
+		}
+
+		if len(inputDef.SecondaryFiles) > 0 {
+			result[inputID] = ResolveForValueWithInputs(val, inputDef.SecondaryFiles, cwlDir, result)
+			continue
+		}
+
+		if len(inputDef.RecordFields) > 0 {
+			recordVal, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+			resolvedRecord := make(map[string]any)
+			for k, v := range recordVal {
+				resolvedRecord[k] = v
+			}
+			for _, field := range inputDef.RecordFields {
+				if len(field.SecondaryFiles) == 0 {
+					continue
+				}
+				if fieldVal, exists := resolvedRecord[field.Name]; exists && fieldVal != nil {
+					resolvedRecord[field.Name] = ResolveForValueWithInputs(fieldVal, field.SecondaryFiles, cwlDir, result)
+				}
+			}
+			result[inputID] = resolvedRecord
+		}
+	}
+
+	return result
+}
+
 // ResolveForValue resolves secondary files for a File or array of Files.
 // This can be used for both tool inputs and workflow inputs.
 func ResolveForValue(val any, schemas []cwl.SecondaryFileSchema, cwlDir string) any {

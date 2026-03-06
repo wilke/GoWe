@@ -528,9 +528,11 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 		wfInputs = make(map[string]cwl.InputParam)
 		for id, inp := range cmdTool.Inputs {
 			wfInputs[id] = cwl.InputParam{
-				Type:    inp.Type,
-				Doc:     inp.Doc,
-				Default: inp.Default,
+				Type:           inp.Type,
+				Doc:            inp.Doc,
+				Default:        inp.Default,
+				RecordFields:   inp.RecordFields,
+				SecondaryFiles: inp.SecondaryFiles,
 			}
 		}
 
