@@ -9,7 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/me/gowe/internal/execution"
+	"github.com/me/gowe/internal/cwltool"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -46,6 +47,7 @@ func (r *osCommandRunner) Run(ctx context.Context, name string, args ...string) 
 // DockerExecutor runs tasks inside Docker containers using the Docker CLI.
 type DockerExecutor struct {
 	logger  *slog.Logger
+	parser  *parser.Parser
 	workDir string
 	runner  CommandRunner
 }
@@ -59,6 +61,7 @@ func NewDockerExecutor(workDir string, logger *slog.Logger) *DockerExecutor {
 	return &DockerExecutor{
 		workDir: workDir,
 		logger:  logger.With("component", "docker-executor"),
+		parser:  parser.New(logger),
 		runner:  &osCommandRunner{},
 	}
 }
@@ -71,6 +74,7 @@ func newDockerExecutorWithRunner(workDir string, logger *slog.Logger, runner Com
 	return &DockerExecutor{
 		workDir: workDir,
 		logger:  logger.With("component", "docker-executor"),
+		parser:  parser.New(logger),
 		runner:  runner,
 	}
 }
@@ -88,9 +92,9 @@ func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, 
 		return "", fmt.Errorf("task %s: create work dir: %w", task.ID, err)
 	}
 
-	// Use execution.Engine for full CWL support when Tool/Job are available.
+	// Use cwltool for full CWL support when Tool/Job are available.
 	if task.HasTool() {
-		return e.submitWithEngine(ctx, task, taskDir)
+		return e.submitWithCWLTool(ctx, task, taskDir)
 	}
 
 	// Legacy path: use _base_command from task.Inputs.
@@ -182,43 +186,29 @@ func (e *DockerExecutor) Submit(ctx context.Context, task *model.Task) (string, 
 	return containerName, nil
 }
 
-// submitWithEngine executes a task using execution.Engine with full CWL support.
-func (e *DockerExecutor) submitWithEngine(ctx context.Context, task *model.Task, taskDir string) (string, error) {
-	e.logger.Debug("executing with engine", "task_id", task.ID)
+// submitWithCWLTool executes a task using the cwltool package with full CWL support.
+func (e *DockerExecutor) submitWithCWLTool(ctx context.Context, task *model.Task, taskDir string) (string, error) {
+	e.logger.Debug("executing with cwltool", "task_id", task.ID)
 
-	// Parse tool from task.Tool map.
-	tool, err := parseToolFromMap(task.Tool)
+	// Parse tool from task.Tool map using the proper parser.
+	tool, err := e.parser.ParseToolFromMap(task.Tool)
 	if err != nil {
 		return "", fmt.Errorf("task %s: parse tool: %w", task.ID, err)
 	}
 
-	// Build engine configuration.
-	var expressionLib []string
-	var namespaces map[string]string
-	var cwlDir string
+	// Build cwltool configuration.
+	cfg := cwltool.Config{
+		Logger: e.logger,
+	}
 	if task.RuntimeHints != nil {
-		expressionLib = task.RuntimeHints.ExpressionLib
-		namespaces = task.RuntimeHints.Namespaces
-		cwlDir = task.RuntimeHints.CWLDir
+		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
+		cfg.Namespaces = task.RuntimeHints.Namespaces
+		cfg.CWLDir = task.RuntimeHints.CWLDir
 	}
 
-	engine := execution.NewEngine(execution.Config{
-		Logger:        e.logger,
-		ExpressionLib: expressionLib,
-		Namespaces:    namespaces,
-		CWLDir:        cwlDir,
-	})
-
 	// Execute the tool.
-	result, err := engine.ExecuteTool(ctx, tool, task.Job, taskDir)
+	result, err := cwltool.ExecuteTool(ctx, cfg, tool, task.Job, taskDir)
 	if err != nil {
-		// Even on error, capture any partial results.
-		if result != nil {
-			task.ExitCode = &result.ExitCode
-			task.Stdout = result.Stdout
-			task.Stderr = result.Stderr
-			task.Outputs = result.Outputs
-		}
 		return taskDir, fmt.Errorf("task %s: execute: %w", task.ID, err)
 	}
 
@@ -228,7 +218,7 @@ func (e *DockerExecutor) submitWithEngine(ctx context.Context, task *model.Task,
 	task.Stderr = result.Stderr
 	task.Outputs = result.Outputs
 
-	e.logger.Debug("task completed with engine",
+	e.logger.Debug("task completed with cwltool",
 		"task_id", task.ID,
 		"exit_code", result.ExitCode,
 		"outputs", len(result.Outputs),
@@ -261,3 +251,4 @@ func (e *DockerExecutor) Cancel(ctx context.Context, task *model.Task) error {
 func (e *DockerExecutor) Logs(_ context.Context, task *model.Task) (string, string, error) {
 	return task.Stdout, task.Stderr, nil
 }
+

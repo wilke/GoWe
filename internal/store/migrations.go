@@ -182,6 +182,13 @@ var alterStatements = []struct {
 		alterSQL: "ALTER TABLE workers ADD COLUMN worker_group TEXT NOT NULL DEFAULT 'default'",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workers_group ON workers(worker_group)",
 	},
+	// Parent task ID for child submissions (sub-workflow execution)
+	{
+		table:    "submissions",
+		column:   "parent_task_id",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN parent_task_id TEXT NOT NULL DEFAULT ''",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_submissions_parent_task_id ON submissions(parent_task_id) WHERE parent_task_id != ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

@@ -291,6 +291,19 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 			"task_id", task.ID, "error", err)
 	}
 
+	// Check if this step references a sub-workflow - execute via child submissions.
+	if isSubWorkflow(task.Tool) {
+		if len(step.Scatter) > 0 {
+			return l.executeScatterSubWorkflow(ctx, task, step, wf, sub, mergedInputs, tasksByStep)
+		}
+		return l.executeSubWorkflowTask(ctx, task, step, wf, sub, mergedInputs, tasksByStep)
+	}
+
+	// Handle scatter steps: decompose into N executions with merged array outputs.
+	if len(step.Scatter) > 0 {
+		return l.executeScatterTask(ctx, task, step, wf, sub, mergedInputs, tasksByStep)
+	}
+
 	// Check if this is an ExpressionTool - execute it directly without sending to executor.
 	// ExpressionTools evaluate JavaScript expressions and don't run external commands.
 	if isExpressionTool(task.Tool) {
@@ -366,6 +379,15 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 		task.Stderr = submitErr.Error()
 		completedAt := time.Now().UTC()
 		task.CompletedAt = &completedAt
+
+		// Don't retry permanent failures (timeouts, signals, context cancellation).
+		errMsg := submitErr.Error()
+		if strings.Contains(errMsg, "signal: killed") ||
+			strings.Contains(errMsg, "context deadline exceeded") ||
+			strings.Contains(errMsg, "context canceled") {
+			task.MaxRetries = task.RetryCount
+		}
+
 		l.logger.Info("task failed (submit error)", "task_id", task.ID, "error", submitErr)
 	} else {
 		// Check immediate status (synchronous executors complete within Submit).
@@ -388,6 +410,203 @@ func (l *Loop) submitTask(ctx context.Context, task *model.Task) error {
 	}
 
 	return l.store.UpdateTask(ctx, task)
+}
+
+// executeScatterTask decomposes a scatter step into N iterations, executes each
+// sequentially, and merges outputs into arrays. This is called from submitTask()
+// when the step has scatter inputs.
+func (l *Loop) executeScatterTask(ctx context.Context, task *model.Task, step *model.Step,
+	wf *model.Workflow, sub *model.Submission,
+	mergedInputs map[string]any, tasksByStep map[string]*model.Task) error {
+
+	l.logger.Info("executing scatter step",
+		"task_id", task.ID, "step_id", task.StepID,
+		"scatter", step.Scatter, "method", step.ScatterMethod)
+
+	// Determine scatter method.
+	method := step.ScatterMethod
+	if method == "" {
+		if len(step.Scatter) == 1 {
+			method = "dotproduct"
+		} else {
+			method = "nested_crossproduct"
+		}
+	}
+
+	// Extract scatter arrays from the task's resolved job inputs.
+	scatterArrays := make(map[string][]any)
+	for _, scatterInput := range step.Scatter {
+		value := task.Job[scatterInput]
+		arr, ok := toAnySlice(value)
+		if !ok {
+			now := time.Now().UTC()
+			task.State = model.TaskStateFailed
+			task.Stderr = fmt.Sprintf("scatter input %q is not an array (got %T)", scatterInput, value)
+			task.CompletedAt = &now
+			return l.store.UpdateTask(ctx, task)
+		}
+		scatterArrays[scatterInput] = arr
+	}
+
+	// Generate input combinations based on scatter method.
+	var combinations []map[string]any
+	switch method {
+	case "dotproduct":
+		combinations = scatterDotProduct(task.Job, step.Scatter, scatterArrays)
+	case "flat_crossproduct":
+		combinations = scatterFlatCrossProduct(task.Job, step.Scatter, scatterArrays)
+	case "nested_crossproduct":
+		// For execution, nested_crossproduct is the same as flat_crossproduct;
+		// nesting is applied to outputs only.
+		combinations = scatterFlatCrossProduct(task.Job, step.Scatter, scatterArrays)
+	default:
+		now := time.Now().UTC()
+		task.State = model.TaskStateFailed
+		task.Stderr = fmt.Sprintf("unknown scatter method: %s", method)
+		task.CompletedAt = &now
+		return l.store.UpdateTask(ctx, task)
+	}
+
+	l.logger.Debug("scatter combinations generated",
+		"task_id", task.ID, "count", len(combinations))
+
+	// Execute each scatter iteration sequentially.
+	now := time.Now().UTC()
+	task.StartedAt = &now
+
+	isExprTool := isExpressionTool(task.Tool)
+
+	var results []map[string]any
+	for i, combo := range combinations {
+		// Evaluate 'when' condition per iteration if present.
+		if step.When != "" {
+			shouldRun, err := l.evaluateWhenForScatterIteration(step, combo, mergedInputs, tasksByStep)
+			if err != nil {
+				l.logger.Warn("scatter when evaluation failed", "task_id", task.ID, "iteration", i, "error", err)
+				// Continue with execution on eval failure
+			} else if !shouldRun {
+				// Produce null outputs for this iteration.
+				nullOutputs := make(map[string]any)
+				for _, outID := range step.Out {
+					nullOutputs[outID] = nil
+				}
+				results = append(results, nullOutputs)
+				continue
+			}
+		}
+
+		if isExprTool {
+			// ExpressionTool: execute expression with modified inputs.
+			iterTask := *task
+			iterTask.Job = combo
+			outputs, err := l.executeExpressionTool(&iterTask)
+			if err != nil {
+				completedAt := time.Now().UTC()
+				task.State = model.TaskStateFailed
+				task.Stderr = fmt.Sprintf("scatter iteration %d: %s", i, err.Error())
+				task.CompletedAt = &completedAt
+				return l.store.UpdateTask(ctx, task)
+			}
+			results = append(results, outputs)
+		} else {
+			// CommandLineTool: submit to executor with modified job inputs.
+			iterOutputs, err := l.executeScatterIteration(ctx, task, combo, i)
+			if err != nil {
+				completedAt := time.Now().UTC()
+				task.State = model.TaskStateFailed
+				task.Stderr = fmt.Sprintf("scatter iteration %d: %s", i, err.Error())
+				task.CompletedAt = &completedAt
+				return l.store.UpdateTask(ctx, task)
+			}
+			results = append(results, iterOutputs)
+		}
+	}
+
+	// Merge results into arrays using step.Out.
+	var mergedOutputs map[string]any
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		dims := make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			dims[i] = len(scatterArrays[name])
+		}
+		mergedOutputs = mergeScatterResultsNested(results, step.Out, dims)
+	} else {
+		mergedOutputs = mergeScatterResults(results, step.Out)
+	}
+
+	completedAt := time.Now().UTC()
+	task.State = model.TaskStateSuccess
+	task.Outputs = mergedOutputs
+	task.CompletedAt = &completedAt
+	exitCode := 0
+	task.ExitCode = &exitCode
+
+	l.logger.Info("scatter step completed",
+		"task_id", task.ID, "step_id", task.StepID,
+		"iterations", len(combinations))
+
+	return l.store.UpdateTask(ctx, task)
+}
+
+// executeScatterIteration runs a single scatter iteration through the executor.
+// Returns the iteration's outputs or an error.
+func (l *Loop) executeScatterIteration(ctx context.Context, task *model.Task, iterJob map[string]any, iterIdx int) (map[string]any, error) {
+	// Create a copy of the task with modified job inputs.
+	iterTask := *task
+	iterTask.Job = iterJob
+
+	// Re-resolve legacy inputs for backward compatibility with non-worker executors.
+	// The Tool field is already set from the parent task.
+
+	exec, err := l.registry.Get(task.ExecutorType)
+	if err != nil {
+		return nil, fmt.Errorf("get executor: %w", err)
+	}
+
+	_, submitErr := exec.Submit(ctx, &iterTask)
+	if submitErr != nil {
+		return nil, fmt.Errorf("submit: %w", submitErr)
+	}
+
+	// Check status (synchronous executors complete within Submit).
+	newState, statusErr := exec.Status(ctx, &iterTask)
+	if statusErr != nil {
+		return nil, fmt.Errorf("status: %w", statusErr)
+	}
+
+	if newState == model.TaskStateFailed {
+		stdout, stderr, _ := exec.Logs(ctx, &iterTask)
+		return nil, fmt.Errorf("execution failed: %s %s", stdout, stderr)
+	}
+
+	if newState == model.TaskStateSuccess {
+		return iterTask.Outputs, nil
+	}
+
+	// For async executors, we'd need to poll. For now, treat non-terminal as error.
+	return nil, fmt.Errorf("unexpected task state after submit: %s", newState)
+}
+
+// evaluateWhenForScatterIteration evaluates the when condition for a scatter iteration.
+func (l *Loop) evaluateWhenForScatterIteration(step *model.Step, iterInputs map[string]any,
+	submissionInputs map[string]any, tasksByStepID map[string]*model.Task) (bool, error) {
+
+	// Build the inputs context for the when expression.
+	inputs := make(map[string]any)
+
+	// Add workflow inputs as base.
+	for k, v := range submissionInputs {
+		inputs[k] = v
+	}
+
+	// Override with the scatter iteration's resolved inputs.
+	for k, v := range iterInputs {
+		inputs[k] = v
+	}
+
+	evaluator := cwlexpr.NewEvaluator(nil)
+	evalCtx := cwlexpr.NewContext(inputs)
+	return evaluator.EvaluateBool(step.When, evalCtx)
 }
 
 // pollInFlight checks QUEUED and RUNNING tasks for status updates (for async executors).
@@ -704,6 +923,18 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		}
 	}
 
+	// Check SubWorkflows if not found
+	if tool == nil {
+		for id := range graphDoc.SubWorkflows {
+			normalizedID := strings.TrimPrefix(id, "#")
+			if normalizedID == toolID || id == toolID {
+				// Mark as sub-workflow so submitTask can detect it.
+				tool = subWorkflowMarker(normalizedID)
+				break
+			}
+		}
+	}
+
 	if tool == nil {
 		return fmt.Errorf("tool %q not found in parsed workflow", toolID)
 	}
@@ -735,9 +966,29 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		return fmt.Errorf("resolve job inputs: %w", err)
 	}
 
+	// Merge workflow-level and step-level requirements into the tool.
+	// CWL spec priority: tool requirements > step requirements > workflow requirements.
+	mergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
+
 	task.Tool = tool
 	task.Job = job
 	task.RuntimeHints = runtimeHints
+
+	// Refresh runtime hints after requirement merge (picks up inherited Docker, etc.).
+	if merged := extractRuntimeHints(tool); merged != nil {
+		if runtimeHints != nil {
+			// Preserve existing hints, overlay merged ones.
+			if merged.DockerImage != "" {
+				runtimeHints.DockerImage = merged.DockerImage
+			}
+			if len(merged.ExpressionLib) > 0 {
+				runtimeHints.ExpressionLib = merged.ExpressionLib
+			}
+		} else {
+			runtimeHints = merged
+		}
+		task.RuntimeHints = runtimeHints
+	}
 
 	// Add namespaces from the graph document for format resolution.
 	if len(graphDoc.Namespaces) > 0 {
@@ -935,4 +1186,78 @@ func extractExpressionLibFromTool(tool map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// mergeRequirementsIntoTool merges workflow-level and step-level requirements
+// into a tool map. CWL spec priority:
+//
+//	tool requirements > step requirements > workflow requirements > tool hints > step hints > workflow hints
+func mergeRequirementsIntoTool(tool map[string]any, wf *cwl.Workflow, stepID string) {
+	if wf == nil || tool == nil {
+		return
+	}
+
+	// Get or create tool requirements map.
+	toolReqs, _ := tool["requirements"].(map[string]any)
+	if toolReqs == nil {
+		toolReqs = make(map[string]any)
+	}
+
+	toolHints, _ := tool["hints"].(map[string]any)
+	if toolHints == nil {
+		toolHints = make(map[string]any)
+	}
+
+	// Look up the cwl.Step for step-level requirements.
+	var cwlStep *cwl.Step
+	if s, ok := wf.Steps[stepID]; ok {
+		cwlStep = &s
+	}
+
+	// Merge step requirements (higher priority than workflow, lower than tool).
+	if cwlStep != nil && cwlStep.Requirements != nil {
+		for key, val := range cwlStep.Requirements {
+			if _, exists := toolReqs[key]; !exists {
+				toolReqs[key] = val
+			}
+		}
+	}
+
+	// Merge workflow requirements (lowest priority among requirements).
+	if wf.Requirements != nil {
+		for key, val := range wf.Requirements {
+			if _, exists := toolReqs[key]; !exists {
+				toolReqs[key] = val
+			}
+		}
+	}
+
+	// Merge step hints.
+	if cwlStep != nil && cwlStep.Hints != nil {
+		for key, val := range cwlStep.Hints {
+			if _, exists := toolReqs[key]; !exists {
+				if _, exists := toolHints[key]; !exists {
+					toolHints[key] = val
+				}
+			}
+		}
+	}
+
+	// Merge workflow hints.
+	if wf.Hints != nil {
+		for key, val := range wf.Hints {
+			if _, exists := toolReqs[key]; !exists {
+				if _, exists := toolHints[key]; !exists {
+					toolHints[key] = val
+				}
+			}
+		}
+	}
+
+	if len(toolReqs) > 0 {
+		tool["requirements"] = toolReqs
+	}
+	if len(toolHints) > 0 {
+		tool["hints"] = toolHints
+	}
 }

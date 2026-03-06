@@ -101,6 +101,13 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		Namespaces:    namespaces,
 	}
 
+	// Collect all parsed workflows; we'll select the main one below.
+	type parsedWorkflow struct {
+		result workflowParseResult
+		index  int
+	}
+	var parsedWorkflows []parsedWorkflow
+
 	for i, entry := range entries {
 		m, ok := entry.(map[string]any)
 		if !ok {
@@ -110,9 +117,6 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		class := stringField(m, "class")
 		switch class {
 		case "Workflow":
-			if graph.Workflow != nil {
-				return nil, fmt.Errorf("$graph contains multiple Workflow entries")
-			}
 			wfResult, err := p.parseWorkflow(m)
 			if err != nil {
 				return nil, fmt.Errorf("$graph[%d] (Workflow): %w", i, err)
@@ -120,18 +124,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			if version != "" && wfResult.Workflow.CWLVersion == "" {
 				wfResult.Workflow.CWLVersion = version
 			}
-			graph.Workflow = wfResult.Workflow
-			// Add inline tools from workflow steps.
-			for toolID, tool := range wfResult.InlineTools {
-				graph.Tools[toolID] = tool
-			}
-			// Add inline expression tools from workflow steps.
-			for toolID, exprTool := range wfResult.InlineExpressionTools {
-				if graph.ExpressionTools == nil {
-					graph.ExpressionTools = make(map[string]*cwl.ExpressionTool)
-				}
-				graph.ExpressionTools[toolID] = exprTool
-			}
+			parsedWorkflows = append(parsedWorkflows, parsedWorkflow{result: wfResult, index: i})
 
 		case "CommandLineTool":
 			tool, err := p.parseTool(m)
@@ -171,6 +164,60 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		}
 	}
 
+	// Select the main workflow from parsed workflows.
+	if len(parsedWorkflows) == 1 {
+		// Single workflow - use it directly.
+		pw := parsedWorkflows[0]
+		graph.Workflow = pw.result.Workflow
+		addWorkflowInlineTools(graph, pw.result)
+	} else if len(parsedWorkflows) > 1 {
+		// Multiple workflows - select the main one (id="main") and store others as sub-workflows.
+		mainIdx := -1
+		for i, pw := range parsedWorkflows {
+			wfID := pw.result.Workflow.ID
+			if strings.TrimPrefix(wfID, "#") == "main" {
+				mainIdx = i
+				break
+			}
+		}
+		if mainIdx == -1 {
+			// No "main" workflow found; use the last one (bundler convention).
+			mainIdx = len(parsedWorkflows) - 1
+		}
+
+		// Set the main workflow.
+		graph.Workflow = parsedWorkflows[mainIdx].result.Workflow
+		addWorkflowInlineTools(graph, parsedWorkflows[mainIdx].result)
+
+		// Store sub-workflows and flatten their tools into the main graph.
+		for i, pw := range parsedWorkflows {
+			if i == mainIdx {
+				continue
+			}
+			wfID := strings.TrimPrefix(pw.result.Workflow.ID, "#")
+			if wfID == "" {
+				wfID = fmt.Sprintf("subworkflow_%d", pw.index)
+			}
+
+			subGraph := &cwl.GraphDocument{
+				CWLVersion:    version,
+				OriginalClass: "Workflow",
+				Workflow:      pw.result.Workflow,
+				Tools:         pw.result.InlineTools,
+				ExpressionTools: pw.result.InlineExpressionTools,
+			}
+			if graph.SubWorkflows == nil {
+				graph.SubWorkflows = make(map[string]*cwl.GraphDocument)
+			}
+			graph.SubWorkflows[wfID] = subGraph
+
+			// Flatten sub-workflow inline tools into the main graph for lookup.
+			addWorkflowInlineTools(graph, pw.result)
+
+			p.logger.Debug("added sub-workflow to graph", "id", wfID)
+		}
+	}
+
 	if graph.Workflow == nil {
 		// No workflow found - create a synthetic one from the main tool.
 		// Look for tool with id "main" (IDs are stored without "#" prefix), or use the first tool.
@@ -193,6 +240,37 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 	}
 
 	return graph, nil
+}
+
+// addWorkflowInlineTools adds inline tools and expression tools from a workflow parse result to the graph.
+func addWorkflowInlineTools(graph *cwl.GraphDocument, wfResult workflowParseResult) {
+	for toolID, tool := range wfResult.InlineTools {
+		graph.Tools[toolID] = tool
+	}
+	for toolID, exprTool := range wfResult.InlineExpressionTools {
+		if graph.ExpressionTools == nil {
+			graph.ExpressionTools = make(map[string]*cwl.ExpressionTool)
+		}
+		graph.ExpressionTools[toolID] = exprTool
+	}
+	for wfID, subWf := range wfResult.InlineWorkflows {
+		if graph.SubWorkflows == nil {
+			graph.SubWorkflows = make(map[string]*cwl.GraphDocument)
+		}
+		graph.SubWorkflows[wfID] = subWf
+
+		// Recursively flatten sub-workflow tools into the main graph so
+		// populateToolAndJob() can find them when processing child tasks.
+		for toolID, tool := range subWf.Tools {
+			graph.Tools[toolID] = tool
+		}
+		for toolID, exprTool := range subWf.ExpressionTools {
+			if graph.ExpressionTools == nil {
+				graph.ExpressionTools = make(map[string]*cwl.ExpressionTool)
+			}
+			graph.ExpressionTools[toolID] = exprTool
+		}
+	}
 }
 
 // createSyntheticWorkflow creates a workflow that wraps a single tool.
@@ -929,6 +1007,13 @@ func normalizeSourceRefs(source any) []string {
 	return nil
 }
 
+// ParseToolFromMap parses a CWL CommandLineTool from a raw map[string]any.
+// This is the exported entry point used by executor/worker paths to parse
+// task.Tool maps into proper CommandLineTool structs.
+func (p *Parser) ParseToolFromMap(raw map[string]any) (*cwl.CommandLineTool, error) {
+	return p.parseTool(raw)
+}
+
 // parseTool parses a single CWL CommandLineTool from a raw map.
 func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	tool := &cwl.CommandLineTool{
@@ -1126,6 +1211,29 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 		}
 	}
 
+	// When re-parsing from JSON-serialized task.Tool, the type is already a string
+	// (e.g. "File[]") and the structured fields were serialized as separate JSON keys.
+	// Recover them so executor/worker paths have full type information.
+	if inp.ItemInputBinding == nil {
+		if itemIB, ok := val["itemInputBinding"].(map[string]any); ok {
+			inp.ItemInputBinding = parseInputBinding(itemIB)
+		}
+	}
+	if len(inp.RecordFields) == 0 {
+		if rf := val["recordFields"]; rf != nil {
+			inp.RecordFields = parseRecordFields(rf)
+		}
+	}
+	if len(inp.ArrayItemTypes) == 0 {
+		if ait, ok := val["arrayItemTypes"].([]any); ok {
+			for _, item := range ait {
+				if s, ok := item.(string); ok {
+					inp.ArrayItemTypes = append(inp.ArrayItemTypes, s)
+				}
+			}
+		}
+	}
+
 	// Parse secondaryFiles.
 	inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
 
@@ -1174,6 +1282,14 @@ func parseToolOutput(m map[string]any) cwl.ToolOutputParam {
 		if typeStr, ok := typeMap["type"].(string); ok && typeStr == "record" {
 			out.Type = "record"
 			out.OutputRecordFields = parseOutputRecordFields(typeMap["fields"])
+		}
+	}
+
+	// When re-parsing from JSON-serialized task.Tool, the type is already a string
+	// and outputRecordFields were serialized as a separate JSON key.
+	if len(out.OutputRecordFields) == 0 {
+		if orf := m["outputRecordFields"]; orf != nil {
+			out.OutputRecordFields = parseOutputRecordFields(orf)
 		}
 	}
 
@@ -1486,11 +1602,12 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 		toolRef := strings.TrimPrefix(step.Run, "#")
 
 		ms := model.Step{
-			ID:      stepID,
-			ToolRef: toolRef,
-			Out:     step.Out,
-			Scatter: step.Scatter,
-			When:    step.When,
+			ID:            stepID,
+			ToolRef:       toolRef,
+			Out:           step.Out,
+			Scatter:       step.Scatter,
+			ScatterMethod: step.ScatterMethod,
+			When:          step.When,
 		}
 
 		// Convert step inputs, preserving all CWL semantics.

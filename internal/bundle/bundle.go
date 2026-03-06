@@ -126,76 +126,8 @@ func Bundle(workflowPath string) (*Result, error) {
 		return nil, fmt.Errorf("workflow has no steps")
 	}
 
-	for stepName, stepVal := range steps {
-		step, ok := stepVal.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// Resolve file paths in step input defaults.
-		if stepIn, ok := step["in"].(map[string]any); ok {
-			for _, inputVal := range stepIn {
-				if inputMap, ok := inputVal.(map[string]any); ok {
-					if def, ok := inputMap["default"]; ok {
-						inputMap["default"] = ResolveFilePaths(def, baseDir)
-					}
-				}
-			}
-		} else if stepInArr, ok := step["in"].([]any); ok {
-			for _, inputItem := range stepInArr {
-				if inputMap, ok := inputItem.(map[string]any); ok {
-					if def, ok := inputMap["default"]; ok {
-						inputMap["default"] = ResolveFilePaths(def, baseDir)
-					}
-				}
-			}
-		}
-
-		runRef, ok := step["run"].(string)
-		if !ok {
-			continue
-		}
-
-		// Skip if already a fragment reference
-		if strings.HasPrefix(runRef, "#") {
-			continue
-		}
-
-		// Check if we've already loaded this tool
-		if _, seen := toolIDs[runRef]; seen {
-			step["run"] = "#" + toolIDs[runRef]
-			continue
-		}
-
-		// Resolve and read the tool file
-		toolPath := filepath.Join(baseDir, runRef)
-		toolData, err := os.ReadFile(toolPath)
-		if err != nil {
-			return nil, fmt.Errorf("step %q: read tool %q: %w", stepName, runRef, err)
-		}
-
-		var toolDoc map[string]any
-		if err := yaml.Unmarshal(toolData, &toolDoc); err != nil {
-			return nil, fmt.Errorf("step %q: parse tool %q: %w", stepName, runRef, err)
-		}
-
-		// Assign an ID to the tool (use filename without extension)
-		toolID := strings.TrimSuffix(filepath.Base(runRef), filepath.Ext(runRef))
-		toolDoc["id"] = toolID
-		toolIDs[runRef] = toolID
-
-		// Remove cwlVersion from individual tools (it's at the top level)
-		delete(toolDoc, "cwlVersion")
-
-		// Propagate workflow's DockerRequirement to tool if tool doesn't have one.
-		if workflowDockerReq != nil && !hasDockerRequirement(toolDoc) {
-			injectDockerRequirement(toolDoc, workflowDockerReq)
-		}
-
-		graph = append(graph, toolDoc)
-
-		// Replace run: with fragment reference
-		step["run"] = "#" + toolID
+	if err := resolveStepRuns(steps, baseDir, &graph, toolIDs, workflowDockerReq); err != nil {
+		return nil, err
 	}
 
 	// Add the workflow itself to the graph
@@ -764,4 +696,132 @@ func resolveImports(v any, baseDir string) (any, error) {
 		// Primitive values are returned as-is.
 		return v, nil
 	}
+}
+
+// resolveStepRuns resolves run: references in workflow steps.
+// For each step with a string run: reference (not a fragment), it loads the referenced file,
+// adds it to the graph, and replaces the reference with a fragment.
+// If the loaded file is itself a Workflow, its steps are recursively resolved.
+func resolveStepRuns(steps map[string]any, baseDir string, graph *[]any, toolIDs map[string]string, workflowDockerReq map[string]any) error {
+	for stepName, stepVal := range steps {
+		step, ok := stepVal.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Resolve file paths in step input defaults.
+		if stepIn, ok := step["in"].(map[string]any); ok {
+			for _, inputVal := range stepIn {
+				if inputMap, ok := inputVal.(map[string]any); ok {
+					if def, ok := inputMap["default"]; ok {
+						inputMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		} else if stepInArr, ok := step["in"].([]any); ok {
+			for _, inputItem := range stepInArr {
+				if inputMap, ok := inputItem.(map[string]any); ok {
+					if def, ok := inputMap["default"]; ok {
+						inputMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		}
+
+		runRef, ok := step["run"].(string)
+		if !ok {
+			// Handle inline workflow definitions (run: is a map, not a string).
+			// Recursively resolve external tool references within the inline workflow's steps.
+			if runMap, isMap := step["run"].(map[string]any); isMap {
+				class, _ := runMap["class"].(string)
+				if class == "Workflow" {
+					subSteps := extractSteps(runMap)
+					if subSteps != nil {
+						if err := resolveStepRuns(subSteps, baseDir, graph, toolIDs, workflowDockerReq); err != nil {
+							return fmt.Errorf("step %q: resolve inline workflow: %w", stepName, err)
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// Skip if already a fragment reference.
+		if strings.HasPrefix(runRef, "#") {
+			continue
+		}
+
+		// Check if we've already loaded this tool.
+		if _, seen := toolIDs[runRef]; seen {
+			step["run"] = "#" + toolIDs[runRef]
+			continue
+		}
+
+		// Resolve and read the tool file.
+		toolPath := filepath.Join(baseDir, runRef)
+		toolData, err := os.ReadFile(toolPath)
+		if err != nil {
+			return fmt.Errorf("step %q: read tool %q: %w", stepName, runRef, err)
+		}
+
+		var toolDoc map[string]any
+		if err := yaml.Unmarshal(toolData, &toolDoc); err != nil {
+			return fmt.Errorf("step %q: parse tool %q: %w", stepName, runRef, err)
+		}
+
+		// Assign an ID to the tool (use filename without extension).
+		toolID := strings.TrimSuffix(filepath.Base(runRef), filepath.Ext(runRef))
+		toolDoc["id"] = toolID
+		toolIDs[runRef] = toolID
+
+		// Remove cwlVersion from individual tools (it's at the top level).
+		delete(toolDoc, "cwlVersion")
+
+		// Propagate workflow's DockerRequirement to tool if tool doesn't have one.
+		if workflowDockerReq != nil && !hasDockerRequirement(toolDoc) {
+			injectDockerRequirement(toolDoc, workflowDockerReq)
+		}
+
+		// If the loaded file is a Workflow, recursively resolve its run: references.
+		class, _ := toolDoc["class"].(string)
+		if class == "Workflow" {
+			subBaseDir := filepath.Dir(toolPath)
+			subSteps := extractSteps(toolDoc)
+			if subSteps != nil {
+				if err := resolveStepRuns(subSteps, subBaseDir, graph, toolIDs, workflowDockerReq); err != nil {
+					return fmt.Errorf("step %q: resolve sub-workflow %q: %w", stepName, runRef, err)
+				}
+			}
+		}
+
+		*graph = append(*graph, toolDoc)
+
+		// Replace run: with fragment reference.
+		step["run"] = "#" + toolID
+	}
+	return nil
+}
+
+// extractSteps extracts the steps map from a workflow document.
+// Handles both map-style and array-style step definitions.
+func extractSteps(doc map[string]any) map[string]any {
+	switch s := doc["steps"].(type) {
+	case map[string]any:
+		return s
+	case []any:
+		steps := make(map[string]any)
+		for _, item := range s {
+			if stepMap, ok := item.(map[string]any); ok {
+				if id, ok := stepMap["id"].(string); ok {
+					id = strings.TrimPrefix(id, "#")
+					if idx := strings.LastIndex(id, "/"); idx >= 0 {
+						id = id[idx+1:]
+					}
+					steps[id] = stepMap
+				}
+			}
+		}
+		return steps
+	}
+	return nil
 }

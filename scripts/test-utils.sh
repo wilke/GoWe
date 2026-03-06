@@ -2,9 +2,8 @@
 #
 # test-utils.sh - Shared test utilities for GoWe test scripts
 #
-# NOTE: Requires bash 4+ for associative arrays. On macOS, install via:
-#   brew install bash
-# Then ensure /opt/homebrew/bin/bash or /usr/local/bin/bash is in your PATH.
+# NOTE: Works with bash 3.2+ (macOS system bash). Bash 4+ associative arrays
+# are used when available, with indexed-array fallback for older bash.
 #
 # This file provides common functions for:
 # - Color output and logging

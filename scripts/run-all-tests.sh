@@ -2,8 +2,8 @@
 #
 # run-all-tests.sh - Comprehensive test runner for all GoWe execution modes
 #
-# NOTE: Requires bash 4+ for associative arrays. On macOS, install via:
-#   brew install bash
+# NOTE: Works with bash 3.2+ (macOS system bash). Bash 4+ associative arrays
+# are used when available, with indexed-array fallback for older bash.
 #
 # This script runs all test types across all execution modes, with cwl-runner
 # as the gold standard baseline. All modes should eventually pass 378/378

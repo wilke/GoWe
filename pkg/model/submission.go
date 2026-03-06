@@ -18,6 +18,10 @@ type Submission struct {
 	CreatedAt     time.Time         `json:"created_at"`
 	CompletedAt   *time.Time        `json:"completed_at"`
 
+	// Child submission linkage: if set, this submission was created by the
+	// scheduler to execute a sub-workflow step on behalf of a parent task.
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+
 	// Authentication token fields (not serialized to JSON responses).
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time

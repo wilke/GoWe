@@ -54,8 +54,9 @@ type Step struct {
 	DependsOn  []string    `json:"depends_on"`
 	In         []StepInput `json:"in"`
 	Out        []string    `json:"out"`
-	Scatter    []string    `json:"scatter,omitempty"`
-	When       string      `json:"when,omitempty"`
+	Scatter       []string    `json:"scatter,omitempty"`
+	ScatterMethod string      `json:"scatter_method,omitempty"`
+	When          string      `json:"when,omitempty"`
 	Hints      *StepHints  `json:"hints,omitempty"`
 }
 

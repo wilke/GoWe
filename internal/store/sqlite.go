@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -289,12 +290,12 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
-		sub.UserToken, tokenExpiry, sub.AuthProvider,
+		sub.UserToken, tokenExpiry, sub.AuthProvider, sub.ParentTaskID,
 	)
 	return err
 }
@@ -309,12 +310,12 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var tokenExpiry int64
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
-		&sub.UserToken, &tokenExpiry, &sub.AuthProvider)
+		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -452,6 +453,45 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 	return nil
 }
 
+func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_children", "table", "submissions", "parent_task_id", parentTaskID)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id
+		 FROM submissions WHERE parent_task_id = ? ORDER BY created_at`, parentTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []*model.Submission
+	for rows.Next() {
+		var sub model.Submission
+		var inputsJSON, outputsJSON, labelsJSON string
+		var state, createdAt string
+		var completedAt *string
+
+		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
+			&inputsJSON, &outputsJSON, &labelsJSON,
+			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID); err != nil {
+			return nil, err
+		}
+
+		sub.State = model.SubmissionState(state)
+		json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
+		json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
+		json.Unmarshal([]byte(labelsJSON), &sub.Labels)
+		sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if completedAt != nil {
+			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			sub.CompletedAt = &t
+		}
+
+		subs = append(subs, &sub)
+	}
+	return subs, rows.Err()
+}
+
 // --- Task operations ---
 
 func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
@@ -539,6 +579,11 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 	s.logger.Debug("sql", "op", "update", "table", "tasks", "id", task.ID)
 
+	// Sanitize NaN/Inf values before marshaling (Go's encoding/json rejects them).
+	sanitizeFloats(task.Outputs)
+	sanitizeFloats(task.Tool)
+	sanitizeFloats(task.Job)
+
 	outputsJSON, err := json.Marshal(task.Outputs)
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
@@ -568,10 +613,10 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
-		 outputs=?, retry_count=?, stdout=?, stderr=?, exit_code=?,
+		 outputs=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
 		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=? WHERE id=?`,
 		string(task.State), string(task.ExecutorType), task.ExternalID,
-		string(outputsJSON), task.RetryCount,
+		string(outputsJSON), task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
@@ -1167,4 +1212,27 @@ func (s *SQLiteStore) LinkProvider(ctx context.Context, userID string, provider 
 		userID, provider, username,
 	)
 	return err
+}
+
+// sanitizeFloats recursively replaces NaN and Inf float64 values with nil
+// so that encoding/json.Marshal doesn't fail.
+func sanitizeFloats(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, v := range val {
+			if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+				val[k] = nil
+			} else {
+				sanitizeFloats(v)
+			}
+		}
+	case []any:
+		for i, v := range val {
+			if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+				val[i] = nil
+			} else {
+				sanitizeFloats(v)
+			}
+		}
+	}
 }
