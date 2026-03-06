@@ -697,6 +697,11 @@ func uploadDirectoryInput(dirObj map[string]any, quiet bool) (map[string]any, er
 		}
 	}
 
+	// Remove host-side location/path since listing entries have server-side locations.
+	// The worker uses the listing to stage files, not the directory location.
+	delete(result, "location")
+	delete(result, "path")
+
 	return result, nil
 }
 

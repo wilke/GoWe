@@ -27,7 +27,7 @@ services:
       - "-upload-local-dir"
       - "/workdir/uploads"
       - "-upload-download-dirs"
-      - "/workdir/uploads,/workdir/outputs"
+      - "/workdir/uploads,/workdir/outputs,/workdir/scratch"
       - "-debug"
     volumes:
       - gowe-data:/data

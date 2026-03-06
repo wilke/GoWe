@@ -77,6 +77,76 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 		location = path
 	}
 
+	class, _ := obj["class"].(string)
+
+	// For Directories with a listing but no accessible location,
+	// reconstruct the directory from listing entries in the work directory.
+	if class == "Directory" {
+		if listing, ok := obj["listing"].([]any); ok && len(listing) > 0 {
+			basename, _ := obj["basename"].(string)
+			if basename == "" {
+				basename = inputID
+			}
+
+			// Check if the location is missing or inaccessible.
+			needsReconstruct := location == ""
+			if !needsReconstruct {
+				_, localPath := cwl.ParseLocationScheme(location)
+				if _, err := os.Stat(localPath); err != nil {
+					needsReconstruct = true
+				}
+			}
+
+			if needsReconstruct {
+				// Use a dedicated staging subdirectory to avoid conflicts
+				// with the tool's output directory (runtime.outdir == workDir).
+				stageDir := filepath.Join(workDir, "_inputs")
+				dirPath := filepath.Join(stageDir, basename)
+				if err := os.MkdirAll(dirPath, 0o755); err != nil {
+					return fmt.Errorf("create listing dir %s: %w", dirPath, err)
+				}
+				// Stage listing entries into the reconstructed directory.
+				for i, item := range listing {
+					if itemMap, ok := item.(map[string]any); ok {
+						if err := stageFileOrDirectory(ctx, stager, fmt.Sprintf("%s.listing[%d]", inputID, i), itemMap, dirPath, logger); err != nil {
+							return err
+						}
+						// Copy/link the file into the directory.
+						itemLoc := ""
+						if l, ok := itemMap["path"].(string); ok {
+							itemLoc = l
+						} else if l, ok := itemMap["location"].(string); ok {
+							_, itemLoc = cwl.ParseLocationScheme(l)
+						}
+						itemBasename, _ := itemMap["basename"].(string)
+						if itemBasename == "" && itemLoc != "" {
+							itemBasename = filepath.Base(itemLoc)
+						}
+						if itemLoc != "" && itemBasename != "" {
+							destInDir := filepath.Join(dirPath, itemBasename)
+							if destInDir != itemLoc {
+								itemClass, _ := itemMap["class"].(string)
+								if itemClass == "Directory" {
+									// For subdirectories, use symlink.
+									_ = os.Symlink(itemLoc, destInDir)
+								} else {
+									_ = staging.CopyFile(itemLoc, destInDir)
+								}
+							}
+						}
+					}
+				}
+				obj["path"] = dirPath
+				obj["location"] = cwl.BuildLocation(cwl.SchemeFile, dirPath)
+				logger.Debug("reconstructed directory from listing",
+					"input", inputID,
+					"dir", dirPath,
+				)
+				return nil
+			}
+		}
+	}
+
 	if location == "" {
 		return nil
 	}
