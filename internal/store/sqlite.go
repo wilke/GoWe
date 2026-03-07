@@ -304,18 +304,18 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	s.logger.Debug("sql", "op", "select", "table", "submissions", "id", id)
 
 	var sub model.Submission
-	var inputsJSON, outputsJSON, labelsJSON string
+	var inputsJSON, outputsJSON, labelsJSON, errorJSON string
 	var state, createdAt string
 	var completedAt *string
 	var tokenExpiry int64
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
-		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID)
+		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -328,6 +328,12 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
 	json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
 	json.Unmarshal([]byte(labelsJSON), &sub.Labels)
+	if errorJSON != "" {
+		var subErr model.SubmissionError
+		if json.Unmarshal([]byte(errorJSON), &subErr) == nil {
+			sub.Error = &subErr
+		}
+	}
 	sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	if completedAt != nil {
 		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
@@ -433,6 +439,13 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	errorJSON := ""
+	if sub.Error != nil {
+		if b, err := json.Marshal(sub.Error); err == nil {
+			errorJSON = string(b)
+		}
+	}
+
 	var completedAt *string
 	if sub.CompletedAt != nil {
 		s := sub.CompletedAt.Format(time.RFC3339Nano)
@@ -440,8 +453,8 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET state=?, outputs=?, labels=?, completed_at=? WHERE id=?`,
-		string(sub.State), string(outputsJSON), string(labelsJSON), completedAt, sub.ID,
+		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=? WHERE id=?`,
+		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON, completedAt, sub.ID,
 	)
 	if err != nil {
 		return err

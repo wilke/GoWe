@@ -271,6 +271,7 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 
 	if anyFailed {
 		sub.State = model.SubmissionStateFailed
+		sub.Error = l.buildSubmissionError(ctx, allSteps)
 	} else {
 		sub.State = model.SubmissionStateCompleted
 
@@ -489,43 +490,58 @@ func buildChildRawCWL(parentRawCWL string, stepID string) (string, error) {
 		return "", fmt.Errorf("parent CWL has no $graph")
 	}
 
-	// Collect all tool entries (CommandLineTool, ExpressionTool) from the parent.
-	var tools []any
+	// Index all graph items by ID and collect non-main entries.
+	graphByID := make(map[string]map[string]any)
 	var mainWorkflow map[string]any
+	var nonMainItems []any
 	for _, item := range graphItems {
 		itemMap, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
+		id, _ := itemMap["id"].(string)
+		if id != "" {
+			graphByID[id] = itemMap
+		}
 		class, _ := itemMap["class"].(string)
-		switch class {
-		case "CommandLineTool", "ExpressionTool":
-			tools = append(tools, item)
-		case "Workflow":
+		if class == "Workflow" && id == "main" {
 			mainWorkflow = itemMap
+		} else {
+			nonMainItems = append(nonMainItems, item)
 		}
 	}
 
 	if mainWorkflow == nil {
-		return "", fmt.Errorf("no Workflow found in parent $graph")
+		return "", fmt.Errorf("no main Workflow found in parent $graph")
 	}
 
-	// Navigate to the step and extract the inline run: workflow.
-	inlineWf, err := extractInlineWorkflow(mainWorkflow, stepID)
+	// Find the sub-workflow for the given step.
+	// It may be inline (run: {class: Workflow, ...}) or a fragment reference (run: "#id").
+	subWf, err := extractStepWorkflow(mainWorkflow, stepID, graphByID)
 	if err != nil {
-		return "", fmt.Errorf("extract inline workflow for step %q: %w", stepID, err)
+		return "", fmt.Errorf("extract workflow for step %q: %w", stepID, err)
 	}
 
-	// Create a copy of the inline workflow with id "main".
+	// Create a copy of the sub-workflow with id "main".
 	childMainWf := make(map[string]any)
-	for k, v := range inlineWf {
+	for k, v := range subWf {
 		childMainWf[k] = v
 	}
 	childMainWf["id"] = "main"
 
-	// Build the new $graph: tools + child workflow.
-	newGraph := make([]any, 0, len(tools)+1)
-	newGraph = append(newGraph, tools...)
+	// Build the new $graph: all non-main items + child workflow as main.
+	// This includes tools and any other sub-workflows needed by the child.
+	newGraph := make([]any, 0, len(nonMainItems)+1)
+	// Add non-main items, excluding the sub-workflow itself (it becomes main).
+	subWfID, _ := subWf["id"].(string)
+	for _, item := range nonMainItems {
+		if itemMap, ok := item.(map[string]any); ok {
+			if id, _ := itemMap["id"].(string); id == subWfID {
+				continue // Skip — it's becoming main.
+			}
+		}
+		newGraph = append(newGraph, item)
+	}
 	newGraph = append(newGraph, childMainWf)
 
 	newDoc := map[string]any{
@@ -540,8 +556,10 @@ func buildChildRawCWL(parentRawCWL string, stepID string) (string, error) {
 	return string(out), nil
 }
 
-// extractInlineWorkflow finds a step in a workflow and extracts its inline run: map.
-func extractInlineWorkflow(workflow map[string]any, stepID string) (map[string]any, error) {
+// extractStepWorkflow finds a step in a workflow and returns its sub-workflow definition.
+// Handles both inline workflows (run: {class: Workflow, ...}) and fragment references
+// (run: "#count-lines1-wf") by looking up the reference in graphByID.
+func extractStepWorkflow(workflow map[string]any, stepID string, graphByID map[string]map[string]any) (map[string]any, error) {
 	// Steps can be map or array format.
 	var steps map[string]any
 	switch s := workflow["steps"].(type) {
@@ -573,15 +591,27 @@ func extractInlineWorkflow(workflow map[string]any, stepID string) (map[string]a
 		return nil, fmt.Errorf("step %q is not a map", stepID)
 	}
 
-	runVal, ok := stepMap["run"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("step %q run: is not an inline workflow", stepID)
+	// Handle inline workflow (run: {class: Workflow, ...}).
+	if runVal, ok := stepMap["run"].(map[string]any); ok {
+		class, _ := runVal["class"].(string)
+		if class != "Workflow" {
+			return nil, fmt.Errorf("step %q run: is class %q, not Workflow", stepID, class)
+		}
+		return runVal, nil
 	}
 
-	class, _ := runVal["class"].(string)
-	if class != "Workflow" {
-		return nil, fmt.Errorf("step %q run: is class %q, not Workflow", stepID, class)
+	// Handle fragment reference (run: "#count-lines1-wf").
+	if runRef, ok := stepMap["run"].(string); ok {
+		ref := strings.TrimPrefix(runRef, "#")
+		if wf, ok := graphByID[ref]; ok {
+			class, _ := wf["class"].(string)
+			if class != "Workflow" {
+				return nil, fmt.Errorf("step %q run: references %q which is class %q, not Workflow", stepID, ref, class)
+			}
+			return wf, nil
+		}
+		return nil, fmt.Errorf("step %q run: references %q which is not in $graph", stepID, ref)
 	}
 
-	return runVal, nil
+	return nil, fmt.Errorf("step %q run: is neither an inline workflow nor a fragment reference", stepID)
 }

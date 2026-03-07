@@ -1628,6 +1628,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 				Default:      si.Default,
 				ValueFrom:    si.ValueFrom,
 				LoadContents: si.LoadContents,
+				LinkMerge:    si.LinkMerge,
 			})
 		}
 		sort.Slice(ms.In, func(i, j int) bool {

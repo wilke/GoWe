@@ -79,6 +79,8 @@ func Bundle(workflowPath string) (*Result, error) {
 			}
 		}
 
+		resolveGraphInputDefaults(graphItems, baseDir)
+
 		packed, err := yaml.Marshal(doc)
 		if err != nil {
 			return nil, fmt.Errorf("marshal packed document: %w", err)
@@ -141,6 +143,10 @@ func Bundle(workflowPath string) (*Result, error) {
 	wfDoc["id"] = "main"
 	graph = append(graph, wfDoc)
 
+	// Resolve File/Directory objects in input defaults to absolute paths.
+	// This ensures uploadPackedCWLFiles can find and upload them.
+	resolveGraphInputDefaults(graph, baseDir)
+
 	// Build the packed document
 	packed := map[string]any{
 		"cwlVersion": doc["cwlVersion"],
@@ -190,6 +196,39 @@ func nameFromPath(path string) string {
 	base := filepath.Base(path)
 	name := strings.TrimSuffix(base, filepath.Ext(base))
 	return name
+}
+
+// resolveGraphInputDefaults resolves File/Directory objects in input defaults
+// across all graph entries to absolute paths. This ensures uploadPackedCWLFiles
+// can find and upload files referenced in workflow/tool input defaults.
+func resolveGraphInputDefaults(graph []any, baseDir string) {
+	for _, item := range graph {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Process inputs — can be map or array form.
+		switch inputs := itemMap["inputs"].(type) {
+		case map[string]any:
+			for id, inp := range inputs {
+				if inpMap, ok := inp.(map[string]any); ok {
+					if def, ok := inpMap["default"]; ok {
+						inpMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+				_ = id
+			}
+		case []any:
+			for _, inp := range inputs {
+				if inpMap, ok := inp.(map[string]any); ok {
+					if def, ok := inpMap["default"]; ok {
+						inpMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		}
+	}
 }
 
 // bundleBareTool wraps a bare CommandLineTool or ExpressionTool in a synthetic

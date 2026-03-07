@@ -48,6 +48,7 @@ func ResolveTaskInputs(
 			si.Default,
 			si.ValueFrom,
 			si.LoadContents,
+			si.LinkMerge,
 		)
 	}
 

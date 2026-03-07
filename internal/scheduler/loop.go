@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/exprtool"
+	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
@@ -296,11 +298,18 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	mergedInputs = ResolveWorkflowSecondaryFiles(wf, mergedInputs, "")
 	mergedInputs = ResolveWorkflowLoadContents(wf, mergedInputs, "")
 
-	// Evaluate 'when' condition.
-	if step.When != "" {
+	// Evaluate 'when' condition for non-scatter steps.
+	// For scatter steps, the 'when' condition is evaluated per-iteration inside
+	// dispatchScatterStep, not at the step level.
+	if step.When != "" && len(step.Scatter) == 0 {
 		shouldRun, err := l.evaluateWhenConditionFromSteps(step, mergedInputs, stepOutputs)
 		if err != nil {
-			l.logger.Warn("when condition evaluation failed", "si_id", si.ID, "error", err)
+			// CWL spec: non-boolean 'when' expressions must fail the step.
+			now := time.Now().UTC()
+			si.State = model.StepStateFailed
+			si.CompletedAt = &now
+			l.logger.Error("when condition evaluation failed", "si_id", si.ID, "error", err)
+			return l.store.UpdateStepInstance(ctx, si)
 		} else if !shouldRun {
 			now := time.Now().UTC()
 			si.State = model.StepStateSkipped
@@ -354,6 +363,15 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			si.CompletedAt = &now
 			l.logger.Error("expression tool failed", "si_id", si.ID, "error", err)
 		} else {
+			// Materialize file/directory literals in expression tool outputs.
+			tmpDir, mkErr := os.MkdirTemp("", "exprtool-"+si.ID+"-")
+			if mkErr == nil {
+				if materialized, matErr := fileliteral.MaterializeOutputs(outputs, tmpDir); matErr == nil {
+					outputs = materialized
+				} else {
+					l.logger.Warn("failed to materialize expression tool outputs", "si_id", si.ID, "error", matErr)
+				}
+			}
 			si.State = model.StepStateCompleted
 			si.Outputs = outputs
 			si.CompletedAt = &now
@@ -492,6 +510,12 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				si.CompletedAt = &now
 				return l.store.UpdateStepInstance(ctx, si)
 			}
+			// Materialize file/directory literals in scatter iteration outputs.
+			if tmpDir, mkErr := os.MkdirTemp("", fmt.Sprintf("exprtool-%s-%d-", si.ID, i)); mkErr == nil {
+				if materialized, matErr := fileliteral.MaterializeOutputs(outputs, tmpDir); matErr == nil {
+					outputs = materialized
+				}
+			}
 			results = append(results, outputs)
 		}
 		si.Outputs = l.mergeScatterOutputs(results, step, method, scatterArrays)
@@ -511,7 +535,12 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		if step.When != "" {
 			shouldRun, err := l.evaluateWhenForScatterIterationFromSteps(step, combo, mergedInputs, stepOutputs)
 			if err != nil {
-				l.logger.Warn("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+				// CWL spec: non-boolean 'when' expressions must fail.
+				now := time.Now().UTC()
+				si.State = model.StepStateFailed
+				si.CompletedAt = &now
+				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+				return l.store.UpdateStepInstance(ctx, si)
 			} else if !shouldRun {
 				nullOutputs := make(map[string]any)
 				for _, outID := range step.Out {
@@ -917,21 +946,41 @@ func (l *Loop) evaluateWhenConditionFromSteps(step *model.Step, submissionInputs
 	}
 
 	for _, si := range step.In {
-		if si.Source == "" {
+		if si.Source == "" && len(si.Sources) == 0 {
 			continue
 		}
-		if strings.Contains(si.Source, "/") {
-			parts := strings.SplitN(si.Source, "/", 2)
-			stepID, outputID := parts[0], parts[1]
-			if outputs, ok := stepOutputs[stepID]; ok {
-				if val, ok := outputs[outputID]; ok {
-					inputs[si.ID] = val
+		// Use Sources array, fall back to Source string.
+		sources := si.Sources
+		if len(sources) == 0 && si.Source != "" {
+			sources = strings.Split(si.Source, ",")
+		}
+		if len(sources) == 1 {
+			src := sources[0]
+			if strings.Contains(src, "/") {
+				parts := strings.SplitN(src, "/", 2)
+				stepID, outputID := parts[0], parts[1]
+				if outputs, ok := stepOutputs[stepID]; ok {
+					inputs[si.ID] = outputs[outputID]
+				}
+			} else {
+				// Always set the input, even if nil. CWL spec requires
+				// null (not undefined) for missing optional inputs so
+				// that when expressions like $(inputs.x !== null) work.
+				inputs[si.ID] = submissionInputs[src]
+			}
+		} else if len(sources) > 1 {
+			values := make([]any, len(sources))
+			for i, src := range sources {
+				if strings.Contains(src, "/") {
+					parts := strings.SplitN(src, "/", 2)
+					if outputs, ok := stepOutputs[parts[0]]; ok {
+						values[i] = outputs[parts[1]]
+					}
+				} else {
+					values[i] = submissionInputs[src]
 				}
 			}
-		} else {
-			if val, ok := submissionInputs[si.Source]; ok {
-				inputs[si.ID] = val
-			}
+			inputs[si.ID] = values
 		}
 	}
 
@@ -1176,6 +1225,7 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 		if allTerminal {
 			if anyFailed {
 				sub.State = model.SubmissionStateFailed
+				sub.Error = l.buildSubmissionError(ctx, steps)
 			} else {
 				sub.State = model.SubmissionStateCompleted
 
@@ -1194,6 +1244,10 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 					if outErr != nil {
 						l.logger.Error("collect workflow outputs", "submission_id", subID, "error", outErr)
 						sub.State = model.SubmissionStateFailed
+						sub.Error = &model.SubmissionError{
+							Code:    "OUTPUT_COLLECTION_FAILED",
+							Message: outErr.Error(),
+						}
 					} else {
 						sub.Outputs = outputs
 						l.logger.Debug("collected workflow outputs", "submission_id", subID, "outputs", len(outputs))
@@ -1218,6 +1272,64 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 	}
 
 	return nil
+}
+
+// buildSubmissionError constructs a SubmissionError from the first failed step
+// and its associated failed task (if any), including exit code and stderr snippet.
+func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInstance) *model.SubmissionError {
+	// Find the first failed step instance.
+	var failedStep *model.StepInstance
+	for _, si := range steps {
+		if si.State == model.StepStateFailed {
+			failedStep = si
+			break
+		}
+	}
+	if failedStep == nil {
+		return &model.SubmissionError{
+			Code:    "STEP_FAILED",
+			Message: "one or more steps failed",
+		}
+	}
+
+	subErr := &model.SubmissionError{
+		Code:    "STEP_FAILED",
+		Message: fmt.Sprintf("step '%s' failed", failedStep.StepID),
+		Context: &model.SubmissionErrDetail{
+			StepID: failedStep.StepID,
+		},
+	}
+
+	// Look for a failed task under this step to get exit code and stderr.
+	tasks, err := l.store.ListTasksByStepInstance(ctx, failedStep.ID)
+	if err != nil {
+		return subErr
+	}
+
+	for _, task := range tasks {
+		if task.State == model.TaskStateFailed {
+			subErr.Code = "TASK_FAILED"
+			subErr.Context.TaskID = task.ID
+			subErr.Context.ExitCode = task.ExitCode
+
+			// Include a stderr snippet (truncate to 1000 chars for storage).
+			stderr := task.Stderr
+			if len(stderr) > 1000 {
+				stderr = stderr[:1000] + "...(truncated)"
+			}
+			if stderr != "" {
+				subErr.Context.Stderr = stderr
+			}
+
+			subErr.Message = fmt.Sprintf("step '%s' task failed", failedStep.StepID)
+			if task.ExitCode != nil {
+				subErr.Message = fmt.Sprintf("step '%s' task failed with exit code %d", failedStep.StepID, *task.ExitCode)
+			}
+			break
+		}
+	}
+
+	return subErr
 }
 
 // markRetries transitions FAILED tasks with remaining retries to RETRYING.
@@ -1356,6 +1468,7 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 			si.Default,
 			si.ValueFrom,
 			si.LoadContents,
+			si.LinkMerge,
 		)
 	}
 
@@ -1373,8 +1486,13 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 	}
 
 	// Merge workflow-level and step-level requirements into the tool.
-	// CWL spec priority: tool requirements > step requirements > workflow requirements.
+	// CWL spec priority: job requirements > tool requirements > step requirements > workflow requirements.
 	mergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
+
+	// Merge cwl:requirements from the job input document (highest priority).
+	if jobReqs, ok := submissionInputs["cwl:requirements"].([]any); ok {
+		mergeJobRequirementsIntoTool(tool, jobReqs)
+	}
 
 	task.Tool = tool
 	task.Job = job
@@ -1679,4 +1797,32 @@ func mergeRequirementsIntoTool(tool map[string]any, wf *cwl.Workflow, stepID str
 	if len(toolHints) > 0 {
 		tool["hints"] = toolHints
 	}
+}
+
+// mergeJobRequirementsIntoTool merges cwl:requirements from the job input document
+// into a tool map. Job requirements have the highest priority, overriding all other requirements.
+func mergeJobRequirementsIntoTool(tool map[string]any, jobReqs []any) {
+	if tool == nil || len(jobReqs) == 0 {
+		return
+	}
+
+	toolReqs, _ := tool["requirements"].(map[string]any)
+	if toolReqs == nil {
+		toolReqs = make(map[string]any)
+	}
+
+	for _, req := range jobReqs {
+		reqMap, ok := req.(map[string]any)
+		if !ok {
+			continue
+		}
+		class, _ := reqMap["class"].(string)
+		if class == "" {
+			continue
+		}
+		// Job requirements override — use class name as key.
+		toolReqs[class] = reqMap
+	}
+
+	tool["requirements"] = toolReqs
 }

@@ -227,6 +227,12 @@ var alterStatements = []struct {
 		column:   "scatter_dims",
 		alterSQL: "ALTER TABLE step_instances ADD COLUMN scatter_dims TEXT NOT NULL DEFAULT ''",
 	},
+	// Submission error details for structured failure reporting
+	{
+		table:    "submissions",
+		column:   "error",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

@@ -315,7 +315,7 @@ func TestResolveDefaultValue_File(t *testing.T) {
 
 func TestInputDefFromModel(t *testing.T) {
 	// Test with Sources array.
-	def := InputDefFromModel("in1", []string{"a", "b"}, "ignored", "default", "$(self)", true)
+	def := InputDefFromModel("in1", []string{"a", "b"}, "ignored", "default", "$(self)", true, "")
 	if def.ID != "in1" {
 		t.Errorf("expected ID='in1', got %q", def.ID)
 	}
@@ -333,19 +333,19 @@ func TestInputDefFromModel(t *testing.T) {
 	}
 
 	// Test with comma-separated Source (backwards compat).
-	def = InputDefFromModel("in2", nil, "x,y,z", nil, "", false)
+	def = InputDefFromModel("in2", nil, "x,y,z", nil, "", false, "")
 	if len(def.Sources) != 3 || def.Sources[0] != "x" || def.Sources[1] != "y" || def.Sources[2] != "z" {
 		t.Errorf("expected Sources=[x,y,z], got %v", def.Sources)
 	}
 
 	// Test with single Source.
-	def = InputDefFromModel("in3", nil, "single", nil, "", false)
+	def = InputDefFromModel("in3", nil, "single", nil, "", false, "")
 	if len(def.Sources) != 1 || def.Sources[0] != "single" {
 		t.Errorf("expected Sources=[single], got %v", def.Sources)
 	}
 
 	// Test with empty Sources and Source.
-	def = InputDefFromModel("in4", nil, "", "fallback", "", false)
+	def = InputDefFromModel("in4", nil, "", "fallback", "", false, "")
 	if len(def.Sources) != 0 {
 		t.Errorf("expected empty Sources, got %v", def.Sources)
 	}

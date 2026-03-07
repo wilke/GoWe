@@ -68,6 +68,7 @@ type StepInput struct {
 	Default      any      `json:"default,omitempty"`       // Fallback value if sources resolve to nil
 	ValueFrom    string   `json:"value_from,omitempty"`    // Expression to transform input
 	LoadContents bool     `json:"load_contents,omitempty"` // Read file contents before valueFrom
+	LinkMerge    string   `json:"link_merge,omitempty"`    // merge_nested (default) or merge_flattened
 }
 
 // StepHints holds GoWe-specific hints extracted from a CWL step.

@@ -10,6 +10,7 @@ type Submission struct {
 	State         SubmissionState   `json:"state"`
 	Inputs        map[string]any    `json:"inputs"`
 	Outputs       map[string]any    `json:"outputs,omitempty"`
+	Error         *SubmissionError  `json:"error,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	SubmittedBy   string            `json:"submitted_by,omitempty"`
 	Tasks         []Task            `json:"tasks,omitempty"`
@@ -26,6 +27,21 @@ type Submission struct {
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time
 	AuthProvider string    `json:"-"` // Provider name (bvbrc, mgrast)
+}
+
+// SubmissionError captures structured failure details when a submission fails.
+type SubmissionError struct {
+	Code    string               `json:"code"`
+	Message string               `json:"message"`
+	Context *SubmissionErrDetail `json:"context,omitempty"`
+}
+
+// SubmissionErrDetail provides specific context about where the failure occurred.
+type SubmissionErrDetail struct {
+	StepID   string `json:"step_id,omitempty"`
+	TaskID   string `json:"task_id,omitempty"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
 }
 
 // TaskSummary provides an aggregate count of task states within a Submission.

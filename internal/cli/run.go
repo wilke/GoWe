@@ -241,23 +241,49 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 
 	// 5. Check final state.
 	if subData.State == model.SubmissionStateFailed {
-		// Print task errors.
-		for _, task := range subData.Tasks {
-			if task.State == model.TaskStateFailed {
-				fmt.Fprintf(os.Stderr, "Task %s (step %s) failed\n", task.ID, task.StepID)
-				// Fetch task logs.
-				logsResp, err := client.Get(fmt.Sprintf("/api/v1/submissions/%s/tasks/%s/logs", subData.ID, task.ID))
-				if err == nil {
-					var logs map[string]any
-					if json.Unmarshal(logsResp.Data, &logs) == nil {
-						if stderr, ok := logs["stderr"].(string); ok && stderr != "" {
-							fmt.Fprintf(os.Stderr, "stderr: %s\n", stderr)
+		fmt.Fprintf(os.Stderr, "Submission %s failed", subData.ID)
+
+		if subData.Error != nil {
+			fmt.Fprintf(os.Stderr, " [%s]\n", subData.Error.Code)
+			fmt.Fprintf(os.Stderr, "  Error: %s\n", subData.Error.Message)
+			if c := subData.Error.Context; c != nil {
+				if c.StepID != "" {
+					fmt.Fprintf(os.Stderr, "  Step:  %s\n", c.StepID)
+				}
+				if c.TaskID != "" {
+					fmt.Fprintf(os.Stderr, "  Task:  %s\n", c.TaskID)
+				}
+				if c.ExitCode != nil {
+					fmt.Fprintf(os.Stderr, "  Exit:  %d\n", *c.ExitCode)
+				}
+				if c.Stderr != "" {
+					fmt.Fprintf(os.Stderr, "  Stderr:\n%s\n", c.Stderr)
+				}
+			}
+		} else {
+			// Fallback: fetch task logs directly (for older servers without error field).
+			fmt.Fprintln(os.Stderr)
+			for _, task := range subData.Tasks {
+				if task.State == model.TaskStateFailed {
+					fmt.Fprintf(os.Stderr, "  Task %s (step %s) failed\n", task.ID, task.StepID)
+					logsResp, err := client.Get(fmt.Sprintf("/api/v1/submissions/%s/tasks/%s/logs", subData.ID, task.ID))
+					if err == nil {
+						var logs map[string]any
+						if json.Unmarshal(logsResp.Data, &logs) == nil {
+							if stderr, ok := logs["stderr"].(string); ok && stderr != "" {
+								fmt.Fprintf(os.Stderr, "  stderr: %s\n", stderr)
+							}
 						}
 					}
 				}
 			}
 		}
-		return fmt.Errorf("submission failed")
+
+		errMsg := "submission failed"
+		if subData.Error != nil {
+			errMsg = fmt.Sprintf("submission failed: [%s] %s", subData.Error.Code, subData.Error.Message)
+		}
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	if subData.State == model.SubmissionStateCancelled {
@@ -437,6 +463,14 @@ func formatFileOutput(fileMap map[string]any, outDir string, outputPathMap map[s
 				result["location"] = "file://" + destPath
 				result["path"] = destPath
 			}
+		}
+	} else {
+		// File doesn't exist locally — preserve size/checksum from server if present.
+		if size, ok := fileMap["size"]; ok {
+			result["size"] = size
+		}
+		if checksum, ok := fileMap["checksum"]; ok {
+			result["checksum"] = checksum
 		}
 	}
 
@@ -948,6 +982,29 @@ func downloadAndFormatOutput(val any, outDir string) any {
 
 // downloadFileOutput downloads a file from the server and creates a CWL File object.
 func downloadFileOutput(fileMap map[string]any, outDir string) map[string]any {
+	// Handle file literals with contents (e.g., from ExpressionTool outputs).
+	// These can be materialized locally without downloading from the server.
+	if contents, ok := fileMap["contents"].(string); ok {
+		basename := "cwl_file"
+		if b, ok := fileMap["basename"].(string); ok && b != "" {
+			basename = b
+		}
+		destPath := filepath.Join(outDir, basename)
+		if err := os.WriteFile(destPath, []byte(contents), 0644); err == nil {
+			result := map[string]any{
+				"class":    "File",
+				"location": "file://" + destPath,
+				"path":     destPath,
+				"basename": basename,
+				"size":     int64(len(contents)),
+			}
+			if checksum, err := computeFileChecksum(destPath); err == nil {
+				result["checksum"] = "sha1$" + checksum
+			}
+			return result
+		}
+	}
+
 	location, _ := fileMap["location"].(string)
 	if location == "" {
 		return fileMap
@@ -955,6 +1012,20 @@ func downloadFileOutput(fileMap map[string]any, outDir string) map[string]any {
 
 	basename := filepath.Base(strings.TrimPrefix(location, "file://"))
 	destPath := filepath.Join(outDir, basename)
+
+	// Avoid overwriting existing files (e.g., when scattered outputs share a basename).
+	if _, err := os.Stat(destPath); err == nil {
+		ext := filepath.Ext(basename)
+		name := strings.TrimSuffix(basename, ext)
+		for i := 2; ; i++ {
+			candidate := filepath.Join(outDir, fmt.Sprintf("%s_%d%s", name, i, ext))
+			if _, err := os.Stat(candidate); os.IsNotExist(err) {
+				destPath = candidate
+				basename = filepath.Base(candidate)
+				break
+			}
+		}
+	}
 
 	// Try to download from server.
 	if err := client.DownloadFile(location, destPath); err != nil {
@@ -1022,7 +1093,14 @@ func downloadDirectoryOutput(dirMap map[string]any, outDir string) map[string]an
 			formattedListing := make([]any, 0, len(listing))
 			for _, item := range listing {
 				if itemMap, ok := item.(map[string]any); ok {
-					formattedListing = append(formattedListing, downloadAndFormatOutput(itemMap, localDir))
+					processed := downloadAndFormatOutput(itemMap, localDir)
+					// Normalize listing item locations to basenames (CWL convention).
+					if pMap, ok := processed.(map[string]any); ok {
+						if loc, ok := pMap["location"].(string); ok {
+							pMap["location"] = filepath.Base(strings.TrimPrefix(loc, "file://"))
+						}
+					}
+					formattedListing = append(formattedListing, processed)
 				} else {
 					formattedListing = append(formattedListing, item)
 				}
