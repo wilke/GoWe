@@ -114,6 +114,13 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			return nil, fmt.Errorf("$graph[%d]: expected map, got %T", i, entry)
 		}
 
+		// Inherit root cwlVersion for entries without their own.
+		// This enables version-specific validation (e.g., rejecting v1.2
+		// features in documents declared as v1.0).
+		if _, hasVersion := m["cwlVersion"]; !hasVersion && version != "" {
+			m["cwlVersion"] = version
+		}
+
 		class := stringField(m, "class")
 		switch class {
 		case "Workflow":

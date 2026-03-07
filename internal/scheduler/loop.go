@@ -341,6 +341,17 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
 
+	// Check for InplaceUpdateRequirement in distributed mode.
+	// InplaceUpdate requires shared filesystem across steps which is not available
+	// in distributed execution. Fail early with a clear message.
+	if execType != model.ExecutorTypeLocal && hasInplaceUpdateReq(tmpTask.Tool) {
+		now := time.Now().UTC()
+		si.State = model.StepStateFailed
+		si.CompletedAt = &now
+		l.logger.Error("InplaceUpdateRequirement not supported in distributed mode", "si_id", si.ID)
+		return l.store.UpdateStepInstance(ctx, si)
+	}
+
 	// Sub-workflow dispatch.
 	if isSubWorkflow(tmpTask.Tool) {
 		if len(step.Scatter) > 0 {
@@ -1650,6 +1661,23 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 	}
 
 	return hints
+}
+
+// hasInplaceUpdateReq checks if a tool map has InplaceUpdateRequirement enabled.
+func hasInplaceUpdateReq(tool map[string]any) bool {
+	if tool == nil {
+		return false
+	}
+	reqs, ok := tool["requirements"].(map[string]any)
+	if !ok {
+		return false
+	}
+	iur, ok := reqs["InplaceUpdateRequirement"].(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, _ := iur["inplaceUpdate"].(bool)
+	return enabled
 }
 
 // isExpressionTool checks if a tool map represents a CWL ExpressionTool.
