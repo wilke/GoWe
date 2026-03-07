@@ -17,6 +17,7 @@ import (
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/cwloutput"
+	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/iwdr"
@@ -351,35 +352,15 @@ func (r *Runner) executeTool(ctx context.Context, graph *cwl.GraphDocument, tool
 }
 
 // executeToolWithStepID executes a single CommandLineTool with an optional step ID for metrics.
+// Graph-specific concerns (workflow requirement merging, step counting, metrics) are handled here.
+// The actual preprocessing + execution + output collection is delegated to cwltool.ExecuteTool.
 func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocument, tool *cwl.CommandLineTool, inputs map[string]any, resolveSecondary bool, stepID string) (map[string]any, error) {
 	r.logger.Info("executing tool", "id", tool.ID)
 
-	// Merge workflow requirements into tool (workflow requirements override tool hints).
+	// Merge workflow requirements into tool (graph-specific, stays in cwlrunner).
 	mergeWorkflowRequirements(tool, graph.Workflow)
 
-	// Resolve secondaryFiles for tool inputs if requested (direct tool execution).
-	resolvedInputs := inputs
-	if resolveSecondary {
-		resolvedInputs = secondaryfiles.ResolveForTool(tool, inputs, r.cwlDir)
-	}
-
-	// Merge tool input defaults with resolved inputs.
-	mergedInputs, err := mergeToolDefaults(tool, resolvedInputs, r.cwlDir)
-	if err != nil {
-		return nil, fmt.Errorf("process inputs: %w", err)
-	}
-
-	// Validate inputs against tool schema.
-	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
-		return nil, err
-	}
-
-	// Validate file formats.
-	if err := validate.ValidateFileFormat(tool, mergedInputs, r.namespaces); err != nil {
-		return nil, err
-	}
-
-	// Get expression library from requirements.
+	// Extract expression library from graph (may handle $include directives).
 	expressionLib := extractExpressionLib(graph, r.cwlDir)
 
 	// Determine container runtime.
@@ -390,130 +371,38 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 	} else if containerRuntime == "" {
 		if r.ForceDocker {
 			containerRuntime = "docker"
-		} else if hasDockerRequirement(tool, graph.Workflow) {
-			// Auto-detect: default to "docker" when DockerRequirement is present.
-			containerRuntime = "docker"
 		}
+		// Auto-detect is handled by cwltool.ExecuteTool when containerRuntime is empty.
 	}
 
 	// Get the work directory for this execution (increments stepCount).
-	// Use mutex for thread-safety in parallel execution.
 	r.stepMu.Lock()
 	r.stepCount++
 	stepNum := r.stepCount
 	r.stepMu.Unlock()
 	workDir := filepath.Join(r.OutDir, fmt.Sprintf("work_%d", stepNum))
-	// Make workDir absolute for use in runtime.outdir expressions.
-	if absWorkDir, err := filepath.Abs(workDir); err == nil {
-		workDir = absWorkDir
-	}
 
-	// Ensure work directory exists for staging.
-	if err := os.MkdirAll(workDir, 0755); err != nil {
-		return nil, fmt.Errorf("create work dir: %w", err)
-	}
+	startTime := time.Now()
 
-	// Populate directory listings for inputs with loadListing.
-	populateDirectoryListings(tool, mergedInputs)
-
-	// Stage files from InitialWorkDirRequirement.
-	// For container execution, copy files instead of symlinking (symlinks point to host paths).
-	// Check for InplaceUpdateRequirement - if enabled, writable files should be symlinked
-	// so modifications affect the original (required for workflows that depend on side effects).
-	useContainer := containerRuntime == "docker" || containerRuntime == "apptainer"
-	inplaceUpdate := hasInplaceUpdateRequirement(tool)
-	iwdResult, err := iwdr.Stage(tool, mergedInputs, workDir, iwdr.StageOptions{
-		CopyForContainer: useContainer,
+	// Delegate to cwltool.ExecuteTool for the actual preprocessing + execution.
+	cfg := cwltool.Config{
+		Logger:           r.logger,
 		CWLDir:           r.cwlDir,
+		Namespaces:       r.namespaces,
 		ExpressionLib:    expressionLib,
-		InplaceUpdate:    inplaceUpdate,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)
-	}
-	var containerMounts []iwdr.ContainerMount
-	if iwdResult != nil {
-		containerMounts = iwdResult.ContainerMounts
-		iwdr.UpdateInputPaths(mergedInputs, workDir, iwdResult.StagedPaths)
+		ContainerRuntime: containerRuntime,
+		NoContainer:      r.NoContainer,
+		ResolveSecondary: resolveSecondary,
+		JobRequirements:  r.jobRequirements,
+		OutDir:           r.OutDir,
 	}
 
-	// Stage files with renamed basenames (e.g., from ExpressionTool modifications).
-	// When a File has basename != filepath.Base(path), we need to symlink it with
-	// the new basename so that $(inputs.x.path) returns the correct path.
-	if err := stageRenamedInputs(mergedInputs, workDir); err != nil {
-		return nil, fmt.Errorf("stage renamed inputs: %w", err)
-	}
+	result, execErr := cwltool.ExecuteTool(ctx, cfg, tool, inputs, workDir)
 
-	// Apply ToolTimeLimit if specified.
-	// Wrap context with timeout to enforce the time limit.
-	timeLimit := getToolTimeLimit(tool, mergedInputs)
-	if timeLimit < 0 {
-		return nil, fmt.Errorf("invalid ToolTimeLimit: timelimit must be non-negative, got %d", timeLimit)
-	}
-	if timeLimit > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeLimit)*time.Second)
-		defer cancel()
-	}
-
-	// Build command line with runtime context appropriate for the execution environment.
-	// For containers, use container paths; for local execution, use host paths.
-	builder := cmdline.NewBuilder(expressionLib)
-
-	var result *ExecutionResult
-	var execErr error
-	switch containerRuntime {
-	case "docker":
-		dockerImage := getDockerImage(tool, graph.Workflow)
-		if dockerImage == "" {
-			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
-		}
-		dockerOutputDir := getDockerOutputDirectory(tool)
-		// Build runtime context with container paths.
-		containerWorkDir := "/var/spool/cwl"
-		if dockerOutputDir != "" {
-			containerWorkDir = dockerOutputDir
-		}
-		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
-		runtime.TmpDir = "/tmp"
-		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-		if err != nil {
-			return nil, fmt.Errorf("build command: %w", err)
-		}
-		r.logger.Debug("built command", "cmd", cmdResult.Command)
-		result, execErr = r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
-	case "apptainer":
-		dockerImage := getDockerImage(tool, graph.Workflow)
-		if dockerImage == "" {
-			return nil, fmt.Errorf("Apptainer execution requested but no docker image specified")
-		}
-		dockerOutputDir := getDockerOutputDirectory(tool)
-		// Build runtime context with container paths.
-		containerWorkDir := "/var/spool/cwl"
-		if dockerOutputDir != "" {
-			containerWorkDir = dockerOutputDir
-		}
-		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
-		runtime.TmpDir = "/tmp"
-		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-		if err != nil {
-			return nil, fmt.Errorf("build command: %w", err)
-		}
-		r.logger.Debug("built command", "cmd", cmdResult.Command)
-		result, execErr = r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
-	default:
-		// Build runtime context using actual work directory for local execution.
-		runtime := buildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
-		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-		if err != nil {
-			return nil, fmt.Errorf("build command: %w", err)
-		}
-		r.logger.Debug("built command", "cmd", cmdResult.Command)
-		result, execErr = r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
-	}
+	duration := time.Since(startTime)
 
 	if execErr != nil {
-		// Record failed step metrics if enabled
+		// Record failed step metrics if enabled.
 		if r.metrics != nil && r.metrics.Enabled() {
 			metricsStepID := stepID
 			if metricsStepID == "" {
@@ -529,20 +418,19 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		return nil, execErr
 	}
 
-	// Record successful step metrics if enabled
+	// Record successful step metrics if enabled.
 	if r.metrics != nil && r.metrics.Enabled() {
 		metricsStepID := stepID
 		if metricsStepID == "" {
 			metricsStepID = tool.ID
 		}
 		r.metrics.RecordStep(StepMetrics{
-			StepID:       metricsStepID,
-			ToolID:       tool.ID,
-			StartTime:    result.StartTime,
-			Duration:     result.Duration,
-			ExitCode:     result.ExitCode,
-			PeakMemoryKB: result.PeakMemoryKB,
-			Status:       "success",
+			StepID:    metricsStepID,
+			ToolID:    tool.ID,
+			StartTime: startTime,
+			Duration:  duration,
+			ExitCode:  result.ExitCode,
+			Status:    "success",
 		})
 	}
 

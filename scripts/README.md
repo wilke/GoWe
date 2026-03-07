@@ -107,7 +107,7 @@ GoWe supports multiple execution modes, each tested for CWL v1.2 conformance:
                                        │
                     ┌──────────────────┼──────────────────┐
                     ▼                  ▼                  ▼
-            distributed-docker  distributed-apptainer  distributed-bare
+            distributed-docker  distributed-apptainer  distributed-none
 ```
 
 | Mode | Description | Container Runtime |
@@ -115,7 +115,7 @@ GoWe supports multiple execution modes, each tested for CWL v1.2 conformance:
 | `cwl-runner` | Direct CLI execution | Docker/Apptainer |
 | `cwl-runner --parallel` | Parallel step execution | Docker/Apptainer |
 | `server-local` | Server with LocalExecutor | Docker/Apptainer |
-| `distributed-bare` | Server + Workers | Host $PATH (no containers) |
+| `distributed-none` | Server + Workers | Host $PATH (no containers) |
 | `distributed-docker` | Server + Workers | Docker-in-Docker |
 | `distributed-apptainer` | Server + Workers | Apptainer |
 
@@ -140,7 +140,7 @@ These tests verify server-based execution modes. Progress is tracked toward 100%
 | Test | Description | Current | Target |
 |------|-------------|---------|--------|
 | `server-local` | Server + LocalExecutor | 250/378 | 378/378 |
-| `distributed-bare` | Workers with host tools | TBD | 378/378 |
+| `distributed-none` | Workers with host tools | TBD | 378/378 |
 | `distributed-docker` | Workers with Docker | ~200/378 | 378/378 |
 | `distributed-apptainer` | Workers with Apptainer | TBD | 378/378 |
 
@@ -231,7 +231,7 @@ Options:
 ./scripts/run-all-tests.sh -t 1
 
 # Skip distributed tests
-./scripts/run-all-tests.sh -s distributed-docker -s distributed-bare
+./scripts/run-all-tests.sh -s distributed-docker -s distributed-none
 
 # Run without Docker dependencies
 ./scripts/run-all-tests.sh --no-docker
@@ -407,7 +407,7 @@ Use these estimates for CI timeout configuration and planning.
 | cwl-runner | ~2 min | ~2 min | OK (baseline) |
 | cwl-runner-parallel | ~2 min | ~2 min | OK (baseline) |
 | server-local | ~19 min | ~2 min | **TOO SLOW** |
-| distributed-bare | ~37 min | ~2 min | **TOO SLOW** |
+| distributed-none | ~37 min | ~2 min | **TOO SLOW** |
 | distributed-docker | ~35 min | ~2 min | **TOO SLOW** |
 | staging (all) | ~22s | ~22s | OK |
 | **Total (all tiers)** | **~95 min** | **~10 min** | |

@@ -474,7 +474,41 @@ $graph:
 
 func TestParseGraph_MultipleWorkflows(t *testing.T) {
 	p := testParser()
-	data := []byte(`cwlVersion: v1.2
+
+	t.Run("selects main workflow", func(t *testing.T) {
+		data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: sub_wf
+    class: Workflow
+    inputs: {}
+    outputs: {}
+    steps: {}
+  - id: main
+    class: Workflow
+    inputs: {}
+    outputs: {}
+    steps: {}
+`)
+		graph, err := p.ParseGraph(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if graph.Workflow == nil {
+			t.Fatal("expected Workflow to be set")
+		}
+		if graph.Workflow.ID != "main" {
+			t.Errorf("expected main workflow, got %q", graph.Workflow.ID)
+		}
+		if len(graph.SubWorkflows) != 1 {
+			t.Errorf("expected 1 sub-workflow, got %d", len(graph.SubWorkflows))
+		}
+		if _, ok := graph.SubWorkflows["sub_wf"]; !ok {
+			t.Error("expected sub_wf in SubWorkflows")
+		}
+	})
+
+	t.Run("no main uses last workflow", func(t *testing.T) {
+		data := []byte(`cwlVersion: v1.2
 $graph:
   - id: wf1
     class: Workflow
@@ -487,10 +521,17 @@ $graph:
     outputs: {}
     steps: {}
 `)
-	_, err := p.ParseGraph(data)
-	if err == nil {
-		t.Error("expected error for multiple Workflows")
-	}
+		graph, err := p.ParseGraph(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if graph.Workflow.ID != "wf2" {
+			t.Errorf("expected last workflow wf2, got %q", graph.Workflow.ID)
+		}
+		if len(graph.SubWorkflows) != 1 {
+			t.Errorf("expected 1 sub-workflow, got %d", len(graph.SubWorkflows))
+		}
+	})
 }
 
 func TestParseGraph_ExpandedInputs(t *testing.T) {

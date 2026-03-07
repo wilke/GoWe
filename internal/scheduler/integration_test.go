@@ -104,39 +104,22 @@ func TestIntegration_TwoStepLocalPipeline(t *testing.T) {
 		t.Fatalf("create submission: %v", err)
 	}
 
-	// --- Tasks ---
-	task1 := &model.Task{
-		ID:           "task_" + uuid.New().String(),
-		SubmissionID: sub.ID,
-		StepID:       "step1",
-		State:        model.TaskStatePending,
-		ExecutorType: model.ExecutorTypeLocal,
-		Inputs:       map[string]any{},
-		Outputs:      map[string]any{},
-		DependsOn:    []string{},
-		MaxRetries:   0,
-		CreatedAt:    time.Now().UTC(),
+	// --- Step Instances (scheduler creates Tasks from these) ---
+	now := time.Now().UTC()
+	for _, step := range wf.Steps {
+		si := &model.StepInstance{
+			ID:           "si_" + uuid.New().String(),
+			SubmissionID: sub.ID,
+			StepID:       step.ID,
+			State:        model.StepStateWaiting,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("create step instance %s: %v", step.ID, err)
+		}
 	}
-
-	task2 := &model.Task{
-		ID:           "task_" + uuid.New().String(),
-		SubmissionID: sub.ID,
-		StepID:       "step2",
-		State:        model.TaskStatePending,
-		ExecutorType: model.ExecutorTypeLocal,
-		Inputs:       map[string]any{},
-		Outputs:      map[string]any{},
-		DependsOn:    []string{"step1"},
-		MaxRetries:   0,
-		CreatedAt:    time.Now().UTC(),
-	}
-
-	if err := st.CreateTask(ctx, task1); err != nil {
-		t.Fatalf("create task1: %v", err)
-	}
-	if err := st.CreateTask(ctx, task2); err != nil {
-		t.Fatalf("create task2: %v", err)
-	}
+	sched.config.MaxRetries = 0
 
 	// --- Run Tick loop ---
 	const maxTicks = 10

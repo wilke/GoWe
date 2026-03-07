@@ -54,8 +54,9 @@ type Step struct {
 	DependsOn  []string    `json:"depends_on"`
 	In         []StepInput `json:"in"`
 	Out        []string    `json:"out"`
-	Scatter    []string    `json:"scatter,omitempty"`
-	When       string      `json:"when,omitempty"`
+	Scatter       []string    `json:"scatter,omitempty"`
+	ScatterMethod string      `json:"scatter_method,omitempty"`
+	When          string      `json:"when,omitempty"`
 	Hints      *StepHints  `json:"hints,omitempty"`
 }
 
@@ -67,6 +68,7 @@ type StepInput struct {
 	Default      any      `json:"default,omitempty"`       // Fallback value if sources resolve to nil
 	ValueFrom    string   `json:"value_from,omitempty"`    // Expression to transform input
 	LoadContents bool     `json:"load_contents,omitempty"` // Read file contents before valueFrom
+	LinkMerge    string   `json:"link_merge,omitempty"`    // merge_nested (default) or merge_flattened
 }
 
 // StepHints holds GoWe-specific hints extracted from a CWL step.

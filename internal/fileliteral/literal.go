@@ -317,12 +317,12 @@ func materializeFileOutput(obj map[string]any, outDir string) (map[string]any, e
 		}
 
 		result["path"] = filePath
-		result["location"] = basename
+		result["location"] = "file://" + filePath
 		result["size"] = int64(len(contents))
 		result["checksum"] = computeSHA1String(contents)
 
-		// Remove contents from output (it's now on disk).
-		delete(result, "contents")
+		// Keep contents in output so downstream (CLI) can reconstruct
+		// the file without needing access to the server's temp directory.
 	} else if hasPath {
 		// File exists on disk - add metadata if missing.
 		path := result["path"].(string)
@@ -405,11 +405,14 @@ func materializeDirOutput(obj map[string]any, outDir string) (map[string]any, er
 						}
 					}
 
-					// Update processed object with new location.
+					// Keep original location for download (e.g., file:///workdir/uploads/...)
+				// but fall back to basename if no original location exists.
+				if _, hasLoc := processedObj["location"].(string); !hasLoc {
 					processedObj["location"] = itemBasename
-					if err := addFileMetadata(processedObj, srcPath); err != nil {
-						return nil, err
-					}
+				}
+				if err := addFileMetadata(processedObj, srcPath); err != nil {
+					return nil, err
+				}
 				}
 			}
 

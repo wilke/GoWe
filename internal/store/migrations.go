@@ -107,6 +107,20 @@ var schema = []string{
 	`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 	`CREATE INDEX IF NOT EXISTS idx_users_provider ON users(provider)`,
 
+	// Step instances table for the 3-level state architecture
+	`CREATE TABLE IF NOT EXISTS step_instances (
+		id            TEXT PRIMARY KEY,
+		submission_id TEXT NOT NULL,
+		step_id       TEXT NOT NULL,
+		state         TEXT NOT NULL DEFAULT 'WAITING',
+		scatter_count INTEGER NOT NULL DEFAULT 0,
+		outputs       TEXT NOT NULL DEFAULT '{}',
+		created_at    TEXT NOT NULL,
+		completed_at  TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_si_submission ON step_instances(submission_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_si_state ON step_instances(state)`,
+
 	// Linked providers for multi-provider authentication
 	`CREATE TABLE IF NOT EXISTS linked_providers (
 		user_id   TEXT NOT NULL,
@@ -181,6 +195,43 @@ var alterStatements = []struct {
 		column:   "worker_group",
 		alterSQL: "ALTER TABLE workers ADD COLUMN worker_group TEXT NOT NULL DEFAULT 'default'",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workers_group ON workers(worker_group)",
+	},
+	// Parent task ID for child submissions (sub-workflow execution)
+	{
+		table:    "submissions",
+		column:   "parent_task_id",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN parent_task_id TEXT NOT NULL DEFAULT ''",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_submissions_parent_task_id ON submissions(parent_task_id) WHERE parent_task_id != ''",
+	},
+	// Step instance ID links task to its parent StepInstance
+	{
+		table:    "tasks",
+		column:   "step_instance_id",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN step_instance_id TEXT NOT NULL DEFAULT ''",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_tasks_step_instance_id ON tasks(step_instance_id) WHERE step_instance_id != ''",
+	},
+	// Scatter index for ordering scatter task outputs (-1 for non-scatter)
+	{
+		table:    "tasks",
+		column:   "scatter_index",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN scatter_index INTEGER NOT NULL DEFAULT -1",
+	},
+	// Scatter method and dims for correct nested_crossproduct merge in async mode
+	{
+		table:    "step_instances",
+		column:   "scatter_method",
+		alterSQL: "ALTER TABLE step_instances ADD COLUMN scatter_method TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		table:    "step_instances",
+		column:   "scatter_dims",
+		alterSQL: "ALTER TABLE step_instances ADD COLUMN scatter_dims TEXT NOT NULL DEFAULT ''",
+	},
+	// Submission error details for structured failure reporting
+	{
+		table:    "submissions",
+		column:   "error",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN error TEXT NOT NULL DEFAULT ''",
 	},
 }
 

@@ -20,14 +20,15 @@
   "tier2": {
     "server-local": {
       "status": "partial",
-      "expected": "250/378",
-      "known_failures": 128,
+      "expected": "334/378",
+      "known_failures": 44,
       "description": "Server + LocalExecutor mode"
     },
-    "distributed-bare": {
-      "status": "unknown",
-      "expected": "TBD",
-      "description": "Server + Workers with --runtime=bare"
+    "distributed-none": {
+      "status": "partial",
+      "expected": "310/378",
+      "known_failures": 68,
+      "description": "Server + Workers with --runtime=none (no containers)"
     },
     "distributed-docker": {
       "status": "partial",

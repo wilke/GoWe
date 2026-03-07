@@ -145,6 +145,46 @@ func createTestSubmission(t *testing.T, srv *Server) (string, string) {
 	return wfID, subID
 }
 
+// createTestSubmissionWithTasks creates a submission and manually adds tasks
+// (emulating what the scheduler does) so API tests can exercise task endpoints.
+func createTestSubmissionWithTasks(t *testing.T, srv *Server) (string, string) {
+	t.Helper()
+	wfID, subID := createTestSubmission(t, srv)
+
+	// Look up the workflow to get step IDs.
+	wf, err := srv.store.GetWorkflow(context.Background(), wfID)
+	if err != nil || wf == nil {
+		t.Fatalf("get workflow: %v", err)
+	}
+
+	// Look up step instances to link tasks.
+	steps, err := srv.store.ListStepsBySubmission(context.Background(), subID)
+	if err != nil {
+		t.Fatalf("list step instances: %v", err)
+	}
+
+	// Create one task per step instance (mirroring scheduler behavior).
+	for _, si := range steps {
+		task := &model.Task{
+			ID:             "task_test_" + si.StepID,
+			SubmissionID:   subID,
+			StepID:         si.StepID,
+			StepInstanceID: si.ID,
+			State:          model.TaskStatePending,
+			ExecutorType:   model.ExecutorTypeLocal,
+			Inputs:         map[string]any{},
+			Outputs:        map[string]any{},
+			Job:            map[string]any{},
+			ScatterIndex:   -1,
+		}
+		if err := srv.store.CreateTask(context.Background(), task); err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+	}
+
+	return wfID, subID
+}
+
 // --- Discovery & Health (unchanged) ---
 
 func TestDiscovery(t *testing.T) {
@@ -630,10 +670,11 @@ func TestCreateSubmission(t *testing.T) {
 	if data["workflow_id"] != wfID {
 		t.Errorf("workflow_id = %v, want %s", data["workflow_id"], wfID)
 	}
-	// Should have 2 tasks (assemble + annotate).
-	tasks, ok := data["tasks"].([]any)
-	if !ok || len(tasks) != 2 {
-		t.Errorf("tasks count = %v, want 2", data["tasks"])
+	// Tasks are created by the scheduler, not at submission time.
+	// Submission should have 0 tasks initially.
+	tasks, _ := data["tasks"].([]any)
+	if len(tasks) != 0 {
+		t.Errorf("tasks count = %d, want 0 (tasks created by scheduler)", len(tasks))
 	}
 }
 
@@ -863,10 +904,10 @@ func TestCancelSubmission(t *testing.T) {
 	if data["state"] != "CANCELLED" {
 		t.Errorf("state = %v, want CANCELLED", data["state"])
 	}
-	// 2 pending tasks should be cancelled.
-	tasksCancelled, _ := data["tasks_cancelled"].(float64)
-	if tasksCancelled != 2 {
-		t.Errorf("tasks_cancelled = %v, want 2", data["tasks_cancelled"])
+	// 2 WAITING step instances should be cancelled (tasks not yet created).
+	stepsCancelled, _ := data["steps_cancelled"].(float64)
+	if stepsCancelled != 2 {
+		t.Errorf("steps_cancelled = %v, want 2", data["steps_cancelled"])
 	}
 }
 
@@ -884,7 +925,7 @@ func TestCancelSubmission_NotFound(t *testing.T) {
 
 func TestListTasks(t *testing.T) {
 	srv := testServer()
-	_, subID := createTestSubmission(t, srv)
+	_, subID := createTestSubmissionWithTasks(t, srv)
 
 	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
 	if env.Pagination == nil {
@@ -908,7 +949,7 @@ func TestListTasks_Empty(t *testing.T) {
 
 func TestGetTask(t *testing.T) {
 	srv := testServer()
-	_, subID := createTestSubmission(t, srv)
+	_, subID := createTestSubmissionWithTasks(t, srv)
 
 	// List tasks to get a task ID.
 	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
@@ -943,7 +984,7 @@ func TestGetTask_NotFound(t *testing.T) {
 
 func TestGetTaskLogs(t *testing.T) {
 	srv := testServer()
-	_, subID := createTestSubmission(t, srv)
+	_, subID := createTestSubmissionWithTasks(t, srv)
 
 	// List tasks to get a task ID.
 	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")

@@ -22,6 +22,12 @@ services:
       - "local,docker,worker,container"
       - "-scheduler-poll"
       - "500ms"
+      - "-upload-backend"
+      - "local"
+      - "-upload-local-dir"
+      - "/workdir/uploads"
+      - "-upload-download-dirs"
+      - "/workdir/uploads,/workdir/outputs,/workdir/scratch"
       - "-debug"
     volumes:
       - gowe-data:/data

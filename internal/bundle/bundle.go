@@ -79,6 +79,9 @@ func Bundle(workflowPath string) (*Result, error) {
 			}
 		}
 
+		resolveGraphInputDefaults(graphItems, baseDir)
+		resolveIWDListingPaths(graphItems, baseDir)
+
 		packed, err := yaml.Marshal(doc)
 		if err != nil {
 			return nil, fmt.Errorf("marshal packed document: %w", err)
@@ -126,76 +129,8 @@ func Bundle(workflowPath string) (*Result, error) {
 		return nil, fmt.Errorf("workflow has no steps")
 	}
 
-	for stepName, stepVal := range steps {
-		step, ok := stepVal.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// Resolve file paths in step input defaults.
-		if stepIn, ok := step["in"].(map[string]any); ok {
-			for _, inputVal := range stepIn {
-				if inputMap, ok := inputVal.(map[string]any); ok {
-					if def, ok := inputMap["default"]; ok {
-						inputMap["default"] = ResolveFilePaths(def, baseDir)
-					}
-				}
-			}
-		} else if stepInArr, ok := step["in"].([]any); ok {
-			for _, inputItem := range stepInArr {
-				if inputMap, ok := inputItem.(map[string]any); ok {
-					if def, ok := inputMap["default"]; ok {
-						inputMap["default"] = ResolveFilePaths(def, baseDir)
-					}
-				}
-			}
-		}
-
-		runRef, ok := step["run"].(string)
-		if !ok {
-			continue
-		}
-
-		// Skip if already a fragment reference
-		if strings.HasPrefix(runRef, "#") {
-			continue
-		}
-
-		// Check if we've already loaded this tool
-		if _, seen := toolIDs[runRef]; seen {
-			step["run"] = "#" + toolIDs[runRef]
-			continue
-		}
-
-		// Resolve and read the tool file
-		toolPath := filepath.Join(baseDir, runRef)
-		toolData, err := os.ReadFile(toolPath)
-		if err != nil {
-			return nil, fmt.Errorf("step %q: read tool %q: %w", stepName, runRef, err)
-		}
-
-		var toolDoc map[string]any
-		if err := yaml.Unmarshal(toolData, &toolDoc); err != nil {
-			return nil, fmt.Errorf("step %q: parse tool %q: %w", stepName, runRef, err)
-		}
-
-		// Assign an ID to the tool (use filename without extension)
-		toolID := strings.TrimSuffix(filepath.Base(runRef), filepath.Ext(runRef))
-		toolDoc["id"] = toolID
-		toolIDs[runRef] = toolID
-
-		// Remove cwlVersion from individual tools (it's at the top level)
-		delete(toolDoc, "cwlVersion")
-
-		// Propagate workflow's DockerRequirement to tool if tool doesn't have one.
-		if workflowDockerReq != nil && !hasDockerRequirement(toolDoc) {
-			injectDockerRequirement(toolDoc, workflowDockerReq)
-		}
-
-		graph = append(graph, toolDoc)
-
-		// Replace run: with fragment reference
-		step["run"] = "#" + toolID
+	if err := resolveStepRuns(steps, baseDir, &graph, toolIDs, workflowDockerReq); err != nil {
+		return nil, err
 	}
 
 	// Add the workflow itself to the graph
@@ -208,6 +143,13 @@ func Bundle(workflowPath string) (*Result, error) {
 	}
 	wfDoc["id"] = "main"
 	graph = append(graph, wfDoc)
+
+	// Resolve File/Directory objects in input defaults to absolute paths.
+	// This ensures uploadPackedCWLFiles can find and upload them.
+	resolveGraphInputDefaults(graph, baseDir)
+
+	// Resolve relative paths in InitialWorkDirRequirement listings.
+	resolveIWDListingPaths(graph, baseDir)
 
 	// Build the packed document
 	packed := map[string]any{
@@ -260,6 +202,83 @@ func nameFromPath(path string) string {
 	return name
 }
 
+// resolveGraphInputDefaults resolves File/Directory objects in input defaults
+// across all graph entries to absolute paths. This ensures uploadPackedCWLFiles
+// can find and upload files referenced in workflow/tool input defaults.
+func resolveGraphInputDefaults(graph []any, baseDir string) {
+	for _, item := range graph {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Process inputs — can be map or array form.
+		switch inputs := itemMap["inputs"].(type) {
+		case map[string]any:
+			for id, inp := range inputs {
+				if inpMap, ok := inp.(map[string]any); ok {
+					if def, ok := inpMap["default"]; ok {
+						inpMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+				_ = id
+			}
+		case []any:
+			for _, inp := range inputs {
+				if inpMap, ok := inp.(map[string]any); ok {
+					if def, ok := inpMap["default"]; ok {
+						inpMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		}
+	}
+}
+
+// resolveIWDListingPaths resolves relative File/Directory locations in
+// InitialWorkDirRequirement listings to absolute paths. Without this,
+// relative paths like "../testdir" can't be resolved at execution time
+// because the CWL file directory context is lost after bundling.
+func resolveIWDListingPaths(graph []any, baseDir string) {
+	for _, item := range graph {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Check requirements for InitialWorkDirRequirement.
+		reqs, _ := itemMap["requirements"].(map[string]any)
+		if reqs == nil {
+			// Also check array-form requirements.
+			if reqArr, ok := itemMap["requirements"].([]any); ok {
+				for _, req := range reqArr {
+					reqMap, ok := req.(map[string]any)
+					if !ok {
+						continue
+					}
+					if class, _ := reqMap["class"].(string); class == "InitialWorkDirRequirement" {
+						resolveIWDListing(reqMap, baseDir)
+					}
+				}
+			}
+			continue
+		}
+		if iwdReq, ok := reqs["InitialWorkDirRequirement"].(map[string]any); ok {
+			resolveIWDListing(iwdReq, baseDir)
+		}
+	}
+}
+
+// resolveIWDListing resolves File/Directory paths in an IWD listing.
+func resolveIWDListing(iwdReq map[string]any, baseDir string) {
+	listing, ok := iwdReq["listing"].([]any)
+	if !ok {
+		return
+	}
+	for i, item := range listing {
+		listing[i] = ResolveFilePaths(item, baseDir)
+	}
+}
+
 // bundleBareTool wraps a bare CommandLineTool or ExpressionTool in a synthetic
 // single-step workflow, producing a packed $graph document.
 func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (*Result, error) {
@@ -288,13 +307,19 @@ func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (
 			inputType = v
 		case map[string]any:
 			inputType = v["type"]
+			wfDef := map[string]any{"type": inputType}
+			// Copy secondaryFiles to synthetic workflow input so the
+			// workflow-level secondaryFiles resolution picks them up.
+			if sf, ok := v["secondaryFiles"]; ok {
+				wfDef["secondaryFiles"] = sf
+			}
 			// Copy default if present, resolving File/Directory locations.
 			if def, ok := v["default"]; ok {
-				resolvedDef := ResolveFilePaths(def, baseDir)
-				wfInputs[id] = map[string]any{"type": inputType, "default": resolvedDef}
-				stepIn[id] = id
-				continue
+				wfDef["default"] = ResolveFilePaths(def, baseDir)
 			}
+			wfInputs[id] = wfDef
+			stepIn[id] = id
+			continue
 		}
 		wfInputs[id] = map[string]any{"type": inputType}
 		stepIn[id] = id
@@ -318,7 +343,9 @@ func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (
 		stepOut = append(stepOut, id)
 	}
 
-	// Create synthetic workflow
+	// Create synthetic workflow.
+	// Propagate SchemaDefRequirement so the workflow parser can resolve
+	// type references (e.g., RecordTestType) for secondaryFiles on record fields.
 	workflow := map[string]any{
 		"id":      "main",
 		"class":   "Workflow",
@@ -331,6 +358,13 @@ func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (
 				"out": stepOut,
 			},
 		},
+	}
+	if toolReqs, ok := toolDoc["requirements"].(map[string]any); ok {
+		if sd, ok := toolReqs["SchemaDefRequirement"]; ok {
+			workflow["requirements"] = map[string]any{
+				"SchemaDefRequirement": sd,
+			}
+		}
 	}
 
 	// Prepare tool for graph (remove cwlVersion, add id, resolve paths).
@@ -360,6 +394,9 @@ func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (
 		// Remove from tool copy (it's at root level).
 		delete(toolForGraph, "$namespaces")
 	}
+
+	// Resolve relative paths in InitialWorkDirRequirement listings.
+	resolveIWDListingPaths([]any{toolForGraph}, baseDir)
 
 	// Build packed document
 	packed := map[string]any{
@@ -737,6 +774,20 @@ func resolveImports(v any, baseDir string) (any, error) {
 			return resolveImports(imported, importDir)
 		}
 
+		// Check if this is an $include directive.
+		// $include loads external text as a string (unlike $import which loads YAML/JSON).
+		if includePath, ok := val["$include"].(string); ok && len(val) == 1 {
+			fullPath := includePath
+			if !filepath.IsAbs(includePath) {
+				fullPath = filepath.Join(baseDir, includePath)
+			}
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				return nil, fmt.Errorf("read include %q: %w", includePath, err)
+			}
+			return string(data), nil
+		}
+
 		// Recursively process all values in the map.
 		result := make(map[string]any)
 		for k, v := range val {
@@ -764,4 +815,136 @@ func resolveImports(v any, baseDir string) (any, error) {
 		// Primitive values are returned as-is.
 		return v, nil
 	}
+}
+
+// resolveStepRuns resolves run: references in workflow steps.
+// For each step with a string run: reference (not a fragment), it loads the referenced file,
+// adds it to the graph, and replaces the reference with a fragment.
+// If the loaded file is itself a Workflow, its steps are recursively resolved.
+func resolveStepRuns(steps map[string]any, baseDir string, graph *[]any, toolIDs map[string]string, workflowDockerReq map[string]any) error {
+	for stepName, stepVal := range steps {
+		step, ok := stepVal.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Resolve file paths in step input defaults.
+		if stepIn, ok := step["in"].(map[string]any); ok {
+			for _, inputVal := range stepIn {
+				if inputMap, ok := inputVal.(map[string]any); ok {
+					if def, ok := inputMap["default"]; ok {
+						inputMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		} else if stepInArr, ok := step["in"].([]any); ok {
+			for _, inputItem := range stepInArr {
+				if inputMap, ok := inputItem.(map[string]any); ok {
+					if def, ok := inputMap["default"]; ok {
+						inputMap["default"] = ResolveFilePaths(def, baseDir)
+					}
+				}
+			}
+		}
+
+		runRef, ok := step["run"].(string)
+		if !ok {
+			// Handle inline workflow definitions (run: is a map, not a string).
+			// Recursively resolve external tool references within the inline workflow's steps.
+			if runMap, isMap := step["run"].(map[string]any); isMap {
+				class, _ := runMap["class"].(string)
+				if class == "Workflow" {
+					subSteps := extractSteps(runMap)
+					if subSteps != nil {
+						if err := resolveStepRuns(subSteps, baseDir, graph, toolIDs, workflowDockerReq); err != nil {
+							return fmt.Errorf("step %q: resolve inline workflow: %w", stepName, err)
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// Skip if already a fragment reference.
+		if strings.HasPrefix(runRef, "#") {
+			continue
+		}
+
+		// Check if we've already loaded this tool.
+		if _, seen := toolIDs[runRef]; seen {
+			step["run"] = "#" + toolIDs[runRef]
+			continue
+		}
+
+		// Resolve and read the tool file.
+		toolPath := filepath.Join(baseDir, runRef)
+		toolData, err := os.ReadFile(toolPath)
+		if err != nil {
+			return fmt.Errorf("step %q: read tool %q: %w", stepName, runRef, err)
+		}
+
+		var toolDoc map[string]any
+		if err := yaml.Unmarshal(toolData, &toolDoc); err != nil {
+			return fmt.Errorf("step %q: parse tool %q: %w", stepName, runRef, err)
+		}
+
+		// Assign an ID to the tool (use filename without extension).
+		toolID := strings.TrimSuffix(filepath.Base(runRef), filepath.Ext(runRef))
+		toolDoc["id"] = toolID
+		toolIDs[runRef] = toolID
+
+		// Keep cwlVersion on individual tools for version-specific validation.
+		// Tools from older versions may use only features valid for their version.
+
+		// Propagate workflow's DockerRequirement to tool if tool doesn't have one.
+		if workflowDockerReq != nil && !hasDockerRequirement(toolDoc) {
+			injectDockerRequirement(toolDoc, workflowDockerReq)
+		}
+
+		// Resolve IWD listing paths relative to the tool's directory.
+		toolBaseDir := filepath.Dir(toolPath)
+		resolveIWDListingPaths([]any{toolDoc}, toolBaseDir)
+
+		// If the loaded file is a Workflow, recursively resolve its run: references.
+		class, _ := toolDoc["class"].(string)
+		if class == "Workflow" {
+			subBaseDir := filepath.Dir(toolPath)
+			subSteps := extractSteps(toolDoc)
+			if subSteps != nil {
+				if err := resolveStepRuns(subSteps, subBaseDir, graph, toolIDs, workflowDockerReq); err != nil {
+					return fmt.Errorf("step %q: resolve sub-workflow %q: %w", stepName, runRef, err)
+				}
+			}
+		}
+
+		*graph = append(*graph, toolDoc)
+
+		// Replace run: with fragment reference.
+		step["run"] = "#" + toolID
+	}
+	return nil
+}
+
+// extractSteps extracts the steps map from a workflow document.
+// Handles both map-style and array-style step definitions.
+func extractSteps(doc map[string]any) map[string]any {
+	switch s := doc["steps"].(type) {
+	case map[string]any:
+		return s
+	case []any:
+		steps := make(map[string]any)
+		for _, item := range s {
+			if stepMap, ok := item.(map[string]any); ok {
+				if id, ok := stepMap["id"].(string); ok {
+					id = strings.TrimPrefix(id, "#")
+					if idx := strings.LastIndex(id, "/"); idx >= 0 {
+						id = id[idx+1:]
+					}
+					steps[id] = stepMap
+				}
+			}
+		}
+		return steps
+	}
+	return nil
 }
