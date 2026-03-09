@@ -792,6 +792,17 @@ EOF
     rm -f docker-compose.override.yml
     docker-compose down -v 2>/dev/null || true
 
+    # Wait for port to be released before returning, so the next mode
+    # (e.g., distributed-docker after distributed-none) can start cleanly.
+    local wait_count=0
+    while ! check_port_available $DISTRIBUTED_PORT && [ $wait_count -lt 30 ]; do
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+    if [ $wait_count -ge 30 ]; then
+        log_warn "Port $DISTRIBUTED_PORT still in use after 30s"
+    fi
+
     local end_time
     end_time=$(get_time)
     local duration
