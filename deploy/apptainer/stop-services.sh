@@ -51,7 +51,7 @@ INSTANCES=(
 echo "Stopping GoWe services..."
 
 for instance in "${INSTANCES[@]}"; do
-    if apptainer instance list 2>/dev/null | grep -q "$instance"; then
+    if apptainer instance list 2>/dev/null | awk '{print $1}' | grep -qw "$instance"; then
         echo "  Stopping $instance..."
         apptainer instance stop "$instance"
     else

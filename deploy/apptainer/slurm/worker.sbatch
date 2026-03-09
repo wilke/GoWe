@@ -21,8 +21,14 @@
 module load apptainer 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — REQUIRED: set these for your cluster
 # ---------------------------------------------------------------------------
+# GOWE_SERVER_URL must point to the head node running the GoWe server.
+# GOWE_SHOCK_HOST must point to the Shock server (if remote).
+# Set via environment or edit the defaults below.
+export GOWE_SERVER_URL="${GOWE_SERVER_URL:?ERROR: GOWE_SERVER_URL must be set (e.g. http://head-node:8080)}"
+export GOWE_SHOCK_HOST="${GOWE_SHOCK_HOST:-${GOWE_SERVER_URL##http*://}}"
+
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # Give the worker a unique name from SLURM metadata

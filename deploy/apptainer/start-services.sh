@@ -55,13 +55,14 @@ SHOCK_PORT="${SHOCK_PORT:-7445}"
 SERVER_PORT="${SERVER_PORT:-8080}"
 
 GOWE_DEFAULT_EXECUTOR="${GOWE_DEFAULT_EXECUTOR:-worker}"
-GOWE_ALLOW_ANONYMOUS="${GOWE_ALLOW_ANONYMOUS:-true}"
+GOWE_ALLOW_ANONYMOUS="${GOWE_ALLOW_ANONYMOUS:-false}"
 GOWE_ANONYMOUS_EXECUTORS="${GOWE_ANONYMOUS_EXECUTORS:-local,docker,worker,container,apptainer}"
 GOWE_LOG_LEVEL="${GOWE_LOG_LEVEL:-info}"
 GOWE_SCHEDULER_POLL="${GOWE_SCHEDULER_POLL:-2s}"
 
 SHOCK_TOKEN="${SHOCK_TOKEN:-}"
 SHOCK_USE_HTTP="${SHOCK_USE_HTTP:-true}"
+SHOCK_HOST="${SHOCK_HOST:-localhost:${SHOCK_PORT}}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -83,7 +84,7 @@ wait_for_health() {
 }
 
 instance_running() {
-    apptainer instance list 2>/dev/null | grep -q "$1"
+    apptainer instance list 2>/dev/null | awk '{print $1}' | grep -qw "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -115,7 +116,8 @@ if [ "$SERVER_ONLY" = false ]; then
         apptainer instance start \
             --bind "$DATA_DIR/mongo:/data/db" \
             "$SIF_DIR/mongodb.sif" \
-            "$MONGO_INSTANCE"
+            "$MONGO_INSTANCE" \
+            --port "$MONGO_PORT"
 
         wait_for_health "MongoDB" \
             "apptainer exec instance://$MONGO_INSTANCE mongo --port $MONGO_PORT --eval 'db.adminCommand(\"ping\")'"
@@ -175,10 +177,10 @@ else
     fi
 
     # Shock upload backend
-    if [ "$SERVER_ONLY" = false ] || [ -n "$SHOCK_TOKEN" ]; then
+    if [ "$SERVER_ONLY" = false ] || [ -n "${SHOCK_HOST:-}" ]; then
         SERVER_ARGS+=(
             -upload-backend shock
-            -upload-shock-host "localhost:${SHOCK_PORT}"
+            -upload-shock-host "$SHOCK_HOST"
         )
         if [ "$SHOCK_USE_HTTP" = true ]; then
             SERVER_ARGS+=(-upload-shock-http)

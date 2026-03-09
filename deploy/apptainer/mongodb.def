@@ -21,10 +21,10 @@ From: mongo:5.0
             mongo --eval "db.adminCommand('ping')"
 
 %startscript
-    exec mongod --bind_ip_all "$@"
+    exec mongod --bind_ip localhost "$@"
 
 %runscript
-    exec mongod --bind_ip_all "$@"
+    exec mongod --bind_ip localhost "$@"
 
 %test
     mongod --version
