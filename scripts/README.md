@@ -48,7 +48,7 @@ Before running tests, set up your environment using the setup script:
 The setup script:
 1. Creates `~/.gowe/` config directory
 2. Generates `.env` file with auto-detected project paths
-3. Creates working directories (`tmp/workdir`, `tmp/outputs`)
+3. Creates working directories (local `tmp/` for testing; docker-compose uses named volume `gowe-workdir`)
 4. Validates prerequisites (Go, Docker, cwltest)
 5. Clones CWL conformance tests if needed
 6. Optionally builds binaries and runs tests
@@ -65,7 +65,8 @@ Key variables set in `.env`:
 | `GOWE_WORKDIR` | Shared working directory |
 | `GOWE_TEST_SERVER_LOCAL_PORT` | Port for server-local tests (default: 8091) |
 | `GOWE_TEST_DISTRIBUTED_PORT` | Port for distributed tests (default: 8090) |
-| `DOCKER_HOST_PATH_MAP` | Path mapping for Docker-in-Docker |
+| `DOCKER_HOST_PATH_MAP` | Path mapping for DinD (legacy — prefer `DOCKER_VOLUME`) |
+| `DOCKER_VOLUME` | Named Docker volume for DinD tool containers (preferred) |
 
 ### Configuration Templates
 
@@ -140,8 +141,8 @@ These tests verify server-based execution modes. Progress is tracked toward 100%
 | Test | Description | Current | Target |
 |------|-------------|---------|--------|
 | `server-local` | Server + LocalExecutor | 250/378 | 378/378 |
-| `distributed-none` | Workers with host tools | TBD | 378/378 |
-| `distributed-docker` | Workers with Docker | ~200/378 | 378/378 |
+| `distributed-none` | Workers with host tools | 376/378 | 378/378 |
+| `distributed-docker` | Workers with Docker | 376/378 | 378/378 |
 | `distributed-apptainer` | Workers with Apptainer | TBD | 378/378 |
 
 #### Tier 3: Staging Backends (Feature Tests)

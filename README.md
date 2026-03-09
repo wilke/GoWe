@@ -119,6 +119,12 @@ gowe run workflow.cwl job.yml
 
 This bundles the CWL, submits to the server, waits for completion, and outputs CWL-formatted JSON to stdout.
 
+**Flags:**
+- `--outdir` — Output directory (default: temporary directory)
+- `--no-upload` — Disable file upload; use `GOWE_PATH_MAP` for shared-filesystem mode
+- `--timeout` — Execution timeout (default: 5m)
+- `-q, --quiet` — Suppress progress messages
+
 ## API
 
 All endpoints are prefixed with `/api/v1`.
@@ -262,6 +268,10 @@ $PROJECT/
 | `--anonymous-executors` | `local,docker,worker` | Executors for anonymous users |
 | `--worker-keys` | `""` | Path to worker keys JSON file |
 | `--config` | `""` | Path to admin config file (JSON admin list only) |
+| `--scheduler-poll` | `2s` | Scheduler poll interval |
+| `--upload-backend` | `""` | File upload backend: `shock`, `s3`, `local` |
+| `--upload-local-dir` | `""` | Local directory for file uploads |
+| `--upload-download-dirs` | `""` | Directories allowed for file download |
 
 ### Worker Flags
 
@@ -275,6 +285,10 @@ $PROJECT/
 | `--workdir` | `$TMPDIR/gowe-worker` | Working directory |
 | `--stage-out` | `local` | Output staging: `local`, `file://`, `s3://`, `shock://` |
 | `--poll` | `5s` | Poll interval |
+| `--stage-mode` | `copy` | File staging mode (`copy`, `symlink`, `reference`) |
+| `--docker-host-path-map` | `""` | Path mapping for DinD (or `DOCKER_HOST_PATH_MAP` env) |
+| `--docker-volume` | `""` | Named Docker volume shared with tool containers (or `DOCKER_VOLUME` env) |
+| `--input-path-map` | `""` | Input path mapping (or `INPUT_PATH_MAP` env) |
 
 ### Environment Variables
 
@@ -286,9 +300,12 @@ These environment variables are actually read by the application code (not just 
 | `BVBRC_TOKEN` | Server | BV-BRC authentication token (also checks `~/.bvbrc_token` etc.) |
 | `AWS_ACCESS_KEY_ID` | Server, Worker | S3 access key (fallback when flag is empty) |
 | `AWS_SECRET_ACCESS_KEY` | Server, Worker | S3 secret key (fallback when flag is empty) |
-| `DOCKER_HOST_PATH_MAP` | Worker | Path mapping for Docker-in-Docker (fallback when flag is empty) |
+| `DOCKER_HOST_PATH_MAP` | Worker | Path mapping for DinD — legacy approach, prefer `DOCKER_VOLUME` |
+| `DOCKER_VOLUME` | Worker | Named Docker volume for tool containers (preferred for DinD) |
 | `INPUT_PATH_MAP` | Worker | Input path translation (fallback when flag is empty) |
 | `SHOCK_TOKEN` | Worker | Shock authentication token (fallback when flag is empty) |
+| `GOWE_PATH_MAP` | CLI (run) | Path mapping for shared-filesystem distributed mode |
+| `GOWE_OUTPUT_PATH_MAP` | CLI (run) | Output path translation for distributed mode |
 
 Test script environment variables (set in `.env` via `setup-env.sh`):
 
@@ -374,9 +391,11 @@ docker-compose down -v
 ```
 
 The `docker-compose.yml` starts:
-- 1 server with `--default-executor=worker` and `--allow-anonymous`
+- 1 server with `--default-executor=worker`, `--allow-anonymous`, and `--upload-backend=local`
 - 2 workers with `--runtime=none` (host execution)
-- 1 worker with `--runtime=docker` (container execution)
+- 1 worker with `--runtime=docker` (container execution, `DOCKER_VOLUME=gowe-workdir`)
+
+All services share a named Docker volume (`gowe-workdir`) for working directories and outputs.
 
 ### Worker Groups
 
@@ -401,12 +420,14 @@ Tasks can target specific worker groups via `RuntimeHints.WorkerGroup`.
 
 ### Shared Volume
 
-Output files are accessible on the host via bind mount:
+All services share a named Docker volume (`gowe-workdir`) mounted at `/workdir`. Output files are accessible at:
 
 ```
-Host:       ./tmp/workdir/outputs/task_<id>/
+Volume:     gowe-workdir:/workdir/outputs/task_<id>/
 Container:  /workdir/outputs/task_<id>/
 ```
+
+The Docker worker uses `DOCKER_VOLUME=gowe-workdir` so that tool containers mount the same named volume — no host path translation is needed.
 
 See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration details.
 
@@ -462,6 +483,13 @@ BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
 ### CWL Conformance
 
 GoWe passes 100% of CWL v1.2 conformance tests (378/378) in cwl-runner mode.
+
+| Mode | Result |
+|------|--------|
+| cwl-runner | 378/378 |
+| cwl-runner-parallel | 378/378 |
+| distributed-none | 376/378 |
+| distributed-docker | 376/378 |
 
 See [scripts/README.md](scripts/README.md) for detailed test documentation.
 
