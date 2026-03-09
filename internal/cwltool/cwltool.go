@@ -100,7 +100,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		containerRuntime = ""
 	} else if containerRuntime == "" {
 		if HasDockerRequirement(tool) {
-			containerRuntime = "docker"
+			containerRuntime = DetectContainerRuntime()
 		}
 	}
 

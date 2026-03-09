@@ -653,7 +653,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if r.ForceDocker {
 			containerRuntime = "docker"
 		} else if hasDockerRequirement(tool, graph.Workflow) {
-			containerRuntime = "docker"
+			containerRuntime = cwltool.DetectContainerRuntime()
 		}
 	}
 

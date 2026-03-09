@@ -18,6 +18,7 @@ var (
 	outDir           string
 	noContainer      bool
 	forceDocker      bool
+	forceApptainer   bool
 	containerRuntime string
 	outputFormat     string
 	verbose          bool
@@ -58,7 +59,8 @@ Examples:
 	rootCmd.PersistentFlags().StringVar(&outDir, "outdir", "./cwl-output", "Output directory")
 	rootCmd.PersistentFlags().BoolVar(&noContainer, "no-container", false, "Disable container execution")
 	rootCmd.PersistentFlags().BoolVar(&forceDocker, "docker", false, "Force Docker execution (alias for --runtime docker)")
-	rootCmd.PersistentFlags().StringVar(&containerRuntime, "runtime", "", "Container runtime: docker, apptainer, or none (default: auto-detect)")
+	rootCmd.PersistentFlags().BoolVar(&forceApptainer, "apptainer", false, "Force Apptainer execution (alias for --runtime apptainer)")
+	rootCmd.PersistentFlags().StringVar(&containerRuntime, "runtime", "", "Container runtime: docker, apptainer, or none (default: auto-detect from PATH)")
 	rootCmd.PersistentFlags().StringVar(&outputFormat, "output-format", "json", "Output format (json|yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress informational output")
@@ -97,7 +99,7 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 	r.OutDir = outDir
 	r.OutputFormat = outputFormat
 
-	// Wire container runtime: --runtime flag takes precedence over --docker/--no-container.
+	// Wire container runtime: --runtime flag takes precedence over --docker/--apptainer/--no-container.
 	switch containerRuntime {
 	case "none":
 		r.NoContainer = true
@@ -105,7 +107,11 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 		r.ContainerRuntime = containerRuntime
 	default:
 		r.NoContainer = noContainer
-		r.ForceDocker = forceDocker
+		if forceApptainer {
+			r.ContainerRuntime = "apptainer"
+		} else {
+			r.ForceDocker = forceDocker
+		}
 	}
 
 	// Configure parallel execution.

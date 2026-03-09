@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -410,6 +411,19 @@ func PopulateDirListing(dirObj map[string]any, depth string) {
 		}
 	}
 	dirObj["listing"] = listing
+}
+
+// DetectContainerRuntime probes the system for available container runtimes.
+// Returns "docker" if docker is found, "apptainer" if apptainer is found,
+// or "" if neither is available (falls through to local execution).
+func DetectContainerRuntime() string {
+	if _, err := exec.LookPath("docker"); err == nil {
+		return "docker"
+	}
+	if _, err := exec.LookPath("apptainer"); err == nil {
+		return "apptainer"
+	}
+	return ""
 }
 
 // HasDockerRequirement checks if a tool has a DockerRequirement.
