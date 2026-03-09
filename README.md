@@ -487,6 +487,7 @@ GoWe passes 100% of CWL v1.2 conformance tests (378/378) in cwl-runner mode.
 | Mode | Result |
 |------|--------|
 | cwl-runner | 378/378 |
+| cwl-runner-parallel | 378/378 |
 | distributed-none | 376/378 |
 | distributed-docker | 376/378 |
 
