@@ -41,6 +41,10 @@ Thumbs.db
 # Environment
 .env
 .env.local
+gowe-stack.env
+
+# Apptainer SIF images
+deploy/apptainer/sif/
 
 # Claude Code
 .claude/

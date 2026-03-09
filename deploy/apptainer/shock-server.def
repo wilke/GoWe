@@ -1,0 +1,40 @@
+Bootstrap: docker
+From: mgrast/shock-server:latest
+
+%labels
+    Author      GoWe Team
+    Version     0.1.0
+    Description Shock Data Service (MG-RAST) — file storage backend for GoWe
+
+%help
+    Shock data service for GoWe file staging.
+
+    Requires a running MongoDB instance (see mongodb.def).
+
+    Run as an Apptainer instance:
+
+        apptainer instance start \
+            --bind /data/gowe/shock/data:/usr/local/shock/data \
+            --bind /data/gowe/shock/logs:/var/log/shock \
+            shock-server.sif gowe-shock \
+            --hosts=localhost \
+            --basic=false \
+            --force_yes=true \
+            --api-url=http://localhost:7445 \
+            --api-port=7445
+
+    Health check:
+
+        curl -sf http://localhost:7445/
+
+    If the mgrast/shock-server Docker image is not available, build
+    from source: https://github.com/MG-RAST/Shock
+
+%startscript
+    exec /go/bin/shock-server "$@"
+
+%runscript
+    exec /go/bin/shock-server "$@"
+
+%test
+    test -x /go/bin/shock-server

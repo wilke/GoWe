@@ -1,0 +1,30 @@
+Bootstrap: docker
+From: mongo:5.0
+
+%labels
+    Author      GoWe Team
+    Version     5.0
+    Description MongoDB 5.0 — backend for Shock data service
+
+%help
+    MongoDB 5.0 for use with the Shock data service.
+
+    Run as an Apptainer instance:
+
+        apptainer instance start \
+            --bind /data/gowe/mongo:/data/db \
+            mongodb.sif gowe-mongo
+
+    Health check:
+
+        apptainer exec instance://gowe-mongo \
+            mongo --eval "db.adminCommand('ping')"
+
+%startscript
+    exec mongod --bind_ip_all "$@"
+
+%runscript
+    exec mongod --bind_ip_all "$@"
+
+%test
+    mongod --version
