@@ -129,6 +129,7 @@ gowe run <cwl-file> [job-file] [flags]
 - `--outdir` - Output directory for result files (default: temporary directory)
 - `-q, --quiet` - Suppress progress messages (required for cwltest)
 - `--timeout` - Execution timeout (default: 5m)
+- `--no-upload` - Disable file upload; use `GOWE_PATH_MAP` for shared-filesystem mode
 
 **Examples:**
 
@@ -446,6 +447,8 @@ gowe logs sub_xyz789 task_001
 |----------|-------------|
 | `GOWE_SERVER` | Default server URL (overrides `--server` default) |
 | `BVBRC_TOKEN` | BV-BRC authentication token |
+| `GOWE_PATH_MAP` | Path mapping for shared-filesystem distributed mode (format: `src1=dst1:src2=dst2`) |
+| `GOWE_OUTPUT_PATH_MAP` | Output path translation for distributed mode (translates container paths to host paths) |
 
 ## Configuration Files
 

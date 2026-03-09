@@ -530,9 +530,11 @@ curl -s http://localhost:8090/api/v1/workers | jq '.data | length'
 ```
 
 The default `docker-compose.yml` starts:
-- 1 server with `--default-executor=worker`
+- 1 server with `--default-executor=worker`, `--upload-backend=local`
 - 2 workers with `--runtime=none` (execute on host)
-- 1 worker with `--runtime=docker` (execute in containers)
+- 1 worker with `--runtime=docker` (execute in containers, `DOCKER_VOLUME=gowe-workdir`)
+
+All services share a named Docker volume (`gowe-workdir`) mounted at `/workdir`.
 
 ### Running Workflows
 
@@ -552,7 +554,7 @@ Output:
 {
   "output": {
     "class": "File",
-    "location": "file:///workdir/outputs/task_abc123/output.txt",
+    "location": "file:///tmp/gowe-output123/output.txt",
     "basename": "output.txt",
     "checksum": "sha1$...",
     "size": 19

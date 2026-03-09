@@ -28,6 +28,7 @@ gowe-server [flags]
 | `--db` | `~/.gowe/gowe.db` | SQLite database path |
 | `--default-executor` | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
 | `--config` | `~/.gowe/config.yaml` | Server configuration file |
+| `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
@@ -42,6 +43,48 @@ gowe-server [flags]
 
 Environment variables:
 - `GOWE_ADMINS` — Comma-separated list of admin usernames (e.g., `alice@bvbrc,bob@mgrast`)
+
+#### File Upload Proxy
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--upload-backend` | `""` | Enable file upload proxy: `shock`, `s3`, `local` |
+| `--upload-max-size` | `1073741824` (1 GB) | Maximum upload size in bytes |
+| `--upload-local-dir` | `""` | Local directory for file uploads |
+| `--upload-download-dirs` | `""` | Comma-separated directories allowed for file download |
+
+**S3 backend flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--upload-s3-endpoint` | `""` | S3 endpoint (empty = AWS) |
+| `--upload-s3-region` | `us-east-1` | S3 region |
+| `--upload-s3-bucket` | `""` | S3 bucket |
+| `--upload-s3-prefix` | `uploads/` | S3 key prefix |
+| `--upload-s3-access-key` | `""` | S3 access key (env: `AWS_ACCESS_KEY_ID`) |
+| `--upload-s3-secret-key` | `""` | S3 secret key (env: `AWS_SECRET_ACCESS_KEY`) |
+| `--upload-s3-path-style` | `false` | Use path-style S3 addressing (for MinIO) |
+| `--upload-s3-disable-ssl` | `false` | Disable SSL for S3 |
+
+**Shock backend flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--upload-shock-host` | `""` | Shock server host (e.g., `localhost:7445`) |
+| `--upload-shock-http` | `false` | Use HTTP instead of HTTPS |
+| `--upload-shock-token` | `""` | Shock authentication token |
+
+The upload proxy enables workers to upload output files through the server. Workers POST files to `/api/v1/upload`, and the server forwards them to the configured backend.
+
+**Example: local upload backend for docker-compose:**
+
+```bash
+gowe-server \
+  --default-executor worker \
+  --upload-backend local \
+  --upload-local-dir /workdir/uploads \
+  --upload-download-dirs /workdir/uploads,/workdir/outputs
+```
 
 ## Examples
 

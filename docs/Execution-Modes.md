@@ -102,22 +102,14 @@ Legend:
 
 ## Test Results
 
-As of 2026-02-26:
+As of 2026-03-09:
 
 | Mode | Passing | Total | Percentage | Notes |
 |------|---------|-------|------------|-------|
-| cwl-runner | 84 | 84 | 100% | ✓ |
-| server-local | 84 | 84 | 100% | ✓ |
-| distributed | 0 | 84 | 0% | Needs input staging |
-
-### Distributed Mode Limitation
-
-The distributed conformance tests currently fail because input files are not staged to the shared filesystem. The CLI bundles CWL with absolute host paths that don't exist inside worker containers.
-
-**Required Enhancement**: Add input file staging to the CLI:
-1. Copy input files to `file:///workdir/inputs/...`
-2. Rewrite job inputs with staged paths
-3. Submit to server for worker execution
+| cwl-runner | 378 | 378 | 100% | ✓ |
+| cwl-runner-parallel | 378 | 378 | 100% | ✓ |
+| distributed-none | 376 | 378 | 99.5% | 2 known failures |
+| distributed-docker | 376 | 378 | 99.5% | 2 known failures |
 
 ## Adding New Test Coverage
 

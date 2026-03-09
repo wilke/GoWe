@@ -32,6 +32,10 @@ gowe-worker [flags]
 | `--workdir` | `$TMPDIR/gowe-worker` | Local working directory for task execution |
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
 | `--poll` | `5s` | Poll interval for checking new tasks |
+| `--stage-mode` | `copy` | File staging mode (`copy`, `symlink`, `reference`) |
+| `--docker-host-path-map` | `""` | Path mapping for DinD (env: `DOCKER_HOST_PATH_MAP`) |
+| `--docker-volume` | `""` | Named Docker volume shared with tool containers (env: `DOCKER_VOLUME`) |
+| `--input-path-map` | `""` | Input path mapping (env: `INPUT_PATH_MAP`) |
 
 #### GPU Configuration
 
@@ -65,6 +69,47 @@ gowe-worker [flags]
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
+
+#### S3 Staging
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--s3-endpoint` | `""` | S3-compatible endpoint (e.g., `minio.example.com:9000`) |
+| `--s3-region` | `us-east-1` | S3 region |
+| `--s3-access-key` | `""` | S3 access key (env: `AWS_ACCESS_KEY_ID`) |
+| `--s3-secret-key` | `""` | S3 secret key (env: `AWS_SECRET_ACCESS_KEY`) |
+| `--s3-bucket` | `""` | Default S3 bucket for stage-out |
+| `--s3-path-style` | `false` | Use path-style addressing (required for MinIO) |
+| `--s3-disable-ssl` | `false` | Disable SSL (local development only) |
+
+**Example: MinIO setup**
+
+```bash
+gowe-worker \
+  --server http://gowe-server:8080 \
+  --stage-out s3://my-bucket/outputs \
+  --s3-endpoint minio.example.com:9000 \
+  --s3-access-key minioadmin \
+  --s3-secret-key minioadmin \
+  --s3-path-style \
+  --s3-disable-ssl
+```
+
+#### Shock Staging
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--shock-host` | `""` | Default Shock server host (e.g., `p3.theseed.org`) |
+| `--shock-token` | `""` | Shock authentication token (env: `SHOCK_TOKEN`) |
+| `--shock-use-http` | `false` | Use HTTP instead of HTTPS (local development) |
+
+#### Shared Filesystem Staging
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--shared-fs` | `false` | Enable shared filesystem stager |
+| `--shared-path-map` | `""` | Path mapping: `host1=local1:host2=local2` |
+| `--shared-stage-out-dir` | `""` | Shared filesystem stage-out directory |
 
 ## Examples
 
@@ -497,6 +542,44 @@ steps:
 gowe status sub_abc123
 gowe logs sub_abc123
 ```
+
+## Docker Volume Mode (DinD)
+
+When running workers inside Docker (Docker-in-Docker), tool containers need access to the same working directory. There are two approaches:
+
+### Named Volume (Preferred)
+
+Use `--docker-volume` (or `DOCKER_VOLUME` env) to share a named Docker volume between the worker and tool containers. The volume is mounted at the same path inside both containers, so no path translation is needed.
+
+```yaml
+# docker-compose.yml
+worker-docker:
+  environment:
+    - DOCKER_VOLUME=gowe-workdir
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - gowe-workdir:/workdir
+
+volumes:
+  gowe-workdir:
+    name: gowe-workdir
+```
+
+### Legacy: Host Path Mapping
+
+Use `--docker-host-path-map` (or `DOCKER_HOST_PATH_MAP` env) to translate container paths to host paths. This is needed when using bind mounts instead of named volumes.
+
+```bash
+# Format: container_path=host_path:container_path2=host_path2
+DOCKER_HOST_PATH_MAP="/workdir=/host/path/to/workdir"
+```
+
+**When to use which:**
+
+| Approach | Use Case |
+|----------|----------|
+| Named volume (`DOCKER_VOLUME`) | Docker Compose deployments, single-host setups |
+| Host path map (`DOCKER_HOST_PATH_MAP`) | Multi-host setups where host paths must be explicit |
 
 ## Systemd Service
 
