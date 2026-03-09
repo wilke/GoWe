@@ -237,41 +237,106 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		containerWorkDir = dockerOutputDir
 	}
 
-	// Mount working directory (resolve symlinks for macOS /tmp -> /private/tmp).
-	// Use --mount syntax to handle paths with colons (Docker -v uses : as separator).
-	// For Docker-in-Docker, translate container paths to host paths.
-	absWorkDir := translateDockerPath(ResolveSymlinks(workDir), opts.DockerHostPathMap)
-	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/var/spool/cwl", absWorkDir))
+	if opts.DockerVolume != "" {
+		// Shared volume mode: mount the named volume into the tool container.
+		// All files (workdir, staged inputs, uploads) are under the volume mount.
+		// Paths are valid as-is — no host path translation needed.
+		//
+		// Determine the volume mount point by walking up from workDir to the
+		// second path component (e.g., /workdir/scratch/task_xxx → /workdir).
+		volumeMountPoint := workDir
+		for {
+			parent := filepath.Dir(volumeMountPoint)
+			if parent == "/" || parent == "." {
+				break
+			}
+			volumeMountPoint = parent
+		}
+		dockerArgs = append(dockerArgs, "-v", opts.DockerVolume+":"+volumeMountPoint)
 
-	// If dockerOutputDirectory is specified, mount outputDir there.
-	if dockerOutputDir != "" {
-		absOutputDir := translateDockerPath(ResolveSymlinks(outputDir), opts.DockerHostPathMap)
-		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absOutputDir, dockerOutputDir))
+		// Use the actual workdir path as the container working directory.
+		// The runtime context was already built with workDir in cwltool.go.
+		containerWorkDir = workDir
+		if dockerOutputDir != "" {
+			containerWorkDir = dockerOutputDir
+			// Mount the output directory at the dockerOutputDirectory path.
+			// Use volume-subpath so the tool container can write to the
+			// dockerOutputDirectory and outputs are captured on the volume.
+			subpath := strings.TrimPrefix(outputDir, volumeMountPoint+"/")
+			dockerArgs = append(dockerArgs, "--mount",
+				fmt.Sprintf("type=volume,source=%s,target=%s,volume-subpath=%s",
+					opts.DockerVolume, dockerOutputDir, subpath))
+		}
+		dockerArgs = append(dockerArgs, "-w", containerWorkDir)
+
+		// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir.
+		dockerArgs = append(dockerArgs, "-e", "HOME="+containerWorkDir)
+		dockerArgs = append(dockerArgs, "-e", "TMPDIR="+tmpDir)
+
+		// Mount input files from outside the volume using path translation.
+		mounts := CollectInputMounts(inputs)
+		for hostPath, containerPath := range mounts {
+			if strings.HasPrefix(hostPath, volumeMountPoint+"/") {
+				continue // Already accessible via the named volume.
+			}
+			// Out-of-volume files: use host path translation.
+			translatedPath := translateDockerPath(hostPath, opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", translatedPath, containerPath))
+		}
+
+		// Mount IWDR files at absolute paths.
+		for _, m := range containerMounts {
+			if strings.HasPrefix(m.HostPath, volumeMountPoint+"/") {
+				if m.HostPath == m.ContainerPath {
+					continue // Same path, already in volume.
+				}
+				// HostPath is on the volume but needs a different container path.
+				// Use volume-subpath to mount from the named volume.
+				subpath := strings.TrimPrefix(m.HostPath, volumeMountPoint+"/")
+				dockerArgs = append(dockerArgs, "--mount",
+					fmt.Sprintf("type=volume,source=%s,target=%s,volume-subpath=%s",
+						opts.DockerVolume, m.ContainerPath, subpath))
+				continue
+			}
+			absHostPath := translateDockerPath(ResolveSymlinks(m.HostPath), opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
+		}
+	} else {
+		// Bind mount mode: mount working directory with optional host path translation.
+		// Use --mount syntax to handle paths with colons (Docker -v uses : as separator).
+		absWorkDir := translateDockerPath(ResolveSymlinks(workDir), opts.DockerHostPathMap)
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/var/spool/cwl", absWorkDir))
+
+		// If dockerOutputDirectory is specified, mount outputDir there.
+		if dockerOutputDir != "" {
+			absOutputDir := translateDockerPath(ResolveSymlinks(outputDir), opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absOutputDir, dockerOutputDir))
+		}
+
+		// Set working directory.
+		dockerArgs = append(dockerArgs, "-w", containerWorkDir)
+
+		// Mount tmp directory.
+		absTmpDir := translateDockerPath(ResolveSymlinks(tmpDir), opts.DockerHostPathMap)
+		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/tmp", absTmpDir))
+
+		// Mount input files that are outside working directory.
+		mounts := CollectInputMounts(inputs)
+		for hostPath, containerPath := range mounts {
+			translatedPath := translateDockerPath(hostPath, opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", translatedPath, containerPath))
+		}
+
+		// Mount files/directories at absolute paths (from InitialWorkDirRequirement with absolute entryname).
+		for _, m := range containerMounts {
+			absHostPath := translateDockerPath(ResolveSymlinks(m.HostPath), opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
+		}
+
+		// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
+		dockerArgs = append(dockerArgs, "-e", "HOME="+containerWorkDir)
+		dockerArgs = append(dockerArgs, "-e", "TMPDIR=/tmp")
 	}
-
-	// Set working directory.
-	dockerArgs = append(dockerArgs, "-w", containerWorkDir)
-
-	// Mount tmp directory.
-	absTmpDir := translateDockerPath(ResolveSymlinks(tmpDir), opts.DockerHostPathMap)
-	dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/tmp", absTmpDir))
-
-	// Mount input files that are outside working directory.
-	mounts := CollectInputMounts(inputs)
-	for hostPath, containerPath := range mounts {
-		translatedPath := translateDockerPath(hostPath, opts.DockerHostPathMap)
-		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", translatedPath, containerPath))
-	}
-
-	// Mount files/directories at absolute paths (from InitialWorkDirRequirement with absolute entryname).
-	for _, m := range containerMounts {
-		absHostPath := translateDockerPath(ResolveSymlinks(m.HostPath), opts.DockerHostPathMap)
-		dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
-	}
-
-	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
-	dockerArgs = append(dockerArgs, "-e", "HOME="+containerWorkDir)
-	dockerArgs = append(dockerArgs, "-e", "TMPDIR=/tmp")
 
 	// Set environment variables from EnvVarRequirement.
 	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)

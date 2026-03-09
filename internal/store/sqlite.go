@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -289,12 +290,12 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
-		sub.UserToken, tokenExpiry, sub.AuthProvider,
+		sub.UserToken, tokenExpiry, sub.AuthProvider, sub.ParentTaskID,
 	)
 	return err
 }
@@ -303,18 +304,18 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	s.logger.Debug("sql", "op", "select", "table", "submissions", "id", id)
 
 	var sub model.Submission
-	var inputsJSON, outputsJSON, labelsJSON string
+	var inputsJSON, outputsJSON, labelsJSON, errorJSON string
 	var state, createdAt string
 	var completedAt *string
 	var tokenExpiry int64
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
-		&sub.UserToken, &tokenExpiry, &sub.AuthProvider)
+		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -327,6 +328,12 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
 	json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
 	json.Unmarshal([]byte(labelsJSON), &sub.Labels)
+	if errorJSON != "" {
+		var subErr model.SubmissionError
+		if json.Unmarshal([]byte(errorJSON), &subErr) == nil {
+			sub.Error = &subErr
+		}
+	}
 	sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	if completedAt != nil {
 		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
@@ -432,6 +439,13 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	errorJSON := ""
+	if sub.Error != nil {
+		if b, err := json.Marshal(sub.Error); err == nil {
+			errorJSON = string(b)
+		}
+	}
+
 	var completedAt *string
 	if sub.CompletedAt != nil {
 		s := sub.CompletedAt.Format(time.RFC3339Nano)
@@ -439,8 +453,8 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET state=?, outputs=?, labels=?, completed_at=? WHERE id=?`,
-		string(sub.State), string(outputsJSON), string(labelsJSON), completedAt, sub.ID,
+		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=? WHERE id=?`,
+		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON, completedAt, sub.ID,
 	)
 	if err != nil {
 		return err
@@ -450,6 +464,195 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 		return fmt.Errorf("submission %s not found", sub.ID)
 	}
 	return nil
+}
+
+func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_children", "table", "submissions", "parent_task_id", parentTaskID)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id
+		 FROM submissions WHERE parent_task_id = ? ORDER BY created_at`, parentTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []*model.Submission
+	for rows.Next() {
+		var sub model.Submission
+		var inputsJSON, outputsJSON, labelsJSON string
+		var state, createdAt string
+		var completedAt *string
+
+		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
+			&inputsJSON, &outputsJSON, &labelsJSON,
+			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID); err != nil {
+			return nil, err
+		}
+
+		sub.State = model.SubmissionState(state)
+		json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
+		json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
+		json.Unmarshal([]byte(labelsJSON), &sub.Labels)
+		sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if completedAt != nil {
+			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			sub.CompletedAt = &t
+		}
+
+		subs = append(subs, &sub)
+	}
+	return subs, rows.Err()
+}
+
+// --- StepInstance operations ---
+
+func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInstance) error {
+	s.logger.Debug("sql", "op", "insert", "table", "step_instances", "id", si.ID)
+
+	outputsJSON, err := json.Marshal(si.Outputs)
+	if err != nil {
+		return fmt.Errorf("marshal outputs: %w", err)
+	}
+
+	var completedAt *string
+	if si.CompletedAt != nil {
+		v := si.CompletedAt.Format(time.RFC3339Nano)
+		completedAt = &v
+	}
+
+	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		si.ID, si.SubmissionID, si.StepID, string(si.State),
+		si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON),
+		si.CreatedAt.Format(time.RFC3339Nano), completedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.StepInstance, error) {
+	s.logger.Debug("sql", "op", "select", "table", "step_instances", "id", id)
+
+	var si model.StepInstance
+	var state, outputsJSON, createdAt string
+	var completedAt *string
+	var scatterDimsJSON string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
+		 FROM step_instances WHERE id = ?`, id,
+	).Scan(&si.ID, &si.SubmissionID, &si.StepID, &state,
+		&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &createdAt, &completedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	si.State = model.StepInstanceState(state)
+	json.Unmarshal([]byte(outputsJSON), &si.Outputs)
+	if scatterDimsJSON != "" {
+		json.Unmarshal([]byte(scatterDimsJSON), &si.ScatterDims)
+	}
+	si.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if completedAt != nil {
+		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+		si.CompletedAt = &t
+	}
+
+	return &si, nil
+}
+
+func (s *SQLiteStore) UpdateStepInstance(ctx context.Context, si *model.StepInstance) error {
+	s.logger.Debug("sql", "op", "update", "table", "step_instances", "id", si.ID)
+
+	outputsJSON, err := json.Marshal(si.Outputs)
+	if err != nil {
+		return fmt.Errorf("marshal outputs: %w", err)
+	}
+
+	var completedAt *string
+	if si.CompletedAt != nil {
+		v := si.CompletedAt.Format(time.RFC3339Nano)
+		completedAt = &v
+	}
+
+	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, completed_at=? WHERE id=?`,
+		string(si.State), si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), completedAt, si.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("step_instance %s not found", si.ID)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListStepsBySubmission(ctx context.Context, submissionID string) ([]*model.StepInstance, error) {
+	s.logger.Debug("sql", "op", "list", "table", "step_instances", "submission_id", submissionID)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
+		 FROM step_instances WHERE submission_id = ? ORDER BY created_at`, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanStepInstances(rows)
+}
+
+func (s *SQLiteStore) ListStepsByState(ctx context.Context, state model.StepInstanceState) ([]*model.StepInstance, error) {
+	s.logger.Debug("sql", "op", "list_by_state", "table", "step_instances", "state", state)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
+		 FROM step_instances WHERE state = ? ORDER BY created_at`, string(state))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanStepInstances(rows)
+}
+
+func (s *SQLiteStore) scanStepInstances(rows *sql.Rows) ([]*model.StepInstance, error) {
+	var items []*model.StepInstance
+	for rows.Next() {
+		var si model.StepInstance
+		var state, outputsJSON, createdAt string
+		var completedAt *string
+		var scatterDimsJSON string
+
+		if err := rows.Scan(&si.ID, &si.SubmissionID, &si.StepID, &state,
+			&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &createdAt, &completedAt); err != nil {
+			return nil, err
+		}
+
+		si.State = model.StepInstanceState(state)
+		json.Unmarshal([]byte(outputsJSON), &si.Outputs)
+		if scatterDimsJSON != "" {
+			json.Unmarshal([]byte(scatterDimsJSON), &si.ScatterDims)
+		}
+		si.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if completedAt != nil {
+			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			si.CompletedAt = &t
+		}
+
+		items = append(items, &si)
+	}
+	return items, rows.Err()
 }
 
 // --- Task operations ---
@@ -493,18 +696,19 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, submission_id, step_id, state, executor_type, external_id,
+		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.ID, task.SubmissionID, task.StepID, string(task.State),
+		 tool, job, runtime_hints, scatter_index)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
 		task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
+		task.ScatterIndex,
 	)
 	return err
 }
@@ -512,10 +716,10 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "select", "table", "tasks", "id", id)
 	return s.scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, submission_id, step_id, state, executor_type, external_id,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints
+		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE id = ?`, id))
 }
 
@@ -523,11 +727,28 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "submission_id", submissionID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, executor_type, external_id,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints
+		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanTasks(rows)
+}
+
+func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error) {
+	s.logger.Debug("sql", "op", "list", "table", "tasks", "step_instance_id", stepInstanceID)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints, scatter_index
+		 FROM tasks WHERE step_instance_id = ? ORDER BY scatter_index, created_at`, stepInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -538,6 +759,11 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 
 func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 	s.logger.Debug("sql", "op", "update", "table", "tasks", "id", task.ID)
+
+	// Sanitize NaN/Inf values before marshaling (Go's encoding/json rejects them).
+	sanitizeFloats(task.Outputs)
+	sanitizeFloats(task.Tool)
+	sanitizeFloats(task.Job)
 
 	outputsJSON, err := json.Marshal(task.Outputs)
 	if err != nil {
@@ -568,13 +794,15 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
-		 outputs=?, retry_count=?, stdout=?, stderr=?, exit_code=?,
-		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=? WHERE id=?`,
+		 outputs=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
+		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
+		 step_instance_id=?, scatter_index=? WHERE id=?`,
 		string(task.State), string(task.ExecutorType), task.ExternalID,
-		string(outputsJSON), task.RetryCount,
+		string(outputsJSON), task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
+		task.StepInstanceID, task.ScatterIndex,
 		task.ID,
 	)
 	if err != nil {
@@ -591,10 +819,10 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	s.logger.Debug("sql", "op", "list_by_state", "table", "tasks", "state", state)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, executor_type, external_id,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints
+		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -618,13 +846,14 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	var startedAt, completedAt *string
 
 	err := row.Scan(
-		&task.ID, &task.SubmissionID, &task.StepID, &state,
+		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
 		&executorType, &task.ExternalID, &task.BVBRCAppID,
 		&inputsJSON, &outputsJSON, &dependsOnJSON,
 		&task.RetryCount, &task.MaxRetries,
 		&task.Stdout, &task.Stderr, &task.ExitCode,
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
+		&task.ScatterIndex,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -664,13 +893,14 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		var startedAt, completedAt *string
 
 		if err := rows.Scan(
-			&task.ID, &task.SubmissionID, &task.StepID, &state,
+			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
 			&executorType, &task.ExternalID, &task.BVBRCAppID,
 			&inputsJSON, &outputsJSON, &dependsOnJSON,
 			&task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
+			&task.ScatterIndex,
 		); err != nil {
 			return nil, err
 		}
@@ -909,10 +1139,10 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, executor_type, external_id,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints
+		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
 		 ORDER BY created_at LIMIT 10`)
 	if err != nil {
@@ -928,13 +1158,14 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		var startedAt, completedAt *string
 
 		if err := rows.Scan(
-			&task.ID, &task.SubmissionID, &task.StepID, &stateStr,
+			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
 			&executorType, &task.ExternalID, &task.BVBRCAppID,
 			&inputsJSON, &outputsJSON, &dependsOnJSON,
 			&task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
+			&task.ScatterIndex,
 		); err != nil {
 			rows.Close()
 			return nil, err
@@ -1167,4 +1398,27 @@ func (s *SQLiteStore) LinkProvider(ctx context.Context, userID string, provider 
 		userID, provider, username,
 	)
 	return err
+}
+
+// sanitizeFloats recursively replaces NaN and Inf float64 values with nil
+// so that encoding/json.Marshal doesn't fail.
+func sanitizeFloats(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, v := range val {
+			if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+				val[k] = nil
+			} else {
+				sanitizeFloats(v)
+			}
+		}
+	case []any:
+		for i, v := range val {
+			if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+				val[i] = nil
+			} else {
+				sanitizeFloats(v)
+			}
+		}
+	}
 }

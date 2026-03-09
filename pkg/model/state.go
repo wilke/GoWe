@@ -29,10 +29,12 @@ func (s TaskState) IsTerminal() bool {
 }
 
 // ValidTransitions defines the allowed state transitions for Tasks.
+// Includes both legacy transitions (PENDING→SCHEDULED) for backward compat
+// and the new direct QUEUED→RUNNING flow used by the StepInstance scheduler.
 var ValidTaskTransitions = map[TaskState][]TaskState{
-	TaskStatePending:   {TaskStateScheduled, TaskStateSkipped},
+	TaskStatePending:   {TaskStateScheduled, TaskStateSkipped, TaskStateQueued},
 	TaskStateScheduled: {TaskStateQueued},
-	TaskStateQueued:    {TaskStateRunning},
+	TaskStateQueued:    {TaskStateRunning, TaskStateSuccess, TaskStateFailed},
 	TaskStateRunning:   {TaskStateSuccess, TaskStateFailed, TaskStateSkipped},
 	TaskStateFailed:    {TaskStateRetrying},
 	TaskStateRetrying:  {TaskStateQueued},

@@ -22,10 +22,16 @@ services:
       - "local,docker,worker,container"
       - "-scheduler-poll"
       - "500ms"
+      - "-upload-backend"
+      - "local"
+      - "-upload-local-dir"
+      - "/workdir/uploads"
+      - "-upload-download-dirs"
+      - "/workdir/uploads,/workdir/outputs,/workdir/scratch"
       - "-debug"
     volumes:
       - gowe-data:/data
-      - ./tmp/workdir:/workdir
+      - gowe-workdir:/workdir
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 5s
@@ -56,7 +62,7 @@ services:
       - "500ms"
       - "-debug"
     volumes:
-      - ./tmp/workdir:/workdir
+      - gowe-workdir:/workdir
       - ./testdata/cwl-v1.2:/testdata:ro
     networks:
       - gowe-net
@@ -83,7 +89,7 @@ services:
       - "500ms"
       - "-debug"
     volumes:
-      - ./tmp/workdir:/workdir
+      - gowe-workdir:/workdir
       - ./testdata/cwl-v1.2:/testdata:ro
     networks:
       - gowe-net
@@ -110,22 +116,20 @@ services:
       - "500ms"
       - "-debug"
     environment:
-      # Docker-in-Docker path mapping: container paths -> host paths.
-      # Required because docker commands run on the host Docker daemon,
-      # so mount paths must be valid on the host, not inside this container.
-      # Note: /testdata maps to cwl-v1.2 subdirectory for conformance tests.
-      - DOCKER_HOST_PATH_MAP=/workdir=${PWD}/tmp/workdir:/testdata=${PWD}/testdata/cwl-v1.2
+      # Named Docker volume shared between worker and tool containers.
+      # Tool containers mount this volume at /workdir — no path translation needed.
+      - DOCKER_VOLUME=gowe-workdir
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./tmp/workdir:/workdir
+      - gowe-workdir:/workdir
       - ./testdata/cwl-v1.2:/testdata:ro
     networks:
       - gowe-net
 
 volumes:
   gowe-data:
-  # gowe-workdir is a host bind mount for CLI access to outputs
-  # In production, use a named volume or NFS mount
+  gowe-workdir:
+    name: gowe-workdir
 
 networks:
   gowe-net:

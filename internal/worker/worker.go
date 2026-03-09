@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/execution"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
@@ -24,12 +25,14 @@ type Worker struct {
 	runtime           Runtime
 	stager            execution.Stager
 	httpStager        *execution.HTTPStager // Base HTTP stager for creating per-task overrides
+	parser            *parser.Parser
 	workDir           string
 	stageOut          string
 	stagerCfg         StagerConfig
 	poll              time.Duration
 	gpu               GPUWorkerConfig   // GPU configuration
 	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
+	dockerVolume      string            // Named Docker volume shared with tool containers
 	inputPathMap      map[string]string // Input path mapping for host->container translation
 	logger            *slog.Logger
 }
@@ -53,6 +56,12 @@ type Config struct {
 	// uses the host's Docker socket.
 	// Format: container_path -> host_path
 	DockerHostPathMap map[string]string
+
+	// DockerVolume is a named Docker volume shared between the worker and
+	// tool containers. When set, tool containers mount this volume instead
+	// of using bind mounts with path translation. This eliminates the need
+	// for DockerHostPathMap when the worker runs inside a container.
+	DockerVolume string
 
 	// InputPathMap maps host paths in task inputs to local container paths.
 	// This allows workers running in containers to translate paths from the
@@ -198,12 +207,14 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		runtime:           rt,
 		stager:            stager,
 		httpStager:        httpStager,
+		parser:            parser.New(logger),
 		workDir:           cfg.WorkDir,
 		stageOut:          cfg.StageOut,
 		stagerCfg:         cfg.Stager,
 		poll:              cfg.Poll,
 		gpu:               cfg.GPU,
 		dockerHostPathMap: cfg.DockerHostPathMap,
+		dockerVolume:      cfg.DockerVolume,
 		inputPathMap:      cfg.InputPathMap,
 		logger:            logger.With("component", "worker"),
 	}, nil
@@ -309,20 +320,18 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 
 	// Check if task has Tool+Job (new format) or legacy _base_command.
 	if task.HasTool() {
-		return w.executeWithEngine(ctx, task, taskDir)
+		return w.executeWithCWLTool(ctx, task, taskDir)
 	}
 
 	// Legacy path: use _base_command from task.Inputs.
 	return w.executeLegacy(ctx, task, taskDir)
 }
 
-// executeWithEngine executes a task using the execution.Engine with full CWL support.
-func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDir string) error {
-	w.logger.Debug("executing with engine", "task_id", task.ID, "has_tool", true)
+// executeWithCWLTool executes a task using the cwltool package with full CWL support.
+func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string) error {
+	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
 
 	// Rematerialize file literals in job inputs if paths don't exist locally.
-	// This handles distributed execution where file literals were materialized
-	// on the server but the paths are not accessible to this worker.
 	for k, v := range task.Job {
 		if rematerialized, err := fileliteral.RematerializeRecursive(v, taskDir); err != nil {
 			w.logger.Warn("rematerialize file literal", "input", k, "error", err)
@@ -331,50 +340,48 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 		}
 	}
 
-	// Convert task.Tool (map[string]any) to *cwl.CommandLineTool.
-	tool, err := parseToolFromMap(task.Tool)
-	if err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
+	// Remap input paths if configured (host->container translation).
+	job := task.Job
+	if len(w.inputPathMap) > 0 {
+		job = cwltool.RemapInputPaths(job, w.inputPathMap)
+		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
 	}
 
-	// Build engine configuration.
-	var expressionLib []string
-	var namespaces map[string]string
-	var cwlDir string
-	if task.RuntimeHints != nil {
-		expressionLib = task.RuntimeHints.ExpressionLib
-		namespaces = task.RuntimeHints.Namespaces
-		cwlDir = task.RuntimeHints.CWLDir
-	}
-
-	// Apply per-task stager overrides if present.
+	// Stage-in remote files (worker owns this step).
 	stager := w.stager
 	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
 		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
 	}
+	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
+	}
 
-	// Create the execution engine with the (possibly overridden) stager and GPU config.
-	engine := execution.NewEngine(execution.Config{
-		Logger:            w.logger,
-		Stager:            stager,
-		ExpressionLib:     expressionLib,
-		Namespaces:        namespaces,
-		CWLDir:            cwlDir,
-		DockerHostPathMap: w.dockerHostPathMap,
-		InputPathMap:      w.inputPathMap,
-		GPU: execution.GPUConfig{
-			Enabled:  w.gpu.Enabled,
-			DeviceID: w.gpu.DeviceID,
-		},
-	})
+	// Parse tool from task.Tool map using the proper parser.
+	tool, err := w.parser.ParseToolFromMap(task.Tool)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
+	}
+
+	// Build cwltool configuration.
+	cfg := cwltool.Config{
+		Logger:                w.logger,
+		DockerHostPathMap:     w.dockerHostPathMap,
+		DockerVolume:          w.dockerVolume,
+		GPU:                   toolexecGPU(w.gpu),
+		ResolveSecondary:      true,
+		RemoveDefaultListings: true,
+	}
+	if task.RuntimeHints != nil {
+		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
+		cfg.Namespaces = task.RuntimeHints.Namespaces
+		cfg.CWLDir = task.RuntimeHints.CWLDir
+	}
 
 	// Execute the tool.
-	result, err := engine.ExecuteTool(ctx, tool, task.Job, taskDir)
+	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
 
 	// Handle execution errors.
 	if err != nil {
-		// Check if it's an execution error with exit code.
-		var execErr *execution.ExecutionError
 		if result != nil {
 			return w.client.ReportComplete(ctx, task.ID, TaskResult{
 				State:    model.TaskStateFailed,
@@ -384,17 +391,15 @@ func (w *Worker) executeWithEngine(ctx context.Context, task *model.Task, taskDi
 				Outputs:  result.Outputs,
 			})
 		}
-		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w (%v)", err, execErr))
+		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", err))
 	}
 
-	// Stage out output files.
+	// Stage out output files (worker owns this step).
 	stagedOutputs := make(map[string]any)
 	for outputID, output := range result.Outputs {
 		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task.ID)
 	}
 
-	// The engine handles successCodes/permanentFailCodes, so if we reach here
-	// without an error, the task succeeded (even if exit code is non-zero).
 	return w.client.ReportComplete(ctx, task.ID, TaskResult{
 		State:    model.TaskStateSuccess,
 		ExitCode: &result.ExitCode,
@@ -537,180 +542,6 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, taskID string) any
 	default:
 		return v
 	}
-}
-
-// parseToolFromMap converts a map[string]any to *cwl.CommandLineTool.
-func parseToolFromMap(toolMap map[string]any) (*cwl.CommandLineTool, error) {
-	// Marshal to JSON then unmarshal to struct.
-	// This handles all the field conversions properly.
-	data, err := json.Marshal(toolMap)
-	if err != nil {
-		return nil, fmt.Errorf("marshal tool: %w", err)
-	}
-
-	var tool cwl.CommandLineTool
-	if err := json.Unmarshal(data, &tool); err != nil {
-		return nil, fmt.Errorf("unmarshal tool: %w", err)
-	}
-
-	// Handle baseCommand which may be string or []string in YAML.
-	if bc, ok := toolMap["baseCommand"]; ok {
-		switch cmd := bc.(type) {
-		case string:
-			tool.BaseCommand = []string{cmd}
-		case []any:
-			var baseCmd []string
-			for _, c := range cmd {
-				if s, ok := c.(string); ok {
-					baseCmd = append(baseCmd, s)
-				}
-			}
-			tool.BaseCommand = baseCmd
-		}
-	}
-
-	// Handle inputs map conversion.
-	if inputs, ok := toolMap["inputs"].(map[string]any); ok {
-		tool.Inputs = make(map[string]cwl.ToolInputParam)
-		for id, inp := range inputs {
-			param, err := parseInputParam(id, inp)
-			if err != nil {
-				return nil, fmt.Errorf("input %s: %w", id, err)
-			}
-			tool.Inputs[id] = param
-		}
-	}
-
-	// Handle outputs map conversion.
-	if outputs, ok := toolMap["outputs"].(map[string]any); ok {
-		tool.Outputs = make(map[string]cwl.ToolOutputParam)
-		for id, out := range outputs {
-			param, err := parseOutputParam(id, out)
-			if err != nil {
-				return nil, fmt.Errorf("output %s: %w", id, err)
-			}
-			tool.Outputs[id] = param
-		}
-	}
-
-	// Copy requirements and hints as raw maps.
-	if reqs, ok := toolMap["requirements"].(map[string]any); ok {
-		tool.Requirements = reqs
-	}
-	if hints, ok := toolMap["hints"].(map[string]any); ok {
-		tool.Hints = hints
-	}
-
-	return &tool, nil
-}
-
-// parseInputParam parses a CWL input parameter from map.
-func parseInputParam(id string, v any) (cwl.ToolInputParam, error) {
-	param := cwl.ToolInputParam{}
-
-	switch val := v.(type) {
-	case string:
-		// Shorthand: just the type.
-		param.Type = val
-	case map[string]any:
-		if t, ok := val["type"]; ok {
-			switch tv := t.(type) {
-			case string:
-				param.Type = tv
-			case map[string]any:
-				// Array type like {type: array, items: string}
-				if typeStr, ok := tv["type"].(string); ok && typeStr == "array" {
-					if items, ok := tv["items"].(string); ok {
-						param.Type = items + "[]"
-					}
-				}
-			}
-		}
-
-		if ib, ok := val["inputBinding"].(map[string]any); ok {
-			param.InputBinding = parseInputBinding(ib)
-		}
-
-		// Parse itemInputBinding from nested array type or from top-level.
-		// Can be in: val["itemInputBinding"] or val["type"]["inputBinding"]
-		if itemIB, ok := val["itemInputBinding"].(map[string]any); ok {
-			param.ItemInputBinding = parseInputBinding(itemIB)
-		} else if typeMap, ok := val["type"].(map[string]any); ok {
-			// Array type with nested inputBinding: {type: array, items: File, inputBinding: {prefix: "-X"}}
-			if typeMap["type"] == "array" {
-				if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
-					param.ItemInputBinding = parseInputBinding(itemIB)
-				}
-			}
-		}
-
-		if def, ok := val["default"]; ok {
-			param.Default = def
-		}
-	}
-
-	return param, nil
-}
-
-// parseOutputParam parses a CWL output parameter from map.
-func parseOutputParam(id string, v any) (cwl.ToolOutputParam, error) {
-	param := cwl.ToolOutputParam{}
-
-	switch val := v.(type) {
-	case string:
-		// Shorthand: just the type (e.g., "stdout").
-		param.Type = val
-	case map[string]any:
-		if t, ok := val["type"]; ok {
-			switch tv := t.(type) {
-			case string:
-				param.Type = tv
-			case map[string]any:
-				if typeStr, ok := tv["type"].(string); ok && typeStr == "array" {
-					if items, ok := tv["items"].(string); ok {
-						param.Type = items + "[]"
-					}
-				}
-			}
-		}
-
-		if ob, ok := val["outputBinding"].(map[string]any); ok {
-			binding := &cwl.OutputBinding{}
-			if glob, ok := ob["glob"]; ok {
-				binding.Glob = glob
-			}
-			if oe, ok := ob["outputEval"].(string); ok {
-				binding.OutputEval = oe
-			}
-			if lc, ok := ob["loadContents"].(bool); ok {
-				binding.LoadContents = lc
-			}
-			param.OutputBinding = binding
-		}
-	}
-
-	return param, nil
-}
-
-// parseInputBinding parses a CWL inputBinding from map.
-func parseInputBinding(ib map[string]any) *cwl.InputBinding {
-	binding := &cwl.InputBinding{}
-	if pos, ok := ib["position"]; ok {
-		binding.Position = pos
-	}
-	if prefix, ok := ib["prefix"].(string); ok {
-		binding.Prefix = prefix
-	}
-	if sep, ok := ib["separate"].(bool); ok {
-		binding.Separate = &sep
-	}
-	if vf, ok := ib["valueFrom"].(string); ok {
-		binding.ValueFrom = vf
-	}
-	if is, ok := ib["itemSeparator"].(string); ok {
-		binding.ItemSeparator = is
-	}
-	return binding
 }
 
 // reportFailure sends a FAILED completion with the given error as stderr.

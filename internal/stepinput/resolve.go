@@ -23,12 +23,14 @@ type InputDef struct {
 	Default      any      // Default value if sources resolve to nil
 	ValueFrom    string   // Expression to transform input
 	LoadContents bool     // Read file contents before valueFrom
+	LinkMerge    string   // merge_nested (default) or merge_flattened
 }
 
 // Options configures step input resolution.
 type Options struct {
-	CWLDir        string   // Directory for resolving relative paths
-	ExpressionLib []string // JavaScript library from InlineJavascriptRequirement
+	CWLDir            string   // Directory for resolving relative paths
+	ExpressionLib     []string // JavaScript library from InlineJavascriptRequirement
+	SkipAllValueFrom  bool     // Skip all valueFrom evaluation (used for scatter steps)
 }
 
 // ResolveInputs resolves step inputs following CWL semantics:
@@ -58,7 +60,21 @@ func ResolveInputs(
 			for i, src := range inp.Sources {
 				values[i] = ResolveSource(src, workflowInputs, stepOutputs)
 			}
-			value = values
+			// Apply linkMerge: merge_flattened flattens nested arrays into a single array.
+			// Default (merge_nested) keeps them as-is.
+			if inp.LinkMerge == "merge_flattened" {
+				var flattened []any
+				for _, v := range values {
+					if arr, ok := v.([]any); ok {
+						flattened = append(flattened, arr...)
+					} else {
+						flattened = append(flattened, v)
+					}
+				}
+				value = flattened
+			} else {
+				value = values
+			}
 		}
 
 		// Apply default if source resolved to nil.
@@ -268,6 +284,11 @@ func evaluateValueFromExpressions(
 	workflowInputs map[string]any,
 	opts Options,
 ) error {
+	// For scatter steps, skip all valueFrom — it's applied per-iteration later.
+	if opts.SkipAllValueFrom {
+		return nil
+	}
+
 	// Check if any inputs have valueFrom.
 	hasValueFrom := false
 	for _, inp := range inputs {
@@ -314,7 +335,7 @@ func evaluateValueFromExpressions(
 
 // InputDefFromModel creates an InputDef from model.StepInput fields.
 // This is a convenience function for converting from the model representation.
-func InputDefFromModel(id string, sources []string, source string, defaultVal any, valueFrom string, loadContents bool) InputDef {
+func InputDefFromModel(id string, sources []string, source string, defaultVal any, valueFrom string, loadContents bool, linkMerge string) InputDef {
 	// Prefer Sources array, fall back to splitting comma-separated Source.
 	srcs := sources
 	if len(srcs) == 0 && source != "" {
@@ -326,5 +347,6 @@ func InputDefFromModel(id string, sources []string, source string, defaultVal an
 		Default:      defaultVal,
 		ValueFrom:    valueFrom,
 		LoadContents: loadContents,
+		LinkMerge:    linkMerge,
 	}
 }

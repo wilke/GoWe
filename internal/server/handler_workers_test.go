@@ -134,8 +134,8 @@ func TestWorkerTaskComplete(t *testing.T) {
 	srv := testServer()
 	workerID := registerTestWorker(t, srv)
 
-	// Create a workflow + submission to get a task.
-	_, subID := createTestSubmission(t, srv)
+	// Create a workflow + submission with tasks.
+	_, subID := createTestSubmissionWithTasks(t, srv)
 
 	// Get the task IDs.
 	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")

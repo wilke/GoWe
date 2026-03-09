@@ -266,9 +266,10 @@ func TestLogsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logs error: %v", err)
 	}
-	// Newly created tasks have empty logs, but the command shows step headers.
-	if !strings.Contains(output, "===") {
-		t.Errorf("expected task log header in output, got: %s", output)
+	// With the 3-level model, tasks are created by the scheduler (not at submission time).
+	// A freshly created submission has no tasks yet.
+	if !strings.Contains(output, "No tasks found") && !strings.Contains(output, "===") {
+		t.Errorf("expected 'No tasks found' or task headers in output, got: %s", output)
 	}
 }
 

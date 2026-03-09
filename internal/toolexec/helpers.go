@@ -166,6 +166,21 @@ func isFileType(outputType any) bool {
 	return false
 }
 
+// isOptionalType checks if the output type is optional (allows null).
+func isOptionalType(outputType any) bool {
+	switch t := outputType.(type) {
+	case string:
+		return strings.HasSuffix(t, "?")
+	case []any:
+		for _, item := range t {
+			if s, ok := item.(string); ok && s == "null" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isArrayOutputType checks if the output type is an array type.
 func isArrayOutputType(outputType any) bool {
 	switch t := outputType.(type) {

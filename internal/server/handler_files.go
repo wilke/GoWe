@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/me/gowe/pkg/model"
@@ -28,6 +29,11 @@ type FileUploadConfig struct {
 	// TempDir is the temporary directory for buffering uploads.
 	// If empty, uses os.TempDir().
 	TempDir string
+
+	// AllowedDownloadDirs is the list of directories from which files
+	// can be downloaded via the GET /api/v1/files/download endpoint.
+	// Paths are validated to prevent directory traversal.
+	AllowedDownloadDirs []string
 
 	// Shock configuration (when Backend == "shock")
 	Shock ShockUploadConfig
@@ -259,4 +265,125 @@ func (s *Server) uploadToLocal(ctx context.Context, tmpPath, filename string, cf
 	}
 
 	return "file://" + destPath, nil
+}
+
+// handleDownloadFile handles GET /api/v1/files/download?location=file:///path/to/file
+// For regular files, it serves the raw bytes via http.ServeFile.
+// For directories, it returns a JSON listing of entries.
+func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+
+	if s.fileUploadConfig == nil || !s.fileUploadConfig.Enabled {
+		respondError(w, reqID, http.StatusNotFound, &model.APIError{
+			Code:    "FILE_DOWNLOAD_DISABLED",
+			Message: "file download endpoint is not enabled",
+		})
+		return
+	}
+
+	location := r.URL.Query().Get("location")
+	if location == "" {
+		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "missing 'location' query parameter",
+		})
+		return
+	}
+
+	// Parse file:// URI to local path.
+	filePath := location
+	if strings.HasPrefix(filePath, "file://") {
+		filePath = strings.TrimPrefix(filePath, "file://")
+	}
+
+	// Clean the path to prevent directory traversal.
+	filePath = filepath.Clean(filePath)
+
+	// Validate path is under an allowed directory.
+	if !s.isPathAllowed(filePath) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    "DOWNLOAD_FORBIDDEN",
+			Message: "path is not in an allowed download directory",
+		})
+		return
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			respondError(w, reqID, http.StatusNotFound, &model.APIError{
+				Code:    "FILE_NOT_FOUND",
+				Message: fmt.Sprintf("file not found: %s", location),
+			})
+			return
+		}
+		respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+			Code:    model.ErrInternal,
+			Message: fmt.Sprintf("stat file: %v", err),
+		})
+		return
+	}
+
+	if info.IsDir() {
+		// Return JSON listing of directory entries.
+		s.serveDirectoryListing(w, reqID, filePath)
+		return
+	}
+
+	// Serve file as raw bytes.
+	s.logger.Debug("serving file download", "path", filePath, "size", info.Size())
+	http.ServeFile(w, r, filePath)
+}
+
+// serveDirectoryListing returns a JSON listing of directory entries.
+func (s *Server) serveDirectoryListing(w http.ResponseWriter, reqID string, dirPath string) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+			Code:    model.ErrInternal,
+			Message: fmt.Sprintf("read directory: %v", err),
+		})
+		return
+	}
+
+	listing := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		entryPath := filepath.Join(dirPath, entry.Name())
+		item := map[string]any{
+			"basename": entry.Name(),
+			"location": "file://" + entryPath,
+			"is_dir":   entry.IsDir(),
+		}
+		if info, err := entry.Info(); err == nil {
+			item["size"] = info.Size()
+		}
+		listing = append(listing, item)
+	}
+
+	respondOK(w, reqID, listing)
+}
+
+// isPathAllowed checks if a file path is under one of the allowed download directories.
+func (s *Server) isPathAllowed(filePath string) bool {
+	if s.fileUploadConfig == nil || len(s.fileUploadConfig.AllowedDownloadDirs) == 0 {
+		return false
+	}
+
+	resolved, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return false
+	}
+	cleanPath := filepath.Clean(resolved)
+	for _, dir := range s.fileUploadConfig.AllowedDownloadDirs {
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
+		}
+		cleanDir := filepath.Clean(resolvedDir)
+		// Path must be under the allowed directory (prefix + separator check).
+		if cleanPath == cleanDir || strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

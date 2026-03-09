@@ -21,11 +21,20 @@ type Store interface {
 	GetSubmission(ctx context.Context, id string) (*model.Submission, error)
 	ListSubmissions(ctx context.Context, opts model.ListOptions) ([]*model.Submission, int, error)
 	UpdateSubmission(ctx context.Context, sub *model.Submission) error
+	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)
+
+	// StepInstance operations
+	CreateStepInstance(ctx context.Context, si *model.StepInstance) error
+	GetStepInstance(ctx context.Context, id string) (*model.StepInstance, error)
+	UpdateStepInstance(ctx context.Context, si *model.StepInstance) error
+	ListStepsBySubmission(ctx context.Context, submissionID string) ([]*model.StepInstance, error)
+	ListStepsByState(ctx context.Context, state model.StepInstanceState) ([]*model.StepInstance, error)
 
 	// Task operations
 	CreateTask(ctx context.Context, task *model.Task) error
 	GetTask(ctx context.Context, id string) (*model.Task, error)
 	ListTasksBySubmission(ctx context.Context, submissionID string) ([]*model.Task, error)
+	ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error)
 	UpdateTask(ctx context.Context, task *model.Task) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 

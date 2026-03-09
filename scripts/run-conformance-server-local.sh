@@ -186,7 +186,7 @@ log_info "Server: ${SERVER_URL} (default-executor: local)"
 WRAPPER_SCRIPT=$(mktemp)
 cat > "$WRAPPER_SCRIPT" << EOF
 #!/bin/bash
-exec "$PROJECT_DIR/bin/gowe" run --server ${SERVER_URL} --quiet "\$@"
+exec "$PROJECT_DIR/bin/gowe" run --server ${SERVER_URL} --no-upload --quiet "\$@"
 EOF
 chmod +x "$WRAPPER_SCRIPT"
 

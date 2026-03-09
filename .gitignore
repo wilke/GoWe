@@ -56,5 +56,8 @@ scratchpad*.md
 /worker
 testdata/cwl-v1.2
 conformance-results.txt
+conformance-*-results.txt
+conformance-*-timing.xml
 badges/
 docker-compose.override.yml
+test-logs/

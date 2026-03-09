@@ -63,6 +63,9 @@ func main() {
 	// Local upload options
 	uploadLocalDir := flag.String("upload-local-dir", "", "Local directory for file uploads")
 
+	// Download options
+	uploadDownloadDirs := flag.String("upload-download-dirs", "", "Comma-separated list of directories allowed for file download")
+
 	flag.Parse()
 
 	if *debug {
@@ -159,10 +162,26 @@ func main() {
 			s3SecretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
 		}
 
+		// Parse allowed download directories.
+		var downloadDirs []string
+		if *uploadDownloadDirs != "" {
+			for _, d := range strings.Split(*uploadDownloadDirs, ",") {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					downloadDirs = append(downloadDirs, d)
+				}
+			}
+		}
+		// If no download dirs specified, default to the local upload dir.
+		if len(downloadDirs) == 0 && *uploadLocalDir != "" {
+			downloadDirs = []string{*uploadLocalDir}
+		}
+
 		uploadCfg := &server.FileUploadConfig{
-			Enabled: true,
-			Backend: *uploadBackend,
-			MaxSize: *uploadMaxSize,
+			Enabled:             true,
+			Backend:             *uploadBackend,
+			MaxSize:             *uploadMaxSize,
+			AllowedDownloadDirs: downloadDirs,
 			Shock: server.ShockUploadConfig{
 				Host:    *uploadShockHost,
 				UseHTTP: *uploadShockHTTP,
@@ -213,9 +232,10 @@ func main() {
 	// Register BVBRCExecutor (uses per-task tokens for job submission).
 	reg.Register(executor.NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, defaultBVBRCCaller, logger))
 
-	// Create scheduler with configurable poll interval.
+	// Create scheduler with configurable poll interval and default executor.
 	schedCfg := scheduler.DefaultConfig()
 	schedCfg.PollInterval = *schedulerPoll
+	schedCfg.DefaultExecutor = cfg.DefaultExecutor
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
 	srv := server.New(cfg, st, sched, logger, serverOpts...)
