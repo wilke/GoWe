@@ -742,7 +742,9 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 		if err == nil && si != nil {
 			si.State = model.StepStateDispatched
 			si.CompletedAt = nil
-			ui.store.UpdateStepInstance(r.Context(), si)
+			if err := ui.store.UpdateStepInstance(r.Context(), si); err != nil {
+				ui.logger.Error("failed to reset step instance", "si_id", task.StepInstanceID, "error", err)
+			}
 		}
 	}
 
@@ -751,7 +753,9 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	if sub != nil && sub.State.IsTerminal() {
 		sub.State = model.SubmissionStateRunning
 		sub.CompletedAt = nil
-		ui.store.UpdateSubmission(r.Context(), sub)
+		if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
+			ui.logger.Error("failed to update submission", "id", subID, "error", err)
+		}
 	}
 
 	ui.logger.Info("task recomputed", "task_id", taskID, "submission_id", subID)

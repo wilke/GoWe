@@ -30,6 +30,7 @@ type Config struct {
 	NoContainer          bool               // Force local execution even with DockerRequirement
 	GPU                  toolexec.GPUConfig // GPU configuration
 	DockerHostPathMap    map[string]string  // Container path -> host path for DinD
+	DockerVolume         string             // Named Docker volume shared with tool containers
 	ResolveSecondary     bool               // Resolve secondary files from tool definitions
 	JobRequirements      []any              // cwl:requirements from job file
 	OutDir               string             // Output directory for resolved output paths
@@ -163,12 +164,35 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			return nil, fmt.Errorf("Docker execution requested but no docker image specified")
 		}
 		dockerOutputDir := GetDockerOutputDirectory(tool)
-		containerWorkDir := "/var/spool/cwl"
-		if dockerOutputDir != "" {
-			containerWorkDir = dockerOutputDir
+
+		// Determine runtime context paths based on execution mode.
+		var containerWorkDir, runtimeTmpDir string
+		if cfg.DockerVolume != "" {
+			// Volume mode: the named volume is mounted into the tool container,
+			// so files are accessible at their actual paths. Use workDir as
+			// the container working directory rather than /var/spool/cwl.
+			containerWorkDir = workDir
+			if dockerOutputDir != "" {
+				containerWorkDir = dockerOutputDir
+			}
+			runtimeTmpDir = workDir + "_tmp"
+
+			// Stage any input files outside the volume mount into workDir
+			// so they are accessible in the tool container via the volume.
+			if err := stageOutOfVolumeInputs(mergedInputs, workDir); err != nil {
+				return nil, fmt.Errorf("stage inputs for volume mode: %w", err)
+			}
+		} else {
+			// Bind mount mode: workDir is bind-mounted at /var/spool/cwl.
+			containerWorkDir = "/var/spool/cwl"
+			if dockerOutputDir != "" {
+				containerWorkDir = dockerOutputDir
+			}
+			runtimeTmpDir = "/tmp"
 		}
+
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
-		runtime.TmpDir = "/tmp"
+		runtime.TmpDir = runtimeTmpDir
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
@@ -187,6 +211,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			DockerOutputDir:   dockerOutputDir,
 			Namespaces:        cfg.Namespaces,
 			DockerHostPathMap: cfg.DockerHostPathMap,
+			DockerVolume:      cfg.DockerVolume,
 			GPU:               cfg.GPU,
 			JobRequirements:   cfg.JobRequirements,
 		})

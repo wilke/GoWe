@@ -32,6 +32,7 @@ type Worker struct {
 	poll              time.Duration
 	gpu               GPUWorkerConfig   // GPU configuration
 	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
+	dockerVolume      string            // Named Docker volume shared with tool containers
 	inputPathMap      map[string]string // Input path mapping for host->container translation
 	logger            *slog.Logger
 }
@@ -55,6 +56,12 @@ type Config struct {
 	// uses the host's Docker socket.
 	// Format: container_path -> host_path
 	DockerHostPathMap map[string]string
+
+	// DockerVolume is a named Docker volume shared between the worker and
+	// tool containers. When set, tool containers mount this volume instead
+	// of using bind mounts with path translation. This eliminates the need
+	// for DockerHostPathMap when the worker runs inside a container.
+	DockerVolume string
 
 	// InputPathMap maps host paths in task inputs to local container paths.
 	// This allows workers running in containers to translate paths from the
@@ -207,6 +214,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		poll:              cfg.Poll,
 		gpu:               cfg.GPU,
 		dockerHostPathMap: cfg.DockerHostPathMap,
+		dockerVolume:      cfg.DockerVolume,
 		inputPathMap:      cfg.InputPathMap,
 		logger:            logger.With("component", "worker"),
 	}, nil
@@ -358,6 +366,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	cfg := cwltool.Config{
 		Logger:                w.logger,
 		DockerHostPathMap:     w.dockerHostPathMap,
+		DockerVolume:          w.dockerVolume,
 		GPU:                   toolexecGPU(w.gpu),
 		ResolveSecondary:      true,
 		RemoveDefaultListings: true,

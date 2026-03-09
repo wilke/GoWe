@@ -215,13 +215,12 @@ func resolveGraphInputDefaults(graph []any, baseDir string) {
 		// Process inputs — can be map or array form.
 		switch inputs := itemMap["inputs"].(type) {
 		case map[string]any:
-			for id, inp := range inputs {
+			for _, inp := range inputs {
 				if inpMap, ok := inp.(map[string]any); ok {
 					if def, ok := inpMap["default"]; ok {
 						inpMap["default"] = ResolveFilePaths(def, baseDir)
 					}
 				}
-				_ = id
 			}
 		case []any:
 			for _, inp := range inputs {

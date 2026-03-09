@@ -325,7 +325,7 @@ func ResolveWorkflowLoadContents(wf *model.Workflow, inputs map[string]any, cwlD
 		}
 		processed, err := loadcontents.Process(val, cwlDir)
 		if err != nil {
-			// Log but don't fail — validation will catch issues later.
+			slog.Default().Error("loadContents failed", "input_id", inputID, "error", err)
 			continue
 		}
 		result[inputID] = processed

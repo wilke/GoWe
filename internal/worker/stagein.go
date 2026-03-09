@@ -223,7 +223,9 @@ func reconstructDirectoryFromListing(ctx context.Context, stager execution.Stage
 					// Symlink the accessible directory into place.
 					destInDir := filepath.Join(dirPath, itemBasename)
 					if destInDir != localPath {
-						_ = os.Symlink(localPath, destInDir)
+						if err := os.Symlink(localPath, destInDir); err != nil {
+							return fmt.Errorf("symlink %s -> %s: %w", localPath, destInDir, err)
+						}
 					}
 					itemMap["path"] = destInDir
 					itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, destInDir)
@@ -232,7 +234,9 @@ func reconstructDirectoryFromListing(ctx context.Context, stager execution.Stage
 			}
 			// Empty directory with no accessible location — just create it.
 			subDirPath := filepath.Join(dirPath, itemBasename)
-			_ = os.MkdirAll(subDirPath, 0o755)
+			if err := os.MkdirAll(subDirPath, 0o755); err != nil {
+				return fmt.Errorf("create subdirectory %s: %w", subDirPath, err)
+			}
 			itemMap["path"] = subDirPath
 			itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, subDirPath)
 			continue
@@ -278,7 +282,9 @@ func reconstructDirectoryFromListing(ctx context.Context, stager execution.Stage
 				}
 				destInDir := filepath.Join(dirPath, itemBasename)
 				if destInDir != srcPath {
-					_ = staging.CopyFile(srcPath, destInDir)
+					if err := staging.CopyFile(srcPath, destInDir); err != nil {
+						return fmt.Errorf("copy %s -> %s: %w", srcPath, destInDir, err)
+					}
 				}
 				itemMap["path"] = destInDir
 				itemMap["location"] = cwl.BuildLocation(cwl.SchemeFile, destInDir)

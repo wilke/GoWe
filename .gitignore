@@ -60,3 +60,4 @@ conformance-*-results.txt
 conformance-*-timing.xml
 badges/
 docker-compose.override.yml
+test-logs/

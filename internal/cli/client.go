@@ -129,7 +129,9 @@ func (c *Client) UploadFile(filePath string) (*UploadResult, error) {
 	if _, err := io.Copy(part, f); err != nil {
 		return nil, fmt.Errorf("copy file data: %w", err)
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
 
 	reqURL := c.BaseURL + "/api/v1/files"
 	req, err := http.NewRequest("POST", reqURL, &buf)

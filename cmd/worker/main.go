@@ -36,6 +36,10 @@ func main() {
 	var dockerHostPathMapStr string
 	flag.StringVar(&dockerHostPathMapStr, "docker-host-path-map", "", "Path mapping for DinD: 'container1=host1:container2=host2' (or DOCKER_HOST_PATH_MAP env)")
 
+	// Docker volume name for sharing files between worker and tool containers.
+	var dockerVolume string
+	flag.StringVar(&dockerVolume, "docker-volume", "", "Named Docker volume shared with tool containers (or DOCKER_VOLUME env)")
+
 	// Input path mapping - translates host paths in task inputs to local container paths.
 	var inputPathMapStr string
 	flag.StringVar(&inputPathMapStr, "input-path-map", "", "Input path mapping: 'hostpath1=localpath1:hostpath2=localpath2' (or INPUT_PATH_MAP env)")
@@ -114,6 +118,14 @@ func main() {
 	}
 	if dockerHostPathMapStr != "" {
 		cfg.DockerHostPathMap = parsePathMap(dockerHostPathMapStr)
+	}
+
+	// Parse Docker volume from flag or environment variable.
+	if dockerVolume == "" {
+		dockerVolume = os.Getenv("DOCKER_VOLUME")
+	}
+	if dockerVolume != "" {
+		cfg.DockerVolume = dockerVolume
 	}
 
 	// Parse input path map from flag or environment variable.

@@ -369,9 +369,17 @@ func (s *Server) isPathAllowed(filePath string) bool {
 		return false
 	}
 
-	cleanPath := filepath.Clean(filePath)
+	resolved, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return false
+	}
+	cleanPath := filepath.Clean(resolved)
 	for _, dir := range s.fileUploadConfig.AllowedDownloadDirs {
-		cleanDir := filepath.Clean(dir)
+		resolvedDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
+		}
+		cleanDir := filepath.Clean(resolvedDir)
 		// Path must be under the allowed directory (prefix + separator check).
 		if cleanPath == cleanDir || strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) {
 			return true

@@ -36,7 +36,6 @@ func NewLocalExecutor(workDir string, logger *slog.Logger) *LocalExecutor {
 }
 
 // SetKeepWorkDir controls whether working directories are preserved after execution.
-// When false (default), working directories are cleaned up after output collection.
 // When true (debug mode), working directories are kept for inspection.
 func (e *LocalExecutor) SetKeepWorkDir(keep bool) {
 	e.keepWorkDir = keep
@@ -49,8 +48,6 @@ func (e *LocalExecutor) Type() model.ExecutorType {
 
 // Submit executes the task synchronously as a local process.
 // It returns the task working directory as the externalID.
-// Each invocation gets a unique working directory that is cleaned up
-// after outputs are collected, unless keepWorkDir is enabled.
 func (e *LocalExecutor) Submit(ctx context.Context, task *model.Task) (string, error) {
 	taskDir := filepath.Join(e.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {

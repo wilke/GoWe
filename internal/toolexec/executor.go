@@ -77,6 +77,12 @@ type Options struct {
 	// Format: container_path -> host_path
 	DockerHostPathMap map[string]string
 
+	// DockerVolume is a named Docker volume shared between the worker and
+	// tool containers. When set, the volume is mounted into tool containers
+	// and all paths under the volume mount point are used directly without
+	// host path translation.
+	DockerVolume string
+
 	// GPU configuration for container execution.
 	GPU GPUConfig
 

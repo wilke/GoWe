@@ -88,6 +88,12 @@ USE_PARALLEL=false
 SERVER_LOCAL_PORT="${GOWE_TEST_SERVER_LOCAL_PORT:-8091}"
 DISTRIBUTED_PORT="${GOWE_TEST_DISTRIBUTED_PORT:-8090}"
 
+# Timestamped log directory with commit ID
+TEST_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+TEST_COMMIT=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+TEST_LOG_DIR="$PROJECT_DIR/test-logs/${TEST_TIMESTAMP}-${TEST_COMMIT}"
+mkdir -p "$TEST_LOG_DIR"
+
 # Results tracking - use compatibility layer for bash < 4
 if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
     declare -A MODE_RESULTS
@@ -359,7 +365,7 @@ run_unit_tests() {
         test_args="-v"
     fi
 
-    local output_file="$PROJECT_DIR/test-unit-results.txt"
+    local output_file="$TEST_LOG_DIR/test-unit-results.txt"
 
     if go test $test_args ./... 2>&1 | tee "$output_file"; then
         local end_time
@@ -399,7 +405,7 @@ run_cwl_runner() {
 
     local runner="$PROJECT_DIR/bin/cwl-runner"
     local conformance_dir="${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
-    local output_file="$PROJECT_DIR/conformance-${mode_name}-results.txt"
+    local output_file="$TEST_LOG_DIR/conformance-${mode_name}-results.txt"
 
     # Build if needed
     if [ ! -f "$runner" ]; then
@@ -410,7 +416,7 @@ run_cwl_runner() {
     ensure_conformance_tests "$PROJECT_DIR" || return 1
 
     # Build cwltest command
-    local junit_file="$PROJECT_DIR/conformance-${mode_name}-timing.xml"
+    local junit_file="$TEST_LOG_DIR/conformance-${mode_name}-timing.xml"
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $runner"
     cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
 
@@ -481,7 +487,7 @@ run_server_local() {
     local start_time
     start_time=$(get_time)
 
-    local output_file="$PROJECT_DIR/conformance-server-local-results.txt"
+    local output_file="$TEST_LOG_DIR/conformance-server-local-results.txt"
 
     # Build server and CLI
     build_binary "$PROJECT_DIR/bin/server" "./cmd/server" || return 1
@@ -533,7 +539,7 @@ run_server_local() {
     # Run tests
     cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
 
-    local junit_file="$PROJECT_DIR/conformance-server-local-timing.xml"
+    local junit_file="$TEST_LOG_DIR/conformance-server-local-timing.xml"
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
     cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
     if [ -n "$TAGS" ]; then
@@ -608,7 +614,7 @@ run_distributed() {
     local start_time
     start_time=$(get_time)
 
-    local output_file="$PROJECT_DIR/conformance-${mode_name}-results.txt"
+    local output_file="$TEST_LOG_DIR/conformance-${mode_name}-results.txt"
 
     # Build CLI
     build_binary "$PROJECT_DIR/bin/gowe" "./cmd/cli" || return 1
@@ -627,8 +633,60 @@ run_distributed() {
         # Start docker-compose
         log_info "Starting docker-compose environment..."
 
-        # Create override for port and worker runtime
-        cat > docker-compose.override.yml << EOF
+        # Create override for port and worker runtime.
+        # For docker runtime, workers need Docker socket access and the
+        # shared volume name so tool containers can access staged files.
+        if [ "$runtime" = "docker" ]; then
+            cat > docker-compose.override.yml << EOF
+services:
+  gowe-server:
+    ports:
+      - "${DISTRIBUTED_PORT}:8080"
+  worker-1:
+    command:
+      - "-server"
+      - "http://gowe-server:8080"
+      - "-runtime"
+      - "docker"
+      - "-name"
+      - "worker-1"
+      - "-workdir"
+      - "/workdir/scratch"
+      - "-stage-out"
+      - "file:///workdir/outputs"
+      - "-poll"
+      - "500ms"
+      - "-debug"
+    environment:
+      - DOCKER_VOLUME=gowe-workdir
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gowe-workdir:/workdir
+      - ./testdata/cwl-v1.2:/testdata:ro
+  worker-2:
+    command:
+      - "-server"
+      - "http://gowe-server:8080"
+      - "-runtime"
+      - "docker"
+      - "-name"
+      - "worker-2"
+      - "-workdir"
+      - "/workdir/scratch"
+      - "-stage-out"
+      - "file:///workdir/outputs"
+      - "-poll"
+      - "500ms"
+      - "-debug"
+    environment:
+      - DOCKER_VOLUME=gowe-workdir
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gowe-workdir:/workdir
+      - ./testdata/cwl-v1.2:/testdata:ro
+EOF
+        else
+            cat > docker-compose.override.yml << EOF
 services:
   gowe-server:
     ports:
@@ -664,6 +722,7 @@ services:
       - "500ms"
       - "-debug"
 EOF
+        fi
 
         docker-compose up -d --build
 
@@ -711,7 +770,7 @@ EOF
     # Run tests
     cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
 
-    local junit_file="$PROJECT_DIR/conformance-${mode_name}-timing.xml"
+    local junit_file="$TEST_LOG_DIR/conformance-${mode_name}-timing.xml"
     local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
     cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
     if [ -n "$TAGS" ]; then
@@ -1012,16 +1071,21 @@ done
 echo ""
 echo -e "Total duration: $(format_duration "$SUITE_DURATION")"
 
-# Show timing files
+# Update latest symlink
+rm -f "$PROJECT_DIR/test-logs/latest"
+ln -s "${TEST_TIMESTAMP}-${TEST_COMMIT}" "$PROJECT_DIR/test-logs/latest"
+
+# Show log location and timing files
 echo ""
+echo -e "${CYAN}Log directory:${NC} test-logs/${TEST_TIMESTAMP}-${TEST_COMMIT}/"
 echo -e "${CYAN}Timing data (JUnit XML):${NC}"
-for xml_file in "$PROJECT_DIR"/conformance-*-timing.xml; do
+for xml_file in "$TEST_LOG_DIR"/conformance-*-timing.xml; do
     if [ -f "$xml_file" ]; then
         local_name=$(basename "$xml_file")
         echo -e "  ${DIM}$local_name${NC}"
     fi
 done
-echo -e "  ${DIM}Analyze with: ./scripts/parse-timing.sh [file.xml]${NC}"
+echo -e "  ${DIM}Analyze with: ./scripts/parse-timing.sh test-logs/latest/[file.xml]${NC}"
 
 # Overall status
 echo ""
@@ -1118,15 +1182,17 @@ if [ "$GENERATE_REPORT" = true ]; then
         echo ""
         echo "## Timing Data"
         echo ""
+        echo "Log directory: \`test-logs/${TEST_TIMESTAMP}-${TEST_COMMIT}/\`"
+        echo ""
         echo "JUnit XML files with per-test timing:"
         echo ""
-        for xml_file in "$PROJECT_DIR"/conformance-*-timing.xml; do
+        for xml_file in "$TEST_LOG_DIR"/conformance-*-timing.xml; do
             if [ -f "$xml_file" ]; then
                 echo "- \`$(basename "$xml_file")\`"
             fi
         done
         echo ""
-        echo "Analyze with: \`./scripts/parse-timing.sh [file.xml]\`"
+        echo "Analyze with: \`./scripts/parse-timing.sh test-logs/latest/[file.xml]\`"
         echo ""
         echo "---"
         echo "*Generated by GoWe test suite*"

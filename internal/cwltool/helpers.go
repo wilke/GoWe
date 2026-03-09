@@ -12,6 +12,7 @@ import (
 	"github.com/me/gowe/internal/loadcontents"
 	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/pkg/cwl"
+	"github.com/me/gowe/pkg/staging"
 )
 
 // MergeToolDefaults merges tool input defaults with provided inputs.
@@ -739,4 +740,148 @@ func splitBasenameExt(basename string) (string, string) {
 
 func isURI(s string) bool {
 	return len(s) > 5 && (s[:5] == "file:" || s[:5] == "http:" || s[:6] == "https:")
+}
+
+// stageOutOfVolumeInputs copies input files that are outside the named volume
+// into workDir so they are accessible via the Docker named volume. This is
+// needed for volume mode (DockerVolume) where the tool container only has
+// access to files under the named volume mount point.
+//
+// Files already under the volume mount point are skipped (they are already
+// accessible in the tool container). For out-of-volume files (e.g., default
+// files from the CWL directory), symlinks are created if source and dest are
+// on the same filesystem; otherwise files are copied.
+func stageOutOfVolumeInputs(inputs map[string]any, workDir string) error {
+	// Compute the volume mount point by walking up from workDir to the
+	// root-level directory (e.g., /workdir/scratch/task_xxx → /workdir).
+	volumeRoot := workDir
+	for {
+		parent := filepath.Dir(volumeRoot)
+		if parent == "/" || parent == "." {
+			break
+		}
+		volumeRoot = parent
+	}
+
+	for _, v := range inputs {
+		if err := stageOutOfVolumeValue(v, workDir, volumeRoot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stageOutOfVolumeValue recursively stages File/Directory values outside the volume.
+func stageOutOfVolumeValue(v any, workDir, volumeRoot string) error {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			if err := stageOutOfVolumeFileObj(val, workDir, volumeRoot); err != nil {
+				return err
+			}
+			// Recurse into secondaryFiles.
+			if secFiles, ok := val["secondaryFiles"].([]any); ok {
+				for _, sf := range secFiles {
+					if err := stageOutOfVolumeValue(sf, workDir, volumeRoot); err != nil {
+						return err
+					}
+				}
+			}
+			// Recurse into listing.
+			if listing, ok := val["listing"].([]any); ok {
+				for _, item := range listing {
+					if err := stageOutOfVolumeValue(item, workDir, volumeRoot); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}
+		// Recurse into record fields.
+		for _, item := range val {
+			if err := stageOutOfVolumeValue(item, workDir, volumeRoot); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if err := stageOutOfVolumeValue(item, workDir, volumeRoot); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// stageOutOfVolumeFileObj stages a single File/Directory object if its path
+// is outside the volume mount point. Updates the path/location in-place.
+func stageOutOfVolumeFileObj(obj map[string]any, workDir, volumeRoot string) error {
+	path, _ := obj["path"].(string)
+	if path == "" {
+		path, _ = obj["location"].(string)
+	}
+	if path == "" || !filepath.IsAbs(path) {
+		return nil
+	}
+
+	// If already under the volume mount point, no staging needed — the file
+	// is already accessible in the tool container via the shared volume.
+	if strings.HasPrefix(path, volumeRoot+"/") || path == volumeRoot {
+		return nil
+	}
+
+	// Determine destination inside workDir, preserving the basename.
+	basename := filepath.Base(path)
+	dest := filepath.Join(workDir, basename)
+
+	// Handle name conflicts by adding a suffix.
+	if _, err := os.Lstat(dest); err == nil {
+		// Destination exists — check if it's already pointing to the same source.
+		if target, err := os.Readlink(dest); err == nil && target == path {
+			// Already staged, update paths.
+			obj["path"] = dest
+			if _, ok := obj["location"]; ok {
+				obj["location"] = dest
+			}
+			return nil
+		}
+		// Use a unique suffix.
+		ext := filepath.Ext(basename)
+		name := strings.TrimSuffix(basename, ext)
+		for i := 1; ; i++ {
+			dest = filepath.Join(workDir, fmt.Sprintf("%s_%d%s", name, i, ext))
+			if _, err := os.Lstat(dest); os.IsNotExist(err) {
+				break
+			}
+		}
+	}
+
+	// Create symlink (preferred: no data copy, works on same filesystem).
+	if err := os.Symlink(path, dest); err != nil {
+		// Symlink failed; try copying instead.
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return fmt.Errorf("stat %s: %w", path, statErr)
+		}
+		if info.IsDir() {
+			// For directories, symlink is the only option.
+			return fmt.Errorf("symlink directory %s -> %s: %w", path, dest, err)
+		}
+		if copyErr := staging.CopyFile(path, dest); copyErr != nil {
+			return fmt.Errorf("copy %s -> %s: %w", path, dest, copyErr)
+		}
+	}
+
+	// Update paths in-place.
+	obj["path"] = dest
+	if _, ok := obj["location"]; ok {
+		obj["location"] = dest
+	}
+
+	// Update derived properties.
+	obj["basename"] = filepath.Base(dest)
+	obj["dirname"] = filepath.Dir(dest)
+
+	return nil
 }
