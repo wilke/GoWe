@@ -486,7 +486,15 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	// Build Apptainer command.
-	apptainerArgs := []string{"exec"}
+	// Use "exec" by default. Switch to "run" when the command relies on the
+	// Docker ENTRYPOINT (detected by the first command element being a flag
+	// like "-c"). "run" honors the image's runscript (Docker ENTRYPOINT),
+	// while "exec" bypasses it.
+	apptainerSubcmd := "exec"
+	if !hasShellCommandRequirement(tool) && len(cmdResult.Command) > 0 && strings.HasPrefix(cmdResult.Command[0], "-") {
+		apptainerSubcmd = "run"
+	}
+	apptainerArgs := []string{apptainerSubcmd}
 
 	// Determine container working directory.
 	containerWorkDir := "/var/spool/cwl"
@@ -494,14 +502,18 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		containerWorkDir = dockerOutputDir
 	}
 
-	// Mount working directory (resolve symlinks for consistency).
+	// Mount working directory and set HOME.
+	// Apptainer does not allow overriding HOME via --env; use --home instead
+	// which both bind-mounts the directory and sets $HOME.
 	absWorkDir := ResolveSymlinks(workDir)
-	apptainerArgs = append(apptainerArgs, "--bind", absWorkDir+":/var/spool/cwl")
+	apptainerArgs = append(apptainerArgs, "--home", absWorkDir+":"+containerWorkDir)
 
-	// If dockerOutputDirectory is specified, mount outputDir there.
+	// If dockerOutputDirectory is specified and differs from default,
+	// also mount workDir at /var/spool/cwl for CWL compatibility.
 	if dockerOutputDir != "" {
+		apptainerArgs = append(apptainerArgs, apptainerMount(absWorkDir, "/var/spool/cwl", "")...)
 		absOutputDir := ResolveSymlinks(outputDir)
-		apptainerArgs = append(apptainerArgs, "--bind", absOutputDir+":"+dockerOutputDir)
+		apptainerArgs = append(apptainerArgs, apptainerMount(absOutputDir, dockerOutputDir, "")...)
 	}
 
 	// Set working directory.
@@ -509,22 +521,22 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 
 	// Mount tmp directory.
 	absTmpDir := ResolveSymlinks(tmpDir)
-	apptainerArgs = append(apptainerArgs, "--bind", absTmpDir+":/tmp")
+	apptainerArgs = append(apptainerArgs, apptainerMount(absTmpDir, "/tmp", "")...)
 
 	// Mount input files that are outside working directory.
+	// Use --mount instead of --bind to handle colons in paths.
 	mounts := CollectInputMounts(inputs)
 	for hostPath, containerPath := range mounts {
-		apptainerArgs = append(apptainerArgs, "--bind", hostPath+":"+containerPath+":ro")
+		apptainerArgs = append(apptainerArgs, apptainerMount(hostPath, containerPath, "ro")...)
 	}
 
 	// Mount files/directories at absolute paths (from InitialWorkDirRequirement with absolute entryname).
 	for _, m := range containerMounts {
 		absHostPath := ResolveSymlinks(m.HostPath)
-		apptainerArgs = append(apptainerArgs, "--bind", absHostPath+":"+m.ContainerPath)
+		apptainerArgs = append(apptainerArgs, apptainerMount(absHostPath, m.ContainerPath, "")...)
 	}
 
-	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
-	apptainerArgs = append(apptainerArgs, "--env", "HOME="+containerWorkDir)
+	// CWL spec requires TMPDIR=$runtime.tmpdir (HOME is already set by --home above).
 	apptainerArgs = append(apptainerArgs, "--env", "TMPDIR=/tmp")
 
 	// Set environment variables from EnvVarRequirement.
@@ -662,6 +674,17 @@ func moveFile(src, dst string) error {
 
 // ResolveSymlinks resolves symlinks in a path for Docker mounts.
 // Delegates to the shared staging package.
+// apptainerMount returns the arguments for an Apptainer bind mount.
+// Uses --mount instead of --bind to correctly handle colons in paths
+// (--bind uses colons as delimiters, which breaks on paths like "A:Gln2Cys").
+func apptainerMount(src, dst, opts string) []string {
+	spec := "type=bind,source=" + src + ",destination=" + dst
+	if opts != "" {
+		spec += "," + opts
+	}
+	return []string{"--mount", spec}
+}
+
 func ResolveSymlinks(path string) string {
 	return staging.ResolveSymlinks(path)
 }
