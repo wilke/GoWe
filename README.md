@@ -16,7 +16,7 @@ A CWL v1.2 workflow engine for [BV-BRC](https://www.bv-brc.org/) bioinformatics 
 ## Requirements
 
 - Go 1.24+
-- Docker (optional, for container executor)
+- Docker or Apptainer (optional, for container executor — auto-detected from PATH)
 - BV-BRC account (optional, for remote job submission)
 
 ## Installation
@@ -482,14 +482,17 @@ BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
 
 ### CWL Conformance
 
-GoWe passes 100% of CWL v1.2 conformance tests (378/378) in cwl-runner mode.
+GoWe passes 100% of CWL v1.2 conformance tests (378/378) in cwl-runner mode with Docker, and 377/378 with Apptainer. The container runtime is auto-detected from PATH when `DockerRequirement` is present.
 
-| Mode | Result |
-|------|--------|
-| cwl-runner | 378/378 |
-| cwl-runner-parallel | 378/378 |
-| distributed-none | 376/378 |
-| distributed-docker | 376/378 |
+| Mode | Result | Notes |
+|------|--------|-------|
+| cwl-runner (Docker) | 378/378 | |
+| cwl-runner (Apptainer) | 377/378 | 1 known limitation¹ |
+| cwl-runner-parallel | 378/378 | |
+| distributed-none | 376/378 | |
+| distributed-docker | 376/378 | |
+
+¹ Test 227 (`networkaccess_disabled`): Apptainer shares the host network by default. Network isolation (`--net --network none`) requires root or admin config, which is unavailable on most HPC systems. See [docs/Execution-Modes.md](docs/Execution-Modes.md) for details.
 
 See [scripts/README.md](scripts/README.md) for detailed test documentation.
 

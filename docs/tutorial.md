@@ -590,6 +590,210 @@ Or set `--default-executor=worker` on the server to route all tasks to workers.
 docker-compose down -v
 ```
 
+## 11. Distributed Execution with Apptainer (No Docker)
+
+On HPC systems where Docker is unavailable, you can run the full distributed stack as native host processes using Apptainer as the container runtime.
+
+### Architecture
+
+All three process types run on the same machine (or across nodes via a shared filesystem):
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  gowe-server │◄───►│  worker-1    │     │  worker-2    │
+│  (scheduler) │◄───►│  (apptainer) │     │  (apptainer) │
+│  port 8080   │     │  GPU 0       │     │  GPU 1       │
+└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+       │                    │                    │
+       │              ┌─────┴────────────────────┘
+       ▼              ▼
+  ┌─────────┐   ┌──────────┐
+  │ uploads │   │ data/    │    ◄── shared filesystem (file:// staging)
+  └─────────┘   └──────────┘
+```
+
+- **Server**: Receives submissions, schedules tasks, dispatches to workers
+- **Workers**: Poll server, execute CWL tools in Apptainer containers
+- **CLI**: Bundles CWL, uploads inputs, submits, downloads outputs
+
+File transfer uses **upload mode**: the CLI uploads input files to the server, workers stage outputs to a shared directory via `file://`, and the server serves those files back for CLI download.
+
+### Build Binaries
+
+Go is often not natively installed on HPC systems. Build via Apptainer:
+
+```bash
+mkdir -p bin /tmp/gomod
+apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 bash -c \
+  "cd $(pwd) && go build -o bin/ ./cmd/server ./cmd/worker && go build -o bin/gowe ./cmd/cli"
+```
+
+### Set Up Working Directories
+
+```bash
+BASE_DIR="/scratch/gowe"   # Use fast local storage
+mkdir -p "$BASE_DIR/gowe/uploads" "$BASE_DIR/data" \
+         "$BASE_DIR/gowe/workdir/worker-1" \
+         "$BASE_DIR/gowe/workdir/worker-2"
+```
+
+| Directory | Purpose |
+|-----------|---------|
+| `gowe/uploads/` | Server stores files uploaded by CLI |
+| `data/` | Workers copy outputs here (file:// stage-out) |
+| `gowe/workdir/worker-N/` | Per-worker scratch space |
+
+### Start the Server
+
+```bash
+./bin/server \
+    --addr ":8080" \
+    --db "$BASE_DIR/gowe/gowe.db" \
+    --default-executor worker \
+    --allow-anonymous \
+    --anonymous-executors "local,docker,worker,container" \
+    --scheduler-poll 100ms \
+    --upload-backend local \
+    --upload-local-dir "$BASE_DIR/gowe/uploads" \
+    --upload-download-dirs "$BASE_DIR/gowe/uploads,$BASE_DIR/data,$BASE_DIR/gowe/workdir/worker-1,$BASE_DIR/gowe/workdir/worker-2" \
+    --log-level info &
+```
+
+Key flags:
+- `--default-executor worker` routes all tasks to workers
+- `--upload-backend local` + `--upload-local-dir` enables file upload from CLI
+- `--upload-download-dirs` lists all directories the server may serve files from (uploads, stage-out, and worker scratch dirs)
+
+### Start Workers
+
+```bash
+for i in 1 2; do
+    ./bin/worker \
+        --server "http://localhost:8080" \
+        --runtime apptainer \
+        --name "worker-${i}" \
+        --workdir "$BASE_DIR/gowe/workdir/worker-${i}" \
+        --stage-out "file://$BASE_DIR/data" \
+        --poll 500ms \
+        --log-level info &
+done
+```
+
+Key flags:
+- `--runtime apptainer` uses Apptainer for CWL tools with `DockerRequirement` (tools without it run locally)
+- `--stage-out "file://..."` copies outputs to the shared directory
+
+### GPU Workers
+
+For GPU workloads (e.g., protein structure prediction), bind each worker to a specific GPU:
+
+```bash
+for GPU_ID in 0 1 2 3 4 5 6 7; do
+    ./bin/worker \
+        --server "http://localhost:8080" \
+        --runtime apptainer \
+        --gpu \
+        --gpu-id "$GPU_ID" \
+        --name "gpu-worker-$GPU_ID" \
+        --group "gpu-workers" \
+        --workdir "$BASE_DIR/gowe/workdir/worker-$GPU_ID" \
+        --stage-out "file://$BASE_DIR/data" \
+        --poll 2s \
+        --log-level info &
+done
+```
+
+The `--gpu` flag passes `--nv` to Apptainer for NVIDIA GPU passthrough. The `--gpu-id` flag sets `CUDA_VISIBLE_DEVICES` to isolate each worker to one GPU.
+
+### Verify the Cluster
+
+```bash
+# Check server health
+curl -s http://localhost:8080/api/v1/health | jq .
+
+# List registered workers
+curl -s http://localhost:8080/api/v1/workers | jq '.data[] | {name, state, runtime}'
+
+# Count workers
+curl -s http://localhost:8080/api/v1/workers | jq '.data | length'
+```
+
+### Run a Workflow
+
+```bash
+export GOWE_SERVER="http://localhost:8080"
+
+# Run a CWL tool (upload mode — CLI handles file transfer)
+./bin/gowe run my-tool.cwl my-job.yml
+
+# Submit a workflow
+./bin/gowe submit my-workflow.cwl -i my-inputs.yml
+
+# Check status
+./bin/gowe list
+./bin/gowe status sub_XXXXX
+./bin/gowe logs sub_XXXXX
+```
+
+### Multi-Node Setup
+
+For clusters with shared storage (NFS, Lustre, GPFS), run the server on a head node and workers on compute nodes:
+
+```bash
+# On the head node
+./bin/server \
+    --addr "0.0.0.0:8080" \
+    --default-executor worker \
+    --upload-backend local \
+    --upload-local-dir "/shared/gowe/uploads" \
+    --upload-download-dirs "/shared/gowe/uploads,/shared/gowe/data,/shared/gowe/workdir" \
+    ...
+
+# On each compute node (the server URL must be reachable)
+./bin/worker \
+    --server "http://head-node:8080" \
+    --runtime apptainer \
+    --gpu --gpu-id 0 \
+    --name "$(hostname)-gpu0" \
+    --workdir "/shared/gowe/workdir/$(hostname)-gpu0" \
+    --stage-out "file:///shared/gowe/data" \
+    --poll 2s
+```
+
+All paths under `--upload-download-dirs` must be accessible from both the server and workers. On a shared filesystem this happens naturally.
+
+### Run CWL Conformance Tests
+
+A dedicated script runs the full CWL v1.2 conformance suite in this mode:
+
+```bash
+# Run all 378 tests (375 pass, 3 known failures)
+./scripts/run-conformance-distributed-apptainer.sh
+
+# Required tests only (faster)
+./scripts/run-conformance-distributed-apptainer.sh required
+
+# Custom port, keep processes running after tests
+./scripts/run-conformance-distributed-apptainer.sh -p 9092 -k
+```
+
+### Cleanup
+
+```bash
+# Kill workers and server
+pkill -f "bin/worker"
+pkill -f "bin/server"
+
+# Remove working data
+rm -rf "$BASE_DIR"
+```
+
+### Known Limitations
+
+- **Network isolation**: Apptainer shares the host network. CWL's `NetworkAccess: false` cannot be enforced without root (test 227 fails).
+- **SIF cache contention**: Multiple workers pulling the same image simultaneously can be slow. Pre-pull images or use a shared SIF cache (`APPTAINER_CACHEDIR`).
+- **Rootless only**: Apptainer runs unprivileged by default. Features requiring `--fakeroot` (e.g., `--writable`) may not work on all HPC configurations.
+
 ## Executor Selection Reference
 
 GoWe picks the executor for each step based on CWL hints:
