@@ -48,6 +48,10 @@ func main() {
 	flag.BoolVar(&cfg.GPU.Enabled, "gpu", false, "Enable GPU support (passes --nv to Apptainer, --gpus to Docker)")
 	flag.StringVar(&cfg.GPU.DeviceID, "gpu-id", "", "Specific GPU device ID (e.g., '0', '1', '0,1') - empty means all/auto")
 
+	// Resource limit flags.
+	flag.Int64Var(&cfg.Resources.MaxMemMB, "max-mem", 0, "Maximum memory in MiB for containers (0 = auto-detect from system)")
+	flag.IntVar(&cfg.Resources.MaxCPUs, "max-cpus", 0, "Maximum CPUs for containers (0 = auto-detect from system)")
+
 	// TLS flags (applies to server API + HTTPS staging).
 	var caCert string
 	var insecure bool
@@ -218,6 +222,8 @@ func main() {
 		"poll", cfg.Poll,
 		"gpu", cfg.GPU.Enabled,
 		"gpu_id", cfg.GPU.DeviceID,
+		"max_cpus", cfg.Resources.MaxCPUs,
+		"max_mem_mb", cfg.Resources.MaxMemMB,
 	)
 
 	if err := w.Run(ctx, cfg); err != nil {

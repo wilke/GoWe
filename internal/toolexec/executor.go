@@ -39,6 +39,12 @@ type GPUConfig struct {
 	DeviceID string // Specific GPU device ID (e.g., "0", "1") - empty means use all/auto
 }
 
+// ResourceConfig holds resource limits for container execution.
+type ResourceConfig struct {
+	Cores int   // Effective CPU cores for this task
+	RamMB int64 // Effective memory in MiB for this task
+}
+
 // Options configures a tool execution.
 type Options struct {
 	// Tool is the CWL CommandLineTool to execute.
@@ -85,6 +91,9 @@ type Options struct {
 
 	// GPU configuration for container execution.
 	GPU GPUConfig
+
+	// Resources holds resource limits for container execution.
+	Resources ResourceConfig
 
 	// JobRequirements are cwl:requirements from the job file.
 	// These can add or override tool requirements.

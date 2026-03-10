@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/me/gowe/internal/cwltool"
@@ -30,7 +32,9 @@ type Worker struct {
 	stageOut          string
 	stagerCfg         StagerConfig
 	poll              time.Duration
-	gpu               GPUWorkerConfig   // GPU configuration
+	containerRuntime  string               // "docker", "apptainer", or "none"
+	gpu               GPUWorkerConfig     // GPU configuration
+	resources         ResourceWorkerConfig // Resource limits
 	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
 	dockerVolume      string            // Named Docker volume shared with tool containers
 	inputPathMap      map[string]string // Input path mapping for host->container translation
@@ -49,7 +53,8 @@ type Config struct {
 	StageOut  string
 	Poll      time.Duration
 	Stager    StagerConfig
-	GPU       GPUWorkerConfig // GPU configuration
+	GPU       GPUWorkerConfig      // GPU configuration
+	Resources ResourceWorkerConfig // Resource limits
 
 	// DockerHostPathMap maps container paths to Docker host paths.
 	// Needed for Docker-in-Docker scenarios where the worker container
@@ -76,6 +81,12 @@ type GPUWorkerConfig struct {
 	DeviceID string // Specific GPU device ID (e.g., "0", "1") - empty means use all/auto
 }
 
+// ResourceWorkerConfig holds resource limit settings for the worker.
+type ResourceWorkerConfig struct {
+	MaxCPUs  int   // Max CPUs for containers (0 = auto-detect)
+	MaxMemMB int64 // Max memory in MiB for containers (0 = auto-detect)
+}
+
 // New creates a Worker from configuration.
 func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	rt, err := NewRuntime(cfg.Runtime)
@@ -92,6 +103,21 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	if cfg.Poll == 0 {
 		cfg.Poll = 5 * time.Second
 	}
+
+	// Auto-detect system resources if not explicitly set.
+	if cfg.Resources.MaxMemMB == 0 {
+		var si syscall.Sysinfo_t
+		if err := syscall.Sysinfo(&si); err == nil {
+			cfg.Resources.MaxMemMB = (int64(si.Totalram) * int64(si.Unit)) / (1024 * 1024)
+		}
+	}
+	if cfg.Resources.MaxCPUs == 0 {
+		cfg.Resources.MaxCPUs = runtime.NumCPU()
+	}
+	logger.Info("worker resource limits",
+		"max_cpus", cfg.Resources.MaxCPUs,
+		"max_mem_mb", cfg.Resources.MaxMemMB,
+	)
 
 	// Build TLS config.
 	tlsCfg, err := cfg.Stager.TLS.BuildTLSConfig()
@@ -205,6 +231,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	return &Worker{
 		client:            client,
 		runtime:           rt,
+		containerRuntime:  cfg.Runtime,
 		stager:            stager,
 		httpStager:        httpStager,
 		parser:            parser.New(logger),
@@ -213,6 +240,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		stagerCfg:         cfg.Stager,
 		poll:              cfg.Poll,
 		gpu:               cfg.GPU,
+		resources:         cfg.Resources,
 		dockerHostPathMap: cfg.DockerHostPathMap,
 		dockerVolume:      cfg.DockerVolume,
 		inputPathMap:      cfg.InputPathMap,
@@ -365,9 +393,12 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	// Build cwltool configuration.
 	cfg := cwltool.Config{
 		Logger:                w.logger,
+		ContainerRuntime:      w.containerRuntime,
 		DockerHostPathMap:     w.dockerHostPathMap,
 		DockerVolume:          w.dockerVolume,
 		GPU:                   toolexecGPU(w.gpu),
+		MaxCPUs:               w.resources.MaxCPUs,
+		MaxMemMB:              w.resources.MaxMemMB,
 		ResolveSecondary:      true,
 		RemoveDefaultListings: true,
 	}
