@@ -2,6 +2,37 @@
 
 This tutorial walks through the complete GoWe workflow lifecycle: writing a CWL workflow, registering it with the server, submitting a run, monitoring progress, and retrieving results.
 
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [1. Start the Server](#1-start-the-server)
+- [2. Write a CWL Workflow](#2-write-a-cwl-workflow)
+  - [Simple: Single-Step Workflow](#simple-single-step-workflow)
+  - [Multi-Step: Pipeline with Dependencies](#multi-step-pipeline-with-dependencies)
+- [3. Register a Workflow](#3-register-a-workflow)
+- [4. Validate the Workflow (Optional)](#4-validate-the-workflow-optional)
+- [5. Submit a Run](#5-submit-a-run)
+- [6. Monitor Progress](#6-monitor-progress)
+- [7. Retrieve Results](#7-retrieve-results)
+- [8. Clean Up](#8-clean-up)
+- [9. Multi-Step Pipeline Example](#9-multi-step-pipeline-example)
+- [10. Distributed Execution with Workers](#10-distributed-execution-with-workers)
+  - [Using Docker Compose](#using-docker-compose)
+  - [Running Workflows](#running-workflows)
+  - [Using goweHint for Worker Selection](#using-gowehint-for-worker-selection)
+- [11. Distributed Execution with Apptainer (No Docker)](#11-distributed-execution-with-apptainer-no-docker)
+  - [Architecture](#architecture)
+  - [Build Binaries](#build-binaries)
+  - [Start the Server](#start-the-server)
+  - [Start Workers](#start-workers)
+  - [GPU Workers](#gpu-workers)
+  - [Multi-Node Setup](#multi-node-setup)
+  - [Known Limitations](#known-limitations)
+- [Executor Selection Reference](#executor-selection-reference)
+- [API Response Envelope](#api-response-envelope)
+- [Task State Machine](#task-state-machine)
+- [Quick Reference](#quick-reference)
+
 ## Prerequisites
 
 - Go 1.24+ installed
