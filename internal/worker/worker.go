@@ -108,7 +108,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	if cfg.Resources.MaxMemMB == 0 {
 		var si syscall.Sysinfo_t
 		if err := syscall.Sysinfo(&si); err == nil {
-			cfg.Resources.MaxMemMB = int64(si.Totalram) / (1024 * 1024)
+			cfg.Resources.MaxMemMB = (int64(si.Totalram) * int64(si.Unit)) / (1024 * 1024)
 		}
 	}
 	if cfg.Resources.MaxCPUs == 0 {

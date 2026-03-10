@@ -223,7 +223,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	// don't match the remapped container device IDs.
 	if opts.GPU.Enabled {
 		if opts.GPU.DeviceID != "" {
-			dockerArgs = append(dockerArgs, "--gpus", fmt.Sprintf(`"device=%s"`, opts.GPU.DeviceID))
+			dockerArgs = append(dockerArgs, "--gpus", fmt.Sprintf("device=%s", opts.GPU.DeviceID))
 		} else {
 			dockerArgs = append(dockerArgs, "--gpus", "all")
 		}

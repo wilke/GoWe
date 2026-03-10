@@ -51,27 +51,47 @@ type Result struct {
 // resolveResources validates CWL resource requirements against worker limits
 // and computes effective resource values. It returns a ResourceConfig for
 // container execution and updates the runtime context with effective values.
-func resolveResources(runtime *cwlexpr.RuntimeContext, cfg Config) (toolexec.ResourceConfig, error) {
+//
+// Resource flags (--memory, --cpus) are only set when a CWL ResourceRequirement
+// or worker max limit is explicitly provided. When neither is set, zeros are
+// returned (meaning "no limit" for the container runtime).
+func resolveResources(runtime *cwlexpr.RuntimeContext, cfg Config, tool *cwl.CommandLineTool) (toolexec.ResourceConfig, error) {
+	rr := getResourceRequirement(tool)
+	_, hasCWLCores := rr["coresMin"]
+	if !hasCWLCores {
+		_, hasCWLCores = rr["cores"]
+	}
+	_, hasCWLRam := rr["ramMin"]
+
 	// Validate: CWL requirements must not exceed worker limits.
-	if cfg.MaxCPUs > 0 && runtime.Cores > cfg.MaxCPUs {
+	if cfg.MaxCPUs > 0 && hasCWLCores && runtime.Cores > cfg.MaxCPUs {
 		return toolexec.ResourceConfig{}, fmt.Errorf("task requires %d cores but worker max is %d", runtime.Cores, cfg.MaxCPUs)
 	}
-	if cfg.MaxMemMB > 0 && runtime.Ram > cfg.MaxMemMB {
+	if cfg.MaxMemMB > 0 && hasCWLRam && runtime.Ram > cfg.MaxMemMB {
 		return toolexec.ResourceConfig{}, fmt.Errorf("task requires %d MiB RAM but worker max is %d MiB", runtime.Ram, cfg.MaxMemMB)
 	}
 
-	// If no CWL requirement specified, use worker max as the effective limit.
-	if cfg.MaxCPUs > 0 && runtime.Cores <= 0 {
+	var res toolexec.ResourceConfig
+
+	// Set effective cores: CWL requirement takes priority, then worker max.
+	if hasCWLCores {
+		res.Cores = runtime.Cores
+	} else if cfg.MaxCPUs > 0 {
+		res.Cores = cfg.MaxCPUs
 		runtime.Cores = cfg.MaxCPUs
 	}
-	if cfg.MaxMemMB > 0 && runtime.Ram <= 0 {
+	// else: no limit, keep runtime default for expressions
+
+	// Set effective RAM: CWL requirement takes priority, then worker max.
+	if hasCWLRam {
+		res.RamMB = runtime.Ram
+	} else if cfg.MaxMemMB > 0 {
+		res.RamMB = cfg.MaxMemMB
 		runtime.Ram = cfg.MaxMemMB
 	}
+	// else: no limit, keep runtime default for expressions
 
-	return toolexec.ResourceConfig{
-		Cores: runtime.Cores,
-		RamMB: runtime.Ram,
-	}, nil
+	return res, nil
 }
 
 // ExecuteTool executes a CWL CommandLineTool with the given inputs.
@@ -225,7 +245,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = runtimeTmpDir
-		resources, err := resolveResources(runtime, cfg)
+		resources, err := resolveResources(runtime, cfg, tool)
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +285,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		}
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
-		resources, err := resolveResources(runtime, cfg)
+		resources, err := resolveResources(runtime, cfg, tool)
 		if err != nil {
 			return nil, err
 		}
@@ -294,7 +314,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	default:
 		// Local execution.
 		runtime := BuildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
-		resources, err := resolveResources(runtime, cfg)
+		resources, err := resolveResources(runtime, cfg, tool)
 		if err != nil {
 			return nil, err
 		}
