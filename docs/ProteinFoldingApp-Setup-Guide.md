@@ -27,11 +27,18 @@ git clone https://github.com/wilke/GoWe.git
 cd GoWe
 git checkout v0.10.1
 
-# Build binaries
+# Build binaries (requires Go 1.24+)
 mkdir -p bin
 go build -o bin/gowe-server ./cmd/server
 go build -o bin/gowe-worker ./cmd/worker
 go build -o bin/gowe ./cmd/cli
+
+# Alternative: build via Apptainer (if Go is not natively installed)
+mkdir -p bin /tmp/gomod
+apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 bash -c \
+  "cd $(pwd) && go build -o bin/gowe-server ./cmd/server && \
+   go build -o bin/gowe-worker ./cmd/worker && \
+   go build -o bin/gowe ./cmd/cli"
 
 # Add to PATH
 export PATH="$PWD/bin:$PATH"
@@ -138,10 +145,15 @@ gowe-server \
   --allow-anonymous \
   --default-executor worker \
   --db ~/.gowe/gowe.db \
+  --upload-backend local \
+  --upload-local-dir /scratch/gowe/uploads \
+  --upload-download-dirs "/scratch/gowe/uploads,/results/protein-folding,/scratch/gowe" \
   --debug
 
 # Terminal 2: Start workers (run this script)
+mkdir -p /scratch/gowe/uploads
 for GPU_ID in {0..7}; do
+  mkdir -p "/scratch/gowe/worker-$GPU_ID"
   gowe-worker \
     --server http://localhost:8080 \
     --runtime apptainer \
@@ -178,12 +190,17 @@ pkill -f gowe-worker || true
 pkill -f gowe-server || true
 sleep 2
 
+mkdir -p "$WORKDIR/uploads"
+
 echo "Starting GoWe server..."
 $GOWE_BIN/gowe-server \
   --addr 0.0.0.0:8080 \
   --allow-anonymous \
   --default-executor worker \
   --db ~/.gowe/gowe.db \
+  --upload-backend local \
+  --upload-local-dir "$WORKDIR/uploads" \
+  --upload-download-dirs "$WORKDIR/uploads,$RESULTS,$WORKDIR" \
   > "$LOG_DIR/server.log" 2>&1 &
 
 sleep 3

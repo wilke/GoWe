@@ -35,6 +35,7 @@
 #   server-local        Server + LocalExecutor
 #   distributed-none    Server + Workers (--runtime=none, no containers)
 #   distributed-docker  Server + Workers (--runtime=docker, Docker-in-Docker)
+#   distributed-apptainer Server + Workers (--runtime=apptainer, native processes)
 #
 # Tier System:
 #   Tier 1 (Core):    cwl-runner, cwl-runner-parallel, Go unit tests
@@ -279,7 +280,7 @@ done
 
 # Define all available modes by tier
 TIER1_MODES=("unit" "cwl-runner" "cwl-runner-parallel")
-TIER2_MODES=("server-local" "distributed-none" "distributed-docker")
+TIER2_MODES=("server-local" "distributed-none" "distributed-docker" "distributed-apptainer")
 TIER3_MODES=("staging-file" "staging-shared" "staging-s3" "staging-shock")
 
 # Build list of modes to run based on tier and options
@@ -858,6 +859,207 @@ EOF
     return $result
 }
 
+# Run distributed-apptainer tests (native processes, no Docker)
+run_distributed_apptainer() {
+    local mode_name="distributed-apptainer"
+
+    log_subheader "Distributed Mode (--runtime=apptainer, native processes)"
+
+    if ! command -v apptainer &> /dev/null; then
+        log_warn "Apptainer not available, skipping $mode_name"
+        set_mode_result "$mode_name" "skip" "Apptainer not available" ""
+        return 0
+    fi
+
+    local start_time
+    start_time=$(get_time)
+
+    local output_file="$TEST_LOG_DIR/conformance-${mode_name}-results.txt"
+    local dist_port="${GOWE_TEST_DISTRIBUTED_APPTAINER_PORT:-8092}"
+
+    # Build binaries via Apptainer (no native Go)
+    log_info "Building binaries via Apptainer..."
+    mkdir -p "$PROJECT_DIR/bin" /tmp/gomod
+    if ! apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 bash -c \
+        "cd $PROJECT_DIR && go build -o bin/ ./cmd/server ./cmd/worker && go build -o bin/gowe ./cmd/cli"; then
+        set_mode_result "$mode_name" "fail" "Build failed" ""
+        return 1
+    fi
+
+    # Check port
+    if ! check_port_available $dist_port; then
+        log_error "Port $dist_port is in use"
+        set_mode_result "$mode_name" "fail" "Port $dist_port in use" ""
+        return 1
+    fi
+
+    # Set up working directories
+    local base_dir="/tmp/gowe-distributed-apptainer-$$"
+    local upload_dir="$base_dir/gowe/uploads"
+    local data_dir="$base_dir/data"
+    local workdir_base="$base_dir/gowe/workdir"
+    local num_workers=2
+
+    mkdir -p "$upload_dir" "$data_dir"
+
+    local download_dirs="$upload_dir,$data_dir"
+    for i in $(seq 1 $num_workers); do
+        mkdir -p "$workdir_base/worker-${i}"
+        download_dirs="$download_dirs,$workdir_base/worker-${i}"
+    done
+
+    # Start server
+    local server_pid=""
+    local worker_pids=()
+
+    cleanup_distributed_apptainer() {
+        for pid in "${worker_pids[@]}"; do
+            kill_and_wait "$pid"
+        done
+        if [ -n "$server_pid" ]; then
+            kill_and_wait "$server_pid"
+        fi
+        rm -rf "$base_dir"
+    }
+
+    log_info "Starting server on port $dist_port..."
+    ./bin/server \
+        -addr ":${dist_port}" \
+        -db "$base_dir/gowe/gowe.db" \
+        -default-executor worker \
+        -allow-anonymous \
+        -anonymous-executors "local,docker,worker,container" \
+        -scheduler-poll 100ms \
+        -upload-backend local \
+        -upload-local-dir "$upload_dir" \
+        -upload-download-dirs "$download_dirs" \
+        -log-level warn \
+        &
+    server_pid=$!
+
+    # Wait for health
+    if ! wait_for_url "http://localhost:${dist_port}/api/v1/health" 30 1; then
+        log_error "Server failed to become healthy"
+        cleanup_distributed_apptainer
+        set_mode_result "$mode_name" "fail" "Server failed to start" ""
+        return 1
+    fi
+
+    log_info "Server is healthy (PID $server_pid)"
+
+    # Start workers
+    for i in $(seq 1 $num_workers); do
+        ./bin/worker \
+            -server "http://localhost:${dist_port}" \
+            -runtime apptainer \
+            -name "worker-${i}" \
+            -workdir "$workdir_base/worker-${i}" \
+            -stage-out "file://$data_dir" \
+            -poll 500ms \
+            -log-level warn \
+            &
+        worker_pids+=($!)
+        log_info "  worker-${i} started (PID ${worker_pids[-1]})"
+    done
+
+    # Wait for workers to register
+    log_info "Waiting for workers to register..."
+    local wait_count=0
+    while [ $wait_count -lt 30 ]; do
+        local workers
+        workers=$(curl -s "http://localhost:${dist_port}/api/v1/workers" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ')
+        if [ "$workers" -ge "$num_workers" ]; then
+            break
+        fi
+        wait_count=$((wait_count + 1))
+        sleep 1
+    done
+
+    workers=$(curl -s "http://localhost:${dist_port}/api/v1/workers" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ')
+    log_info "Registered workers: $workers"
+
+    if [ "$workers" -eq 0 ]; then
+        log_warn "No workers registered, continuing anyway..."
+    fi
+
+    # Upload mode wrapper (no --no-upload)
+    export GOWE_SERVER="http://localhost:${dist_port}"
+
+    local wrapper
+    wrapper=$(mktemp)
+    cat > "$wrapper" << EOF
+#!/bin/bash
+export GOWE_SERVER="http://localhost:${dist_port}"
+exec "$PROJECT_DIR/bin/gowe" run --quiet "\$@"
+EOF
+    chmod +x "$wrapper"
+
+    # Ensure conformance tests
+    ensure_conformance_tests "$PROJECT_DIR" || { cleanup_distributed_apptainer; return 1; }
+
+    # Run tests
+    cd "${GOWE_CONFORMANCE_DIR:-$PROJECT_DIR/testdata/cwl-v1.2}"
+
+    local junit_file="$TEST_LOG_DIR/conformance-${mode_name}-timing.xml"
+    local cwltest_cmd="cwltest --test conformance_tests.yaml --tool $wrapper"
+    cwltest_cmd="$cwltest_cmd --junit-xml $junit_file"
+    if [ -n "$TAGS" ]; then
+        cwltest_cmd="$cwltest_cmd --tags $TAGS"
+    fi
+    cwltest_cmd="$cwltest_cmd --verbose"
+
+    local result=0
+    if eval "$cwltest_cmd" 2>&1 | tee "$output_file"; then
+        result=0
+    else
+        result=1
+    fi
+
+    cd "$PROJECT_DIR"
+
+    # Cleanup
+    rm -f "$wrapper"
+    cleanup_distributed_apptainer
+
+    local end_time
+    end_time=$(get_time)
+    local duration
+    duration=$(calc_duration "$start_time" "$end_time")
+
+    # Parse results
+    local summary=""
+    local passed=0
+    local failed=0
+    local total=0
+    if [ -f "$output_file" ]; then
+        if grep -q "All tests passed" "$output_file"; then
+            total=$(grep -oE "Test \[[0-9]+/[0-9]+\]" "$output_file" | tail -1 | grep -oE "/[0-9]+" | tr -d "/" || echo "84")
+            passed=$total
+            summary="$total/$total passed"
+        else
+            passed=$(grep -oE "[0-9]+ tests? passed" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            failed=$(grep -oE "[0-9]+ failures?" "$output_file" | head -1 | grep -oE "[0-9]+" || echo "0")
+            total=$((passed + failed))
+            if [ $total -gt 0 ]; then
+                summary="$passed/$total passed"
+            fi
+        fi
+    fi
+
+    if [ $total -gt 0 ] && [ "$passed" -lt "$total" ]; then
+        result=1
+    fi
+
+    if [ $result -eq 0 ]; then
+        set_mode_result "$mode_name" "pass" "${summary:-All tests passed}" "$duration"
+    else
+        set_mode_result "$mode_name" "fail" "${summary:-Some tests failed}" "$duration"
+        TIER2_FAILED=1
+    fi
+
+    return $result
+}
+
 # Run staging tests
 run_staging_tests() {
     local backend="$1"
@@ -1031,6 +1233,9 @@ for mode in "${MODES_TO_RUN[@]}"; do
         distributed-docker)
             run_distributed "docker" || true
             ;;
+        distributed-apptainer)
+            run_distributed_apptainer || true
+            ;;
     esac
 done
 
@@ -1076,7 +1281,7 @@ done
 # Tier 2 summary
 echo ""
 echo -e "${CYAN}[TIER 2] Server Modes${NC}"
-for mode in server-local distributed-none distributed-docker; do
+for mode in server-local distributed-none distributed-docker distributed-apptainer; do
     result=$(get_mode_result "$mode")
     if [ -n "$result" ]; then
         dur=$(get_mode_duration "$mode")
@@ -1177,7 +1382,7 @@ if [ "$GENERATE_REPORT" = true ]; then
         echo ""
         echo "| Mode | Status | Details |"
         echo "|------|--------|---------|"
-        for mode in server-local distributed-none distributed-docker; do
+        for mode in server-local distributed-none distributed-docker distributed-apptainer; do
             result=$(get_mode_result "$mode")
             if [ -n "$result" ]; then
                 symbol="?"

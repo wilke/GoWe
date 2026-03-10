@@ -13,7 +13,8 @@ GoWe supports multiple execution modes (compute) and storage backends (data). Th
 | **local** | ✅ | `run-conformance-server-local.sh` | Direct process execution on host |
 | **docker** | ✅ | `run-conformance.sh`* | Docker containers (auto-detected) |
 | **worker** | ✅ | `run-conformance-distributed.sh` | Remote workers via docker-compose |
-| **apptainer** | ❌ | - | Apptainer/Singularity containers |
+| **worker (apptainer)** | ✅ | `run-conformance-distributed-apptainer.sh` | Native workers with Apptainer runtime |
+| **apptainer** | ✅ | `run-conformance.sh`* | Apptainer/Singularity containers (auto-detected) |
 | **bvbrc** | ❌ | - | BV-BRC remote execution |
 | **container** | ❌ | - | Generic container executor |
 
@@ -67,7 +68,7 @@ cwl-runner          │  ✅   │    -    │    -    │    -     │   -   �
 server-local        │  ✅   │    -    │    -    │    -     │   -   │   -   │
 server-distributed  │   -   │   ✅    │   ❌    │   ❌     │   -   │  ❌   │
 server-docker       │  ❌   │   ❌    │   ❌    │   ❌     │   -   │  ❌   │
-server-apptainer    │  ❌   │   ❌    │   ❌    │   ❌     │   -   │  ❌   │
+server-apptainer    │  ❌   │   ✅    │   ❌    │   ❌     │   -   │  ❌   │
 server-bvbrc        │   -   │    -    │    -    │   ❌     │  ❌   │   -   │
 ```
 
@@ -98,6 +99,9 @@ Legend:
 
 # Mode 3: Distributed workers (docker-compose)
 ./scripts/run-conformance-distributed.sh
+
+# Mode 4: Distributed workers with Apptainer (native processes, no Docker)
+./scripts/run-conformance-distributed-apptainer.sh
 ```
 
 ## Test Results
@@ -106,10 +110,33 @@ As of 2026-03-09:
 
 | Mode | Passing | Total | Percentage | Notes |
 |------|---------|-------|------------|-------|
-| cwl-runner | 378 | 378 | 100% | ✓ |
+| cwl-runner (Docker) | 378 | 378 | 100% | ✓ |
+| cwl-runner (Apptainer) | 377 | 378 | 99.7% | 1 known limitation (see below) |
 | cwl-runner-parallel | 378 | 378 | 100% | ✓ |
 | distributed-none | 376 | 378 | 99.5% | 2 known failures |
 | distributed-docker | 376 | 378 | 99.5% | 2 known failures |
+| distributed-apptainer | 375 | 378 | 99.2% | 3 known failures (see below) |
+
+### Apptainer Known Limitation
+
+Test 227 (`networkaccess_disabled`) fails on Apptainer. The CWL spec requires network isolation by default (no `NetworkAccess` requirement = no network), which Docker enforces via `--network none`. Apptainer shares the host network by default and `--net --network none` requires root or admin configuration (`allow net users`/`allow net networks` in `apptainer.conf`). This cannot be enforced for unprivileged users on HPC systems.
+
+### Distributed-Apptainer Known Failures
+
+The distributed-apptainer mode (375/378) has 3 failures:
+- Test 227 (`networkaccess_disabled`): Apptainer network isolation limitation (see above)
+- Tests 237, 238 (`inp_update_wf`, `inpdir_update_wf`): Known distributed-mode failures, also present in distributed-none and distributed-docker
+
+### Apptainer Compatibility Fixes
+
+The following adaptations were made for Apptainer compatibility:
+
+| Issue | Docker Behavior | Apptainer Fix |
+|-------|----------------|---------------|
+| HOME override | `--env HOME=...` | `--home src:dest` (Apptainer blocks HOME via `--env`) |
+| ENTRYPOINT | Always honored | Use `apptainer run` when command starts with a flag (e.g. `-c`) |
+| Colons in paths | `--bind src:dest` works | `--mount type=bind,source=...,destination=...` (colons in paths break `--bind`) |
+| Network isolation | `--network none` | Not enforceable without root (known limitation) |
 
 ## Adding New Test Coverage
 
