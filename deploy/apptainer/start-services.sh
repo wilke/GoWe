@@ -22,7 +22,15 @@ ENV_FILE="$SCRIPT_DIR/gowe-stack.env"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --server-only)  SERVER_ONLY=true ;;
-        --env)          ENV_FILE="$2"; shift ;;
+        --env)
+            if [[ $# -lt 2 || "$2" == -* ]]; then
+                echo "Error: --env requires a path to an env file." >&2
+                echo "Usage: ./start-services.sh [--server-only] [--env ENV_FILE]" >&2
+                exit 1
+            fi
+            ENV_FILE="$2"
+            shift
+            ;;
         -h|--help)
             head -10 "$0" | tail -9 | sed 's/^# \?//'
             exit 0
