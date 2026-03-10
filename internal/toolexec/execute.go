@@ -68,6 +68,11 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
 	}
 
+	// GPU support: set CUDA_VISIBLE_DEVICES for local execution.
+	if opts.GPU.Enabled && opts.GPU.DeviceID != "" {
+		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES="+opts.GPU.DeviceID)
+	}
+
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
 		stdinPath := cmdResult.Stdin
@@ -212,16 +217,24 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	dockerArgs := []string{"run", "--rm", "-i"}
 
 	// GPU support: use --gpus for NVIDIA GPU passthrough.
+	// Docker's NVIDIA runtime remaps GPUs inside the container, so device=3
+	// on the host becomes device 0 inside. Do not set CUDA_VISIBLE_DEVICES
+	// since --gpus already restricts visibility and the host device IDs
+	// don't match the remapped container device IDs.
 	if opts.GPU.Enabled {
 		if opts.GPU.DeviceID != "" {
-			// Specific GPU(s): --gpus '"device=0"'
 			dockerArgs = append(dockerArgs, "--gpus", fmt.Sprintf(`"device=%s"`, opts.GPU.DeviceID))
-			// Also set CUDA_VISIBLE_DEVICES for applications that check it.
-			dockerArgs = append(dockerArgs, "-e", "CUDA_VISIBLE_DEVICES="+opts.GPU.DeviceID)
 		} else {
-			// All GPUs
 			dockerArgs = append(dockerArgs, "--gpus", "all")
 		}
+	}
+
+	// Resource limits for container execution.
+	if opts.Resources.RamMB > 0 {
+		dockerArgs = append(dockerArgs, "--memory", fmt.Sprintf("%dm", opts.Resources.RamMB))
+	}
+	if opts.Resources.Cores > 0 {
+		dockerArgs = append(dockerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
 	}
 
 	// Network isolation: disable network access unless NetworkAccess requirement enables it.
@@ -544,6 +557,28 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	for name, value := range envVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
+
+	// GPU support: use --nv for NVIDIA GPU passthrough.
+	if opts.GPU.Enabled {
+		apptainerArgs = append(apptainerArgs, "--nv")
+		if opts.GPU.DeviceID != "" {
+			apptainerArgs = append(apptainerArgs, "--env", "CUDA_VISIBLE_DEVICES="+opts.GPU.DeviceID)
+		}
+	}
+
+	// Resource limits for container execution.
+	// Note: requires cgroups v2 support; may error on HPC systems without user cgroups.
+	if opts.Resources.RamMB > 0 {
+		apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
+	}
+	if opts.Resources.Cores > 0 {
+		apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
+	}
+
+	// NOTE: Apptainer shares the host network by default and --net requires
+	// root or admin config. Network isolation (CWL spec default: no network
+	// when NetworkAccess requirement is absent) cannot be enforced. This is a
+	// known limitation — test 227 (networkaccess_disabled) will fail.
 
 	// Add image with docker:// prefix for pulling from Docker registries.
 	apptainerArgs = append(apptainerArgs, "docker://"+dockerImage)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/cmdline"
+	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/internal/toolexec"
@@ -29,6 +30,8 @@ type Config struct {
 	ContainerRuntime     string             // "docker", "apptainer", or "" (auto-detect)
 	NoContainer          bool               // Force local execution even with DockerRequirement
 	GPU                  toolexec.GPUConfig // GPU configuration
+	MaxCPUs              int                // Worker max CPUs (0 = no limit)
+	MaxMemMB             int64              // Worker max memory in MiB (0 = no limit)
 	DockerHostPathMap    map[string]string  // Container path -> host path for DinD
 	DockerVolume         string             // Named Docker volume shared with tool containers
 	ResolveSecondary     bool               // Resolve secondary files from tool definitions
@@ -43,6 +46,32 @@ type Result struct {
 	ExitCode int
 	Stdout   string
 	Stderr   string
+}
+
+// resolveResources validates CWL resource requirements against worker limits
+// and computes effective resource values. It returns a ResourceConfig for
+// container execution and updates the runtime context with effective values.
+func resolveResources(runtime *cwlexpr.RuntimeContext, cfg Config) (toolexec.ResourceConfig, error) {
+	// Validate: CWL requirements must not exceed worker limits.
+	if cfg.MaxCPUs > 0 && runtime.Cores > cfg.MaxCPUs {
+		return toolexec.ResourceConfig{}, fmt.Errorf("task requires %d cores but worker max is %d", runtime.Cores, cfg.MaxCPUs)
+	}
+	if cfg.MaxMemMB > 0 && runtime.Ram > cfg.MaxMemMB {
+		return toolexec.ResourceConfig{}, fmt.Errorf("task requires %d MiB RAM but worker max is %d MiB", runtime.Ram, cfg.MaxMemMB)
+	}
+
+	// If no CWL requirement specified, use worker max as the effective limit.
+	if cfg.MaxCPUs > 0 && runtime.Cores <= 0 {
+		runtime.Cores = cfg.MaxCPUs
+	}
+	if cfg.MaxMemMB > 0 && runtime.Ram <= 0 {
+		runtime.Ram = cfg.MaxMemMB
+	}
+
+	return toolexec.ResourceConfig{
+		Cores: runtime.Cores,
+		RamMB: runtime.Ram,
+	}, nil
 }
 
 // ExecuteTool executes a CWL CommandLineTool with the given inputs.
@@ -95,11 +124,14 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	}
 
 	// Determine container runtime.
-	containerRuntime := cfg.ContainerRuntime
-	if cfg.NoContainer {
-		containerRuntime = ""
-	} else if containerRuntime == "" {
-		if HasDockerRequirement(tool) {
+	// Only use a container runtime when the tool has DockerRequirement.
+	// This allows --runtime=apptainer to act as the preferred runtime
+	// without forcing container execution for tools that don't need it.
+	var containerRuntime string
+	if !cfg.NoContainer && HasDockerRequirement(tool) {
+		if cfg.ContainerRuntime != "" {
+			containerRuntime = cfg.ContainerRuntime
+		} else {
 			containerRuntime = DetectContainerRuntime()
 		}
 	}
@@ -193,6 +225,10 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = runtimeTmpDir
+		resources, err := resolveResources(runtime, cfg)
+		if err != nil {
+			return nil, err
+		}
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
@@ -213,6 +249,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			DockerHostPathMap: cfg.DockerHostPathMap,
 			DockerVolume:      cfg.DockerVolume,
 			GPU:               cfg.GPU,
+			Resources:         resources,
 			JobRequirements:   cfg.JobRequirements,
 		})
 
@@ -228,6 +265,10 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		}
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
+		resources, err := resolveResources(runtime, cfg)
+		if err != nil {
+			return nil, err
+		}
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
@@ -246,12 +287,17 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			DockerOutputDir: dockerOutputDir,
 			Namespaces:      cfg.Namespaces,
 			GPU:             cfg.GPU,
+			Resources:       resources,
 			JobRequirements: cfg.JobRequirements,
 		})
 
 	default:
 		// Local execution.
 		runtime := BuildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
+		resources, err := resolveResources(runtime, cfg)
+		if err != nil {
+			return nil, err
+		}
 		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
@@ -265,6 +311,8 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			WorkDir:         workDir,
 			OutDir:          outDir,
 			Mode:            toolexec.ModeLocal,
+			GPU:             cfg.GPU,
+			Resources:       resources,
 			Namespaces:      cfg.Namespaces,
 			JobRequirements: cfg.JobRequirements,
 		})
