@@ -41,8 +41,9 @@ type GPUConfig struct {
 
 // ResourceConfig holds resource limits for container execution.
 type ResourceConfig struct {
-	Cores int   // Effective CPU cores for this task
-	RamMB int64 // Effective memory in MiB for this task
+	Cores            int   // Effective CPU cores for this task
+	RamMB            int64 // Effective memory in MiB for this task
+	ApptainerCgroups bool  // System supports cgroups v2 unified (Apptainer --memory/--cpus)
 }
 
 // Options configures a tool execution.

@@ -83,8 +83,9 @@ type GPUWorkerConfig struct {
 
 // ResourceWorkerConfig holds resource limit settings for the worker.
 type ResourceWorkerConfig struct {
-	MaxCPUs  int   // Max CPUs for containers (0 = auto-detect)
-	MaxMemMB int64 // Max memory in MiB for containers (0 = auto-detect)
+	MaxCPUs          int   // Max CPUs for containers (0 = auto-detect)
+	MaxMemMB         int64 // Max memory in MiB for containers (0 = auto-detect)
+	ApptainerCgroups bool  // System supports cgroups v2 unified (detected at startup)
 }
 
 // New creates a Worker from configuration.
@@ -114,9 +115,14 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	if cfg.Resources.MaxCPUs == 0 {
 		cfg.Resources.MaxCPUs = runtime.NumCPU()
 	}
+	// Detect cgroups v2 unified mode for Apptainer resource limits.
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+		cfg.Resources.ApptainerCgroups = true
+	}
 	logger.Info("worker resource limits",
 		"max_cpus", cfg.Resources.MaxCPUs,
 		"max_mem_mb", cfg.Resources.MaxMemMB,
+		"apptainer_cgroups", cfg.Resources.ApptainerCgroups,
 	)
 
 	// Build TLS config.
@@ -399,6 +405,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		GPU:                   toolexecGPU(w.gpu),
 		MaxCPUs:               w.resources.MaxCPUs,
 		MaxMemMB:              w.resources.MaxMemMB,
+		ApptainerCgroups:      w.resources.ApptainerCgroups,
 		ResolveSecondary:      true,
 		RemoveDefaultListings: true,
 	}

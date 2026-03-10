@@ -567,12 +567,15 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	// Resource limits for container execution.
-	// Note: requires cgroups v2 support; may error on HPC systems without user cgroups.
-	if opts.Resources.RamMB > 0 {
-		apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
-	}
-	if opts.Resources.Cores > 0 {
-		apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
+	// Apptainer --memory/--cpus require cgroups v2 unified mode.
+	// On systems without it (most HPC), skip these flags silently.
+	if opts.Resources.ApptainerCgroups {
+		if opts.Resources.RamMB > 0 {
+			apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
+		}
+		if opts.Resources.Cores > 0 {
+			apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
+		}
 	}
 
 	// NOTE: Apptainer shares the host network by default and --net requires
