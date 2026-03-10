@@ -1,0 +1,43 @@
+Bootstrap: docker
+From: alpine:3.20
+
+%labels
+    Author      GoWe Team
+    Version     0.1.0
+    Description GoWe CWL Workflow Engine — API Server
+    URL         https://github.com/wilke/GoWe
+
+%help
+    GoWe Server — CWL v1.2 workflow engine.
+
+    Run as an Apptainer instance:
+
+        apptainer instance start \
+            --bind /data/gowe/server:/data \
+            gowe-server.sif gowe-server \
+            -addr :8080 -db /data/gowe.db
+
+    Or run directly:
+
+        apptainer run gowe-server.sif -addr :8080 -db /tmp/gowe.db
+
+%files
+    bin/server          /usr/local/bin/gowe-server
+    ui/assets           /app/ui/assets
+
+%post
+    apk add --no-cache ca-certificates wget curl
+
+%environment
+    export PATH="/usr/local/bin:$PATH"
+
+%runscript
+    cd /app
+    exec /usr/local/bin/gowe-server "$@"
+
+%startscript
+    cd /app
+    exec /usr/local/bin/gowe-server "$@"
+
+%test
+    /usr/local/bin/gowe-server --help >/dev/null 2>&1

@@ -49,6 +49,7 @@ endif
         test test-conformance test-all test-tier1 test-tier2 test-staging test-distributed \
         setup lint fmt vet \
         docker docker-compose-up docker-compose-down docker-test-up docker-test-down \
+        apptainer apptainer-up apptainer-down \
         clean clean-all help FORCE
 
 # ==============================================================================
@@ -166,6 +167,22 @@ docker-test-up:
 ## docker-test-down: Stop test service containers
 docker-test-down:
 	$(Q)$(DOCKER_COMPOSE) -f docker-compose.test.yml down -v
+
+# ==============================================================================
+# Apptainer targets
+# ==============================================================================
+
+## apptainer: Build all Apptainer SIF images
+apptainer: build
+	$(Q)deploy/apptainer/build-sif.sh --no-build
+
+## apptainer-up: Start Apptainer service stack (MongoDB + Shock + GoWe Server)
+apptainer-up:
+	$(Q)deploy/apptainer/start-services.sh
+
+## apptainer-down: Stop Apptainer service stack
+apptainer-down:
+	$(Q)deploy/apptainer/stop-services.sh
 
 # ==============================================================================
 # Cleanup targets
