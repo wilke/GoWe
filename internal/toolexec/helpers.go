@@ -47,7 +47,18 @@ func stageFileOrDir(obj map[string]any, workDir string) error {
 	if p, ok := obj["path"].(string); ok {
 		path = p
 	} else if loc, ok := obj["location"].(string); ok {
-		path = loc
+		// Defensive: parse URI scheme to extract the actual path.
+		// Normally obj["path"] is set by the upload pipeline or stagein,
+		// but handle raw file:// URIs from direct API submissions.
+		if idx := strings.Index(loc, "://"); idx > 0 {
+			path = loc[idx+3:]
+			// Normalize: ensure leading slash for file:// URIs.
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+		} else {
+			path = loc
+		}
 	}
 
 	if path == "" {
