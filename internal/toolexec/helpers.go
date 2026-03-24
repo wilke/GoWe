@@ -47,16 +47,19 @@ func stageFileOrDir(obj map[string]any, workDir string) error {
 	if p, ok := obj["path"].(string); ok {
 		path = p
 	} else if loc, ok := obj["location"].(string); ok {
-		// Defensive: parse URI scheme to extract the actual path.
+		// Defensive: parse file:// URI to extract the actual path.
 		// Normally obj["path"] is set by the upload pipeline or stagein,
 		// but handle raw file:// URIs from direct API submissions.
-		if idx := strings.Index(loc, "://"); idx > 0 {
-			path = loc[idx+3:]
+		// Only strip file:// scheme; other schemes (http://, s3://) are
+		// not local paths and should not be converted.
+		if strings.HasPrefix(loc, "file://") {
+			path = strings.TrimPrefix(loc, "file://")
 			// Normalize: ensure leading slash for file:// URIs.
 			if !strings.HasPrefix(path, "/") {
 				path = "/" + path
 			}
-		} else {
+		} else if !strings.Contains(loc, "://") {
+			// Plain path (no scheme) — use as-is.
 			path = loc
 		}
 	}

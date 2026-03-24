@@ -16,6 +16,11 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(ui.OptionalAuthMiddleware)
 		r.Get("/workers", ui.HandleWorkerList)
+	})
+
+	// Worker management routes (auth + admin required).
+	r.Group(func(r chi.Router) {
+		r.Use(ui.AuthMiddleware, ui.AdminMiddleware)
 		r.Delete("/workers/{id}", ui.HandleWorkerDelete)
 		r.Post("/workers/purge-offline", ui.HandleWorkerPurgeOffline)
 	})

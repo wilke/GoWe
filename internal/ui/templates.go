@@ -1730,7 +1730,7 @@ var templates = map[string]string{
             <h1 class="text-2xl font-semibold text-gray-900">Workers</h1>
             <p class="mt-1 text-sm text-gray-500">{{len .Workers}} registered worker{{if ne (len .Workers) 1}}s{{end}}</p>
         </div>
-        {{if gt .OfflineCount 0}}
+        {{if and .Session .Session.IsAdmin (gt .OfflineCount 0)}}
         <button hx-post="/workers/purge-offline"
                 hx-confirm="Delete all {{.OfflineCount}} offline worker{{if ne .OfflineCount 1}}s{{end}}?"
                 class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors">
@@ -1811,6 +1811,7 @@ var templates = map[string]string{
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{timeAgo .LastSeen}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .RegisteredAt}}</td>
+                    {{if and $.Session $.Session.IsAdmin}}
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
                         <button hx-delete="/workers/{{.ID}}"
                                 hx-target="#worker-{{.ID}}"
@@ -1822,6 +1823,9 @@ var templates = map[string]string{
                             </svg>
                         </button>
                     </td>
+                    {{else}}
+                    <td class="px-6 py-4"></td>
+                    {{end}}
                 </tr>
                 {{end}}
             </tbody>

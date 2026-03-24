@@ -161,13 +161,11 @@ func (s *Server) StartWorkerReaper(ctx context.Context) {
 				for _, w := range stale {
 					s.logger.Warn("worker marked offline (heartbeat timeout)",
 						"id", w.ID, "name", w.Name, "last_seen", w.LastSeen)
-					if w.CurrentTask != "" {
-						n, err := s.store.RequeueWorkerTasks(ctx, w.ID)
-						if err != nil {
-							s.logger.Error("worker reaper: requeue tasks", "worker_id", w.ID, "error", err)
-						} else if n > 0 {
-							s.logger.Info("requeued tasks from offline worker", "worker_id", w.ID, "count", n)
-						}
+					n, err := s.store.RequeueWorkerTasks(ctx, w.ID)
+					if err != nil {
+						s.logger.Error("worker reaper: requeue tasks", "worker_id", w.ID, "error", err)
+					} else if n > 0 {
+						s.logger.Info("requeued tasks from offline worker", "worker_id", w.ID, "count", n)
 					}
 				}
 			}

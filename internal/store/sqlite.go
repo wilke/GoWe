@@ -1319,16 +1319,21 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
-		 WHERE state = 'RUNNING' AND external_id = ?`, workerID)
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
 	if err != nil {
 		return 0, fmt.Errorf("requeue tasks: %w", err)
 	}
 
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("requeue tasks: rows affected: %w", err)
+	}
 
 	// Clear the worker's current_task.
-	s.db.ExecContext(ctx,
-		`UPDATE workers SET current_task = '' WHERE id = ?`, workerID)
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET current_task = '' WHERE id = ?`, workerID); err != nil {
+		return int(n), fmt.Errorf("clear worker current_task: %w", err)
+	}
 
 	return int(n), nil
 }
