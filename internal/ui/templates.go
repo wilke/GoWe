@@ -323,11 +323,6 @@ var templates = map[string]string{
                     <a href="/login" class="flex items-center px-2 py-2 text-xl font-bold text-indigo-600">
                         GoWe
                     </a>
-                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                        <a href="/workers" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
-                            Workers
-                        </a>
-                    </div>
                 </div>
                 <div class="flex items-center">
                     <a href="/login" class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">Sign in</a>
