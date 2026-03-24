@@ -28,6 +28,7 @@ const (
 // ValidWorkerTransitions defines the allowed state transitions for Workers.
 var ValidWorkerTransitions = map[WorkerState][]WorkerState{
 	WorkerStateOnline:   {WorkerStateOffline, WorkerStateDraining},
+	WorkerStateOffline:  {WorkerStateOnline}, // Worker comes back after heartbeat timeout
 	WorkerStateDraining: {WorkerStateOffline},
 }
 

@@ -676,6 +676,83 @@ func TestListWorkers(t *testing.T) {
 	}
 }
 
+func TestMarkStaleWorkersOffline(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	// Create two workers: one recent, one stale.
+	recent := sampleWorker()
+	recent.LastSeen = time.Now().UTC()
+	st.CreateWorker(ctx, recent)
+
+	stale := sampleWorker()
+	stale.ID = "wrk_stale-1"
+	stale.Name = "stale-worker"
+	stale.LastSeen = time.Now().UTC().Add(-5 * time.Minute)
+	st.CreateWorker(ctx, stale)
+
+	// Mark workers offline with 1-minute timeout.
+	marked, err := st.MarkStaleWorkersOffline(ctx, 1*time.Minute)
+	if err != nil {
+		t.Fatalf("mark stale: %v", err)
+	}
+	if len(marked) != 1 {
+		t.Fatalf("marked = %d, want 1", len(marked))
+	}
+	if marked[0].ID != stale.ID {
+		t.Errorf("marked worker = %s, want %s", marked[0].ID, stale.ID)
+	}
+
+	// Verify the stale worker is offline.
+	got, _ := st.GetWorker(ctx, stale.ID)
+	if got.State != model.WorkerStateOffline {
+		t.Errorf("stale worker state = %s, want offline", got.State)
+	}
+
+	// Verify the recent worker is still online.
+	got, _ = st.GetWorker(ctx, recent.ID)
+	if got.State != model.WorkerStateOnline {
+		t.Errorf("recent worker state = %s, want online", got.State)
+	}
+}
+
+func TestRequeueWorkerTasks(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	// Create a RUNNING task assigned to a worker.
+	task := sampleTask(sub.ID)
+	task.State = model.TaskStateRunning
+	task.ExecutorType = model.ExecutorTypeWorker
+	task.ExternalID = "wrk_dead-1"
+	now := time.Now().UTC()
+	task.StartedAt = &now
+	st.CreateTask(ctx, task)
+
+	// Requeue the dead worker's tasks.
+	n, err := st.RequeueWorkerTasks(ctx, "wrk_dead-1")
+	if err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("requeued = %d, want 1", n)
+	}
+
+	// Task should be back to QUEUED.
+	got, _ := st.GetTask(ctx, task.ID)
+	if got.State != model.TaskStateQueued {
+		t.Errorf("task state = %s, want QUEUED", got.State)
+	}
+	if got.ExternalID != "" {
+		t.Errorf("external_id = %q, want empty", got.ExternalID)
+	}
+}
+
 func TestCheckoutTask_BasicFlow(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()

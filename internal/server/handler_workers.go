@@ -110,6 +110,12 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If worker was marked offline (e.g., by heartbeat timeout), bring it back online.
+	if worker.State == model.WorkerStateOffline {
+		worker.State = model.WorkerStateOnline
+		s.logger.Info("worker back online after heartbeat", "id", worker.ID, "name", worker.Name)
+	}
+
 	worker.LastSeen = time.Now().UTC()
 	if err := s.store.UpdateWorker(r.Context(), worker); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,

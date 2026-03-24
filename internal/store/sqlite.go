@@ -1260,6 +1260,79 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	return selected, nil
 }
 
+// MarkStaleWorkersOffline transitions workers to offline if their last_seen
+// is older than the given timeout. Returns the workers that were transitioned.
+func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error) {
+	cutoff := time.Now().UTC().Add(-timeout).Format(time.RFC3339Nano)
+	s.logger.Debug("sql", "op", "mark_stale_offline", "cutoff", cutoff)
+
+	// Find stale workers first.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at
+		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stale []*model.Worker
+	for rows.Next() {
+		var w model.Worker
+		var state, runtime, labelsJSON, lastSeen, registeredAt string
+		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt); err != nil {
+			return nil, err
+		}
+		w.State = model.WorkerState(state)
+		w.Runtime = model.ContainerRuntime(runtime)
+		json.Unmarshal([]byte(labelsJSON), &w.Labels)
+		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
+		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+		stale = append(stale, &w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(stale) == 0 {
+		return nil, nil
+	}
+
+	// Transition them to offline.
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE workers SET state = 'offline' WHERE state = 'online' AND last_seen < ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("mark workers offline: %w", err)
+	}
+
+	for _, w := range stale {
+		w.State = model.WorkerStateOffline
+	}
+	return stale, nil
+}
+
+// RequeueWorkerTasks resets RUNNING tasks assigned to the given worker back to
+// QUEUED so they can be picked up by another worker. Returns the count of
+// requeued tasks.
+func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int, error) {
+	s.logger.Debug("sql", "op", "requeue_worker_tasks", "worker_id", workerID)
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+		 WHERE state = 'RUNNING' AND external_id = ?`, workerID)
+	if err != nil {
+		return 0, fmt.Errorf("requeue tasks: %w", err)
+	}
+
+	n, _ := res.RowsAffected()
+
+	// Clear the worker's current_task.
+	s.db.ExecContext(ctx,
+		`UPDATE workers SET current_task = '' WHERE id = ?`, workerID)
+
+	return int(n), nil
+}
+
 // --- User operations ---
 
 func (s *SQLiteStore) GetUser(ctx context.Context, username string) (*model.User, error) {
