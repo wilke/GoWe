@@ -156,6 +156,46 @@ var templateFuncs = template.FuncMap{
 		t = strings.TrimSuffix(t, "?")
 		return strings.HasSuffix(t, "[]") || strings.HasPrefix(t, "File[]")
 	},
+	"workerStateColor": func(state string) string {
+		switch strings.ToLower(state) {
+		case "online":
+			return "bg-green-500"
+		case "draining":
+			return "bg-yellow-400"
+		case "offline":
+			return "bg-gray-400"
+		default:
+			return "bg-gray-300"
+		}
+	},
+	"workerStateBorder": func(state string) string {
+		switch strings.ToLower(state) {
+		case "online":
+			return "border-green-600"
+		case "draining":
+			return "border-yellow-500"
+		case "offline":
+			return "border-gray-500"
+		default:
+			return "border-gray-400"
+		}
+	},
+	"timeAgo": func(t time.Time) string {
+		if t.IsZero() {
+			return "never"
+		}
+		d := time.Since(t)
+		switch {
+		case d < time.Minute:
+			return fmt.Sprintf("%ds ago", int(d.Seconds()))
+		case d < time.Hour:
+			return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		case d < 24*time.Hour:
+			return fmt.Sprintf("%dh ago", int(d.Hours()))
+		default:
+			return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+		}
+	},
 	"urlquery": func(s string) string {
 		return template.URLQueryEscaper(s)
 	},
@@ -258,6 +298,9 @@ var templates = map[string]string{
                         <a href="/workspace" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Workspace
                         </a>
+                        <a href="/workers" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Workers
+                        </a>
                         {{if .Session.IsAdmin}}
                         <a href="/admin" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Admin
@@ -268,6 +311,26 @@ var templates = map[string]string{
                 <div class="flex items-center">
                     <span class="text-sm text-gray-500 mr-4">{{.Session.Username}}</span>
                     <a href="/logout" class="text-sm text-gray-500 hover:text-gray-700">Logout</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+    {{else}}
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <a href="/login" class="flex items-center px-2 py-2 text-xl font-bold text-indigo-600">
+                        GoWe
+                    </a>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                        <a href="/workers" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Workers
+                        </a>
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <a href="/login" class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">Sign in</a>
                 </div>
             </div>
         </div>
@@ -1657,6 +1720,122 @@ var templates = map[string]string{
             {{end}}
         </ul>
     </div>
+</div>
+{{end}}`,
+
+	"workers": `{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-8 flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-semibold text-gray-900">Workers</h1>
+            <p class="mt-1 text-sm text-gray-500">{{len .Workers}} registered worker{{if ne (len .Workers) 1}}s{{end}}</p>
+        </div>
+        {{if gt .OfflineCount 0}}
+        <button hx-post="/workers/purge-offline"
+                hx-confirm="Delete all {{.OfflineCount}} offline worker{{if ne .OfflineCount 1}}s{{end}}?"
+                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            Purge {{.OfflineCount}} Offline
+        </button>
+        {{end}}
+    </div>
+
+    {{if .Workers}}
+    <!-- Visual grid -->
+    <div class="bg-white shadow rounded-lg p-6 mb-8">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Status Overview</h2>
+        <div class="flex items-center gap-4 mb-4 text-sm text-gray-500">
+            <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-sm bg-green-500"></span> Online</span>
+            <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-sm bg-yellow-400"></span> Draining</span>
+            <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-sm bg-gray-400"></span> Offline</span>
+        </div>
+        <div class="flex flex-wrap gap-2">
+            {{range .Workers}}
+            <div class="w-10 h-10 rounded {{workerStateColor (print .State)}} {{workerStateBorder (print .State)}} border-2 cursor-pointer hover:opacity-80 transition-opacity flex items-center justify-center"
+                 title="{{.Name}} ({{.State}})&#10;Host: {{.Hostname}}&#10;Runtime: {{.Runtime}}{{if .CurrentTask}}&#10;Task: {{.CurrentTask}}{{end}}">
+                {{if .CurrentTask}}
+                <svg class="w-4 h-4 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Detail table -->
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hostname</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Group</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Runtime</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Task</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Registered</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {{range .Workers}}
+                <tr id="worker-{{.ID}}" class="hover:bg-gray-50">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-2.5 h-2.5 rounded-full {{workerStateColor (print .State)}}"></span>
+                            <span class="text-sm text-gray-700">{{.State}}</span>
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.Name}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Hostname}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Group}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                            {{if eq (print .Runtime) "docker"}}bg-blue-100 text-blue-800
+                            {{else if eq (print .Runtime) "apptainer"}}bg-purple-100 text-purple-800
+                            {{else}}bg-gray-100 text-gray-800{{end}}">
+                            {{.Runtime}}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{if .CurrentTask}}
+                        <span class="text-blue-600">{{truncate .CurrentTask 12}}</span>
+                        {{else}}
+                        <span class="text-gray-400">idle</span>
+                        {{end}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{timeAgo .LastSeen}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .RegisteredAt}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
+                        <button hx-delete="/workers/{{.ID}}"
+                                hx-target="#worker-{{.ID}}"
+                                hx-swap="outerHTML"
+                                hx-confirm="Delete worker {{.Name}}?"
+                                class="text-red-400 hover:text-red-600 transition-colors" title="Delete worker">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="bg-white shadow rounded-lg p-12 text-center">
+        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+        </svg>
+        <h3 class="mt-2 text-sm font-medium text-gray-900">No workers registered</h3>
+        <p class="mt-1 text-sm text-gray-500">Start a worker to see it appear here.</p>
+    </div>
+    {{end}}
 </div>
 {{end}}`,
 }

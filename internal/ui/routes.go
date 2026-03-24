@@ -12,6 +12,14 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 	r.Get("/login", ui.HandleLogin)
 	r.Post("/login", ui.HandleLoginPost)
 
+	// Semi-public routes (work with or without auth).
+	r.Group(func(r chi.Router) {
+		r.Use(ui.OptionalAuthMiddleware)
+		r.Get("/workers", ui.HandleWorkerList)
+		r.Delete("/workers/{id}", ui.HandleWorkerDelete)
+		r.Post("/workers/purge-offline", ui.HandleWorkerPurgeOffline)
+	})
+
 	// Protected routes (auth required).
 	r.Group(func(r chi.Router) {
 		r.Use(ui.AuthMiddleware)
