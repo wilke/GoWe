@@ -20,6 +20,11 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// AdminChecker determines whether a username has admin privileges.
+type AdminChecker interface {
+	IsAdmin(username string) bool
+}
+
 // UI handles the web user interface.
 type UI struct {
 	store           store.Store
@@ -27,6 +32,7 @@ type UI struct {
 	logger          *slog.Logger
 	bvbrcCaller     bvbrc.RPCCaller // AppService caller
 	workspaceCaller bvbrc.RPCCaller // Workspace service caller
+	adminChecker    AdminChecker    // Admin role checker (nil = no admins)
 	startTime       time.Time
 	secure          bool // Use secure cookies (HTTPS)
 }
@@ -55,6 +61,11 @@ func (ui *UI) WithBVBRCCaller(caller bvbrc.RPCCaller) {
 // WithWorkspaceCaller sets the BV-BRC RPC caller for Workspace operations.
 func (ui *UI) WithWorkspaceCaller(caller bvbrc.RPCCaller) {
 	ui.workspaceCaller = caller
+}
+
+// WithAdminChecker sets the admin role checker.
+func (ui *UI) WithAdminChecker(checker AdminChecker) {
+	ui.adminChecker = checker
 }
 
 // HandleLogin renders the login page.
@@ -763,6 +774,71 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// --- Worker Handlers ---
+
+// HandleWorkerList renders the worker status page.
+func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+
+	workers, err := ui.store.ListWorkers(r.Context())
+	if err != nil {
+		ui.renderError(w, "Failed to load workers", err)
+		return
+	}
+
+	// Count offline workers for the purge button.
+	offlineCount := 0
+	for _, wk := range workers {
+		if wk.State == model.WorkerStateOffline {
+			offlineCount++
+		}
+	}
+
+	data := map[string]any{
+		"Title":        "Workers - GoWe",
+		"Session":      sess,
+		"Workers":      workers,
+		"OfflineCount": offlineCount,
+	}
+	ui.render(w, "workers", data)
+}
+
+// HandleWorkerDelete removes a single worker (HTMX).
+func (ui *UI) HandleWorkerDelete(w http.ResponseWriter, r *http.Request) {
+	id := ui.pathParam(r, "id")
+
+	if err := ui.store.DeleteWorker(r.Context(), id); err != nil {
+		w.Header().Set("HX-Reswap", "none")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	ui.logger.Info("worker deleted via UI", "id", id)
+	w.WriteHeader(http.StatusOK)
+}
+
+// HandleWorkerPurgeOffline deletes all offline workers (HTMX).
+func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
+	workers, err := ui.store.ListWorkers(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	count := 0
+	for _, wk := range workers {
+		if wk.State == model.WorkerStateOffline {
+			if err := ui.store.DeleteWorker(r.Context(), wk.ID); err == nil {
+				count++
+			}
+		}
+	}
+
+	ui.logger.Info("purged offline workers via UI", "count", count)
+	w.Header().Set("HX-Redirect", "/workers")
+	w.WriteHeader(http.StatusOK)
+}
+
 // --- Admin Handlers ---
 
 // HandleAdminStats renders system statistics.
@@ -1232,12 +1308,8 @@ func (ui *UI) authenticateBVBRC(ctx context.Context, username, password string) 
 }
 
 func (ui *UI) isAdminUser(username string) bool {
-	// TODO: Make this configurable via environment variable.
-	adminUsers := []string{"admin", "gowe_admin"}
-	for _, admin := range adminUsers {
-		if strings.EqualFold(username, admin) {
-			return true
-		}
+	if ui.adminChecker != nil {
+		return ui.adminChecker.IsAdmin(username)
 	}
 	return false
 }

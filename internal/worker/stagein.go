@@ -137,6 +137,13 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 	if (scheme == cwl.SchemeFile || scheme == "") && filepath.IsAbs(path) {
 		if _, err := os.Stat(path); err == nil {
 			localFileExists = true
+			// Defensive: ensure obj["path"] is set to the resolved absolute path
+			// so downstream code (stageFileOrDir, CollectInputMounts) doesn't
+			// use the raw file:// URI as a filesystem path.
+			// Note: the normal gowe run/submit pipeline sets path before the
+			// worker sees it (via uploadInputFiles), but direct API submissions
+			// with file:// locations may omit path.
+			obj["path"] = path
 		} else {
 			logger.Warn("local file path not accessible",
 				"input", inputID,

@@ -26,11 +26,13 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name     string            `json:"name"`
-		Hostname string            `json:"hostname"`
-		Group    string            `json:"group"`
-		Runtime  string            `json:"runtime"`
-		Labels   map[string]string `json:"labels"`
+		Name       string            `json:"name"`
+		Hostname   string            `json:"hostname"`
+		Group      string            `json:"group"`
+		Runtime    string            `json:"runtime"`
+		Labels     map[string]string `json:"labels"`
+		GPUEnabled bool              `json:"gpu_enabled"`
+		GPUDevice  string            `json:"gpu_device"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -75,6 +77,8 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Group:        group,
 		State:        model.WorkerStateOnline,
 		Runtime:      runtime,
+		GPUEnabled:   req.GPUEnabled,
+		GPUDevice:    req.GPUDevice,
 		Labels:       req.Labels,
 		LastSeen:     now,
 		RegisteredAt: now,
@@ -89,7 +93,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime)
+	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice)
 	respondCreated(w, reqID, worker)
 }
 
@@ -108,6 +112,12 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if worker == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
 		return
+	}
+
+	// If worker was marked offline (e.g., by heartbeat timeout), bring it back online.
+	if worker.State == model.WorkerStateOffline {
+		worker.State = model.WorkerStateOnline
+		s.logger.Info("worker back online after heartbeat", "id", worker.ID, "name", worker.Name)
 	}
 
 	worker.LastSeen = time.Now().UTC()

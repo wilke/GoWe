@@ -38,6 +38,7 @@ func main() {
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
 	anonymousExecutors := flag.String("anonymous-executors", "local,docker,worker", "Comma-separated list of executors allowed for anonymous users")
+	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
 	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
 
@@ -118,7 +119,20 @@ func main() {
 
 	// Configure admin role assignment.
 	adminConfig := server.NewAdminConfig(st, "GOWE_ADMINS", *configFile)
+	if *admins != "" {
+		var cliAdmins []string
+		for _, u := range strings.Split(*admins, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				cliAdmins = append(cliAdmins, u)
+			}
+		}
+		adminConfig.WithCLIAdmins(cliAdmins)
+	}
 	serverOpts = append(serverOpts, server.WithAdminConfig(adminConfig))
+	if len(adminConfig.CLIAdmins()) > 0 {
+		logger.Info("admin users from flag", "admins", adminConfig.CLIAdmins())
+	}
 	if len(adminConfig.EnvAdmins()) > 0 {
 		logger.Info("admin users from env", "admins", adminConfig.EnvAdmins())
 	}
@@ -249,8 +263,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Start scheduler in background.
+	// Start scheduler and worker reaper in background.
 	srv.StartScheduler(ctx)
+	srv.StartWorkerReaper(ctx)
 
 	go func() {
 		logger.Info("server starting", "addr", cfg.Addr)

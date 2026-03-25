@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/me/gowe/pkg/model"
 )
@@ -52,6 +53,8 @@ type Store interface {
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
+	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
+	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
 
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)

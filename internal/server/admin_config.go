@@ -12,9 +12,10 @@ import (
 )
 
 // AdminConfig manages admin role assignment from multiple sources.
-// Admin status is checked in priority order: database > environment > config file.
+// Admin status is checked in priority order: database > CLI flag > environment > config file.
 type AdminConfig struct {
 	store      store.Store // Database source (highest priority)
+	cliAdmins  []string    // From --admins CLI flag
 	envAdmins  []string    // From GOWE_ADMINS environment variable
 	fileAdmins []string    // From config file
 }
@@ -65,12 +66,17 @@ func (c *AdminConfig) IsAdmin(username string) bool {
 		}
 	}
 
-	// 2. Check environment variable.
+	// 2. Check CLI flag.
+	if slices.Contains(c.cliAdmins, username) {
+		return true
+	}
+
+	// 3. Check environment variable.
 	if slices.Contains(c.envAdmins, username) {
 		return true
 	}
 
-	// 3. Check config file.
+	// 4. Check config file.
 	if slices.Contains(c.fileAdmins, username) {
 		return true
 	}
@@ -109,6 +115,16 @@ func (c *AdminConfig) RemoveAdmin(ctx context.Context, username string) error {
 
 	user.Role = model.RoleUser
 	return c.store.UpdateUser(ctx, user)
+}
+
+// WithCLIAdmins sets admin usernames from the CLI flag.
+func (c *AdminConfig) WithCLIAdmins(usernames []string) {
+	c.cliAdmins = usernames
+}
+
+// CLIAdmins returns the list of admins from the CLI flag.
+func (c *AdminConfig) CLIAdmins() []string {
+	return c.cliAdmins
 }
 
 // EnvAdmins returns the list of admins from the environment variable.

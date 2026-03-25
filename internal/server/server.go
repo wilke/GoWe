@@ -117,6 +117,9 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	if s.workspaceCaller != nil {
 		s.ui.WithWorkspaceCaller(s.workspaceCaller)
 	}
+	if s.adminConfig != nil {
+		s.ui.WithAdminChecker(s.adminConfig)
+	}
 
 	s.routes()
 	return s
@@ -130,6 +133,42 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	go func() {
 		if err := s.scheduler.Start(ctx); err != nil && err != context.Canceled {
 			s.logger.Error("scheduler stopped", "error", err)
+		}
+	}()
+}
+
+// defaultWorkerTimeout is the duration after which a worker with no heartbeat
+// is marked offline. Workers heartbeat every 5s, so 30s = 6 missed beats.
+const defaultWorkerTimeout = 30 * time.Second
+
+// StartWorkerReaper runs a background loop that marks workers as offline
+// when their heartbeat times out, and requeues their running tasks.
+func (s *Server) StartWorkerReaper(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				stale, err := s.store.MarkStaleWorkersOffline(ctx, defaultWorkerTimeout)
+				if err != nil {
+					s.logger.Error("worker reaper: mark stale", "error", err)
+					continue
+				}
+				for _, w := range stale {
+					s.logger.Warn("worker marked offline (heartbeat timeout)",
+						"id", w.ID, "name", w.Name, "last_seen", w.LastSeen)
+					n, err := s.store.RequeueWorkerTasks(ctx, w.ID)
+					if err != nil {
+						s.logger.Error("worker reaper: requeue tasks", "worker_id", w.ID, "error", err)
+					} else if n > 0 {
+						s.logger.Info("requeued tasks from offline worker", "worker_id", w.ID, "count", n)
+					}
+				}
+			}
 		}
 	}()
 }

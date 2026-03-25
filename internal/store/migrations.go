@@ -233,6 +233,17 @@ var alterStatements = []struct {
 		column:   "error",
 		alterSQL: "ALTER TABLE submissions ADD COLUMN error TEXT NOT NULL DEFAULT ''",
 	},
+	// Worker GPU capability reporting
+	{
+		table:    "workers",
+		column:   "gpu_enabled",
+		alterSQL: "ALTER TABLE workers ADD COLUMN gpu_enabled INTEGER NOT NULL DEFAULT 0",
+	},
+	{
+		table:    "workers",
+		column:   "gpu_device",
+		alterSQL: "ALTER TABLE workers ADD COLUMN gpu_device TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

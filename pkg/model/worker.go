@@ -10,6 +10,8 @@ type Worker struct {
 	Group        string            `json:"group"` // Worker group for task scheduling
 	State        WorkerState       `json:"state"`
 	Runtime      ContainerRuntime  `json:"runtime"`
+	GPUEnabled   bool              `json:"gpu_enabled"`
+	GPUDevice    string            `json:"gpu_device,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	LastSeen     time.Time         `json:"last_seen"`
 	CurrentTask  string            `json:"current_task,omitempty"`
@@ -28,6 +30,7 @@ const (
 // ValidWorkerTransitions defines the allowed state transitions for Workers.
 var ValidWorkerTransitions = map[WorkerState][]WorkerState{
 	WorkerStateOnline:   {WorkerStateOffline, WorkerStateDraining},
+	WorkerStateOffline:  {WorkerStateOnline}, // Worker comes back after heartbeat timeout
 	WorkerStateDraining: {WorkerStateOffline},
 }
 

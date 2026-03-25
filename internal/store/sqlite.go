@@ -1014,12 +1014,18 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		group = "default"
 	}
 
+	gpuEnabled := 0
+	if w.GPUEnabled {
+		gpuEnabled = 1
+	}
+
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
+		gpuEnabled, w.GPUDevice,
 	)
 	return err
 }
@@ -1029,12 +1035,13 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 
 	var w model.Worker
 	var state, runtime, labelsJSON, lastSeen, registeredAt string
+	var gpuEnabled int
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device
 		 FROM workers WHERE id = ?`, id,
 	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt)
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1045,6 +1052,7 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 
 	w.State = model.WorkerState(state)
 	w.Runtime = model.ContainerRuntime(runtime)
+	w.GPUEnabled = gpuEnabled != 0
 	json.Unmarshal([]byte(labelsJSON), &w.Labels)
 	w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
 	w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
@@ -1060,12 +1068,17 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	gpuEnabled := 0
+	if w.GPUEnabled {
+		gpuEnabled = 1
+	}
+
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
-		 last_seen=?, current_task=? WHERE id=?`,
+		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
-		w.CurrentTask, w.ID,
+		w.CurrentTask, gpuEnabled, w.GPUDevice, w.ID,
 	)
 	if err != nil {
 		return err
@@ -1095,7 +1108,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device
 		 FROM workers ORDER BY registered_at`)
 	if err != nil {
 		return nil, err
@@ -1106,14 +1119,16 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	for rows.Next() {
 		var w model.Worker
 		var state, runtime, labelsJSON, lastSeen, registeredAt string
+		var gpuEnabled int
 
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice); err != nil {
 			return nil, err
 		}
 
 		w.State = model.WorkerState(state)
 		w.Runtime = model.ContainerRuntime(runtime)
+		w.GPUEnabled = gpuEnabled != 0
 		json.Unmarshal([]byte(labelsJSON), &w.Labels)
 		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
 		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
@@ -1258,6 +1273,86 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	selected.StartedAt = &now
 
 	return selected, nil
+}
+
+// MarkStaleWorkersOffline transitions workers to offline if their last_seen
+// is older than the given timeout. Returns the workers that were transitioned.
+func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error) {
+	cutoff := time.Now().UTC().Add(-timeout).Format(time.RFC3339Nano)
+	s.logger.Debug("sql", "op", "mark_stale_offline", "cutoff", cutoff)
+
+	// Find stale workers first.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device
+		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stale []*model.Worker
+	for rows.Next() {
+		var w model.Worker
+		var state, runtime, labelsJSON, lastSeen, registeredAt string
+		var gpuEnabled int
+		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice); err != nil {
+			return nil, err
+		}
+		w.State = model.WorkerState(state)
+		w.Runtime = model.ContainerRuntime(runtime)
+		w.GPUEnabled = gpuEnabled != 0
+		json.Unmarshal([]byte(labelsJSON), &w.Labels)
+		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
+		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+		stale = append(stale, &w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(stale) == 0 {
+		return nil, nil
+	}
+
+	// Transition them to offline.
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE workers SET state = 'offline' WHERE state = 'online' AND last_seen < ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("mark workers offline: %w", err)
+	}
+
+	for _, w := range stale {
+		w.State = model.WorkerStateOffline
+	}
+	return stale, nil
+}
+
+// RequeueWorkerTasks resets RUNNING tasks assigned to the given worker back to
+// QUEUED so they can be picked up by another worker. Returns the count of
+// requeued tasks.
+func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int, error) {
+	s.logger.Debug("sql", "op", "requeue_worker_tasks", "worker_id", workerID)
+
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
+	if err != nil {
+		return 0, fmt.Errorf("requeue tasks: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("requeue tasks: rows affected: %w", err)
+	}
+
+	// Clear the worker's current_task.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET current_task = '' WHERE id = ?`, workerID); err != nil {
+		return int(n), fmt.Errorf("clear worker current_task: %w", err)
+	}
+
+	return int(n), nil
 }
 
 // --- User operations ---

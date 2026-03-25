@@ -12,12 +12,22 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 	r.Get("/login", ui.HandleLogin)
 	r.Post("/login", ui.HandleLoginPost)
 
+	// Worker management routes (admin required for destructive actions).
+	r.Group(func(r chi.Router) {
+		r.Use(ui.AuthMiddleware, ui.AdminMiddleware)
+		r.Delete("/workers/{id}", ui.HandleWorkerDelete)
+		r.Post("/workers/purge-offline", ui.HandleWorkerPurgeOffline)
+	})
+
 	// Protected routes (auth required).
 	r.Group(func(r chi.Router) {
 		r.Use(ui.AuthMiddleware)
 
 		// Dashboard
 		r.Get("/", ui.HandleDashboard)
+
+		// Workers (view only, auth required)
+		r.Get("/workers", ui.HandleWorkerList)
 		r.Get("/logout", ui.HandleLogout)
 
 		// Workflows

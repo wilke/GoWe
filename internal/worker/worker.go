@@ -262,7 +262,11 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("create workdir %s: %w", w.workDir, err)
 	}
 
-	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime)
+	regOpts := RegisterOptions{
+		GPUEnabled: w.gpu.Enabled,
+		GPUDevice:  w.gpu.DeviceID,
+	}
+	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
@@ -271,6 +275,8 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		"name", worker.Name,
 		"group", worker.Group,
 		"runtime", worker.Runtime,
+		"gpu", worker.GPUEnabled,
+		"gpu_device", worker.GPUDevice,
 	)
 
 	// Start heartbeat in a separate goroutine so it continues during task execution.

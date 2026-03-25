@@ -1,6 +1,7 @@
 package toolexec
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -415,6 +416,8 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	}
 
 	// Handle stderr - capture to file if specified or needed for output.
+	// Always capture stderr in a buffer for error reporting.
+	var stderrBuf bytes.Buffer
 	var stderrFile *os.File
 	if stderrCapture != "" {
 		stderrPath := filepath.Join(workDir, stderrCapture)
@@ -424,9 +427,9 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 			return nil, fmt.Errorf("create stderr file: %w", err)
 		}
 		defer stderrFile.Close()
-		cmd.Stderr = stderrFile
+		cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
 	} else {
-		cmd.Stderr = io.Discard
+		cmd.Stderr = &stderrBuf
 	}
 
 	// Run Docker command and capture exit code.
@@ -436,6 +439,10 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		if ok {
 			exitCode = exitErr.ExitCode()
 			if !isSuccessCode(exitCode, tool.SuccessCodes) {
+				stderrMsg := strings.TrimSpace(stderrBuf.String())
+				if stderrMsg != "" {
+					return nil, fmt.Errorf("docker command failed (exit %d): %s", exitCode, stderrMsg)
+				}
 				return nil, fmt.Errorf("docker command failed: %w", err)
 			}
 		} else {
@@ -640,6 +647,8 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	// Handle stderr - capture to file if specified or needed for output.
+	// Always capture stderr in a buffer for error reporting.
+	var stderrBuf bytes.Buffer
 	var stderrFile *os.File
 	if stderrCapture != "" {
 		stderrPath := filepath.Join(workDir, stderrCapture)
@@ -649,9 +658,9 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 			return nil, fmt.Errorf("create stderr file: %w", err)
 		}
 		defer stderrFile.Close()
-		cmd.Stderr = stderrFile
+		cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
 	} else {
-		cmd.Stderr = io.Discard
+		cmd.Stderr = &stderrBuf
 	}
 
 	// Run Apptainer command and capture exit code.
@@ -661,6 +670,10 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		if ok {
 			exitCode = exitErr.ExitCode()
 			if !isSuccessCode(exitCode, tool.SuccessCodes) {
+				stderrMsg := strings.TrimSpace(stderrBuf.String())
+				if stderrMsg != "" {
+					return nil, fmt.Errorf("apptainer command failed (exit %d): %s", exitCode, stderrMsg)
+				}
 				return nil, fmt.Errorf("apptainer command failed: %w", err)
 			}
 		} else {
