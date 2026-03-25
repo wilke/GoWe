@@ -1749,7 +1749,7 @@ var templates = map[string]string{
         <div class="flex flex-wrap gap-2">
             {{range .Workers}}
             <div class="w-10 h-10 rounded {{workerStateColor (print .State)}} {{workerStateBorder (print .State)}} border-2 cursor-pointer hover:opacity-80 transition-opacity flex items-center justify-center"
-                 title="{{.Name}} ({{.State}})&#10;Host: {{.Hostname}}&#10;Runtime: {{.Runtime}}{{if .CurrentTask}}&#10;Task: {{.CurrentTask}}{{end}}">
+                 title="{{.Name}} ({{.State}})&#10;Host: {{.Hostname}}&#10;Runtime: {{.Runtime}}{{if .GPUEnabled}}&#10;GPU: {{if .GPUDevice}}device {{.GPUDevice}}{{else}}yes{{end}}{{end}}{{if .CurrentTask}}&#10;Task: {{.CurrentTask}}{{end}}">
                 {{if .CurrentTask}}
                 <svg class="w-4 h-4 text-white animate-spin" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1771,6 +1771,7 @@ var templates = map[string]string{
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hostname</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Group</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Runtime</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GPU</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Task</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Registered</th>
@@ -1796,6 +1797,15 @@ var templates = map[string]string{
                             {{else}}bg-gray-100 text-gray-800{{end}}">
                             {{.Runtime}}
                         </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {{if .GPUEnabled}}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            GPU{{if .GPUDevice}}:{{.GPUDevice}}{{end}}
+                        </span>
+                        {{else}}
+                        <span class="text-gray-400 text-sm">-</span>
+                        {{end}}
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {{if .CurrentTask}}

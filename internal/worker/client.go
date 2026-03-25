@@ -50,14 +50,25 @@ func (c *Client) WorkerID() string {
 	return c.workerID
 }
 
+// RegisterOptions holds optional fields for worker registration.
+type RegisterOptions struct {
+	GPUEnabled bool
+	GPUDevice  string
+}
+
 // Register registers the worker with the server and stores the worker ID.
-func (c *Client) Register(ctx context.Context, name, hostname, group, runtime string) (*model.Worker, error) {
-	body, err := json.Marshal(map[string]string{
+func (c *Client) Register(ctx context.Context, name, hostname, group, runtime string, opts ...RegisterOptions) (*model.Worker, error) {
+	reg := map[string]any{
 		"name":     name,
 		"hostname": hostname,
 		"group":    group,
 		"runtime":  runtime,
-	})
+	}
+	if len(opts) > 0 && opts[0].GPUEnabled {
+		reg["gpu_enabled"] = true
+		reg["gpu_device"] = opts[0].GPUDevice
+	}
+	body, err := json.Marshal(reg)
 	if err != nil {
 		return nil, err
 	}
