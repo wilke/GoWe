@@ -34,7 +34,7 @@ hints:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `executor` | string | Execution backend: `local`, `docker`, `worker`, `bvbrc`, `container` |
+| `executor` | string | Execution backend: `local`, `worker`, `bvbrc` |
 | `bvbrc_app_id` | string | BV-BRC application ID (implies `executor: bvbrc`) |
 | `docker_image` | string | Container image override (takes priority over `DockerRequirement.dockerPull`) |
 
@@ -42,10 +42,11 @@ hints:
 
 GoWe selects the executor for each task in this order:
 
-1. `gowe:Execution.executor` — if set, use this executor directly
-2. `gowe:Execution.bvbrc_app_id` — implies `bvbrc` executor
-3. `DockerRequirement.dockerPull` — implies `container` executor
-4. Default — `local` executor (runs as OS process)
+1. Server-wide `--default-executor` — if set, overrides all hints
+2. `gowe:Execution.executor` — if set to `worker` or `bvbrc`, route there directly (`container` is ignored as a routing value — it describes *how* to run, not *where*)
+3. `gowe:Execution.bvbrc_app_id` — implies `bvbrc` executor
+4. `DockerRequirement` or `gowe:Execution.docker_image` — auto-promotes to `worker` when workers are online, otherwise runs locally
+5. Default — `local` executor (runs as OS process)
 
 ### Examples
 

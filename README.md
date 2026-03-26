@@ -178,14 +178,15 @@ All responses use a standard envelope:
 
 ## Executors
 
-GoWe supports four execution backends, selected per-step via CWL hints:
+GoWe supports three executor backends that control *where* tasks run, plus container support that controls *how* they run:
 
-| Type | Key | Description |
-|------|-----|-------------|
-| `local` | Default | Runs commands as local OS processes |
-| `docker` | `DockerRequirement` or `gowe:Execution.docker_image` | Runs commands inside Docker containers |
+| Executor | Routing | Description |
+|----------|---------|-------------|
+| `local` | Default (no hints) | Runs commands as local OS processes |
 | `worker` | `gowe:Execution.executor: worker` or `--default-executor=worker` | Delegates to remote workers for distributed execution |
 | `bvbrc` | `gowe:Execution.executor: bvbrc` | Submits jobs to BV-BRC via JSON-RPC 1.1 |
+
+`DockerRequirement` or `gowe:Execution.docker_image` controls the container runtime (Docker/Apptainer), not the executor. Steps with a container image are auto-promoted to `worker` when workers are online, otherwise run locally.
 
 ### Authentication
 

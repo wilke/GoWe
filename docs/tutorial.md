@@ -839,10 +839,9 @@ GoWe picks the executor for each step based on CWL hints:
 | Hint | Executor | Use Case |
 |------|----------|----------|
 | *(none)* | `local` | Run as OS process |
-| `DockerRequirement` | `docker` | Run in Docker container |
 | `gowe:Execution.executor: worker` | `worker` | Dispatch to remote workers |
 | `gowe:Execution.executor: bvbrc` | `bvbrc` | Submit to BV-BRC |
-| `gowe:Execution.docker_image` | `docker` | Run in Docker container |
+| `DockerRequirement` / `gowe:Execution.docker_image` | `worker` (auto) or `local` | Run in container; auto-promoted to `worker` when workers are online |
 
 When `--default-executor=worker` is set on the server, all tasks (regardless of hints) are routed to workers.
 

@@ -26,7 +26,7 @@ gowe-server [flags]
 |------|---------|-------------|
 | `--addr` | `:8080` | Listen address (host:port) |
 | `--db` | `~/.gowe/gowe.db` | SQLite database path |
-| `--default-executor` | `""` | Default executor type: `local`, `docker`, `worker` (empty = hint-based) |
+| `--default-executor` | `""` | Default executor type: `local`, `container`, `worker`, `bvbrc` (empty = hint-based) |
 | `--config` | `~/.gowe/config.yaml` | Server configuration file |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
@@ -38,7 +38,7 @@ gowe-server [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--allow-anonymous` | `false` | Allow unauthenticated API requests |
-| `--anonymous-executors` | `local,docker,worker` | Executors allowed for anonymous users |
+| `--anonymous-executors` | `local,container,worker` | Executors allowed for anonymous users |
 | `--worker-keys` | `""` | Path to worker keys JSON file |
 
 Environment variables:
