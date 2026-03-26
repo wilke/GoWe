@@ -402,6 +402,10 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		whereClauses = append(whereClauses, "state = ?")
 		countArgs = append(countArgs, opts.State)
 	}
+	if opts.WorkflowID != "" {
+		whereClauses = append(whereClauses, "workflow_id = ?")
+		countArgs = append(countArgs, opts.WorkflowID)
+	}
 	if opts.DateStart != "" {
 		whereClauses = append(whereClauses, "created_at >= ?")
 		countArgs = append(countArgs, opts.DateStart+"T00:00:00Z")

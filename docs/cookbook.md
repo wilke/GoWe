@@ -181,6 +181,26 @@ curl -s -X POST "http://localhost:8080/api/v1/submissions/?dry_run=true" \
   | python3 -m json.tool
 ```
 
+### List submissions for a workflow
+
+Filter by workflow name:
+
+```bash
+curl -s "http://localhost:8080/api/v1/submissions?workflow_id=boltz-test" | python3 -m json.tool
+```
+
+Or by workflow ID:
+
+```bash
+curl -s "http://localhost:8080/api/v1/submissions?workflow_id=wf_c6fab32b-..." | python3 -m json.tool
+```
+
+Combine filters — e.g. completed runs of boltz-test:
+
+```bash
+curl -s "http://localhost:8080/api/v1/submissions?workflow_id=boltz-test&state=COMPLETED" | python3 -m json.tool
+```
+
 ### Cancel a running submission
 
 ```bash

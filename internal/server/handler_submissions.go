@@ -160,6 +160,15 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	if state := r.URL.Query().Get("state"); state != "" {
 		opts.State = state
 	}
+	if wfFilter := r.URL.Query().Get("workflow_id"); wfFilter != "" {
+		// Resolve workflow name to ID if needed.
+		if !strings.HasPrefix(wfFilter, "wf_") {
+			if wf, err := s.store.GetWorkflowByName(r.Context(), wfFilter); err == nil && wf != nil {
+				wfFilter = wf.ID
+			}
+		}
+		opts.WorkflowID = wfFilter
+	}
 
 	subs, total, err := s.store.ListSubmissions(r.Context(), opts)
 	if err != nil {

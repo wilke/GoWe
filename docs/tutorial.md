@@ -887,6 +887,7 @@ PENDING ─── dependencies met ──→ SCHEDULED ──→ QUEUED ──�
 | List workflows | `GET /api/v1/workflows/` | — |
 | Validate | `POST /api/v1/workflows/{id}/validate` | — |
 | Submit run | `POST /api/v1/submissions/` | `gowe submit file.cwl` |
+| List submissions | `GET /api/v1/submissions/?workflow_id=...&state=...` | — |
 | Check status | `GET /api/v1/submissions/{id}/` | `gowe status {id}` |
 | List tasks | `GET /api/v1/submissions/{id}/tasks/` | — |
 | Get logs | `GET /api/v1/submissions/{id}/tasks/{tid}/logs` | `gowe logs {id}` |

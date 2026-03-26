@@ -153,8 +153,8 @@ All endpoints are prefixed with `/api/v1`.
 | `PUT` | `/workflows/{id}` | Update workflow |
 | `DELETE` | `/workflows/{id}` | Delete workflow |
 | `POST` | `/workflows/{id}/validate` | Validate workflow |
-| `GET` | `/submissions` | List submissions |
-| `POST` | `/submissions` | Create submission |
+| `GET` | `/submissions` | List submissions (`?workflow_id=...&state=...`) |
+| `POST` | `/submissions` | Create submission (`workflow_id` accepts ID or name) |
 | `GET` | `/submissions/{id}` | Get submission |
 | `PUT` | `/submissions/{id}/cancel` | Cancel submission |
 | `GET` | `/submissions/{id}/tasks` | List tasks |
