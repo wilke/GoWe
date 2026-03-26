@@ -28,7 +28,7 @@ GoWe supports multiple execution modes (compute) and storage backends (data). Th
 
 - **worker** (`internal/executor/worker.go`): Dispatches tasks to remote workers. Workers poll the server for tasks and execute them locally or in containers.
 
-- **apptainer** (`internal/executor/apptainer.go`): Executes commands in Apptainer (formerly Singularity) containers. Useful for HPC environments where Docker is not available.
+- **apptainer** (`internal/executor/apptainer.go`): Executes commands in Apptainer (formerly Singularity) containers. Useful for HPC environments where Docker is not available. Supports local `.sif` images via `--image-dir`, GPU passthrough via `--nv`, and extra bind mounts via `--extra-bind` and `--pre-stage-dir`.
 
 - **bvbrc** (`internal/executor/bvbrc.go`): Submits jobs to BV-BRC (Bacterial and Viral Bioinformatics Resource Center) for remote execution.
 
@@ -137,6 +137,27 @@ The following adaptations were made for Apptainer compatibility:
 | ENTRYPOINT | Always honored | Use `apptainer run` when command starts with a flag (e.g. `-c`) |
 | Colons in paths | `--bind src:dest` works | `--mount type=bind,source=...,destination=...` (colons in paths break `--bind`) |
 | Network isolation | `--network none` | Not enforceable without root (known limitation) |
+
+## Apptainer / SIF Image Support
+
+When using Apptainer as the container runtime, GoWe supports local `.sif` images via the `--image-dir` flag on workers and `cwl-runner`. Image resolution for `DockerRequirement.dockerPull`:
+
+| Pattern | Resolution |
+|---------|------------|
+| `/scout/containers/boltz.sif` (absolute) | Used as-is |
+| `boltz.sif` (relative `.sif`) | Resolved against `--image-dir` |
+| `dxkb/boltz:latest` (non-`.sif`) | Prefixed with `docker://` for registry pull |
+
+## Reference Data and Scheduler Affinity
+
+Workers can declare pre-staged datasets (`--pre-stage-dir`, `--dataset`). CWL tools declare dataset requirements via `gowe:ResourceData` hints. The scheduler routes tasks to workers with matching datasets:
+
+- **`prestage` mode** — Task is only dispatched to workers that have the dataset
+- **`cache` mode** — Workers with the dataset are preferred, but others can execute
+
+Additionally, `--extra-bind` injects arbitrary host paths into containers without affecting scheduling.
+
+See [tools/worker.md](tools/worker.md) for detailed flag documentation and examples.
 
 ## Adding New Test Coverage
 

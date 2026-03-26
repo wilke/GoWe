@@ -1648,7 +1648,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 		}
 
 		// Extract GoWe hints from step or resolved tool.
-		ms.Hints = extractStepHints(step.Hints)
+		ms.Hints = extractStepHints(step.Hints, nil)
 		if ms.Hints == nil && ms.ToolInline != nil {
 			ms.Hints = ms.ToolInline.Hints
 		}
@@ -1722,8 +1722,8 @@ func convertTool(ct *cwl.CommandLineTool) *model.Tool {
 		return t.Outputs[i].ID < t.Outputs[j].ID
 	})
 
-	// Extract tool hints.
-	t.Hints = extractStepHints(ct.Hints)
+	// Extract tool hints (check both hints and requirements for DockerRequirement).
+	t.Hints = extractStepHints(ct.Hints, ct.Requirements)
 
 	return t
 }
@@ -1886,9 +1886,10 @@ func intSlice(m map[string]any, key string) []int {
 	return nil
 }
 
-// extractStepHints extracts GoWe-specific hints and CWL DockerRequirement from a hints map.
-func extractStepHints(hints map[string]any) *model.StepHints {
-	if hints == nil {
+// extractStepHints extracts GoWe-specific hints and CWL DockerRequirement from hints and requirements maps.
+// DockerRequirement may appear in either hints or requirements; both are checked.
+func extractStepHints(hints map[string]any, requirements map[string]any) *model.StepHints {
+	if hints == nil && requirements == nil {
 		return nil
 	}
 
@@ -1903,18 +1904,46 @@ func extractStepHints(hints map[string]any) *model.StepHints {
 		h.DockerImage = stringField(gowe, "docker_image")
 	}
 
-	// CWL standard DockerRequirement.
-	if dr, ok := hints["DockerRequirement"].(map[string]any); ok {
-		pull := stringField(dr, "dockerPull")
-		if pull != "" && h.DockerImage == "" {
-			h.DockerImage = pull
-		}
-		if h.ExecutorType == "" && pull != "" {
-			h.ExecutorType = model.ExecutorTypeContainer
+	// CWL standard DockerRequirement — check hints first, then requirements.
+	for _, m := range []map[string]any{hints, requirements} {
+		if dr, ok := m["DockerRequirement"].(map[string]any); ok {
+			pull := stringField(dr, "dockerPull")
+			if pull != "" && h.DockerImage == "" {
+				h.DockerImage = pull
+			}
+			if h.ExecutorType == "" && pull != "" {
+				h.ExecutorType = model.ExecutorTypeContainer
+			}
+			break // Found DockerRequirement, no need to check further
 		}
 	}
 
-	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" {
+	// Parse gowe:ResourceData from hints and requirements.
+	for _, m := range []map[string]any{hints, requirements} {
+		if m == nil {
+			continue
+		}
+		if rd, ok := m["gowe:ResourceData"].(map[string]any); ok {
+			if datasets, ok := rd["datasets"].([]any); ok {
+				for _, d := range datasets {
+					dm, _ := d.(map[string]any)
+					if dm == nil {
+						continue
+					}
+					h.RequiredDatasets = append(h.RequiredDatasets, model.DatasetRequirement{
+						ID:     stringField(dm, "id"),
+						Path:   stringField(dm, "path"),
+						Size:   stringField(dm, "size"),
+						Mode:   stringField(dm, "mode"),
+						Source: stringField(dm, "source"),
+					})
+				}
+			}
+			break
+		}
+	}
+
+	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && len(h.RequiredDatasets) == 0 {
 		return nil
 	}
 	return &h

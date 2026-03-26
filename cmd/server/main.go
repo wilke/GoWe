@@ -30,6 +30,7 @@ func main() {
 	flag.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log format (text, json)")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "Database path (default ~/.gowe/gowe.db)")
 	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor type: local, docker, worker (empty for hint-based)")
+	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 
 	// Scheduler options
@@ -107,7 +108,11 @@ func main() {
 
 	// Create executor registry and register executors.
 	reg := executor.NewRegistry(logger)
-	reg.Register(executor.NewLocalExecutor("", logger))
+	localExec := executor.NewLocalExecutor("", logger)
+	if *imageDir != "" {
+		localExec.SetImageDir(*imageDir)
+	}
+	reg.Register(localExec)
 	reg.Register(executor.NewDockerExecutor("", logger))
 	reg.Register(executor.NewApptainerExecutor("", logger))
 	reg.Register(executor.NewWorkerExecutor(st, logger))

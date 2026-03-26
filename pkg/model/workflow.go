@@ -73,9 +73,10 @@ type StepInput struct {
 
 // StepHints holds GoWe-specific hints extracted from a CWL step.
 type StepHints struct {
-	BVBRCAppID   string       `json:"bvbrc_app_id,omitempty"`
-	ExecutorType ExecutorType `json:"executor,omitempty"`
-	DockerImage  string       `json:"docker_image,omitempty"`
+	BVBRCAppID       string               `json:"bvbrc_app_id,omitempty"`
+	ExecutorType     ExecutorType          `json:"executor,omitempty"`
+	DockerImage      string               `json:"docker_image,omitempty"`
+	RequiredDatasets []DatasetRequirement  `json:"required_datasets,omitempty"`
 }
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.

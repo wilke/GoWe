@@ -15,6 +15,26 @@ import (
 	"github.com/me/gowe/pkg/staging"
 )
 
+// resolveApptainerImage resolves a DockerRequirement image name for Apptainer.
+// If the image ends with ".sif", it is treated as a local SIF file:
+//   - Absolute paths are used as-is.
+//   - Relative paths are resolved against imageDir (from --image-dir flag).
+//   - If imageDir is empty, the relative path is passed through for Apptainer to resolve.
+//
+// Non-.sif images are prefixed with "docker://" for registry pulls.
+func resolveApptainerImage(dockerImage, imageDir string) string {
+	if strings.HasSuffix(dockerImage, ".sif") {
+		if filepath.IsAbs(dockerImage) {
+			return dockerImage
+		}
+		if imageDir != "" {
+			return filepath.Join(imageDir, dockerImage)
+		}
+		return dockerImage
+	}
+	return "docker://" + dockerImage
+}
+
 // executeLocal executes a tool locally without Docker in the specified work directory.
 func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
@@ -315,6 +335,13 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 			absHostPath := translateDockerPath(ResolveSymlinks(m.HostPath), opts.DockerHostPathMap)
 			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
 		}
+
+		// Extra bind mounts (pre-staged datasets, admin paths).
+		for _, eb := range opts.ExtraBinds {
+			src := translateDockerPath(eb.HostPath, opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount",
+				fmt.Sprintf("type=bind,source=%s,target=%s", src, eb.ContainerPath))
+		}
 	} else {
 		// Bind mount mode: mount working directory with optional host path translation.
 		// Use --mount syntax to handle paths with colons (Docker -v uses : as separator).
@@ -345,6 +372,13 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		for _, m := range containerMounts {
 			absHostPath := translateDockerPath(ResolveSymlinks(m.HostPath), opts.DockerHostPathMap)
 			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", absHostPath, m.ContainerPath))
+		}
+
+		// Extra bind mounts (pre-staged datasets, admin paths).
+		for _, eb := range opts.ExtraBinds {
+			src := translateDockerPath(eb.HostPath, opts.DockerHostPathMap)
+			dockerArgs = append(dockerArgs, "--mount",
+				fmt.Sprintf("type=bind,source=%s,target=%s", src, eb.ContainerPath))
 		}
 
 		// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
@@ -482,7 +516,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
 	dockerImage := opts.DockerImage
-	e.logger.Info("executing in Apptainer", "image", dockerImage, "command", opts.Command.Command)
+	e.logger.Info("executing in Apptainer", "image", dockerImage, "image_dir", opts.ImageDir, "command", opts.Command.Command)
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -556,6 +590,11 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerArgs = append(apptainerArgs, apptainerMount(absHostPath, m.ContainerPath, "")...)
 	}
 
+	// Extra bind mounts (pre-staged datasets, admin paths).
+	for _, eb := range opts.ExtraBinds {
+		apptainerArgs = append(apptainerArgs, apptainerMount(ResolveSymlinks(eb.HostPath), eb.ContainerPath, "")...)
+	}
+
 	// CWL spec requires TMPDIR=$runtime.tmpdir (HOME is already set by --home above).
 	apptainerArgs = append(apptainerArgs, "--env", "TMPDIR=/tmp")
 
@@ -590,8 +629,10 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// when NetworkAccess requirement is absent) cannot be enforced. This is a
 	// known limitation — test 227 (networkaccess_disabled) will fail.
 
-	// Add image with docker:// prefix for pulling from Docker registries.
-	apptainerArgs = append(apptainerArgs, "docker://"+dockerImage)
+	// Resolve image: local .sif files are used directly, others get docker:// prefix.
+	resolvedImage := resolveApptainerImage(dockerImage, opts.ImageDir)
+	e.logger.Debug("resolved apptainer image", "original", dockerImage, "resolved", resolvedImage)
+	apptainerArgs = append(apptainerArgs, resolvedImage)
 
 	// Add tool command. For ShellCommandRequirement, wrap in /bin/sh -c.
 	if hasShellCommandRequirement(tool) {

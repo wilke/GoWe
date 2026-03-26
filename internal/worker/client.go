@@ -54,6 +54,7 @@ func (c *Client) WorkerID() string {
 type RegisterOptions struct {
 	GPUEnabled bool
 	GPUDevice  string
+	Datasets   map[string]string // Dataset ID → host path
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -64,9 +65,14 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		"group":    group,
 		"runtime":  runtime,
 	}
-	if len(opts) > 0 && opts[0].GPUEnabled {
-		reg["gpu_enabled"] = true
-		reg["gpu_device"] = opts[0].GPUDevice
+	if len(opts) > 0 {
+		if opts[0].GPUEnabled {
+			reg["gpu_enabled"] = true
+			reg["gpu_device"] = opts[0].GPUDevice
+		}
+		if len(opts[0].Datasets) > 0 {
+			reg["datasets"] = opts[0].Datasets
+		}
 	}
 	body, err := json.Marshal(reg)
 	if err != nil {

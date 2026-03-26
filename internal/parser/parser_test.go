@@ -759,7 +759,7 @@ func TestExtractStepHints(t *testing.T) {
 			"executor":     "bvbrc",
 		},
 	}
-	got := extractStepHints(hints)
+	got := extractStepHints(hints, nil)
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -772,14 +772,14 @@ func TestExtractStepHints(t *testing.T) {
 }
 
 func TestExtractStepHints_Nil(t *testing.T) {
-	if got := extractStepHints(nil); got != nil {
+	if got := extractStepHints(nil, nil); got != nil {
 		t.Errorf("extractStepHints(nil) = %v, want nil", got)
 	}
 }
 
 func TestExtractStepHints_NoGoweHint(t *testing.T) {
 	hints := map[string]any{"DockerRequirement": map[string]any{}}
-	if got := extractStepHints(hints); got != nil {
+	if got := extractStepHints(hints, nil); got != nil {
 		t.Errorf("extractStepHints = %v, want nil", got)
 	}
 }
@@ -790,7 +790,7 @@ func TestExtractStepHints_DockerRequirement(t *testing.T) {
 			"dockerPull": "ubuntu:22.04",
 		},
 	}
-	got := extractStepHints(hints)
+	got := extractStepHints(hints, nil)
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -812,7 +812,7 @@ func TestExtractStepHints_GoweDockerOverridesDockerRequirement(t *testing.T) {
 			"dockerPull": "ubuntu:22.04",
 		},
 	}
-	got := extractStepHints(hints)
+	got := extractStepHints(hints, nil)
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -828,7 +828,7 @@ func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
 			"docker_image": "biocontainers/samtools:1.17",
 		},
 	}
-	got := extractStepHints(hints)
+	got := extractStepHints(hints, nil)
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -837,6 +837,45 @@ func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
 	}
 	if got.ExecutorType != model.ExecutorTypeContainer {
 		t.Errorf("ExecutorType = %q, want container", got.ExecutorType)
+	}
+}
+
+func TestExtractStepHints_DockerRequirementInRequirements(t *testing.T) {
+	// DockerRequirement in requirements (not hints) should still be detected.
+	requirements := map[string]any{
+		"DockerRequirement": map[string]any{
+			"dockerPull": "all-2026-0224b.sif",
+		},
+	}
+	got := extractStepHints(nil, requirements)
+	if got == nil {
+		t.Fatal("extractStepHints returned nil for DockerRequirement in requirements")
+	}
+	if got.DockerImage != "all-2026-0224b.sif" {
+		t.Errorf("DockerImage = %q, want all-2026-0224b.sif", got.DockerImage)
+	}
+	if got.ExecutorType != model.ExecutorTypeContainer {
+		t.Errorf("ExecutorType = %q, want container", got.ExecutorType)
+	}
+}
+
+func TestExtractStepHints_HintsDockerTakesPrecedenceOverRequirements(t *testing.T) {
+	hints := map[string]any{
+		"DockerRequirement": map[string]any{
+			"dockerPull": "hints-image:latest",
+		},
+	}
+	requirements := map[string]any{
+		"DockerRequirement": map[string]any{
+			"dockerPull": "requirements-image:latest",
+		},
+	}
+	got := extractStepHints(hints, requirements)
+	if got == nil {
+		t.Fatal("extractStepHints returned nil")
+	}
+	if got.DockerImage != "hints-image:latest" {
+		t.Errorf("DockerImage = %q, want hints-image:latest (hints should take precedence)", got.DockerImage)
 	}
 }
 

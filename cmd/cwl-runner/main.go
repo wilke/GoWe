@@ -27,6 +27,7 @@ var (
 	maxJobs          int
 	noFailFast       bool
 	collectMetrics   bool
+	imageDir         string
 )
 
 const version = "1.2.1-dev"
@@ -72,6 +73,9 @@ Examples:
 
 	// Metrics flags.
 	rootCmd.PersistentFlags().BoolVar(&collectMetrics, "metrics", false, "Collect and display execution metrics (duration, memory usage)")
+
+	// Image directory for local SIF files.
+	rootCmd.PersistentFlags().StringVar(&imageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
@@ -125,6 +129,9 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 
 	// Configure metrics collection.
 	r.CollectMetrics = collectMetrics
+
+	// Configure image directory for local SIF files.
+	r.ImageDir = imageDir
 
 	return r
 }

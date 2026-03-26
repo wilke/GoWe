@@ -244,6 +244,12 @@ var alterStatements = []struct {
 		column:   "gpu_device",
 		alterSQL: "ALTER TABLE workers ADD COLUMN gpu_device TEXT NOT NULL DEFAULT ''",
 	},
+	// Worker datasets for scheduler affinity
+	{
+		table:    "workers",
+		column:   "datasets",
+		alterSQL: "ALTER TABLE workers ADD COLUMN datasets TEXT NOT NULL DEFAULT '{}'",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

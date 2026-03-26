@@ -1,0 +1,7 @@
+{
+  "input_file": {
+    "class": "File",
+    "path": "boltz-input.yaml"
+  },
+  "use_msa_server": true
+}

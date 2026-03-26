@@ -46,6 +46,12 @@ type ResourceConfig struct {
 	ApptainerCgroups bool  // System supports cgroups v2 unified (Apptainer --memory/--cpus)
 }
 
+// ExtraBind represents an additional bind mount for container execution.
+type ExtraBind struct {
+	HostPath      string
+	ContainerPath string
+}
+
 // Options configures a tool execution.
 type Options struct {
 	// Tool is the CWL CommandLineTool to execute.
@@ -90,6 +96,11 @@ type Options struct {
 	// host path translation.
 	DockerVolume string
 
+	// ImageDir is the base directory for resolving relative .sif image paths.
+	// When a DockerRequirement specifies a .sif file (e.g., "all.sif"),
+	// it is resolved relative to this directory.
+	ImageDir string
+
 	// GPU configuration for container execution.
 	GPU GPUConfig
 
@@ -99,6 +110,10 @@ type Options struct {
 	// JobRequirements are cwl:requirements from the job file.
 	// These can add or override tool requirements.
 	JobRequirements []any
+
+	// ExtraBinds are additional bind mounts injected into containers.
+	// Used for pre-staged reference datasets and admin-specified paths.
+	ExtraBinds []ExtraBind
 }
 
 // Executor executes CWL CommandLineTools.

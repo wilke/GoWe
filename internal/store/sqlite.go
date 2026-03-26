@@ -1008,6 +1008,11 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	datasetsJSON, err := json.Marshal(w.Datasets)
+	if err != nil {
+		return fmt.Errorf("marshal datasets: %w", err)
+	}
+
 	// Default group to "default" if not set.
 	group := w.Group
 	if group == "" {
@@ -1020,12 +1025,12 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
-		gpuEnabled, w.GPUDevice,
+		gpuEnabled, w.GPUDevice, string(datasetsJSON),
 	)
 	return err
 }
@@ -1034,14 +1039,14 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	s.logger.Debug("sql", "op", "select", "table", "workers", "id", id)
 
 	var w model.Worker
-	var state, runtime, labelsJSON, lastSeen, registeredAt string
+	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 	var gpuEnabled int
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets
 		 FROM workers WHERE id = ?`, id,
 	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice)
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1054,6 +1059,7 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	w.Runtime = model.ContainerRuntime(runtime)
 	w.GPUEnabled = gpuEnabled != 0
 	json.Unmarshal([]byte(labelsJSON), &w.Labels)
+	json.Unmarshal([]byte(datasetsJSON), &w.Datasets)
 	w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
 	w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
 
@@ -1068,6 +1074,11 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
 
+	datasetsJSON, err := json.Marshal(w.Datasets)
+	if err != nil {
+		return fmt.Errorf("marshal datasets: %w", err)
+	}
+
 	gpuEnabled := 0
 	if w.GPUEnabled {
 		gpuEnabled = 1
@@ -1075,10 +1086,10 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
-		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=? WHERE id=?`,
+		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
-		w.CurrentTask, gpuEnabled, w.GPUDevice, w.ID,
+		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON), w.ID,
 	)
 	if err != nil {
 		return err
@@ -1108,7 +1119,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets
 		 FROM workers ORDER BY registered_at`)
 	if err != nil {
 		return nil, err
@@ -1118,11 +1129,11 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	var workers []*model.Worker
 	for rows.Next() {
 		var w model.Worker
-		var state, runtime, labelsJSON, lastSeen, registeredAt string
+		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 		var gpuEnabled int
 
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON); err != nil {
 			return nil, err
 		}
 
@@ -1130,6 +1141,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		w.Runtime = model.ContainerRuntime(runtime)
 		w.GPUEnabled = gpuEnabled != 0
 		json.Unmarshal([]byte(labelsJSON), &w.Labels)
+		json.Unmarshal([]byte(datasetsJSON), &w.Datasets)
 		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
 		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
 
@@ -1143,6 +1155,8 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 // available. Runtime capability matching: if runtime is "none", only tasks
 // without _docker_image are eligible; otherwise all QUEUED worker tasks match.
 // If workerGroup is non-empty, only tasks with matching or empty WorkerGroup are eligible.
+// Dataset affinity: tasks with prestage datasets are only dispatched to workers
+// that have those datasets. Tasks with cache datasets prefer workers with those datasets.
 func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "group", workerGroup, "runtime", runtime)
 
@@ -1211,8 +1225,18 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		return nil, err
 	}
 
-	// Filter by runtime capability and worker group.
+	// Look up the worker's datasets for affinity matching.
+	var workerDatasetsJSON string
+	_ = tx.QueryRowContext(ctx, `SELECT datasets FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON)
+	var workerDatasets map[string]string
+	json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets)
+	if workerDatasets == nil {
+		workerDatasets = map[string]string{}
+	}
+
+	// Filter by runtime capability, worker group, and dataset affinity.
 	var selected *model.Task
+	bestCacheScore := -1
 	for _, task := range candidates {
 		// Check runtime capability: does the task require Docker?
 		requiresDocker := false
@@ -1238,8 +1262,36 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			}
 		}
 
-		selected = task
-		break
+		// Check dataset affinity.
+		if task.RuntimeHints != nil && len(task.RuntimeHints.RequiredDatasets) > 0 {
+			missingPrestage := false
+			cacheScore := 0
+			for _, req := range task.RuntimeHints.RequiredDatasets {
+				if req.Mode == "prestage" {
+					if _, ok := workerDatasets[req.ID]; !ok {
+						missingPrestage = true
+						break
+					}
+				} else if req.Mode == "cache" {
+					if _, ok := workerDatasets[req.ID]; ok {
+						cacheScore++
+					}
+				}
+			}
+			if missingPrestage {
+				continue // Worker missing required prestage dataset
+			}
+			// For cache-mode datasets, prefer workers that have more matching datasets.
+			if cacheScore > bestCacheScore {
+				bestCacheScore = cacheScore
+				selected = task
+				continue
+			}
+		}
+
+		if selected == nil {
+			selected = task
+		}
 	}
 
 	if selected == nil {
@@ -1283,7 +1335,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	// Find stale workers first.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets
 		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
 	if err != nil {
 		return nil, err
@@ -1293,16 +1345,17 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 	var stale []*model.Worker
 	for rows.Next() {
 		var w model.Worker
-		var state, runtime, labelsJSON, lastSeen, registeredAt string
+		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 		var gpuEnabled int
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON); err != nil {
 			return nil, err
 		}
 		w.State = model.WorkerState(state)
 		w.Runtime = model.ContainerRuntime(runtime)
 		w.GPUEnabled = gpuEnabled != 0
 		json.Unmarshal([]byte(labelsJSON), &w.Labels)
+		json.Unmarshal([]byte(datasetsJSON), &w.Datasets)
 		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
 		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
 		stale = append(stale, &w)

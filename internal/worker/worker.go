@@ -15,6 +15,7 @@ import (
 	"github.com/me/gowe/internal/execution"
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/toolexec"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
@@ -35,9 +36,12 @@ type Worker struct {
 	containerRuntime  string               // "docker", "apptainer", or "none"
 	gpu               GPUWorkerConfig     // GPU configuration
 	resources         ResourceWorkerConfig // Resource limits
+	imageDir          string              // Base directory for resolving .sif image paths
 	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
 	dockerVolume      string            // Named Docker volume shared with tool containers
 	inputPathMap      map[string]string // Input path mapping for host->container translation
+	extraBinds        []toolexec.ExtraBind // Extra bind mounts for containers
+	datasets          map[string]string   // Merged dataset map: ID → host path
 	logger            *slog.Logger
 }
 
@@ -55,6 +59,7 @@ type Config struct {
 	Stager    StagerConfig
 	GPU       GPUWorkerConfig      // GPU configuration
 	Resources ResourceWorkerConfig // Resource limits
+	ImageDir  string               // Base directory for resolving relative .sif image paths
 
 	// DockerHostPathMap maps container paths to Docker host paths.
 	// Needed for Docker-in-Docker scenarios where the worker container
@@ -73,6 +78,19 @@ type Config struct {
 	// original host filesystem to their local mount points.
 	// Format: host_path -> container_path
 	InputPathMap map[string]string
+
+	// PreStageDir is a directory containing pre-staged reference datasets.
+	// Subdirectories are auto-discovered as datasets (dirname = dataset ID).
+	// Bind-mounted into every container at the same path.
+	PreStageDir string
+
+	// ExtraBinds are additional paths to bind-mount into every container.
+	// Pure sysadmin escape hatch — not reported to server, not used for scheduling.
+	ExtraBinds []string
+
+	// Datasets are explicit dataset aliases: id → path.
+	// Additive with auto-discovered datasets from PreStageDir.
+	Datasets map[string]string
 }
 
 // GPUWorkerConfig holds GPU settings for the worker.
@@ -234,6 +252,60 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		client.SetWorkerKey(cfg.WorkerKey)
 	}
 
+	// Build datasets map and extra binds from PreStageDir, Datasets, and ExtraBinds.
+	datasets := make(map[string]string)
+	var extraBinds []toolexec.ExtraBind
+
+	// Auto-discover datasets from PreStageDir.
+	if cfg.PreStageDir != "" {
+		absPreStage, err := filepath.Abs(cfg.PreStageDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve pre-stage-dir: %w", err)
+		}
+		entries, err := os.ReadDir(absPreStage)
+		if err != nil {
+			return nil, fmt.Errorf("scan pre-stage-dir %s: %w", absPreStage, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				datasets[entry.Name()] = filepath.Join(absPreStage, entry.Name())
+			}
+		}
+		// Bind-mount the entire PreStageDir at the same path.
+		extraBinds = append(extraBinds, toolexec.ExtraBind{
+			HostPath:      absPreStage,
+			ContainerPath: absPreStage,
+		})
+		logger.Info("pre-stage-dir scanned", "path", absPreStage, "datasets", len(datasets))
+	}
+
+	// Merge explicit dataset aliases (additive).
+	for id, path := range cfg.Datasets {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			logger.Warn("resolve dataset path", "id", id, "path", path, "error", err)
+			absPath = path
+		}
+		datasets[id] = absPath
+	}
+
+	// Build extra binds from ExtraBinds config (generic pass-through).
+	for _, p := range cfg.ExtraBinds {
+		absP, err := filepath.Abs(p)
+		if err != nil {
+			logger.Warn("resolve extra-bind path", "path", p, "error", err)
+			absP = p
+		}
+		extraBinds = append(extraBinds, toolexec.ExtraBind{
+			HostPath:      absP,
+			ContainerPath: absP,
+		})
+	}
+
+	if len(datasets) > 0 {
+		logger.Info("registered datasets", "datasets", datasets)
+	}
+
 	return &Worker{
 		client:            client,
 		runtime:           rt,
@@ -247,9 +319,12 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		poll:              cfg.Poll,
 		gpu:               cfg.GPU,
 		resources:         cfg.Resources,
+		imageDir:          cfg.ImageDir,
 		dockerHostPathMap: cfg.DockerHostPathMap,
 		dockerVolume:      cfg.DockerVolume,
 		inputPathMap:      cfg.InputPathMap,
+		extraBinds:        extraBinds,
+		datasets:          datasets,
 		logger:            logger.With("component", "worker"),
 	}, nil
 }
@@ -265,6 +340,7 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	regOpts := RegisterOptions{
 		GPUEnabled: w.gpu.Enabled,
 		GPUDevice:  w.gpu.DeviceID,
+		Datasets:   w.datasets,
 	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
@@ -412,8 +488,10 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		MaxCPUs:               w.resources.MaxCPUs,
 		MaxMemMB:              w.resources.MaxMemMB,
 		ApptainerCgroups:      w.resources.ApptainerCgroups,
+		ImageDir:              w.imageDir,
 		ResolveSecondary:      true,
 		RemoveDefaultListings: true,
+		ExtraBinds:            w.extraBinds,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
