@@ -9,7 +9,7 @@ Practical recipes for common tasks. Each recipe is self-contained — copy, past
 ### Start a minimal test server
 
 ```bash
-bin/server --addr :8080 --allow-anonymous --anonymous-executors local
+bin/gowe-server --addr :8080 --allow-anonymous --anonymous-executors local
 ```
 
 Local executor only, no auth required. Good for development.
@@ -17,7 +17,7 @@ Local executor only, no auth required. Good for development.
 ### Start a production server with all executors
 
 ```bash
-bin/server \
+bin/gowe-server \
   --addr :8091 \
   --db /data/gowe.db \
   --allow-anonymous \
@@ -31,13 +31,13 @@ bin/server \
 
 ```bash
 rm ~/.gowe/gowe.db        # default location
-bin/server            # creates a new empty database on startup
+bin/gowe-server            # creates a new empty database on startup
 ```
 
 Or specify a new path:
 
 ```bash
-bin/server --db /tmp/fresh.db
+bin/gowe-server --db /tmp/fresh.db
 ```
 
 ### Find which port the server is on
@@ -53,7 +53,7 @@ ss -tlnp | grep gowe
 ### Register a workflow from a CWL file
 
 ```bash
-GOWE_SERVER=http://localhost:8080 bin/cli run my-tool.cwl job.json --no-upload
+GOWE_SERVER=http://localhost:8080 bin/gowe run my-tool.cwl job.json --no-upload
 ```
 
 This bundles, registers, submits, and waits for completion in one step.
@@ -88,8 +88,8 @@ GoWe computes a SHA-256 hash of the CWL content. Submitting identical CWL return
 
 ```bash
 # Submit twice — second call returns the same workflow ID
-GOWE_SERVER=http://localhost:8080 bin/cli run my-tool.cwl job.json --no-upload
-GOWE_SERVER=http://localhost:8080 bin/cli run my-tool.cwl job.json --no-upload
+GOWE_SERVER=http://localhost:8080 bin/gowe run my-tool.cwl job.json --no-upload
+GOWE_SERVER=http://localhost:8080 bin/gowe run my-tool.cwl job.json --no-upload
 # Same wf_... ID both times
 ```
 
@@ -210,7 +210,7 @@ curl -s -X PUT http://localhost:8080/api/v1/submissions/sub_.../cancel | python3
 Or via CLI:
 
 ```bash
-GOWE_SERVER=http://localhost:8080 bin/cli cancel sub_...
+GOWE_SERVER=http://localhost:8080 bin/gowe cancel sub_...
 ```
 
 ---
@@ -226,7 +226,7 @@ curl -s http://localhost:8080/api/v1/submissions/sub_... | python3 -m json.tool
 Or via CLI:
 
 ```bash
-GOWE_SERVER=http://localhost:8080 bin/cli status sub_...
+GOWE_SERVER=http://localhost:8080 bin/gowe status sub_...
 ```
 
 ### Poll until completion
@@ -267,7 +267,7 @@ curl -s http://localhost:8080/api/v1/submissions/sub_.../tasks/task_... \
 ### Start an Apptainer worker
 
 ```bash
-bin/worker \
+bin/gowe-worker \
   --server http://localhost:8080 \
   --runtime apptainer \
   --image-dir /scout/containers/
@@ -276,7 +276,7 @@ bin/worker \
 ### Start a GPU worker with reference data
 
 ```bash
-bin/worker \
+bin/gowe-worker \
   --server http://localhost:8080 \
   --runtime apptainer \
   --image-dir /scout/containers/ \
@@ -291,7 +291,7 @@ bin/worker \
 When CWL hints use IDs that don't match directory names:
 
 ```bash
-bin/worker \
+bin/gowe-worker \
   --server http://localhost:8080 \
   --runtime apptainer \
   --image-dir /scout/containers/ \
@@ -305,7 +305,7 @@ bin/worker \
 For scratch space, licenses, or other paths that don't need scheduler awareness:
 
 ```bash
-bin/worker \
+bin/gowe-worker \
   --server http://localhost:8080 \
   --runtime apptainer \
   --image-dir /scout/containers/ \
@@ -317,12 +317,12 @@ bin/worker \
 
 ```bash
 # GPU worker for protein prediction
-bin/worker --server http://localhost:8080 --runtime apptainer \
+bin/gowe-worker --server http://localhost:8080 --runtime apptainer \
   --image-dir /scout/containers/ --pre-stage-dir /local_databases \
   --gpu --gpu-id 0 --group gpu &
 
 # CPU worker for general tasks
-bin/worker --server http://localhost:8080 --runtime apptainer \
+bin/gowe-worker --server http://localhost:8080 --runtime apptainer \
   --image-dir /scout/containers/ --group cpu &
 ```
 

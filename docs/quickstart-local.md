@@ -13,20 +13,25 @@ cd /scout/Experiments/GoWe
 mkdir -p bin
 
 # If Go is installed natively:
-go build -o bin/ ./cmd/...
+go build -o bin/gowe-server ./cmd/server
+go build -o bin/gowe ./cmd/cli
+go build -o bin/gowe-worker ./cmd/worker
+go build -o bin/cwl-runner ./cmd/cwl-runner
 
 # If using Apptainer (Go not installed):
 mkdir -p /tmp/gomod
-apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 \
-  bash -c "cd /scout/Experiments/GoWe && go build -o bin/ ./cmd/..."
+apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 bash -c \
+  "cd /scout/Experiments/GoWe && \
+   go build -o bin/gowe-server ./cmd/server && \
+   go build -o bin/gowe ./cmd/cli && \
+   go build -o bin/gowe-worker ./cmd/worker && \
+   go build -o bin/cwl-runner ./cmd/cwl-runner"
 ```
-
-This produces binaries in `bin/` named after each cmd directory: `server`, `cli` (the CLI client), `worker`, `cwl-runner`, etc.
 
 ## 1. Start the Server
 
 ```bash
-bin/server --addr :8080 --allow-anonymous --anonymous-executors local
+bin/gowe-server --addr :8080 --allow-anonymous --anonymous-executors local
 ```
 
 You should see:
@@ -44,7 +49,7 @@ In a second terminal:
 ```bash
 cd /scout/Experiments/GoWe
 
-GOWE_SERVER=http://localhost:8080 bin/cli run \
+GOWE_SERVER=http://localhost:8080 bin/gowe run \
   testdata/worker-test/simple-echo.cwl \
   testdata/worker-test/simple-echo-job.yml \
   --no-upload
