@@ -57,6 +57,7 @@ var schema = []string{
 		completed_at  TEXT
 	)`,
 
+	`CREATE INDEX IF NOT EXISTS idx_workflows_name ON workflows(name)`,
 	`CREATE INDEX IF NOT EXISTS idx_submissions_workflow_id ON submissions(workflow_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_submissions_state ON submissions(state)`,
 	`CREATE INDEX IF NOT EXISTS idx_tasks_submission_id ON tasks(submission_id)`,

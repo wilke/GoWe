@@ -122,6 +122,7 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		Description string    `json:"description,omitempty"`
 		Class       string    `json:"class"`
 		CWLVersion  string    `json:"cwl_version"`
+		ContentHash string    `json:"content_hash,omitempty"`
 		StepCount   int       `json:"step_count"`
 		CreatedAt   time.Time `json:"created_at"`
 	}
@@ -137,6 +138,7 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 			Description: wf.Description,
 			Class:       class,
 			CWLVersion:  wf.CWLVersion,
+			ContentHash: wf.ContentHash,
 			StepCount:   len(wf.Steps),
 			CreatedAt:   wf.CreatedAt,
 		}

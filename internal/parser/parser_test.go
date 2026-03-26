@@ -447,6 +447,131 @@ func TestParseGraph_PackedWorkflow_OriginalClass(t *testing.T) {
 	}
 }
 
+func TestParseGraph_BundledBareTool_OriginalClass(t *testing.T) {
+	// When the CLI bundles a bare CommandLineTool, it produces a $graph with
+	// a tool (id "tool") and a synthetic workflow (step "run_tool" → "#tool").
+	// The parser must detect this pattern and set OriginalClass from the tool,
+	// not hardcode "Workflow".
+	p := testParser()
+
+	t.Run("CommandLineTool", func(t *testing.T) {
+		data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: tool
+    class: CommandLineTool
+    baseCommand: [echo]
+    inputs:
+      message:
+        type: string
+    outputs:
+      output:
+        type: stdout
+  - id: main
+    class: Workflow
+    inputs:
+      message:
+        type: string
+    outputs:
+      output:
+        type: stdout
+        outputSource: run_tool/output
+    steps:
+      run_tool:
+        run: "#tool"
+        in:
+          message: message
+        out: [output]
+`)
+		graph, err := p.ParseGraph(data)
+		if err != nil {
+			t.Fatalf("ParseGraph: %v", err)
+		}
+		if graph.OriginalClass != "CommandLineTool" {
+			t.Errorf("OriginalClass = %q, want CommandLineTool", graph.OriginalClass)
+		}
+	})
+
+	t.Run("ExpressionTool", func(t *testing.T) {
+		data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: tool
+    class: ExpressionTool
+    requirements:
+      InlineJavascriptRequirement: {}
+    inputs:
+      message:
+        type: string
+    outputs:
+      output:
+        type: string
+    expression: "${return {'output': inputs.message};}"
+  - id: main
+    class: Workflow
+    inputs:
+      message:
+        type: string
+    outputs:
+      output:
+        type: string
+        outputSource: run_tool/output
+    steps:
+      run_tool:
+        run: "#tool"
+        in:
+          message: message
+        out: [output]
+`)
+		graph, err := p.ParseGraph(data)
+		if err != nil {
+			t.Fatalf("ParseGraph: %v", err)
+		}
+		if graph.OriginalClass != "ExpressionTool" {
+			t.Errorf("OriginalClass = %q, want ExpressionTool", graph.OriginalClass)
+		}
+	})
+
+	t.Run("real workflow not affected", func(t *testing.T) {
+		// A real workflow with 1 step should keep OriginalClass = "Workflow"
+		// because the tool ID is not "tool" and the step is not "run_tool".
+		data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: samtools_sort
+    class: CommandLineTool
+    baseCommand: [samtools, sort]
+    inputs:
+      bam:
+        type: File
+    outputs:
+      sorted:
+        type: File
+        outputBinding:
+          glob: "*.sorted.bam"
+  - id: main
+    class: Workflow
+    inputs:
+      bam:
+        type: File
+    outputs:
+      sorted:
+        type: File
+        outputSource: sort_step/sorted
+    steps:
+      sort_step:
+        run: "#samtools_sort"
+        in:
+          bam: bam
+        out: [sorted]
+`)
+		graph, err := p.ParseGraph(data)
+		if err != nil {
+			t.Fatalf("ParseGraph: %v", err)
+		}
+		if graph.OriginalClass != "Workflow" {
+			t.Errorf("OriginalClass = %q, want Workflow", graph.OriginalClass)
+		}
+	})
+}
+
 func TestParseGraph_NoWorkflow(t *testing.T) {
 	// When $graph contains only tools, a synthetic workflow should be created.
 	p := testParser()

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -46,8 +47,8 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify workflow exists (needed by both dry-run and real submission).
-	wf, err := s.store.GetWorkflow(r.Context(), req.WorkflowID)
+	// Resolve workflow: try by ID first, fall back to name lookup.
+	wf, err := s.resolveWorkflow(r.Context(), req.WorkflowID)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
@@ -153,6 +154,14 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	opts := model.DefaultListOptions()
 	if state := r.URL.Query().Get("state"); state != "" {
 		opts.State = state
+	}
+	if wfFilter := r.URL.Query().Get("workflow_id"); wfFilter != "" {
+		// Resolve workflow name to ID: try by ID first, fall back to name.
+		if wf, err := s.resolveWorkflow(r.Context(), wfFilter); err == nil && wf != nil {
+			opts.WorkflowID = wf.ID
+		} else {
+			opts.WorkflowID = wfFilter // pass through; query will return 0 results
+		}
 	}
 
 	subs, total, err := s.store.ListSubmissions(r.Context(), opts)
@@ -457,4 +466,20 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 	}
 
 	return nil
+}
+
+// resolveWorkflow looks up a workflow by ID first, then falls back to name lookup.
+// This allows workflow_id to accept either "wf_..." IDs or workflow names.
+func (s *Server) resolveWorkflow(ctx context.Context, idOrName string) (*model.Workflow, error) {
+	// Try by ID first.
+	wf, err := s.store.GetWorkflow(ctx, idOrName)
+	if err != nil {
+		return nil, err
+	}
+	if wf != nil {
+		return wf, nil
+	}
+
+	// Fall back to name lookup.
+	return s.store.GetWorkflowByName(ctx, idOrName)
 }

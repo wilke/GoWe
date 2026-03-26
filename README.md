@@ -45,6 +45,12 @@ docker run -p 8080:8080 gowe
 
 ## Quick Start
 
+> **Guides:**
+> - [Quickstart: Local Execution](docs/quickstart-local.md) — no containers, 5 minutes
+> - [Quickstart: Apptainer + Workers](docs/quickstart-apptainer.md) — distributed execution with SIF images
+> - [Cookbook](docs/cookbook.md) — copy-paste recipes for common tasks
+> - [Full Tutorial](docs/tutorial.md) — writing CWL, multi-step pipelines, monitoring
+
 **1. Start the server**
 
 ```bash
@@ -79,6 +85,14 @@ curl -X POST http://localhost:8080/api/v1/submissions \
       "taxonomy_id": 562
     }
   }'
+```
+
+`workflow_id` accepts either a workflow ID (`wf_...`) or a workflow name (e.g. `"boltz-test"`):
+
+```bash
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "boltz-test", "inputs": {...}}'
 ```
 
 **4. Check status**
@@ -139,8 +153,8 @@ All endpoints are prefixed with `/api/v1`.
 | `PUT` | `/workflows/{id}` | Update workflow |
 | `DELETE` | `/workflows/{id}` | Delete workflow |
 | `POST` | `/workflows/{id}/validate` | Validate workflow |
-| `GET` | `/submissions` | List submissions |
-| `POST` | `/submissions` | Create submission |
+| `GET` | `/submissions` | List submissions (`?workflow_id=...&state=...`) |
+| `POST` | `/submissions` | Create submission (`workflow_id` accepts ID or name) |
 | `GET` | `/submissions/{id}` | Get submission |
 | `PUT` | `/submissions/{id}/cancel` | Cancel submission |
 | `GET` | `/submissions/{id}/tasks` | List tasks |
