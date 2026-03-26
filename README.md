@@ -45,9 +45,10 @@ docker run -p 8080:8080 gowe
 
 ## Quick Start
 
-> **Step-by-step guides:**
+> **Guides:**
 > - [Quickstart: Local Execution](docs/quickstart-local.md) — no containers, 5 minutes
 > - [Quickstart: Apptainer + Workers](docs/quickstart-apptainer.md) — distributed execution with SIF images
+> - [Cookbook](docs/cookbook.md) — copy-paste recipes for common tasks
 > - [Full Tutorial](docs/tutorial.md) — writing CWL, multi-step pipelines, monitoring
 
 **1. Start the server**
