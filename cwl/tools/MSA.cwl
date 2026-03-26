@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Multiple sequence alignment variation service — Compute the multiple sequence alignment and analyze SNP/variance."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: MSA
     executor: bvbrc
 

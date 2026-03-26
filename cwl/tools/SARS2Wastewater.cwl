@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "SARS-CoV-2 Wastewater Surveillance — Freyja lineage deconvolution from wastewater samples"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: SARS2Wastewater
     executor: bvbrc
 

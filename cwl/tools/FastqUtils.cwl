@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Fastq Utilites — Useful common processing of fastq files"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: FastqUtils
     executor: bvbrc
 

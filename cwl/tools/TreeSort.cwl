@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "TreeSort — Infer reassortment events along branches of a phylogenetic tree"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: TreeSort
     executor: bvbrc
 

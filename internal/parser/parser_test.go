@@ -226,9 +226,9 @@ func TestParseGraph_GoWeHint(t *testing.T) {
 	if tool.Hints == nil {
 		t.Fatal("tool.Hints is nil")
 	}
-	gowe, ok := tool.Hints["goweHint"].(map[string]any)
+	gowe, ok := tool.Hints["gowe:Execution"].(map[string]any)
 	if !ok {
-		t.Fatal("goweHint not found in hints")
+		t.Fatal("gowe:Execution not found in hints")
 	}
 	if gowe["bvbrc_app_id"] != "GenomeAssembly2" {
 		t.Errorf("bvbrc_app_id = %v, want GenomeAssembly2", gowe["bvbrc_app_id"])
@@ -399,8 +399,10 @@ func TestParseGraph_BareCommandLineTool_WithHints(t *testing.T) {
 class: CommandLineTool
 id: bvbrc-tool
 baseCommand: [echo]
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeAssembly2
     executor: bvbrc
 inputs:
@@ -423,9 +425,9 @@ outputs:
 	if tool.Hints == nil {
 		t.Fatal("tool.Hints is nil")
 	}
-	gowe, ok := tool.Hints["goweHint"].(map[string]any)
+	gowe, ok := tool.Hints["gowe:Execution"].(map[string]any)
 	if !ok {
-		t.Fatal("goweHint not found")
+		t.Fatal("gowe:Execution not found")
 	}
 	if gowe["bvbrc_app_id"] != "GenomeAssembly2" {
 		t.Errorf("bvbrc_app_id = %v, want GenomeAssembly2", gowe["bvbrc_app_id"])
@@ -879,7 +881,7 @@ func TestStringSlice(t *testing.T) {
 
 func TestExtractStepHints(t *testing.T) {
 	hints := map[string]any{
-		"goweHint": map[string]any{
+		"gowe:Execution": map[string]any{
 			"bvbrc_app_id": "GenomeAssembly2",
 			"executor":     "bvbrc",
 		},
@@ -929,7 +931,7 @@ func TestExtractStepHints_DockerRequirement(t *testing.T) {
 
 func TestExtractStepHints_GoweDockerOverridesDockerRequirement(t *testing.T) {
 	hints := map[string]any{
-		"goweHint": map[string]any{
+		"gowe:Execution": map[string]any{
 			"docker_image": "custom:latest",
 			"executor":     "container",
 		},
@@ -942,13 +944,13 @@ func TestExtractStepHints_GoweDockerOverridesDockerRequirement(t *testing.T) {
 		t.Fatal("extractStepHints returned nil")
 	}
 	if got.DockerImage != "custom:latest" {
-		t.Errorf("DockerImage = %q, want custom:latest (goweHint should take precedence)", got.DockerImage)
+		t.Errorf("DockerImage = %q, want custom:latest (gowe:Execution should take precedence)", got.DockerImage)
 	}
 }
 
 func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
 	hints := map[string]any{
-		"goweHint": map[string]any{
+		"gowe:Execution": map[string]any{
 			"executor":     "container",
 			"docker_image": "biocontainers/samtools:1.17",
 		},
@@ -962,6 +964,25 @@ func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
 	}
 	if got.ExecutorType != model.ExecutorTypeContainer {
 		t.Errorf("ExecutorType = %q, want container", got.ExecutorType)
+	}
+}
+
+func TestExtractStepHints_LegacyGoweHint(t *testing.T) {
+	hints := map[string]any{
+		"goweHint": map[string]any{
+			"bvbrc_app_id": "GenomeAssembly2",
+			"executor":     "bvbrc",
+		},
+	}
+	got := extractStepHints(hints, nil)
+	if got == nil {
+		t.Fatal("expected non-nil StepHints from legacy goweHint")
+	}
+	if got.BVBRCAppID != "GenomeAssembly2" {
+		t.Errorf("BVBRCAppID = %q, want GenomeAssembly2", got.BVBRCAppID)
+	}
+	if got.ExecutorType != "bvbrc" {
+		t.Errorf("ExecutorType = %q, want bvbrc", got.ExecutorType)
 	}
 }
 

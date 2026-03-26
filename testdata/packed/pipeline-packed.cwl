@@ -1,9 +1,13 @@
 cwlVersion: v1.2
+
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 $graph:
   - id: bvbrc-assembly
     class: CommandLineTool
     hints:
-      goweHint:
+      gowe:Execution:
         bvbrc_app_id: GenomeAssembly2
         executor: bvbrc
     baseCommand: ["true"]
@@ -17,7 +21,7 @@ $graph:
   - id: bvbrc-annotation
     class: CommandLineTool
     hints:
-      goweHint:
+      gowe:Execution:
         bvbrc_app_id: GenomeAnnotation
         executor: bvbrc
     baseCommand: ["true"]

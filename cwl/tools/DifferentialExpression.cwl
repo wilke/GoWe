@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Transform expression data — Parses and transforms users differential expression data"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: DifferentialExpression
     executor: bvbrc
 

@@ -1,9 +1,13 @@
 cwlVersion: v1.2
+
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 $graph:
   - id: bvbrc-date
     class: CommandLineTool
     hints:
-      goweHint:
+      gowe:Execution:
         bvbrc_app_id: Date
         executor: bvbrc
     baseCommand: [Date]
@@ -16,7 +20,7 @@ $graph:
   - id: bvbrc-sleep
     class: CommandLineTool
     hints:
-      goweHint:
+      gowe:Execution:
         bvbrc_app_id: Sleep
         executor: bvbrc
     baseCommand: [Sleep]

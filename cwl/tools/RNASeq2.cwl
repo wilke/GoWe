@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Analyze RNASeq reads — Align or assemble RNASeq reads into transcripts with normalized expression levels"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: RNASeq2
     executor: bvbrc
 

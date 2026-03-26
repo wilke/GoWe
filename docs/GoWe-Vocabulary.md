@@ -45,9 +45,12 @@ CWL is a **good foundation** for GoWe's workflow definition layer. Here's why:
 cwlVersion: v1.2
 class: Workflow
 
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
   # GoWe extension: declare this is a BV-BRC workflow
-  goweHint:
+  gowe:Execution:
     executor: bvbrc
     workspace_base: /user@bvbrc/home/projects/my-analysis
 
@@ -85,8 +88,11 @@ Where `bvbrc-assembly.cwl` is a GoWe-provided tool wrapper:
 cwlVersion: v1.2
 class: CommandLineTool
 
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeAssembly2
     executor: bvbrc
 
@@ -113,7 +119,7 @@ outputs:
 This means:
 - Standard CWL tooling can **validate** the workflow structure.
 - `cwltool` can run it **locally** for testing (if `baseCommand` points to real tools).
-- GoWe recognizes `goweHint.bvbrc_app_id` and routes execution to BV-BRC instead.
+- GoWe recognizes `gowe:Execution.bvbrc_app_id` and routes execution to BV-BRC instead.
 - Users write CWL once, run anywhere.
 
 ---
@@ -188,7 +194,7 @@ Workflow
 | **CommandLineTool** | Wraps a command-line invocation (`baseCommand`, `arguments`, input bindings) |
 | **ExpressionTool** | Evaluates a JavaScript expression (pure data transformation, no side effects) |
 
-**GoWe extension**: A Tool may carry a `goweHint.bvbrc_app_id` hint, telling the Executor to route it to BV-BRC as an app service call instead of a local command execution.
+**GoWe extension**: A Tool may carry a `gowe:Execution.bvbrc_app_id` hint, telling the Executor to route it to BV-BRC as an app service call instead of a local command execution.
 
 ---
 
@@ -353,7 +359,7 @@ Hardcoding per-app Operators would:
 **Instead, GoWe uses a single generic BVBRCExecutor** that fetches and caches app schemas from the API:
 
 ```
-BVBRCExecutor receives Task with goweHint.bvbrc_app_id = "GenomeAssembly2"
+BVBRCExecutor receives Task with gowe:Execution.bvbrc_app_id = "GenomeAssembly2"
   │
   ├── 1. query_app_description("GenomeAssembly2") → AppParameter[] (cached)
   ├── 2. Validate Task inputs against AppParameter schema
@@ -411,7 +417,7 @@ These terms are often confused. GoWe uses them precisely:
 | "Pipeline" | Informal synonym for **Workflow**. Acceptable in conversation, but code and docs use **Workflow**. |
 | "Process" (CWL) | CWL's abstract base type. In GoWe code, use **Tool** (for CommandLineTool/ExpressionTool) or **Workflow**. |
 | "Work unit" (AWE) | A partition of a Task for data-parallel execution. GoWe models this as **scattered Tasks**. |
-| "App" (BV-BRC) | A BV-BRC application (e.g., GenomeAssembly2). In GoWe, referenced by `goweHint.bvbrc_app_id` on a Tool. The app's parameter schema is fetched dynamically from `query_app_description`. |
+| "App" (BV-BRC) | A BV-BRC application (e.g., GenomeAssembly2). In GoWe, referenced by `gowe:Execution.bvbrc_app_id` on a Tool. The app's parameter schema is fetched dynamically from `query_app_description`. |
 | "Run" | Synonym for **Submission**. Both are acceptable. |
 | "DAG" | The dependency graph. A **Workflow** defines a DAG of Steps. A **Submission** instantiates a DAG of Tasks. |
 

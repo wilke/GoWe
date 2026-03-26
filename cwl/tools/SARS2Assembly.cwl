@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Assemble SARS2 reads — Assemble SARS2 reads into a consensus sequence"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: SARS2Assembly
     executor: bvbrc
 

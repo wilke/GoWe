@@ -3,7 +3,7 @@ class: CommandLineTool
 label: Boltz structure prediction test
 
 $namespaces:
-  gowe: https://gowe.commonwl.org#
+  gowe: https://github.com/wilke/GoWe#
 
 requirements:
   EnvVarRequirement:

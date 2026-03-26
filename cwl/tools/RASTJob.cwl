@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Annotate genome for RAST — RAST worker app."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: RASTJob
     executor: bvbrc
 

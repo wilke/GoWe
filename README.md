@@ -49,7 +49,7 @@ docker run -p 8080:8080 gowe
 > - [Quickstart: Local Execution](docs/quickstart-local.md) — no containers, 5 minutes
 > - [Quickstart: Apptainer + Workers](docs/quickstart-apptainer.md) — distributed execution with SIF images
 > - [Cookbook](docs/cookbook.md) — copy-paste recipes for common tasks
-> - [CWL Hints Reference](docs/cwl-hints.md) — goweHint, gowe:ResourceData, DockerRequirement
+> - [CWL Hints Reference](docs/cwl-hints.md) — gowe:Execution, gowe:ResourceData, DockerRequirement
 > - [Full Tutorial](docs/tutorial.md) — writing CWL, multi-step pipelines, monitoring
 
 **1. Start the server**
@@ -178,14 +178,15 @@ All responses use a standard envelope:
 
 ## Executors
 
-GoWe supports four execution backends, selected per-step via CWL hints:
+GoWe supports three executor backends that control *where* tasks run, plus container support that controls *how* they run:
 
-| Type | Key | Description |
-|------|-----|-------------|
-| `local` | Default | Runs commands as local OS processes |
-| `docker` | `DockerRequirement` or `goweHint.docker_image` | Runs commands inside Docker containers |
-| `worker` | `goweHint.executor: worker` or `--default-executor=worker` | Delegates to remote workers for distributed execution |
-| `bvbrc` | `goweHint.executor: bvbrc` | Submits jobs to BV-BRC via JSON-RPC 1.1 |
+| Executor | Routing | Description |
+|----------|---------|-------------|
+| `local` | Default (no hints) | Runs commands as local OS processes |
+| `worker` | `gowe:Execution.executor: worker` or `--default-executor=worker` | Delegates to remote workers for distributed execution |
+| `bvbrc` | `gowe:Execution.executor: bvbrc` | Submits jobs to BV-BRC via JSON-RPC 1.1 |
+
+`DockerRequirement` or `gowe:Execution.docker_image` controls the container runtime (Docker/Apptainer), not the executor. Steps with a container image are auto-promoted to `worker` when workers are online, otherwise run locally.
 
 ### Authentication
 
@@ -212,11 +213,14 @@ If no server token is found, BV-BRC proxy endpoints are disabled.
 ### CWL Hints Example
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 steps:
   annotate:
     run: tools/bvbrc-annotation.cwl
     hints:
-      goweHint:
+      gowe:Execution:
         executor: bvbrc
         bvbrc_app_id: GenomeAnnotation
     in:
@@ -494,7 +498,7 @@ CWL tools declare dataset requirements via the `gowe:ResourceData` hint:
 
 ```yaml
 $namespaces:
-  gowe: https://gowe.commonwl.org#
+  gowe: https://github.com/wilke/GoWe#
 
 hints:
   gowe:ResourceData:

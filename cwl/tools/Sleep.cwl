@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Sleep — Sleep a bit."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: Sleep
     executor: bvbrc
 

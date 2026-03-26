@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Identify SNVs — Identify and annotate small nucleotide variations relative to a reference genome"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: Variation
     executor: bvbrc
 

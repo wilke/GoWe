@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Annotate metagenome data — Assemble, bin, and annotate metagenomic sample data"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: MetagenomeBinning
     executor: bvbrc
 

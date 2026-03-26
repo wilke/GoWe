@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Run flux balance analysis — Run flux balance analysis on model."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: FluxBalanceAnalysis
     executor: bvbrc
 

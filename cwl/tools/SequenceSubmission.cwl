@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Sequence Submission"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: SequenceSubmission
     executor: bvbrc
 

@@ -1915,13 +1915,18 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 
 	var h model.StepHints
 
-	// GoWe-specific hints.
-	if gowe, ok := hints["goweHint"].(map[string]any); ok {
-		h.BVBRCAppID = stringField(gowe, "bvbrc_app_id")
-		if et := stringField(gowe, "executor"); et != "" {
+	// GoWe-specific execution hints.
+	// Accept both "gowe:Execution" (canonical) and legacy "goweHint".
+	goweMap, ok := hints["gowe:Execution"].(map[string]any)
+	if !ok {
+		goweMap, ok = hints["goweHint"].(map[string]any)
+	}
+	if ok {
+		h.BVBRCAppID = stringField(goweMap, "bvbrc_app_id")
+		if et := stringField(goweMap, "executor"); et != "" {
 			h.ExecutorType = model.ExecutorType(et)
 		}
-		h.DockerImage = stringField(gowe, "docker_image")
+		h.DockerImage = stringField(goweMap, "docker_image")
 	}
 
 	// CWL standard DockerRequirement — check hints first, then requirements.

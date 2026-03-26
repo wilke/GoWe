@@ -11,17 +11,20 @@ All GoWe-specific extensions should go in **`hints`**, not `requirements`. In CW
 
 Using `hints` ensures your CWL workflows remain portable: cwltool, Toil, and other engines will skip unknown hints rather than failing.
 
-> **Parser behavior**: GoWe accepts `DockerRequirement` and `gowe:ResourceData` from either `hints` or `requirements`. `goweHint` is only recognized in `hints`.
+> **Parser behavior**: GoWe accepts `DockerRequirement` and `gowe:ResourceData` from either `hints` or `requirements`. `gowe:Execution` is only recognized in `hints`. The parser also accepts legacy `goweHint` for backward compatibility, but new CWL files should use `gowe:Execution`.
 
 ---
 
-## `goweHint` — Executor Routing
+## `gowe:Execution` — Executor Routing
 
 Controls which execution backend GoWe uses for a tool.
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     executor: worker          # Execution backend
     bvbrc_app_id: GenomeAssembly2  # BV-BRC application ID
     docker_image: "myimage:latest" # Override container image
@@ -31,7 +34,7 @@ hints:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `executor` | string | Execution backend: `local`, `docker`, `worker`, `bvbrc`, `container` |
+| `executor` | string | Execution backend: `local`, `worker`, `bvbrc` |
 | `bvbrc_app_id` | string | BV-BRC application ID (implies `executor: bvbrc`) |
 | `docker_image` | string | Container image override (takes priority over `DockerRequirement.dockerPull`) |
 
@@ -39,18 +42,22 @@ hints:
 
 GoWe selects the executor for each task in this order:
 
-1. `goweHint.executor` — if set, use this executor directly
-2. `goweHint.bvbrc_app_id` — implies `bvbrc` executor
-3. `DockerRequirement.dockerPull` — implies `container` executor
-4. Default — `local` executor (runs as OS process)
+1. Server-wide `--default-executor` — if set, overrides all hints
+2. `gowe:Execution.executor` — if set to `worker` or `bvbrc`, route there directly (`container` is ignored as a routing value — it describes *how* to run, not *where*)
+3. `gowe:Execution.bvbrc_app_id` — implies `bvbrc` executor
+4. `DockerRequirement` or `gowe:Execution.docker_image` — auto-promotes to `worker` when workers are online, otherwise runs locally
+5. Default — `local` executor (runs as OS process)
 
 ### Examples
 
 **Route to a distributed worker:**
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     executor: worker
   DockerRequirement:
     dockerPull: "boltz.sif"
@@ -59,8 +66,11 @@ hints:
 **Submit to BV-BRC:**
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     executor: bvbrc
     bvbrc_app_id: GenomeAssembly2
 ```
@@ -68,11 +78,14 @@ hints:
 **Override container image:**
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     docker_image: "custom-image:v2"
   DockerRequirement:
-    dockerPull: "default-image:v1"  # ignored — goweHint.docker_image wins
+    dockerPull: "default-image:v1"  # ignored — gowe:Execution.docker_image wins
 ```
 
 ---
@@ -97,13 +110,16 @@ GoWe resolves `dockerPull` values as follows:
 | Absolute `.sif` path | Used as-is | `/scout/containers/boltz.sif` |
 | Registry name | Pulled via `docker://` or `apptainer pull` | `dxkb/boltz:latest` |
 
-### Interaction with `goweHint.docker_image`
+### Interaction with `gowe:Execution.docker_image`
 
-If both are set, `goweHint.docker_image` takes priority:
+If both are set, `gowe:Execution.docker_image` takes priority:
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     docker_image: "override.sif"     # ← used
   DockerRequirement:
     dockerPull: "default.sif"        # ← ignored
@@ -119,7 +135,7 @@ Requires the `gowe` namespace declaration:
 
 ```yaml
 $namespaces:
-  gowe: https://gowe.commonwl.org#
+  gowe: https://github.com/wilke/GoWe#
 
 hints:
   gowe:ResourceData:
@@ -163,12 +179,12 @@ cwlVersion: v1.2
 class: CommandLineTool
 
 $namespaces:
-  gowe: https://gowe.commonwl.org#
+  gowe: https://github.com/wilke/GoWe#
 
 hints:
   DockerRequirement:
     dockerPull: "boltz.sif"
-  goweHint:
+  gowe:Execution:
     executor: worker
   gowe:ResourceData:
     datasets:
@@ -222,7 +238,7 @@ Container launched with bind mounts from --pre-stage-dir / --extra-bind
 | Hint | Other CWL engines | Portability |
 |------|-------------------|-------------|
 | `DockerRequirement` | Fully supported | Standard CWL |
-| `goweHint` | Safely ignored (in `hints`) | GoWe-specific |
+| `gowe:Execution` | Safely ignored (namespaced) | GoWe-specific |
 | `gowe:ResourceData` | Safely ignored (namespaced) | GoWe-specific |
 
-To maximize portability, always place GoWe extensions in `hints` and use `$namespaces` for `gowe:` prefixed hints.
+To maximize portability, always place GoWe extensions in `hints` and use `$namespaces` for `gowe:` prefixed hints (both `gowe:Execution` and `gowe:ResourceData`).

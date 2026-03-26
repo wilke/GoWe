@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Metagenomic read mapping — Map metagenomic reads to a defined gene set"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: MetagenomicReadMapping
     executor: bvbrc
 

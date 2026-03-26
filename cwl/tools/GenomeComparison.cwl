@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Blast-based genome proteome comparison — Compare the proteome sets from multiple genomes using Blast"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeComparison
     executor: bvbrc
 

@@ -148,8 +148,11 @@ func (s *Server) handleGetAppCWLTool(w http.ResponseWriter, r *http.Request) {
 	cwlTool := fmt.Sprintf(`cwlVersion: v1.2
 class: CommandLineTool
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: %s
     executor: bvbrc
 

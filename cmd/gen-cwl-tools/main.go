@@ -315,9 +315,13 @@ func buildCWL(appID, label, desc string, inputs []inputReport) string {
 	}
 	b.WriteString(fmt.Sprintf("doc: %q\n\n", docText))
 
+	// Namespaces for GoWe extensions.
+	b.WriteString("$namespaces:\n")
+	b.WriteString("  gowe: \"https://github.com/wilke/GoWe#\"\n\n")
+
 	// Hints.
 	b.WriteString("hints:\n")
-	b.WriteString("  goweHint:\n")
+	b.WriteString("  gowe:Execution:\n")
 	b.WriteString(fmt.Sprintf("    bvbrc_app_id: %s\n", appID))
 	b.WriteString("    executor: bvbrc\n\n")
 

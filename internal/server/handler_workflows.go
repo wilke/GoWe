@@ -319,10 +319,14 @@ func inferWorkflowName(graph *cwl.GraphDocument) string {
 		return graph.Workflow.ID
 	}
 
-	// Try bvbrc_app_id from the first tool's goweHint.
+	// Try bvbrc_app_id from the first tool's gowe:Execution hint (or legacy goweHint).
 	for _, tool := range graph.Tools {
-		if gowe, ok := tool.Hints["goweHint"].(map[string]any); ok {
-			if appID, ok := gowe["bvbrc_app_id"].(string); ok && appID != "" {
+		goweMap, ok := tool.Hints["gowe:Execution"].(map[string]any)
+		if !ok {
+			goweMap, ok = tool.Hints["goweHint"].(map[string]any)
+		}
+		if ok {
+			if appID, ok := goweMap["bvbrc_app_id"].(string); ok && appID != "" {
 				return appID
 			}
 		}

@@ -283,12 +283,12 @@ go mod tidy
 ### Supported CWL Version
 - CWL v1.2 specification (https://www.commonwl.org/v1.2/)
 - Packed or modular workflow formats
-- Custom hints via `goweHint` for GoWe-specific behavior
+- Custom hints via `gowe:Execution` for GoWe-specific behavior
 
 ### Executor Selection
 Executors are selected based on CWL hints:
 - `DockerRequirement` → container executor
-- `goweHint.executor: bvbrc` → bvbrc executor
+- `gowe:Execution.executor: bvbrc` → bvbrc executor
 - Default → local executor
 
 ## Common Patterns

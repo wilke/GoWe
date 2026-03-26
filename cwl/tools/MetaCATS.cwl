@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Metadata-driven Comparative Analysis Tool (meta-CATS) — The meta-CATS tool looks for positions that significantly differ between user-defined groups of sequences."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: MetaCATS
     executor: bvbrc
 

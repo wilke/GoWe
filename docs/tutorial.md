@@ -19,7 +19,7 @@ This tutorial walks through the complete GoWe workflow lifecycle: writing a CWL 
 - [10. Distributed Execution with Workers](#10-distributed-execution-with-workers)
   - [Using Docker Compose](#using-docker-compose)
   - [Running Workflows](#running-workflows)
-  - [Using goweHint for Worker Selection](#using-gowehint-for-worker-selection)
+  - [Using gowe:Execution for Worker Selection](#using-goweexecution-for-worker-selection)
 - [11. Distributed Execution with Apptainer (No Docker)](#11-distributed-execution-with-apptainer-no-docker)
   - [Architecture](#architecture)
   - [Build Binaries](#build-binaries)
@@ -456,11 +456,15 @@ This example uses the BV-BRC assembly + annotation pipeline from `testdata/packe
 
 ```yaml
 cwlVersion: v1.2
+
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 $graph:
   - id: bvbrc-assembly
     class: CommandLineTool
     hints:
-      goweHint:
+      gowe:Execution:
         bvbrc_app_id: GenomeAssembly2
         executor: bvbrc
     baseCommand: ["true"]
@@ -474,7 +478,7 @@ $graph:
   - id: bvbrc-annotation
     class: CommandLineTool
     hints:
-      goweHint:
+      gowe:Execution:
         bvbrc_app_id: GenomeAnnotation
         executor: bvbrc
     baseCommand: ["true"]
@@ -514,7 +518,7 @@ $graph:
 
 Key differences from the simple example:
 
-- **`goweHint`** selects the `bvbrc` executor and maps to a BV-BRC application
+- **`gowe:Execution`** selects the `bvbrc` executor and maps to a BV-BRC application
 - **`assemble/contigs`** in the `annotate` step's `in:` block means "wait for `assemble` to finish, then use its `contigs` output"
 - The scheduler runs `assemble` first, then `annotate` — dependencies are resolved automatically from the `in:` mappings
 
@@ -593,16 +597,19 @@ Output:
 }
 ```
 
-### Using goweHint for Worker Selection
+### Using gowe:Execution for Worker Selection
 
 You can explicitly request the worker executor using CWL hints:
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 steps:
   heavy_computation:
     run: tools/compute.cwl
     hints:
-      goweHint:
+      gowe:Execution:
         executor: worker
     in:
       data: input_data
@@ -832,10 +839,9 @@ GoWe picks the executor for each step based on CWL hints:
 | Hint | Executor | Use Case |
 |------|----------|----------|
 | *(none)* | `local` | Run as OS process |
-| `DockerRequirement` | `docker` | Run in Docker container |
-| `goweHint.executor: worker` | `worker` | Dispatch to remote workers |
-| `goweHint.executor: bvbrc` | `bvbrc` | Submit to BV-BRC |
-| `goweHint.docker_image` | `docker` | Run in Docker container |
+| `gowe:Execution.executor: worker` | `worker` | Dispatch to remote workers |
+| `gowe:Execution.executor: bvbrc` | `bvbrc` | Submit to BV-BRC |
+| `DockerRequirement` / `gowe:Execution.docker_image` | `worker` (auto) or `local` | Run in container; auto-promoted to `worker` when workers are online |
 
 When `--default-executor=worker` is set on the server, all tasks (regardless of hints) are routed to workers.
 

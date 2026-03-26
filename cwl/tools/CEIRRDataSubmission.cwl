@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "CEIRR Data Submission — Submit CEIRR data in CSV format"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: CEIRRDataSubmission
     executor: bvbrc
 

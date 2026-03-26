@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Reconstruct metabolic model — Reconstructs a metabolic model from an annotated genome."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: ModelReconstruction
     executor: bvbrc
 

@@ -559,14 +559,17 @@ curl http://head-node:8080/api/v1/workers/
 
 ### 4. Submit a workflow
 
-Workflows with `goweHint.executor: worker` will be dispatched to registered workers:
+Workflows with `gowe:Execution.executor: worker` will be dispatched to registered workers:
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 steps:
   process:
     run: tools/heavy-computation.cwl
     hints:
-      goweHint:
+      gowe:Execution:
         executor: worker
     in:
       data: input_data
@@ -642,7 +645,7 @@ CWL tools declare dataset requirements via namespaced hints (safely ignored by o
 
 ```yaml
 $namespaces:
-  gowe: https://gowe.commonwl.org#
+  gowe: https://github.com/wilke/GoWe#
 
 hints:
   gowe:ResourceData:

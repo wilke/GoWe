@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Gapfill metabolic model — Run gapfilling on model."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GapfillModel
     executor: bvbrc
 
