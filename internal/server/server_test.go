@@ -693,6 +693,42 @@ func TestCreateSubmission_WorkflowNotFound(t *testing.T) {
 	}
 }
 
+func TestCreateSubmission_ByWorkflowName(t *testing.T) {
+	srv := testServer()
+	wfID := createTestWorkflow(t, srv) // creates "test-workflow"
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": "test-workflow",
+		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+	})
+	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want 201, body=%s", w.Code, w.Body.String())
+	}
+
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	if data["workflow_id"] != wfID {
+		t.Errorf("workflow_id = %v, want %s (resolved from name)", data["workflow_id"], wfID)
+	}
+}
+
+func TestCreateSubmission_ByWorkflowName_NotFound(t *testing.T) {
+	srv := testServer()
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": "nonexistent-workflow",
+		"inputs":      map[string]any{},
+	})
+	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrNotFound {
+		t.Errorf("error = %v, want NOT_FOUND", env.Error)
+	}
+}
+
 func TestCreateSubmission_DryRun(t *testing.T) {
 	srv := testServer()
 	wfID := createTestWorkflow(t, srv)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -46,14 +47,8 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Resolve workflow: try by ID first, then by name.
-	var wf *model.Workflow
-	var err error
-	if strings.HasPrefix(req.WorkflowID, "wf_") {
-		wf, err = s.store.GetWorkflow(r.Context(), req.WorkflowID)
-	} else {
-		wf, err = s.store.GetWorkflowByName(r.Context(), req.WorkflowID)
-	}
+	// Resolve workflow: try by ID first, fall back to name lookup.
+	wf, err := s.resolveWorkflow(r.Context(), req.WorkflowID)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
@@ -161,13 +156,12 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		opts.State = state
 	}
 	if wfFilter := r.URL.Query().Get("workflow_id"); wfFilter != "" {
-		// Resolve workflow name to ID if needed.
-		if !strings.HasPrefix(wfFilter, "wf_") {
-			if wf, err := s.store.GetWorkflowByName(r.Context(), wfFilter); err == nil && wf != nil {
-				wfFilter = wf.ID
-			}
+		// Resolve workflow name to ID: try by ID first, fall back to name.
+		if wf, err := s.resolveWorkflow(r.Context(), wfFilter); err == nil && wf != nil {
+			opts.WorkflowID = wf.ID
+		} else {
+			opts.WorkflowID = wfFilter // pass through; query will return 0 results
 		}
-		opts.WorkflowID = wfFilter
 	}
 
 	subs, total, err := s.store.ListSubmissions(r.Context(), opts)
@@ -472,4 +466,20 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 	}
 
 	return nil
+}
+
+// resolveWorkflow looks up a workflow by ID first, then falls back to name lookup.
+// This allows workflow_id to accept either "wf_..." IDs or workflow names.
+func (s *Server) resolveWorkflow(ctx context.Context, idOrName string) (*model.Workflow, error) {
+	// Try by ID first.
+	wf, err := s.store.GetWorkflow(ctx, idOrName)
+	if err != nil {
+		return nil, err
+	}
+	if wf != nil {
+		return wf, nil
+	}
+
+	// Fall back to name lookup.
+	return s.store.GetWorkflowByName(ctx, idOrName)
 }

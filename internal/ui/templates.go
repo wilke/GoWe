@@ -130,6 +130,12 @@ var templateFuncs = template.FuncMap{
 		}
 		return s[:n] + "..."
 	},
+	"prefix": func(s string, n int) string {
+		if len(s) <= n {
+			return s
+		}
+		return s[:n]
+	},
 	"json": func(v any) string {
 		// Simple JSON output for debugging.
 		return fmt.Sprintf("%+v", v)
@@ -590,7 +596,7 @@ var templates = map[string]string{
                         <span>Created {{formatTime .CreatedAt}}</span>
                         {{if .ContentHash}}
                         <span class="mx-2">•</span>
-                        <span class="font-mono" title="{{.ContentHash}}">{{truncate .ContentHash 12}}</span>
+                        <span class="font-mono" title="{{.ContentHash}}">{{prefix .ContentHash 12}}</span>
                         {{end}}
                     </div>
                 </div>

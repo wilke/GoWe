@@ -27,7 +27,7 @@ apptainer pull ~/containers/python.sif docker://python:3.12-slim
 ## 1. Start the Server
 
 ```bash
-bin/gowe-server \
+bin/server \
   --addr :8080 \
   --allow-anonymous \
   --anonymous-executors local,docker,worker,container \
@@ -39,7 +39,7 @@ bin/gowe-server \
 In a second terminal:
 
 ```bash
-bin/gowe-worker \
+bin/worker \
   --server http://localhost:8080 \
   --runtime apptainer \
   --image-dir /scout/containers/
@@ -58,7 +58,7 @@ The worker appears at http://localhost:8080/workers in the web UI.
 In a third terminal:
 
 ```bash
-GOWE_SERVER=http://localhost:8080 bin/gowe run \
+GOWE_SERVER=http://localhost:8080 bin/cli run \
   test-esmfold/echo-test.cwl \
   --no-upload
 ```
@@ -82,7 +82,7 @@ This requires the `boltz.sif` image and Boltz model weights in `/local_databases
 Start a worker with reference data and GPU:
 
 ```bash
-bin/gowe-worker \
+bin/worker \
   --server http://localhost:8080 \
   --runtime apptainer \
   --image-dir /scout/containers/ \
@@ -95,7 +95,7 @@ The worker auto-discovers datasets in `/local_databases/` and reports them to th
 Submit the Boltz workflow:
 
 ```bash
-GOWE_SERVER=http://localhost:8080 bin/gowe run \
+GOWE_SERVER=http://localhost:8080 bin/cli run \
   test-esmfold/boltz-test.cwl \
   test-esmfold/boltz-sif-job.json \
   --no-upload --timeout 10m
@@ -121,7 +121,7 @@ Monitor progress:
 
 ```bash
 # Via CLI
-GOWE_SERVER=http://localhost:8080 bin/gowe status sub_...
+GOWE_SERVER=http://localhost:8080 bin/cli status sub_...
 
 # Via API
 curl -s http://localhost:8080/api/v1/submissions/sub_... | python3 -m json.tool
@@ -167,12 +167,12 @@ Run multiple workers with different capabilities:
 
 ```bash
 # GPU worker with reference data
-bin/gowe-worker --server http://localhost:8080 --runtime apptainer \
+bin/worker --server http://localhost:8080 --runtime apptainer \
   --image-dir /scout/containers/ --pre-stage-dir /local_databases \
   --gpu --gpu-id 0 --group gpu
 
 # CPU-only worker
-bin/gowe-worker --server http://localhost:8080 --runtime apptainer \
+bin/worker --server http://localhost:8080 --runtime apptainer \
   --image-dir /scout/containers/ --group cpu
 ```
 

@@ -21,12 +21,12 @@ apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 \
   bash -c "cd /scout/Experiments/GoWe && go build -o bin/ ./cmd/..."
 ```
 
-This produces `bin/gowe-server`, `bin/gowe`, and `bin/cwl-runner`.
+This produces binaries in `bin/` named after each cmd directory: `server`, `cli` (the CLI client), `worker`, `cwl-runner`, etc.
 
 ## 1. Start the Server
 
 ```bash
-bin/gowe-server --addr :8080 --allow-anonymous --anonymous-executors local
+bin/server --addr :8080 --allow-anonymous --anonymous-executors local
 ```
 
 You should see:
@@ -44,7 +44,7 @@ In a second terminal:
 ```bash
 cd /scout/Experiments/GoWe
 
-GOWE_SERVER=http://localhost:8080 bin/gowe run \
+GOWE_SERVER=http://localhost:8080 bin/cli run \
   testdata/worker-test/simple-echo.cwl \
   testdata/worker-test/simple-echo-job.yml \
   --no-upload
