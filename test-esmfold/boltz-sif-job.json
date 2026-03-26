@@ -1,7 +1,6 @@
 {
-  "input_file": {
+  "input_yaml": {
     "class": "File",
-    "path": "boltz-input.yaml"
-  },
-  "use_msa_server": true
+    "location": "file:///scout/Experiments/GoWe/test-esmfold/boltz-input.yaml"
+  }
 }
