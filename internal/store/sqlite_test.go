@@ -860,3 +860,91 @@ func TestCheckoutTask_NoQueuedTasks(t *testing.T) {
 		t.Errorf("expected nil when no tasks, got %s", got.ID)
 	}
 }
+
+func TestCheckoutTask_PrestageDatasetRequired(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	// Task requires prestage dataset "boltz".
+	task := sampleTask(sub.ID)
+	task.State = model.TaskStateQueued
+	task.ExecutorType = model.ExecutorTypeWorker
+	task.RuntimeHints = &model.RuntimeHints{
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "boltz", Path: "/data/boltz", Mode: "prestage"},
+		},
+	}
+	st.CreateTask(ctx, task)
+
+	// Worker WITHOUT the dataset should NOT get the task.
+	w := sampleWorker()
+	w.Datasets = map[string]string{}
+	st.CreateWorker(ctx, w)
+
+	got, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if got != nil {
+		t.Errorf("worker without prestage dataset should not get task, got %s", got.ID)
+	}
+
+	// Worker WITH the dataset should get the task.
+	w2 := sampleWorker()
+	w2.ID = "wrk_test-2"
+	w2.Datasets = map[string]string{"boltz": "/data/boltz"}
+	st.CreateWorker(ctx, w2)
+
+	got2, err := st.CheckoutTask(ctx, w2.ID, "", model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("worker with prestage dataset should get the task")
+	}
+	if got2.ID != task.ID {
+		t.Errorf("task id = %q, want %q", got2.ID, task.ID)
+	}
+}
+
+func TestCheckoutTask_CacheDatasetPreference(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	// Task with cache dataset "boltz" — soft preference, not hard require.
+	task := sampleTask(sub.ID)
+	task.State = model.TaskStateQueued
+	task.ExecutorType = model.ExecutorTypeWorker
+	task.RuntimeHints = &model.RuntimeHints{
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "boltz", Path: "/data/boltz", Mode: "cache"},
+		},
+	}
+	st.CreateTask(ctx, task)
+
+	// Worker WITHOUT the dataset should still get the task (cache is soft).
+	w := sampleWorker()
+	w.Datasets = map[string]string{}
+	st.CreateWorker(ctx, w)
+
+	got, err := st.CheckoutTask(ctx, w.ID, "", model.RuntimeNone)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if got == nil {
+		t.Fatal("worker without cache dataset should still get the task")
+	}
+	if got.ID != task.ID {
+		t.Errorf("task id = %q, want %q", got.ID, task.ID)
+	}
+}

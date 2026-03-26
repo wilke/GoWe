@@ -13,9 +13,10 @@ import (
 
 // ApptainerExecutor runs tasks inside Apptainer containers using the Apptainer CLI.
 type ApptainerExecutor struct {
-	logger  *slog.Logger
-	workDir string
-	runner  CommandRunner
+	logger   *slog.Logger
+	workDir  string
+	imageDir string
+	runner   CommandRunner
 }
 
 // NewApptainerExecutor creates an ApptainerExecutor rooted at workDir.
@@ -41,6 +42,11 @@ func newApptainerExecutorWithRunner(workDir string, logger *slog.Logger, runner 
 		logger:  logger.With("component", "apptainer-executor"),
 		runner:  runner,
 	}
+}
+
+// SetImageDir sets the base directory for resolving relative .sif image paths.
+func (e *ApptainerExecutor) SetImageDir(dir string) {
+	e.imageDir = dir
 }
 
 // Type returns model.ExecutorTypeApptainer.

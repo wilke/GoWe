@@ -1,0 +1,6 @@
+{
+  "input_yaml": {
+    "class": "File",
+    "location": "file:///scout/Experiments/GoWe/test-esmfold/boltz-input.yaml"
+  }
+}

@@ -52,6 +52,17 @@ func main() {
 	flag.Int64Var(&cfg.Resources.MaxMemMB, "max-mem", 0, "Maximum memory in MiB for containers (0 = auto-detect from system)")
 	flag.IntVar(&cfg.Resources.MaxCPUs, "max-cpus", 0, "Maximum CPUs for containers (0 = auto-detect from system)")
 
+	// Image directory for local SIF files.
+	flag.StringVar(&cfg.ImageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
+
+	// Pre-staged reference data.
+	var preStageDir string
+	var extraBindPaths []string
+	var datasetAliases map[string]string
+	flag.StringVar(&preStageDir, "pre-stage-dir", "", "Directory with pre-staged datasets (auto-scanned, bind-mounted into containers)")
+	flag.Var(&stringSliceFlag{&extraBindPaths}, "extra-bind", "Extra bind mount path (repeatable, also comma-separated)")
+	flag.Var(&stringMapFlag{&datasetAliases}, "dataset", "Dataset alias 'id=path' (repeatable, also comma-separated)")
+
 	// TLS flags (applies to server API + HTTPS staging).
 	var caCert string
 	var insecure bool
@@ -140,6 +151,11 @@ func main() {
 		cfg.InputPathMap = parsePathMap(inputPathMapStr)
 	}
 
+	// Wire pre-stage-dir, extra-bind, and dataset flags into config.
+	cfg.PreStageDir = preStageDir
+	cfg.ExtraBinds = extraBindPaths
+	cfg.Datasets = datasetAliases
+
 	// Default worker name to hostname.
 	if cfg.Name == "" {
 		h, err := os.Hostname()
@@ -224,6 +240,7 @@ func main() {
 		"gpu_id", cfg.GPU.DeviceID,
 		"max_cpus", cfg.Resources.MaxCPUs,
 		"max_mem_mb", cfg.Resources.MaxMemMB,
+		"image_dir", cfg.ImageDir,
 	)
 
 	if err := w.Run(ctx, cfg); err != nil {
@@ -247,6 +264,69 @@ func parsePathMap(s string) map[string]string {
 		}
 	}
 	return result
+}
+
+// stringSliceFlag implements flag.Value to allow repeated flags like --extra-bind /a --extra-bind /b.
+// Each value is also split on commas, so --extra-bind /a,/b works too.
+type stringSliceFlag struct {
+	values *[]string
+}
+
+func (f *stringSliceFlag) String() string {
+	if f.values == nil {
+		return ""
+	}
+	return strings.Join(*f.values, ",")
+}
+
+func (f *stringSliceFlag) Set(val string) error {
+	for _, p := range strings.Split(val, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			*f.values = append(*f.values, p)
+		}
+	}
+	return nil
+}
+
+// stringMapFlag implements flag.Value to allow repeated flags like --dataset id1=path1 --dataset id2=path2.
+// Each value is also split on commas, so --dataset id1=path1,id2=path2 works too.
+type stringMapFlag struct {
+	values *map[string]string
+}
+
+func (f *stringMapFlag) String() string {
+	if f.values == nil {
+		return ""
+	}
+	var parts []string
+	for k, v := range *f.values {
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (f *stringMapFlag) Set(val string) error {
+	if *f.values == nil {
+		*f.values = make(map[string]string)
+	}
+	for _, rawPair := range strings.Split(val, ",") {
+		pair := strings.TrimSpace(rawPair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid dataset %q, expected id=path", pair)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" || value == "" {
+			return fmt.Errorf("invalid dataset %q, id and path must be non-empty", pair)
+		}
+		(*f.values)[key] = value
+	}
+	return nil
 }
 
 // parseStageMode parses a stage mode string.

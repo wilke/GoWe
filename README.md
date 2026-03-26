@@ -289,6 +289,14 @@ $PROJECT/
 | `--docker-host-path-map` | `""` | Path mapping for DinD (or `DOCKER_HOST_PATH_MAP` env) |
 | `--docker-volume` | `""` | Named Docker volume shared with tool containers (or `DOCKER_VOLUME` env) |
 | `--input-path-map` | `""` | Input path mapping (or `INPUT_PATH_MAP` env) |
+| `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths |
+| `--pre-stage-dir` | `""` | Directory with pre-staged datasets (auto-scanned, bind-mounted) |
+| `--extra-bind` | `""` | Extra bind mount path (repeatable, also comma-separated) |
+| `--dataset` | `""` | Dataset alias `id=path` (repeatable, also comma-separated) |
+| `--gpu` | `false` | Enable GPU support (`--nv` for Apptainer, `--gpus` for Docker) |
+| `--gpu-id` | `""` | Specific GPU device ID (e.g., `0`, `1`, `0,1`) |
+| `--max-mem` | `0` | Maximum memory in MiB for containers (0 = auto-detect) |
+| `--max-cpus` | `0` | Maximum CPUs for containers (0 = auto-detect) |
 
 ### Environment Variables
 
@@ -430,6 +438,61 @@ Container:  /workdir/outputs/task_<id>/
 The Docker worker uses `DOCKER_VOLUME=gowe-workdir` so that tool containers mount the same named volume — no host path translation is needed.
 
 See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration details.
+
+### Apptainer / SIF Image Support
+
+GoWe supports Apptainer as a container runtime alongside Docker. Workers resolve `.sif` images via `--image-dir`:
+
+```bash
+# Worker with Apptainer runtime and local SIF images
+gowe-worker --runtime apptainer --image-dir /scout/containers/ --server http://localhost:8080
+
+# cwl-runner with local SIF images
+bin/cwl-runner --runtime apptainer --image-dir /scout/containers/ tool.cwl job.json
+```
+
+**Image resolution** for `DockerRequirement.dockerPull`:
+- Absolute paths (`/scout/containers/boltz.sif`) — used as-is
+- Relative `.sif` names (`boltz.sif`) — resolved against `--image-dir`
+- Non-`.sif` names (`dxkb/boltz:latest`) — prefixed with `docker://` for registry pull
+
+### Reference Data Pre-staging
+
+Large reference datasets (model weights, sequence databases) are too large to transfer per-job. Workers declare available datasets; the scheduler routes tasks to workers that have the required data.
+
+```bash
+gowe-worker \
+  --server http://localhost:8080 \
+  --runtime apptainer \
+  --pre-stage-dir /local_databases \
+  --dataset boltz_weights=/local_databases/boltz \
+  --extra-bind /scratch \
+  --image-dir /scout/containers/ \
+  --gpu --gpu-id 3
+```
+
+- **`--pre-stage-dir`** — Scans subdirectories at startup, auto-registers each as a dataset (dirname = dataset ID), bind-mounts the directory into every container
+- **`--dataset`** — Adds explicit dataset aliases (additive with auto-discovered), useful when CWL hint IDs don't match directory names
+- **`--extra-bind`** — Generic bind mounts into every container (not reported to server, not used for scheduling)
+
+CWL tools declare dataset requirements via the `gowe:ResourceData` hint:
+
+```yaml
+$namespaces:
+  gowe: https://gowe.commonwl.org#
+
+hints:
+  gowe:ResourceData:
+    datasets:
+      - id: boltz
+        path: /local_databases/boltz
+        size: 50GB
+        mode: cache    # "prestage" (require) or "cache" (prefer)
+```
+
+The scheduler enforces `prestage` requirements (task only dispatched to workers that have the dataset) and prefers `cache` datasets (workers with the data score higher, but others can still execute).
+
+See [docs/tools/worker.md](docs/tools/worker.md) for detailed reference data documentation.
 
 ## Testing
 

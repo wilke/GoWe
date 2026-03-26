@@ -2,6 +2,9 @@ cwlVersion: v1.2
 class: CommandLineTool
 label: Boltz structure prediction test
 
+$namespaces:
+  gowe: https://gowe.commonwl.org#
+
 requirements:
   EnvVarRequirement:
     envDef:
@@ -12,7 +15,13 @@ requirements:
 
 hints:
   DockerRequirement:
-    dockerPull: "dxkb/boltz-bvbrc:latest-gpu"
+    dockerPull: "boltz.sif"
+  gowe:ResourceData:
+    datasets:
+      - id: boltz
+        path: /local_databases/boltz
+        size: 50GB
+        mode: cache
 
 baseCommand: ["boltz", "predict"]
 

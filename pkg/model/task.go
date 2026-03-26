@@ -53,6 +53,16 @@ type Task struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
+// DatasetRequirement describes a reference dataset needed by a CWL tool.
+// Parsed from the gowe:ResourceData CWL hint.
+type DatasetRequirement struct {
+	ID     string `json:"id"`
+	Path   string `json:"path,omitempty"`
+	Size   string `json:"size,omitempty"`
+	Mode   string `json:"mode"`            // "prestage" or "cache"
+	Source string `json:"source,omitempty"` // Future: shock://..., s3://...
+}
+
 // RuntimeHints provides executor-specific runtime configuration.
 type RuntimeHints struct {
 	// DockerImage is the container image to use for Docker/container execution.
@@ -79,6 +89,10 @@ type RuntimeHints struct {
 
 	// CWLDir is the directory containing the CWL file, used for resolving relative paths.
 	CWLDir string `json:"cwl_dir,omitempty"`
+
+	// RequiredDatasets lists reference datasets needed by this task.
+	// Parsed from the gowe:ResourceData CWL hint.
+	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

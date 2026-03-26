@@ -39,6 +39,7 @@ type Runner struct {
 	NoContainer      bool
 	ForceDocker      bool
 	ContainerRuntime string // "docker", "apptainer", or "" (auto-detect)
+	ImageDir         string // Base directory for resolving relative .sif image paths
 	OutputFormat     string // "json" or "yaml"
 	ProcessID        string // specific process ID to run from $graph document
 
@@ -392,6 +393,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		ExpressionLib:    expressionLib,
 		ContainerRuntime: containerRuntime,
 		NoContainer:      r.NoContainer,
+		ImageDir:         r.ImageDir,
 		ResolveSecondary: resolveSecondary,
 		JobRequirements:  r.jobRequirements,
 		OutDir:           r.OutDir,

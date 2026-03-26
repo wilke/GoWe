@@ -12,6 +12,7 @@ type Worker struct {
 	Runtime      ContainerRuntime  `json:"runtime"`
 	GPUEnabled   bool              `json:"gpu_enabled"`
 	GPUDevice    string            `json:"gpu_device,omitempty"`
+	Datasets     map[string]string `json:"datasets,omitempty"` // Dataset ID → host path
 	Labels       map[string]string `json:"labels,omitempty"`
 	LastSeen     time.Time         `json:"last_seen"`
 	CurrentTask  string            `json:"current_task,omitempty"`

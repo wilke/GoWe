@@ -45,6 +45,9 @@ type Loop struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
+
+	// Cached per-tick: whether any online workers exist.
+	cachedHasWorkers *bool
 }
 
 // NewLoop creates a new scheduler loop.
@@ -96,6 +99,7 @@ func (l *Loop) Stop() error {
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
+	l.cachedHasWorkers = nil // Reset per-tick cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
@@ -826,6 +830,15 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		if step.Hints.BVBRCAppID != "" {
 			task.BVBRCAppID = step.Hints.BVBRCAppID
 		}
+		// Propagate dataset requirements from step hints to task runtime hints.
+		if len(step.Hints.RequiredDatasets) > 0 {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			if len(task.RuntimeHints.RequiredDatasets) == 0 {
+				task.RuntimeHints.RequiredDatasets = step.Hints.RequiredDatasets
+			}
+		}
 	}
 
 	return task
@@ -835,16 +848,48 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 // The server's DefaultExecutor (WHERE to run) takes precedence over CWL hints.
 // CWL DockerRequirement (HOW to run) is orthogonal — it's passed to the worker
 // via runtime hints so the worker can choose bare vs container execution.
+//
+// When no executor is explicitly set and the step uses a container (DockerRequirement),
+// prefer dispatching to a worker if any online workers are registered. This avoids
+// running container tasks on the server when workers are available.
 func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) model.ExecutorType {
 	// Server-wide default executor overrides CWL hints.
 	if l.config.DefaultExecutor != "" {
 		return model.ExecutorType(l.config.DefaultExecutor)
 	}
-	// Fall back to step hints from CWL.
-	if step.Hints != nil && step.Hints.ExecutorType != "" {
+	// Explicit step hint from CWL (goweHint.executor) — but not "container",
+	// which describes HOW to run (use container runtime), not WHERE to run.
+	if step.Hints != nil && step.Hints.ExecutorType != "" && step.Hints.ExecutorType != model.ExecutorTypeContainer {
 		return step.Hints.ExecutorType
 	}
+	// Auto-promote container tasks to worker when workers are available.
+	// This covers DockerRequirement steps that don't have an explicit goweHint.
+	if step.Hints != nil && step.Hints.DockerImage != "" {
+		if l.hasOnlineWorkers() {
+			return model.ExecutorTypeWorker
+		}
+	}
 	return model.ExecutorTypeLocal
+}
+
+// hasOnlineWorkers checks if any workers are currently online.
+// The result is cached per scheduler tick to avoid repeated DB queries.
+func (l *Loop) hasOnlineWorkers() bool {
+	if l.cachedHasWorkers != nil {
+		return *l.cachedHasWorkers
+	}
+	result := false
+	workers, err := l.store.ListWorkers(context.TODO())
+	if err == nil {
+		for _, w := range workers {
+			if w.State == model.WorkerStateOnline {
+				result = true
+				break
+			}
+		}
+	}
+	l.cachedHasWorkers = &result
+	return result
 }
 
 // addUserToken adds user authentication token to task runtime hints.
@@ -1597,7 +1642,46 @@ func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
 		}
 	}
 
+	// Extract gowe:ResourceData from both requirements and hints.
+	for _, section := range []string{"requirements", "hints"} {
+		var m map[string]any
+		if section == "requirements" {
+			m, _ = tool["requirements"].(map[string]any)
+		} else {
+			m, _ = tool["hints"].(map[string]any)
+		}
+		if m == nil {
+			continue
+		}
+		if rd, ok := m["gowe:ResourceData"].(map[string]any); ok {
+			if datasets, ok := rd["datasets"].([]any); ok {
+				for _, d := range datasets {
+					dm, _ := d.(map[string]any)
+					if dm == nil {
+						continue
+					}
+					hints.RequiredDatasets = append(hints.RequiredDatasets, model.DatasetRequirement{
+						ID:     stringFromAny(dm["id"]),
+						Path:   stringFromAny(dm["path"]),
+						Size:   stringFromAny(dm["size"]),
+						Mode:   stringFromAny(dm["mode"]),
+						Source: stringFromAny(dm["source"]),
+					})
+				}
+			}
+			break
+		}
+	}
+
 	return hints
+}
+
+// stringFromAny converts any value to string (helper for map field extraction).
+func stringFromAny(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // extractRuntimeHintsFromCWLTool extracts runtime hints from a parsed CWL CommandLineTool.
@@ -1657,6 +1741,31 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 					hints.DockerImage = pull
 				}
 			}
+		}
+	}
+
+	// Extract gowe:ResourceData from requirements and hints.
+	for _, m := range []map[string]any{tool.Requirements, tool.Hints} {
+		if m == nil {
+			continue
+		}
+		if rd, ok := m["gowe:ResourceData"].(map[string]any); ok {
+			if datasets, ok := rd["datasets"].([]any); ok {
+				for _, d := range datasets {
+					dm, _ := d.(map[string]any)
+					if dm == nil {
+						continue
+					}
+					hints.RequiredDatasets = append(hints.RequiredDatasets, model.DatasetRequirement{
+						ID:     stringFromAny(dm["id"]),
+						Path:   stringFromAny(dm["path"]),
+						Size:   stringFromAny(dm["size"]),
+						Mode:   stringFromAny(dm["mode"]),
+						Source: stringFromAny(dm["source"]),
+					})
+				}
+			}
+			break
 		}
 	}
 

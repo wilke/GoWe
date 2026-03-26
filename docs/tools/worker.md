@@ -37,12 +37,47 @@ gowe-worker [flags]
 | `--docker-volume` | `""` | Named Docker volume shared with tool containers (env: `DOCKER_VOLUME`) |
 | `--input-path-map` | `""` | Input path mapping (env: `INPUT_PATH_MAP`) |
 
+#### Container Images
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths in `DockerRequirement` |
+
+When `--image-dir` is set and `DockerRequirement.dockerPull` ends with `.sif`, relative paths are resolved against this directory. Absolute `.sif` paths are used as-is. Non-`.sif` names are prefixed with `docker://` for registry pull.
+
 #### GPU Configuration
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--gpu` | `false` | Enable GPU support (passes `--nv` to Apptainer, `--gpus` to Docker) |
 | `--gpu-id` | `""` | Specific GPU device ID (e.g., "0", "1", "0,1") - empty means all |
+
+#### Resource Limits
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-mem` | `0` | Maximum memory in MiB for containers (0 = auto-detect from system) |
+| `--max-cpus` | `0` | Maximum CPUs for containers (0 = auto-detect from system) |
+
+#### Reference Data Pre-staging
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pre-stage-dir` | `""` | Directory with pre-staged datasets (auto-scanned, bind-mounted into containers) |
+| `--extra-bind` | `""` | Extra bind mount path (repeatable, also comma-separated) |
+| `--dataset` | `""` | Dataset alias `id=path` (repeatable, also comma-separated) |
+
+All three flags support repeated invocation and comma-separated values:
+
+```bash
+# Repeated invocation
+gowe-worker --extra-bind /scratch --extra-bind /opt/licenses
+gowe-worker --dataset boltz=/data/boltz --dataset chai=/data/chai
+
+# Comma-separated
+gowe-worker --extra-bind /scratch,/opt/licenses
+gowe-worker --dataset boltz=/data/boltz,chai=/data/chai
+```
 
 #### TLS Configuration
 
@@ -242,6 +277,9 @@ gowe-worker --runtime docker
 
 # Use Apptainer (Singularity) for HPC environments
 gowe-worker --runtime apptainer
+
+# Apptainer with local SIF images
+gowe-worker --runtime apptainer --image-dir /scout/containers/
 
 # No containers - run directly on host
 gowe-worker --runtime none
@@ -542,6 +580,101 @@ steps:
 gowe status sub_abc123
 gowe logs sub_abc123
 ```
+
+## Reference Data Pre-staging
+
+Large reference datasets (model weights, sequence databases) are too large to transfer per-job. Workers declare available datasets at registration; the scheduler routes tasks to workers that have the required data.
+
+### `--pre-stage-dir` — Managed reference data directory
+
+```bash
+gowe-worker --pre-stage-dir /local_databases
+```
+
+- Scans subdirectories at startup → auto-registers datasets (dirname = dataset ID)
+- Bind-mounted into every container at the same path
+- Reported to server for scheduler affinity
+
+Example: `/local_databases/` with `boltz/`, `alphafold/`, `chai/` → datasets `boltz`, `alphafold`, `chai`.
+
+### `--dataset` — Additional dataset aliases
+
+```bash
+gowe-worker --dataset boltz_weights=/local_databases/boltz \
+            --dataset alphafold_databases=/local_databases/alphafold
+```
+
+- Additive with auto-discovered datasets
+- Useful when CWL hint IDs don't match directory names
+
+### `--extra-bind` — Generic pass-through bind mounts
+
+```bash
+gowe-worker --extra-bind /scratch --extra-bind /opt/licenses
+```
+
+- Bind-mounted into every container, no questions asked
+- NOT reported to server, NOT used for scheduling
+- For: scratch space, config files, license dirs
+
+### Combined example
+
+```bash
+gowe-worker \
+  --server http://localhost:8080 \
+  --runtime apptainer \
+  --pre-stage-dir /local_databases \
+  --dataset boltz_weights=/local_databases/boltz \
+  --extra-bind /scratch \
+  --image-dir /scout/containers/ \
+  --gpu --gpu-id 3
+```
+
+This worker:
+- Auto-discovers datasets in `/local_databases/` (boltz, alphafold, chai)
+- Adds alias `boltz_weights` → `/local_databases/boltz`
+- Bind-mounts `/local_databases` and `/scratch` into every container
+- Reports datasets `{boltz, alphafold, chai, boltz_weights}` to server
+
+### CWL Hint: `gowe:ResourceData`
+
+CWL tools declare dataset requirements via namespaced hints (safely ignored by other engines):
+
+```yaml
+$namespaces:
+  gowe: https://gowe.commonwl.org#
+
+hints:
+  gowe:ResourceData:
+    datasets:
+      - id: boltz               # Must match worker dataset ID
+        path: /local_databases/boltz
+        size: 50GB
+        mode: cache              # "prestage" or "cache"
+```
+
+**Modes:**
+- `prestage` — Data MUST be pre-deployed; scheduler **requires** a matching worker
+- `cache` — Scheduler **prefers** workers that have the data, but dispatches elsewhere if none available
+
+### Scheduler Affinity
+
+The scheduler matches task dataset requirements against worker datasets:
+
+1. Parser extracts `gowe:ResourceData` hints → `StepHints.RequiredDatasets`
+2. Scheduler propagates to `Task.RuntimeHints.RequiredDatasets`
+3. `CheckoutTask()` filters by `prestage` (hard require) and scores by `cache` (soft prefer)
+4. Worker picks up task → pre-stage-dir and extra-binds are injected as container mounts
+
+### Verifying Worker Datasets
+
+Check registered workers and their datasets via the API:
+
+```bash
+curl -s http://localhost:8080/api/v1/workers | python3 -m json.tool
+```
+
+Each worker's `datasets` field shows the map of dataset IDs to host paths.
 
 ## Docker Volume Mode (DinD)
 

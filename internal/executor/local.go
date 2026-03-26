@@ -20,6 +20,7 @@ type LocalExecutor struct {
 	parser      *parser.Parser
 	workDir     string
 	keepWorkDir bool
+	imageDir    string // Base directory for resolving relative .sif image paths
 }
 
 // NewLocalExecutor creates a LocalExecutor rooted at workDir.
@@ -39,6 +40,11 @@ func NewLocalExecutor(workDir string, logger *slog.Logger) *LocalExecutor {
 // When true (debug mode), working directories are kept for inspection.
 func (e *LocalExecutor) SetKeepWorkDir(keep bool) {
 	e.keepWorkDir = keep
+}
+
+// SetImageDir sets the base directory for resolving relative .sif image paths.
+func (e *LocalExecutor) SetImageDir(dir string) {
+	e.imageDir = dir
 }
 
 // Type returns model.ExecutorTypeLocal.
@@ -77,6 +83,7 @@ func (e *LocalExecutor) submitWithCWLTool(ctx context.Context, task *model.Task,
 	cfg := cwltool.Config{
 		Logger:           e.logger,
 		ResolveSecondary: true,
+		ImageDir:         e.imageDir,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib

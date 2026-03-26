@@ -29,16 +29,18 @@ type Config struct {
 	ExpressionLib        []string           // JavaScript library from InlineJavascriptRequirement
 	ContainerRuntime     string             // "docker", "apptainer", or "" (auto-detect)
 	NoContainer          bool               // Force local execution even with DockerRequirement
+	ImageDir             string             // Base directory for resolving relative .sif image paths
 	GPU                  toolexec.GPUConfig // GPU configuration
 	MaxCPUs              int                // Worker max CPUs (0 = no limit)
 	MaxMemMB             int64              // Worker max memory in MiB (0 = no limit)
 	ApptainerCgroups     bool               // System supports cgroups v2 unified
 	DockerHostPathMap    map[string]string  // Container path -> host path for DinD
 	DockerVolume         string             // Named Docker volume shared with tool containers
-	ResolveSecondary     bool               // Resolve secondary files from tool definitions
-	JobRequirements      []any              // cwl:requirements from job file
-	OutDir               string             // Output directory for resolved output paths
-	RemoveDefaultListings bool              // Remove listings when loadListing is default (for worker/executor mode)
+	ResolveSecondary      bool                // Resolve secondary files from tool definitions
+	JobRequirements       []any               // cwl:requirements from job file
+	OutDir                string              // Output directory for resolved output paths
+	RemoveDefaultListings bool                // Remove listings when loadListing is default (for worker/executor mode)
+	ExtraBinds            []toolexec.ExtraBind // Extra bind mounts for containers (pre-staged datasets, admin paths)
 }
 
 // Result holds the result of tool execution.
@@ -273,6 +275,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			GPU:               cfg.GPU,
 			Resources:         resources,
 			JobRequirements:   cfg.JobRequirements,
+			ExtraBinds:        cfg.ExtraBinds,
 		})
 
 	case "apptainer":
@@ -305,12 +308,14 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			OutDir:          outDir,
 			Mode:            toolexec.ModeApptainer,
 			DockerImage:     dockerImage,
+			ImageDir:        cfg.ImageDir,
 			ContainerMounts: containerMounts,
 			DockerOutputDir: dockerOutputDir,
 			Namespaces:      cfg.Namespaces,
 			GPU:             cfg.GPU,
 			Resources:       resources,
 			JobRequirements: cfg.JobRequirements,
+			ExtraBinds:      cfg.ExtraBinds,
 		})
 
 	default:
@@ -337,6 +342,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			Resources:       resources,
 			Namespaces:      cfg.Namespaces,
 			JobRequirements: cfg.JobRequirements,
+			ExtraBinds:      cfg.ExtraBinds,
 		})
 	}
 

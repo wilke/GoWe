@@ -33,6 +33,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Labels     map[string]string `json:"labels"`
 		GPUEnabled bool              `json:"gpu_enabled"`
 		GPUDevice  string            `json:"gpu_device"`
+		Datasets   map[string]string `json:"datasets"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -79,12 +80,16 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Runtime:      runtime,
 		GPUEnabled:   req.GPUEnabled,
 		GPUDevice:    req.GPUDevice,
+		Datasets:     req.Datasets,
 		Labels:       req.Labels,
 		LastSeen:     now,
 		RegisteredAt: now,
 	}
 	if worker.Labels == nil {
 		worker.Labels = map[string]string{}
+	}
+	if worker.Datasets == nil {
+		worker.Datasets = map[string]string{}
 	}
 
 	if err := s.store.CreateWorker(r.Context(), worker); err != nil {
@@ -93,7 +98,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice)
+	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets))
 	respondCreated(w, reqID, worker)
 }
 
