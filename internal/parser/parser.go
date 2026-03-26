@@ -246,6 +246,26 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		p.logger.Debug("created synthetic workflow from packed tool", "tool_id", mainTool.ID)
 	}
 
+	// Detect bundled bare tool: when the CLI bundles a bare CommandLineTool or
+	// ExpressionTool, it wraps it in a $graph with a synthetic workflow.
+	// The bundler always uses tool id "tool" and step name "run_tool" with
+	// run "#tool" — a pattern that won't occur in hand-written workflows.
+	// Without this, OriginalClass is hardcoded to "Workflow" for all $graph docs.
+	if graph.OriginalClass == "Workflow" && graph.Workflow != nil && len(graph.Workflow.Steps) == 1 {
+		totalNonWf := len(graph.Tools) + len(graph.ExpressionTools)
+		if totalNonWf == 1 {
+			if step, ok := graph.Workflow.Steps["run_tool"]; ok && step.Run == "#tool" {
+				if tool, ok := graph.Tools["tool"]; ok {
+					graph.OriginalClass = tool.Class
+					p.logger.Debug("detected bundled bare tool in $graph", "class", tool.Class)
+				} else if _, ok := graph.ExpressionTools["tool"]; ok {
+					graph.OriginalClass = "ExpressionTool"
+					p.logger.Debug("detected bundled bare expression tool in $graph")
+				}
+			}
+		}
+	}
+
 	return graph, nil
 }
 

@@ -46,8 +46,14 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify workflow exists (needed by both dry-run and real submission).
-	wf, err := s.store.GetWorkflow(r.Context(), req.WorkflowID)
+	// Resolve workflow: try by ID first, then by name.
+	var wf *model.Workflow
+	var err error
+	if strings.HasPrefix(req.WorkflowID, "wf_") {
+		wf, err = s.store.GetWorkflow(r.Context(), req.WorkflowID)
+	} else {
+		wf, err = s.store.GetWorkflowByName(r.Context(), req.WorkflowID)
+	}
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})

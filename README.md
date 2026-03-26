@@ -45,6 +45,11 @@ docker run -p 8080:8080 gowe
 
 ## Quick Start
 
+> **Step-by-step guides:**
+> - [Quickstart: Local Execution](docs/quickstart-local.md) — no containers, 5 minutes
+> - [Quickstart: Apptainer + Workers](docs/quickstart-apptainer.md) — distributed execution with SIF images
+> - [Full Tutorial](docs/tutorial.md) — writing CWL, multi-step pipelines, monitoring
+
 **1. Start the server**
 
 ```bash
@@ -79,6 +84,14 @@ curl -X POST http://localhost:8080/api/v1/submissions \
       "taxonomy_id": 562
     }
   }'
+```
+
+`workflow_id` accepts either a workflow ID (`wf_...`) or a workflow name (e.g. `"boltz-test"`):
+
+```bash
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "boltz-test", "inputs": {...}}'
 ```
 
 **4. Check status**

@@ -166,6 +166,41 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 	return &wf, nil
 }
 
+func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*model.Workflow, error) {
+	s.logger.Debug("sql", "op", "select_by_name", "table", "workflows", "name", name)
+
+	var wf model.Workflow
+	var inputsJSON, outputsJSON, stepsJSON string
+	var createdAt, updatedAt string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		 FROM workflows WHERE name = ? ORDER BY created_at DESC LIMIT 1`, name,
+	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
+		&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal([]byte(inputsJSON), &wf.Inputs); err != nil {
+		return nil, fmt.Errorf("unmarshal inputs: %w", err)
+	}
+	if err := json.Unmarshal([]byte(outputsJSON), &wf.Outputs); err != nil {
+		return nil, fmt.Errorf("unmarshal outputs: %w", err)
+	}
+	if err := json.Unmarshal([]byte(stepsJSON), &wf.Steps); err != nil {
+		return nil, fmt.Errorf("unmarshal steps: %w", err)
+	}
+	wf.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	wf.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+
+	return &wf, nil
+}
+
 func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions) ([]*model.Workflow, int, error) {
 	s.logger.Debug("sql", "op", "list", "table", "workflows", "limit", opts.Limit, "offset", opts.Offset)
 	opts.Clamp()

@@ -341,7 +341,7 @@ The submission starts in `PENDING` state. The scheduler picks it up within 2 sec
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `workflow_id` | Yes | ID from step 3 |
+| `workflow_id` | Yes | Workflow ID (`wf_...`) or workflow name (e.g. `"boltz-test"`) |
 | `inputs` | No | Key-value map matching the workflow's declared inputs |
 | `labels` | No | Arbitrary metadata for filtering/tracking |
 
