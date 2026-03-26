@@ -588,6 +588,10 @@ var templates = map[string]string{
                         <span>{{len .Steps}} steps</span>
                         <span class="mx-2">•</span>
                         <span>Created {{formatTime .CreatedAt}}</span>
+                        {{if .ContentHash}}
+                        <span class="mx-2">•</span>
+                        <span class="font-mono" title="{{.ContentHash}}">{{truncate .ContentHash 12}}</span>
+                        {{end}}
                     </div>
                 </div>
             </li>
@@ -667,7 +671,13 @@ var templates = map[string]string{
                     <dt class="text-sm font-medium text-gray-500">CWL Version</dt>
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Workflow.CWLVersion}}</dd>
                 </div>
+                {{if .Workflow.ContentHash}}
                 <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Content Hash</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">{{.Workflow.ContentHash}}</dd>
+                </div>
+                {{end}}
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
                     <dt class="text-sm font-medium text-gray-500">Created</dt>
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Workflow.CreatedAt}}</dd>
                 </div>
