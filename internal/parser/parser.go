@@ -1930,11 +1930,19 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 					if dm == nil {
 						continue
 					}
+					id := strings.TrimSpace(stringField(dm, "id"))
+					if id == "" {
+						continue // Skip datasets without a valid ID.
+					}
+					mode := strings.ToLower(strings.TrimSpace(stringField(dm, "mode")))
+					if mode != "prestage" {
+						mode = "cache" // Default unknown/empty modes to "cache".
+					}
 					h.RequiredDatasets = append(h.RequiredDatasets, model.DatasetRequirement{
-						ID:     stringField(dm, "id"),
+						ID:     id,
 						Path:   stringField(dm, "path"),
 						Size:   stringField(dm, "size"),
-						Mode:   stringField(dm, "mode"),
+						Mode:   mode,
 						Source: stringField(dm, "source"),
 					})
 				}

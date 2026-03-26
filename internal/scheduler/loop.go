@@ -45,6 +45,9 @@ type Loop struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
+
+	// Cached per-tick: whether any online workers exist.
+	cachedHasWorkers *bool
 }
 
 // NewLoop creates a new scheduler loop.
@@ -96,6 +99,7 @@ func (l *Loop) Stop() error {
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
+	l.cachedHasWorkers = nil // Reset per-tick cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
@@ -869,17 +873,23 @@ func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) mo
 }
 
 // hasOnlineWorkers checks if any workers are currently online.
+// The result is cached per scheduler tick to avoid repeated DB queries.
 func (l *Loop) hasOnlineWorkers() bool {
-	workers, err := l.store.ListWorkers(context.Background())
-	if err != nil {
-		return false
+	if l.cachedHasWorkers != nil {
+		return *l.cachedHasWorkers
 	}
-	for _, w := range workers {
-		if w.State == model.WorkerStateOnline {
-			return true
+	result := false
+	workers, err := l.store.ListWorkers(context.TODO())
+	if err == nil {
+		for _, w := range workers {
+			if w.State == model.WorkerStateOnline {
+				result = true
+				break
+			}
 		}
 	}
-	return false
+	l.cachedHasWorkers = &result
+	return result
 }
 
 // addUserToken adds user authentication token to task runtime hints.

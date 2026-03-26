@@ -338,7 +338,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 		// Extra bind mounts (pre-staged datasets, admin paths).
 		for _, eb := range opts.ExtraBinds {
-			src := translateDockerPath(eb.HostPath, opts.DockerHostPathMap)
+			src := translateDockerPath(ResolveSymlinks(eb.HostPath), opts.DockerHostPathMap)
 			dockerArgs = append(dockerArgs, "--mount",
 				fmt.Sprintf("type=bind,source=%s,target=%s", src, eb.ContainerPath))
 		}
@@ -376,7 +376,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 		// Extra bind mounts (pre-staged datasets, admin paths).
 		for _, eb := range opts.ExtraBinds {
-			src := translateDockerPath(eb.HostPath, opts.DockerHostPathMap)
+			src := translateDockerPath(ResolveSymlinks(eb.HostPath), opts.DockerHostPathMap)
 			dockerArgs = append(dockerArgs, "--mount",
 				fmt.Sprintf("type=bind,source=%s,target=%s", src, eb.ContainerPath))
 		}

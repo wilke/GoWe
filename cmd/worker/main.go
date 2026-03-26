@@ -310,11 +310,21 @@ func (f *stringMapFlag) Set(val string) error {
 	if *f.values == nil {
 		*f.values = make(map[string]string)
 	}
-	for _, pair := range strings.Split(val, ",") {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			(*f.values)[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	for _, rawPair := range strings.Split(val, ",") {
+		pair := strings.TrimSpace(rawPair)
+		if pair == "" {
+			continue
 		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid dataset %q, expected id=path", pair)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" || value == "" {
+			return fmt.Errorf("invalid dataset %q, id and path must be non-empty", pair)
+		}
+		(*f.values)[key] = value
 	}
 	return nil
 }

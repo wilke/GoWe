@@ -114,7 +114,11 @@ func main() {
 	}
 	reg.Register(localExec)
 	reg.Register(executor.NewDockerExecutor("", logger))
-	reg.Register(executor.NewApptainerExecutor("", logger))
+	apptainerExec := executor.NewApptainerExecutor("", logger)
+	if *imageDir != "" {
+		apptainerExec.SetImageDir(*imageDir)
+	}
+	reg.Register(apptainerExec)
 	reg.Register(executor.NewWorkerExecutor(st, logger))
 
 	// Register BVBRCExecutor and create RPC callers if a token is available.

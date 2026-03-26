@@ -1150,13 +1150,14 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	return workers, rows.Err()
 }
 
-// CheckoutTask atomically finds the oldest QUEUED worker task and transitions
-// it to RUNNING, assigning it to the given worker. Returns nil if no task is
-// available. Runtime capability matching: if runtime is "none", only tasks
-// without _docker_image are eligible; otherwise all QUEUED worker tasks match.
-// If workerGroup is non-empty, only tasks with matching or empty WorkerGroup are eligible.
-// Dataset affinity: tasks with prestage datasets are only dispatched to workers
-// that have those datasets. Tasks with cache datasets prefer workers with those datasets.
+// CheckoutTask atomically finds a QUEUED worker task and transitions it to
+// RUNNING, assigning it to the given worker. Returns nil if no task is available.
+// Selection considers runtime capability, worker group, and dataset affinity:
+//   - Runtime: if runtime is "none", only tasks without docker_image are eligible.
+//   - Group: if workerGroup is non-empty, only tasks with matching or empty WorkerGroup.
+//   - Prestage datasets: task is skipped if worker lacks a required prestage dataset.
+//   - Cache datasets: among eligible tasks, prefer the one with the highest cache score
+//     (number of matching cache datasets). Ties are broken by creation order (oldest first).
 func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "group", workerGroup, "runtime", runtime)
 
@@ -1227,10 +1228,14 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 
 	// Look up the worker's datasets for affinity matching.
 	var workerDatasetsJSON string
-	_ = tx.QueryRowContext(ctx, `SELECT datasets FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON)
 	var workerDatasets map[string]string
-	json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets)
-	if workerDatasets == nil {
+	if err := tx.QueryRowContext(ctx, `SELECT datasets FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON); err != nil {
+		if err != sql.ErrNoRows {
+			s.logger.Warn("sql", "op", "checkout_task_load_worker_datasets", "worker_id", workerID, "error", err)
+		}
+		workerDatasets = map[string]string{}
+	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
+		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
 		workerDatasets = map[string]string{}
 	}
 
