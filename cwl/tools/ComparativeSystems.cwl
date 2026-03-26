@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Comparative Systems — Create datastructures to decompose genomes"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: ComparativeSystems
     executor: bvbrc
 

@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Viral Assembly — Assemble viral genomes"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: ViralAssembly
     executor: bvbrc
 

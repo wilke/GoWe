@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "HA Subtype Numbering Conversion"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: HASubtypeNumberingConversion
     executor: bvbrc
 

@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Compute synteny graph — Computes a synteny graph"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: SyntenyGraph
     executor: bvbrc
 

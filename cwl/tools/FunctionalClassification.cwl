@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "classify reads — Compute functional classification for read data"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: FunctionalClassification
     executor: bvbrc
 

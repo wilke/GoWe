@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Analyze TnSeq data — Use TRANSIT to analyze TnSeq data"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: TnSeq
     executor: bvbrc
 

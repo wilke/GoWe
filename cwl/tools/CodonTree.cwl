@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Compute phylogenetic tree from PGFam protein and DNA sequence — Computes a phylogenetic tree based on protein and DNA sequences of PGFams for a set of genomes"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: CodonTree
     executor: bvbrc
 

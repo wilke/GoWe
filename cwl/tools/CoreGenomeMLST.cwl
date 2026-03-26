@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Core Genome MLST — Evaluate core genomes from a set of genome groups of the same species"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: CoreGenomeMLST
     executor: bvbrc
 

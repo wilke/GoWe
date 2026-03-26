@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Whole Genome SNP Analysis — Identify SNP differences in a genome group"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: WholeGenomeSNPAnalysis
     executor: bvbrc
 

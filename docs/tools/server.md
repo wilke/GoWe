@@ -195,8 +195,8 @@ The server registers multiple executor backends:
 |----------|---------|-------------|
 | `local` | Default | Runs commands as OS processes |
 | `docker` | `DockerRequirement` hint | Runs in Docker containers |
-| `worker` | `goweHint.executor: worker` | Delegates to remote workers |
-| `bvbrc` | `goweHint.executor: bvbrc` | Submits to BV-BRC cloud |
+| `worker` | `gowe:Execution.executor: worker` | Delegates to remote workers |
+| `bvbrc` | `gowe:Execution.executor: bvbrc` | Submits to BV-BRC cloud |
 
 ### BV-BRC Integration
 

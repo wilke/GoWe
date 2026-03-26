@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Runs a ProbModelSEED job — Runs a ProbModelSEED modeling job"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: RunProbModelSEEDJob
     executor: bvbrc
 

@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Compute phylogenetic tree — Computes a phylogenetic tree given a set of in-group and out-group genomes"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: PhylogeneticTree
     executor: bvbrc
 

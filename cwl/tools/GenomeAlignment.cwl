@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Multiple Whole Genome Alignment — Uses Mauve to perform multiple whole genome alignment with rearrangements."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeAlignment
     executor: bvbrc
 

@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Assemble WGS reads — Assemble reads into a set of contigs"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeAssembly2
     executor: bvbrc
 

@@ -1118,8 +1118,8 @@ func TestGetAppCWLTool(t *testing.T) {
 		t.Errorf("app_id = %v, want GenomeAssembly2", data["app_id"])
 	}
 	cwl, ok := data["cwl_tool"].(string)
-	if !ok || !strings.Contains(cwl, "goweHint") {
-		t.Errorf("cwl_tool should contain goweHint, got %v", data["cwl_tool"])
+	if !ok || !strings.Contains(cwl, "gowe:Execution") {
+		t.Errorf("cwl_tool should contain gowe:Execution, got %v", data["cwl_tool"])
 	}
 }
 

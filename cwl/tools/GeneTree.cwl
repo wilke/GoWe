@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Gene Tree — Estimate phylogeny of gene or other sequence feature"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GeneTree
     executor: bvbrc
 

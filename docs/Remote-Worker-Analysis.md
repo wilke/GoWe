@@ -390,11 +390,14 @@ func (h *WorkerHandler) HandleWorkCheckout(w http.ResponseWriter, r *http.Reques
 
 ### 3.5 CWL Workflow Integration
 
-Workers are specified via the existing `goweHint` mechanism:
+Workers are specified via the existing `gowe:Execution` mechanism:
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     executor: worker              # routes to WorkerExecutor
     docker_image: ubuntu:22.04    # optional — passed as _docker_image
 ```
@@ -416,7 +419,7 @@ If not, the worker runs the command bare.
 | Task state machine | Done | States cover the full lifecycle |
 | Reserved input keys | Done | `_base_command`, `_output_globs`, `_docker_image` |
 | Input resolution | Done | Scheduler resolves before dispatch |
-| CWL hint system | Done | `goweHint.executor` already routes to executors |
+| CWL hint system | Done | `gowe:Execution.executor` already routes to executors |
 | Docker execution code | Done | DockerExecutor has container run/collect logic |
 | HTTP API framework | Done | chi/v5 router, response envelope pattern |
 | SQLite persistence | Done | Store interface with full task CRUD |

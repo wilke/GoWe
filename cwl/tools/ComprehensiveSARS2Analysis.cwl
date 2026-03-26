@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Comprehensive SARS2 Analysis — Analyze a genome from reads or contigs, generating a detailed analysis report."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: ComprehensiveSARS2Analysis
     executor: bvbrc
 

@@ -305,14 +305,14 @@ The CWL tools need a hint for GPU requirement:
 hints:
   DockerRequirement:
     dockerPull: wilke/alphafold:latest
-  goweHint:
+  gowe:Execution:
     executor: local
 
 # Modified for GoWe + Apptainer GPU
 hints:
   DockerRequirement:
     dockerPull: wilke/alphafold:latest
-  goweHint:
+  gowe:Execution:
     executor: worker
     worker_group: gpu-workers
   # Future: cwltool:CUDARequirement
@@ -349,7 +349,7 @@ inputs:
 |------------|--------|------------|
 | No GPU flag in Apptainer | Predictions fail/slow | Add `--nv` flag (1-2 hours) |
 | No resource enforcement | Over-subscription possible | Document limits, use job scheduler |
-| No cwltool:CUDARequirement | Must use goweHint workaround | Add parser support (optional) |
+| No cwltool:CUDARequirement | Must use gowe:Execution workaround | Add parser support (optional) |
 | No Slurm/PBS integration | Manual worker deployment | Future enhancement |
 | Limited progress reporting | Hard to monitor long jobs | Add streaming logs |
 

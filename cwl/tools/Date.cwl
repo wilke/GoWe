@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Date — Returns the current date and time."
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: Date
     executor: bvbrc
 

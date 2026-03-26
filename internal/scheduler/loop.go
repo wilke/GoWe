@@ -857,13 +857,13 @@ func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) mo
 	if l.config.DefaultExecutor != "" {
 		return model.ExecutorType(l.config.DefaultExecutor)
 	}
-	// Explicit step hint from CWL (goweHint.executor) — but not "container",
+	// Explicit step hint from CWL (gowe:Execution.executor) — but not "container",
 	// which describes HOW to run (use container runtime), not WHERE to run.
 	if step.Hints != nil && step.Hints.ExecutorType != "" && step.Hints.ExecutorType != model.ExecutorTypeContainer {
 		return step.Hints.ExecutorType
 	}
 	// Auto-promote container tasks to worker when workers are available.
-	// This covers DockerRequirement steps that don't have an explicit goweHint.
+	// This covers DockerRequirement steps that don't have an explicit gowe:Execution hint.
 	if step.Hints != nil && step.Hints.DockerImage != "" {
 		if l.hasOnlineWorkers() {
 			return model.ExecutorTypeWorker

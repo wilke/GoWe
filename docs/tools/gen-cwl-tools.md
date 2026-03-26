@@ -88,8 +88,11 @@ class: CommandLineTool
 
 doc: "Genome Annotation — Annotate a genome using RASTtk"
 
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeAnnotation
     executor: bvbrc
 
@@ -301,8 +304,11 @@ outputs:
 ### Add resource hints
 
 ```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: GenomeAnnotation
     executor: bvbrc
   ResourceRequirement:

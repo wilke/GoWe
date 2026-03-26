@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Primer Design — Use Primer3 to design primers to given sequence"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: PrimerDesign
     executor: bvbrc
 

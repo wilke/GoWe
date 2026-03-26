@@ -3,8 +3,11 @@ class: CommandLineTool
 
 doc: "Perform homology searches — Perform homology searches on sequence data"
 
+$namespaces:
+  gowe: "https://github.com/wilke/GoWe#"
+
 hints:
-  goweHint:
+  gowe:Execution:
     bvbrc_app_id: Homology
     executor: bvbrc
 
