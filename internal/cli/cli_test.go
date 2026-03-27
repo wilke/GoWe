@@ -304,3 +304,88 @@ func TestSubmitCommand_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestRegisterCommand(t *testing.T) {
+	url := startTestServer(t)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	_, err := runCLI(t,
+		"--server", url,
+		"register", testdataPath("separate/pipeline.cwl"),
+	)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if err != nil {
+		t.Fatalf("register error: %v\noutput: %s", err, output)
+	}
+	if !strings.Contains(output, "Registered:") {
+		t.Errorf("expected 'Registered:' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "wf_") {
+		t.Errorf("expected workflow ID in output, got: %s", output)
+	}
+	// Should NOT create a submission.
+	if strings.Contains(output, "Submission") {
+		t.Errorf("register should not create a submission, got: %s", output)
+	}
+}
+
+func TestRegisterCommand_MultipleFiles(t *testing.T) {
+	url := startTestServer(t)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	_, err := runCLI(t,
+		"--server", url,
+		"register",
+		testdataPath("separate/tools/bvbrc-assembly.cwl"),
+		testdataPath("separate/tools/bvbrc-annotation.cwl"),
+	)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if err != nil {
+		t.Fatalf("register error: %v\noutput: %s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) < 2 {
+		t.Errorf("expected at least 2 Registered lines, got %d: %s", len(lines), output)
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "Registered:") {
+			t.Errorf("expected each line to contain 'Registered:', got: %s", line)
+		}
+	}
+}
+
+func TestRegisterCommand_MissingFile(t *testing.T) {
+	url := startTestServer(t)
+	_, err := runCLI(t, "--server", url, "register", "nonexistent.cwl")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestRegisterCommand_NoArgs(t *testing.T) {
+	url := startTestServer(t)
+	_, err := runCLI(t, "--server", url, "register")
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
