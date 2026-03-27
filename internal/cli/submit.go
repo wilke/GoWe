@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/me/gowe/internal/bundle"
 	"github.com/spf13/cobra"
@@ -13,6 +14,7 @@ import (
 func newSubmitCmd() *cobra.Command {
 	var inputsFile string
 	var dryRun bool
+	var noUpload bool
 
 	cmd := &cobra.Command{
 		Use:   "submit <workflow.cwl>",
@@ -42,6 +44,24 @@ func newSubmitCmd() *cobra.Command {
 					return fmt.Errorf("parse inputs: %w", err)
 				}
 				logger.Debug("parsed inputs", "count", len(inputs))
+
+				// Resolve File/Directory paths relative to job file location.
+				jobDir, err := filepath.Abs(filepath.Dir(inputsFile))
+				if err != nil {
+					return fmt.Errorf("get inputs directory: %w", err)
+				}
+				if resolved, ok := bundle.ResolveFilePaths(inputs, jobDir).(map[string]any); ok {
+					inputs = resolved
+				}
+
+				// Upload File/Directory inputs to the server unless --no-upload.
+				if !noUpload {
+					uploaded, err := uploadInputFiles(inputs, false)
+					if err != nil {
+						return fmt.Errorf("upload inputs: %w", err)
+					}
+					inputs = uploaded
+				}
 			}
 
 			// 3. POST /api/v1/workflows
@@ -101,6 +121,7 @@ func newSubmitCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&inputsFile, "inputs", "i", "", "Input values file (YAML/JSON)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate without executing")
+	cmd.Flags().BoolVar(&noUpload, "no-upload", false, "Disable file upload; assume files are accessible on workers")
 	return cmd
 }
 
