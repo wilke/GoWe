@@ -96,6 +96,9 @@ var templateFuncs = template.FuncMap{
 			return "background: linear-gradient(to bottom, #9CA3AF, #6B7280);"
 		}
 	},
+	"list": func(args ...int) []int {
+		return args
+	},
 	"add": func(a, b int) int {
 		return a + b
 	},
@@ -137,8 +140,11 @@ var templateFuncs = template.FuncMap{
 		return s[:n]
 	},
 	"json": func(v any) string {
-		// Simple JSON output for debugging.
-		return fmt.Sprintf("%+v", v)
+		b, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("%+v", v)
+		}
+		return string(b)
 	},
 	"seq": func(n int) []int {
 		// Generate a sequence 0..n-1 for iteration
@@ -422,7 +428,7 @@ var templates = map[string]string{
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
-                            <dt class="text-sm font-medium text-gray-500 truncate">Running</dt>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Running Now</dt>
                             <dd class="text-lg font-semibold text-blue-600">{{.Stats.Running}}</dd>
                         </dl>
                     </div>
@@ -439,7 +445,7 @@ var templates = map[string]string{
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
-                            <dt class="text-sm font-medium text-gray-500 truncate">Completed</dt>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Completed <span class="text-xs text-gray-400">24h</span></dt>
                             <dd class="text-lg font-semibold text-green-600">{{.Stats.Completed}}</dd>
                         </dl>
                     </div>
@@ -456,7 +462,7 @@ var templates = map[string]string{
                     </div>
                     <div class="ml-5 w-0 flex-1">
                         <dl>
-                            <dt class="text-sm font-medium text-gray-500 truncate">Failed</dt>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Failed <span class="text-xs text-gray-400">24h</span></dt>
                             <dd class="text-lg font-semibold text-red-600">{{.Stats.Failed}}</dd>
                         </dl>
                     </div>
@@ -865,7 +871,18 @@ var templates = map[string]string{
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Submissions</h1>
         <div class="flex items-center space-x-2">
-            <a href="/submissions/export?format=csv{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+            <!-- View toggle -->
+            <div class="inline-flex rounded-md shadow-sm">
+                <a href="?view=cards{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                   class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-l-md border {{if eq .ViewMode "cards"}}bg-indigo-50 text-indigo-700 border-indigo-300{{else}}bg-white text-gray-700 border-gray-300 hover:bg-gray-50{{end}}" title="Card view">
+                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+                </a>
+                <a href="?view=table{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                   class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-r-md border-t border-r border-b {{if eq .ViewMode "table"}}bg-indigo-50 text-indigo-700 border-indigo-300{{else}}bg-white text-gray-700 border-gray-300 hover:bg-gray-50{{end}}" title="Table view">
+                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
+                </a>
+            </div>
+            <a href="/submissions/export?format=csv{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
                class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                 <svg class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -885,23 +902,23 @@ var templates = map[string]string{
             <div>
                 <label class="block text-xs font-medium text-gray-500 mb-1">Status</label>
                 <div class="flex space-x-1">
-                    <a href="/submissions?{{with .DateStart}}date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="/submissions?view={{.ViewMode}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if not .StateFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         All
                     </a>
-                    <a href="/submissions?state=PENDING{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="/submissions?state=PENDING&amp;view={{.ViewMode}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "PENDING"}}bg-yellow-100 text-yellow-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Pending
                     </a>
-                    <a href="/submissions?state=RUNNING{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="/submissions?state=RUNNING&amp;view={{.ViewMode}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "RUNNING"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Running
                     </a>
-                    <a href="/submissions?state=COMPLETED{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="/submissions?state=COMPLETED&amp;view={{.ViewMode}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "COMPLETED"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Completed
                     </a>
-                    <a href="/submissions?state=FAILED{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="/submissions?state=FAILED&amp;view={{.ViewMode}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "FAILED"}}bg-red-100 text-red-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Failed
                     </a>
@@ -921,11 +938,12 @@ var templates = map[string]string{
                            class="block w-36 px-2 py-1 text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
                 </div>
                 {{if .StateFilter}}<input type="hidden" name="state" value="{{.StateFilter}}">{{end}}
+                <input type="hidden" name="view" value="{{.ViewMode}}">
                 <button type="submit" class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">
                     Filter
                 </button>
                 {{if or .DateStart .DateEnd}}
-                <a href="/submissions{{if .StateFilter}}?state={{.StateFilter}}{{end}}" class="px-3 py-1 text-sm text-gray-500 hover:text-gray-700">
+                <a href="/submissions?view={{.ViewMode}}{{with .StateFilter}}&amp;state={{.}}{{end}}" class="px-3 py-1 text-sm text-gray-500 hover:text-gray-700">
                     Clear dates
                 </a>
                 {{end}}
@@ -933,112 +951,283 @@ var templates = map[string]string{
         </form>
     </div>
 
-    <div class="bg-white shadow overflow-hidden sm:rounded-md">
-        <ul class="divide-y divide-gray-200">
-            {{range .Submissions}}
-            <li>
-                <a href="/submissions/{{.ID}}" class="block hover:bg-gray-50">
-                    <div class="px-4 py-4 sm:px-6">
-                        <div class="flex items-center justify-between">
-                            <div class="flex-1 min-w-0">
-                                <div class="flex items-center">
-                                    <p class="text-sm font-medium text-indigo-600 truncate">{{.WorkflowName}}</p>
-                                    {{if .QueuePosition}}
-                                    <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
-                                        Queue #{{.QueuePosition}}
-                                    </span>
-                                    {{end}}
-                                </div>
-                                <p class="mt-1 text-xs text-gray-500 font-mono">{{.ID}}</p>
-                            </div>
-                            <div class="ml-4 flex-shrink-0 flex items-center space-x-4">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                                    {{if eq (stateColor .State.String) "green"}}bg-green-100 text-green-800{{end}}
-                                    {{if eq (stateColor .State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
-                                    {{if eq (stateColor .State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
-                                    {{if eq (stateColor .State.String) "red"}}bg-red-100 text-red-800{{end}}
-                                    {{if eq (stateColor .State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
-                                ">
-                                    {{.State}}
-                                </span>
-                            </div>
-                        </div>
-
-                        <!-- Stage Pills Visualization -->
-                        {{if gt .TaskSummary.Total 0}}
-                        <div class="mt-3">
-                            <div class="flex items-center space-x-1">
-                                <!-- Task state dots -->
-                                {{range .Tasks}}
-                                <div class="w-3 h-3 rounded-full {{stateDotColor .State.String}}"
-                                     title="{{.StepID}}: {{.State}}"></div>
-                                {{end}}
-                            </div>
-                            <!-- Progress bar -->
-                            <div class="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden flex">
-                                {{if gt .TaskSummary.Success 0}}
-                                <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #62C462, #51A351);"></div>
-                                {{end}}
-                                {{if gt .TaskSummary.Running 0}}
-                                <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
-                                {{end}}
-                                {{if gt .TaskSummary.Queued 0}}
-                                <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
-                                {{end}}
-                                {{if gt .TaskSummary.Failed 0}}
-                                <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
-                                {{end}}
-                            </div>
-                        </div>
-                        {{end}}
-
-                        <div class="mt-2 flex items-center text-sm text-gray-500">
-                            <span>Tasks: {{.TaskSummary.Success}}/{{.TaskSummary.Total}} completed</span>
-                            {{if gt .TaskSummary.Running 0}}
-                            <span class="mx-2">•</span>
-                            <span class="text-blue-600">{{.TaskSummary.Running}} running</span>
-                            {{end}}
-                            {{if gt .TaskSummary.Failed 0}}
-                            <span class="mx-2">•</span>
-                            <span class="text-red-600">{{.TaskSummary.Failed}} failed</span>
-                            {{end}}
-                            <span class="mx-2">•</span>
-                            <span>{{formatTime .CreatedAt}}</span>
-                        </div>
-                    </div>
-                </a>
-            </li>
-            {{else}}
-            <li class="px-4 py-8 text-center text-gray-500">
-                No submissions found. <a href="/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
-            </li>
+    <!-- Top Pagination -->
+    <div class="mb-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <!-- Page size selector -->
+        <div class="flex items-center space-x-2 text-sm text-gray-500">
+            <span>Show</span>
+            {{$stateQ := ""}}{{with .StateFilter}}{{$stateQ = printf "&state=%s" .}}{{end}}
+            {{$dateQ := ""}}{{with .DateStart}}{{$dateQ = printf "&date_start=%s" .}}{{end}}
+            {{$dateQ2 := ""}}{{with .DateEnd}}{{$dateQ2 = printf "&date_end=%s" .}}{{end}}
+            {{$viewQ := printf "&view=%s" .ViewMode}}
+            {{range $size := (list 9 18 36 99)}}
+            <a href="?limit={{$size}}{{$stateQ}}{{$dateQ}}{{$dateQ2}}{{$viewQ}}"
+               class="px-2 py-1 rounded {{if eq $.Pagination.Limit $size}}bg-indigo-100 text-indigo-800 font-medium{{else}}hover:bg-gray-100{{end}}">
+                {{$size}}
+            </a>
             {{end}}
-        </ul>
+            <span>per page</span>
+        </div>
+
+        <!-- Navigation -->
+        <div class="flex items-center space-x-1">
+            {{if .Pagination.HasPrev}}
+            <a href="?offset=0&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="First page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+            </a>
+            <a href="?offset={{.Pagination.PrevOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="Previous page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+            </a>
+            {{else}}
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+            </span>
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+            </span>
+            {{end}}
+
+            <span class="px-3 py-2 text-sm text-gray-700">
+                Page {{.Pagination.Page}} of {{.Pagination.TotalPages}}
+            </span>
+
+            {{if .Pagination.HasMore}}
+            <a href="?offset={{.Pagination.NextOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="Next page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+            </a>
+            <a href="?offset={{.Pagination.LastOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="Last page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+            </a>
+            {{else}}
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+            </span>
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+            </span>
+            {{end}}
+        </div>
+
+        <!-- Summary -->
+        <span class="text-sm text-gray-500">
+            {{add .Pagination.Offset 1}}-{{add .Pagination.Offset (len .Submissions)}} of {{.Pagination.Total}}
+        </span>
     </div>
 
-    {{if or .Pagination.HasPrev .Pagination.HasMore}}
-    <div class="mt-4 flex justify-between">
-        {{if .Pagination.HasPrev}}
-        <a href="?offset={{.Pagination.PrevOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
-           class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-            Previous
+    {{if eq .ViewMode "table"}}
+    <!-- Table View -->
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workflow</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Progress</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {{range .Submissions}}
+                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/submissions/{{.ID}}'">
+                    <!-- Workflow name + ID -->
+                    <td class="px-4 py-3 whitespace-nowrap" style="width: 25%;">
+                        <p class="text-sm font-medium text-indigo-600 truncate max-w-xs">{{.WorkflowName}}</p>
+                        <p class="text-xs text-gray-400 font-mono truncate max-w-xs">{{.ID}}</p>
+                    </td>
+                    <!-- Progress: dots + bar + tasks + date -->
+                    <td class="px-4 py-3">
+                        {{if gt .TaskSummary.Total 0}}
+                        <div class="flex items-center gap-4">
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center space-x-0.5 mb-1">
+                                    {{range .Tasks}}
+                                    <div class="w-2 h-2 rounded-full {{stateDotColor .State.String}}"
+                                         title="{{.StepID}}: {{.State}}"></div>
+                                    {{end}}
+                                </div>
+                                <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden flex">
+                                    {{if gt .TaskSummary.Success 0}}
+                                    <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                                    {{end}}
+                                    {{if gt .TaskSummary.Running 0}}
+                                    <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                                    {{end}}
+                                    {{if gt .TaskSummary.Queued 0}}
+                                    <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                                    {{end}}
+                                    {{if gt .TaskSummary.Failed 0}}
+                                    <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                                    {{end}}
+                                </div>
+                            </div>
+                            <div class="flex-shrink-0 text-xs text-gray-500 text-right" style="min-width: 5rem;">
+                                <span>{{.TaskSummary.Success}}/{{.TaskSummary.Total}} tasks</span>
+                                <br><span>{{formatTime .CreatedAt}}</span>
+                            </div>
+                        </div>
+                        {{else}}
+                        <div class="flex items-center justify-between text-xs text-gray-500">
+                            <span>{{if .QueuePosition}}Queue #{{.QueuePosition}}{{else}}No tasks{{end}}</span>
+                            <span>{{formatTime .CreatedAt}}</span>
+                        </div>
+                        {{end}}
+                    </td>
+                    <!-- Status -->
+                    <td class="px-4 py-3 whitespace-nowrap text-right">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                            {{if eq (stateColor .State.String) "green"}}bg-green-100 text-green-800{{end}}
+                            {{if eq (stateColor .State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
+                            {{if eq (stateColor .State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
+                            {{if eq (stateColor .State.String) "red"}}bg-red-100 text-red-800{{end}}
+                            {{if eq (stateColor .State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
+                        ">
+                            {{.State}}
+                        </span>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="3" class="px-4 py-8 text-center text-gray-500">
+                        No submissions found. <a href="/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <!-- Card View -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {{range .Submissions}}
+        <a href="/submissions/{{.ID}}" class="block bg-white shadow rounded-lg hover:shadow-md transition-shadow">
+            <div class="p-4">
+                <!-- Header: Name + Status -->
+                <div class="flex items-start justify-between mb-3">
+                    <div class="min-w-0 flex-1 mr-3">
+                        <p class="text-sm font-medium text-indigo-600 truncate">{{.WorkflowName}}</p>
+                        <p class="mt-0.5 text-xs text-gray-400 font-mono truncate">{{.ID}}</p>
+                    </div>
+                    <span class="flex-shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                        {{if eq (stateColor .State.String) "green"}}bg-green-100 text-green-800{{end}}
+                        {{if eq (stateColor .State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
+                        {{if eq (stateColor .State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
+                        {{if eq (stateColor .State.String) "red"}}bg-red-100 text-red-800{{end}}
+                        {{if eq (stateColor .State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
+                    ">
+                        {{.State}}
+                    </span>
+                </div>
+
+                <!-- Visualization -->
+                {{if gt .TaskSummary.Total 0}}
+                <div class="mb-3">
+                    <div class="flex items-center space-x-1 mb-1.5">
+                        {{range .Tasks}}
+                        <div class="w-2.5 h-2.5 rounded-full {{stateDotColor .State.String}}"
+                             title="{{.StepID}}: {{.State}}"></div>
+                        {{end}}
+                    </div>
+                    <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden flex">
+                        {{if gt .TaskSummary.Success 0}}
+                        <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                        {{end}}
+                        {{if gt .TaskSummary.Running 0}}
+                        <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                        {{end}}
+                        {{if gt .TaskSummary.Queued 0}}
+                        <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                        {{end}}
+                        {{if gt .TaskSummary.Failed 0}}
+                        <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+
+                <!-- Footer -->
+                <div class="flex items-center justify-between text-xs text-gray-500">
+                    <span>{{if gt .TaskSummary.Total 0}}{{.TaskSummary.Success}}/{{.TaskSummary.Total}} tasks{{else}}{{if .QueuePosition}}Queue #{{.QueuePosition}}{{else}}No tasks{{end}}{{end}}</span>
+                    <span>{{formatTime .CreatedAt}}</span>
+                </div>
+            </div>
         </a>
         {{else}}
-        <span></span>
-        {{end}}
-        <span class="text-sm text-gray-500">
-            Showing {{add .Pagination.Offset 1}} - {{add .Pagination.Offset (len .Submissions)}} of {{.Pagination.Total}}
-        </span>
-        {{if .Pagination.HasMore}}
-        <a href="?offset={{.Pagination.NextOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
-           class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-            Next
-        </a>
-        {{else}}
-        <span></span>
+        <div class="col-span-full bg-white shadow rounded-lg px-4 py-8 text-center text-gray-500">
+            No submissions found. <a href="/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
+        </div>
         {{end}}
     </div>
     {{end}}
+
+    <!-- Pagination -->
+    <div class="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <!-- Page size selector -->
+        <div class="flex items-center space-x-2 text-sm text-gray-500">
+            <span>Show</span>
+            {{$stateQ := ""}}{{with .StateFilter}}{{$stateQ = printf "&state=%s" .}}{{end}}
+            {{$dateQ := ""}}{{with .DateStart}}{{$dateQ = printf "&date_start=%s" .}}{{end}}
+            {{$dateQ2 := ""}}{{with .DateEnd}}{{$dateQ2 = printf "&date_end=%s" .}}{{end}}
+            {{$viewQ := printf "&view=%s" .ViewMode}}
+            {{range $size := (list 9 18 36 99)}}
+            <a href="?limit={{$size}}{{$stateQ}}{{$dateQ}}{{$dateQ2}}{{$viewQ}}"
+               class="px-2 py-1 rounded {{if eq $.Pagination.Limit $size}}bg-indigo-100 text-indigo-800 font-medium{{else}}hover:bg-gray-100{{end}}">
+                {{$size}}
+            </a>
+            {{end}}
+            <span>per page</span>
+        </div>
+
+        <!-- Navigation -->
+        <div class="flex items-center space-x-1">
+            {{if .Pagination.HasPrev}}
+            <a href="?offset=0&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="First page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+            </a>
+            <a href="?offset={{.Pagination.PrevOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="Previous page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+            </a>
+            {{else}}
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+            </span>
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+            </span>
+            {{end}}
+
+            <span class="px-3 py-2 text-sm text-gray-700">
+                Page {{.Pagination.Page}} of {{.Pagination.TotalPages}}
+            </span>
+
+            {{if .Pagination.HasMore}}
+            <a href="?offset={{.Pagination.NextOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="Next page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+            </a>
+            <a href="?offset={{.Pagination.LastOffset}}&amp;limit={{.Pagination.Limit}}{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+               class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" title="Last page">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+            </a>
+            {{else}}
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+            </span>
+            <span class="inline-flex items-center px-3 py-2 border border-gray-200 text-sm rounded-md text-gray-300 bg-gray-50 cursor-not-allowed">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+            </span>
+            {{end}}
+        </div>
+
+        <!-- Summary -->
+        <span class="text-sm text-gray-500">
+            {{add .Pagination.Offset 1}}-{{add .Pagination.Offset (len .Submissions)}} of {{.Pagination.Total}}
+        </span>
+    </div>
 </div>
 {{end}}`,
 
@@ -1130,71 +1319,8 @@ var templates = map[string]string{
     </div>
     {{end}}
 
-    <!-- DAG Visualization -->
-    {{if and .Workflow (gt (len .Workflow.Steps) 0)}}
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
-        <div class="px-4 py-5 sm:px-6">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow Graph</h3>
-        </div>
-        <div class="border-t border-gray-200">
-            <div id="submission-dag-container"></div>
-        </div>
-    </div>
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const steps = {{toJSON .Workflow.Steps}};
-        const tasks = {{toJSON .Submission.Tasks}};
-        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
-            const app = Vue.createApp({
-                components: { DagEditor },
-                data() {
-                    return {
-                        steps: steps,
-                        tasks: tasks
-                    };
-                },
-                template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
-            });
-            app.mount('#submission-dag-container');
-        }
-    });
-    </script>
-    {{end}}
-
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
-        <div class="px-4 py-5 sm:px-6">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Submission Details</h3>
-        </div>
-        <div class="border-t border-gray-200">
-            <dl>
-                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Workflow</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
-                        <a href="/workflows/{{.Submission.WorkflowID}}" class="text-indigo-600 hover:text-indigo-500">
-                            {{.Submission.WorkflowName}}
-                        </a>
-                    </dd>
-                </div>
-                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Submitted By</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SubmittedBy}}</dd>
-                </div>
-                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Created</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Submission.CreatedAt}}</dd>
-                </div>
-                {{if .Submission.CompletedAt}}
-                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Completed</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTimePtr .Submission.CompletedAt}}</dd>
-                </div>
-                {{end}}
-            </dl>
-        </div>
-    </div>
-
     <!-- Tasks -->
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Tasks ({{len .Submission.Tasks}})</h3>
             {{if eq .Submission.State.String "FAILED"}}
@@ -1282,28 +1408,92 @@ var templates = map[string]string{
         </div>
     </div>
 
+    <!-- Submission Details -->
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Submission Details</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <dl>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Workflow</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                        <a href="/workflows/{{.Submission.WorkflowID}}" class="text-indigo-600 hover:text-indigo-500">
+                            {{.Submission.WorkflowName}}
+                        </a>
+                    </dd>
+                </div>
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Submitted By</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SubmittedBy}}</dd>
+                </div>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Created</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Submission.CreatedAt}}</dd>
+                </div>
+                {{if .Submission.CompletedAt}}
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Completed</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTimePtr .Submission.CompletedAt}}</dd>
+                </div>
+                {{end}}
+            </dl>
+        </div>
+    </div>
+
     <!-- Inputs -->
     {{if .Submission.Inputs}}
-    <div class="mt-6 bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Inputs</h3>
         </div>
         <div class="border-t border-gray-200 p-4">
-            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>{{json .Submission.Inputs}}</code></pre>
+            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm whitespace-pre-wrap break-words"><code>{{json .Submission.Inputs}}</code></pre>
         </div>
     </div>
     {{end}}
 
     <!-- Outputs -->
     {{if .Submission.Outputs}}
-    <div class="mt-6 bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Outputs</h3>
         </div>
         <div class="border-t border-gray-200 p-4">
-            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>{{json .Submission.Outputs}}</code></pre>
+            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm whitespace-pre-wrap break-words"><code>{{json .Submission.Outputs}}</code></pre>
         </div>
     </div>
+    {{end}}
+
+    <!-- DAG Visualization -->
+    {{if and .Workflow (gt (len .Workflow.Steps) 0)}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow Graph</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <div id="submission-dag-container"></div>
+        </div>
+    </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const steps = {{toJSON .Workflow.Steps}};
+        const tasks = {{toJSON .Submission.Tasks}};
+        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
+            const app = Vue.createApp({
+                components: { DagEditor },
+                data() {
+                    return {
+                        steps: steps,
+                        tasks: tasks
+                    };
+                },
+                template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
+            });
+            app.mount('#submission-dag-container');
+        }
+    });
+    </script>
     {{end}}
 </div>
 {{end}}`,
@@ -1554,10 +1744,10 @@ var templates = map[string]string{
         </div>
     </div>
 
-    <!-- Submission Stats -->
-    <div class="bg-white shadow rounded-lg">
+    <!-- Current Status -->
+    <div class="bg-white shadow rounded-lg mb-8">
         <div class="px-4 py-5 border-b border-gray-200 sm:px-6">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Submission Statistics</h3>
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Current Status</h3>
         </div>
         <div class="p-6">
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1578,6 +1768,54 @@ var templates = map[string]string{
                     <p class="text-sm text-red-800">Failed</p>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Submission Breakdown by Time Period -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 border-b border-gray-200 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Submissions by Time Period</h3>
+            <p class="mt-1 text-sm text-gray-500">Breakdown of submission states over different time windows</p>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period</th>
+                        <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                        <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-blue-500 uppercase tracking-wider">Running</th>
+                        <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-green-500 uppercase tracking-wider">Completed</th>
+                        <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-red-500 uppercase tracking-wider">Failed</th>
+                        <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">Cancelled</th>
+                        <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Success Rate</th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {{range .Breakdown}}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.Label}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">{{.Total}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-blue-600 text-right">{{.Running}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-green-600 text-right">{{.Completed}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-red-600 text-right">{{.Failed}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400 text-right">{{.Cancelled}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-right">
+                            {{if gt .Total 0}}
+                                {{if gt (add .Completed .Failed) 0}}
+                                <span class="{{if ge (percent .Completed (add .Completed .Failed)) 80}}text-green-600{{else if ge (percent .Completed (add .Completed .Failed)) 50}}text-yellow-600{{else}}text-red-600{{end}}">
+                                    {{percent .Completed (add .Completed .Failed)}}%
+                                </span>
+                                {{else}}
+                                <span class="text-gray-400">-</span>
+                                {{end}}
+                            {{else}}
+                            <span class="text-gray-400">-</span>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
@@ -1765,7 +2003,7 @@ var templates = map[string]string{
         <div class="flex flex-wrap gap-2">
             {{range .Workers}}
             <div class="w-10 h-10 rounded {{workerStateColor (print .State)}} {{workerStateBorder (print .State)}} border-2 cursor-pointer hover:opacity-80 transition-opacity flex items-center justify-center"
-                 title="{{.Name}} ({{.State}})&#10;Host: {{.Hostname}}&#10;Runtime: {{.Runtime}}{{if .GPUEnabled}}&#10;GPU: {{if .GPUDevice}}device {{.GPUDevice}}{{else}}yes{{end}}{{end}}{{if .CurrentTask}}&#10;Task: {{.CurrentTask}}{{end}}">
+                 title="{{.Name}} ({{.State}})&#10;Host: {{.Hostname}}&#10;Runtime: {{.Runtime}}{{if .GPUEnabled}}&#10;GPU: {{if .GPUDevice}}device {{.GPUDevice}}{{else}}yes{{end}}{{end}}{{if .Version}}&#10;Version: {{truncate .Version 7}}{{end}}{{if .CurrentTask}}&#10;Task: {{.CurrentTask}}{{end}}">
                 {{if .CurrentTask}}
                 <svg class="w-4 h-4 text-white animate-spin" fill="none" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1789,6 +2027,7 @@ var templates = map[string]string{
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Runtime</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GPU</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Task</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Version</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Registered</th>
                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
@@ -1825,11 +2064,13 @@ var templates = map[string]string{
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {{if .CurrentTask}}
-                        <span class="text-blue-600">{{truncate .CurrentTask 12}}</span>
+                        {{$subID := index $.TaskSubmission .CurrentTask}}
+                        {{if $subID}}<a href="/submissions/{{$subID}}" class="text-blue-600 hover:text-blue-800 hover:underline" title="{{.CurrentTask}}">{{truncate .CurrentTask 12}}</a>{{else}}<span class="text-blue-600">{{truncate .CurrentTask 12}}</span>{{end}}
                         {{else}}
                         <span class="text-gray-400">idle</span>
                         {{end}}
                     </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">{{if .Version}}{{truncate .Version 7}}{{else}}-{{end}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{timeAgo .LastSeen}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .RegisteredAt}}</td>
                     {{if and $.Session $.Session.IsAdmin}}

@@ -102,10 +102,10 @@ func workerAuthMiddleware(keyConfig *WorkerKeyConfig, logger *slog.Logger) func(
 
 			// If no keys are configured, allow open access.
 			if keyConfig == nil || !keyConfig.IsEnabled() {
-				// Create anonymous worker context with default group.
+				// Create anonymous worker context — allow any group.
 				workerCtx := &WorkerAuthContext{
 					KeyID:  "none",
-					Groups: []string{"default"},
+					Groups: nil, // nil means any group is allowed
 				}
 				ctx := context.WithValue(r.Context(), ctxKeyWorkerAuth, workerCtx)
 				next.ServeHTTP(w, r.WithContext(ctx))

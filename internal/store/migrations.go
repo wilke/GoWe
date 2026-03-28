@@ -251,6 +251,12 @@ var alterStatements = []struct {
 		column:   "datasets",
 		alterSQL: "ALTER TABLE workers ADD COLUMN datasets TEXT NOT NULL DEFAULT '{}'",
 	},
+	// Worker version (git commit hash)
+	{
+		table:    "workers",
+		column:   "version",
+		alterSQL: "ALTER TABLE workers ADD COLUMN version TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

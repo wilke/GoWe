@@ -114,6 +114,10 @@ type Options struct {
 	// ExtraBinds are additional bind mounts injected into containers.
 	// Used for pre-staged reference datasets and admin-specified paths.
 	ExtraBinds []ExtraBind
+
+	// SecretEnvVars are environment variables injected into containers.
+	// These are set by the worker admin and never stored in task data.
+	SecretEnvVars map[string]string
 }
 
 // Executor executes CWL CommandLineTools.

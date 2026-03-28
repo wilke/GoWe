@@ -15,6 +15,9 @@ import (
 	"github.com/me/gowe/pkg/staging"
 )
 
+// Version is set at build time via -ldflags.
+var Version = "dev"
+
 func main() {
 	var cfg worker.Config
 
@@ -62,6 +65,12 @@ func main() {
 	flag.StringVar(&preStageDir, "pre-stage-dir", "", "Directory with pre-staged datasets (auto-scanned, bind-mounted into containers)")
 	flag.Var(&stringSliceFlag{&extraBindPaths}, "extra-bind", "Extra bind mount path (repeatable, also comma-separated)")
 	flag.Var(&stringMapFlag{&datasetAliases}, "dataset", "Dataset alias 'id=path' (repeatable, also comma-separated)")
+
+	// Secret environment variables for containers.
+	var secretVars map[string]string
+	var secretFile string
+	flag.Var(&stringMapFlag{&secretVars}, "secret", "Secret env var 'NAME=value' injected into containers (repeatable, never sent to server)")
+	flag.StringVar(&secretFile, "secret-file", "", "File with secret env vars (NAME=value per line, # comments)")
 
 	// TLS flags (applies to server API + HTTPS staging).
 	var caCert string
@@ -155,6 +164,34 @@ func main() {
 	cfg.PreStageDir = preStageDir
 	cfg.ExtraBinds = extraBindPaths
 	cfg.Datasets = datasetAliases
+
+	// Wire build version.
+	cfg.Version = Version
+
+	// Wire secrets: merge --secret flags with --secret-file.
+	secrets := make(map[string]string)
+	if secretFile != "" {
+		loaded, err := parseSecretFile(secretFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load secret file: %v\n", err)
+			os.Exit(1)
+		}
+		for k, v := range loaded {
+			secrets[k] = v
+		}
+	}
+	for k, v := range secretVars {
+		secrets[k] = v // CLI flags override file entries
+	}
+	if len(secrets) > 0 {
+		cfg.Secrets = secrets
+		// Log secret names only, never values.
+		names := make([]string, 0, len(secrets))
+		for k := range secrets {
+			names = append(names, k)
+		}
+		logger.Info("loaded secrets", "names", names)
+	}
 
 	// Default worker name to hostname.
 	if cfg.Name == "" {
@@ -327,6 +364,32 @@ func (f *stringMapFlag) Set(val string) error {
 		(*f.values)[key] = value
 	}
 	return nil
+}
+
+// parseSecretFile reads a secrets file with NAME=value lines.
+// Lines starting with # and blank lines are skipped.
+func parseSecretFile(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	secrets := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key != "" {
+			secrets[key] = value
+		}
+	}
+	return secrets, nil
 }
 
 // parseStageMode parses a stage mode string.

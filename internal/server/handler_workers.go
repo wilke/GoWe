@@ -30,6 +30,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Hostname   string            `json:"hostname"`
 		Group      string            `json:"group"`
 		Runtime    string            `json:"runtime"`
+		Version    string            `json:"version"`
 		Labels     map[string]string `json:"labels"`
 		GPUEnabled bool              `json:"gpu_enabled"`
 		GPUDevice  string            `json:"gpu_device"`
@@ -78,6 +79,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Group:        group,
 		State:        model.WorkerStateOnline,
 		Runtime:      runtime,
+		Version:      req.Version,
 		GPUEnabled:   req.GPUEnabled,
 		GPUDevice:    req.GPUDevice,
 		Datasets:     req.Datasets,

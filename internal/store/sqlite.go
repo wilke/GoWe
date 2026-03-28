@@ -466,6 +466,35 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	return subs, total, rows.Err()
 }
 
+func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Time) (map[string]int, error) {
+	s.logger.Debug("sql", "op", "count_by_state", "table", "submissions", "since", since)
+
+	query := `SELECT state, COUNT(*) FROM submissions`
+	var args []any
+	if !since.IsZero() {
+		query += ` WHERE created_at >= ?`
+		args = append(args, since.Format(time.RFC3339Nano))
+	}
+	query += ` GROUP BY state`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var state string
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, err
+		}
+		counts[state] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submission) error {
 	s.logger.Debug("sql", "op", "update", "table", "submissions", "id", sub.ID)
 
@@ -1064,12 +1093,12 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
-		gpuEnabled, w.GPUDevice, string(datasetsJSON),
+		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version,
 	)
 	return err
 }
@@ -1082,10 +1111,10 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	var gpuEnabled int
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
 		 FROM workers WHERE id = ?`, id,
 	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON)
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1158,7 +1187,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
 		 FROM workers ORDER BY registered_at`)
 	if err != nil {
 		return nil, err
@@ -1172,7 +1201,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		var gpuEnabled int
 
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
 			return nil, err
 		}
 
@@ -1300,9 +1329,21 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		}
 
 		// Check worker group matching.
-		if workerGroup != "" && task.RuntimeHints != nil && task.RuntimeHints.WorkerGroup != "" {
-			if task.RuntimeHints.WorkerGroup != workerGroup {
-				continue // Task requires a different worker group
+		// A non-default worker only picks up tasks that target its group.
+		// A default worker picks up tasks with no group or group "default".
+		taskGroup := ""
+		if task.RuntimeHints != nil {
+			taskGroup = task.RuntimeHints.WorkerGroup
+		}
+		if workerGroup != "default" && workerGroup != "" {
+			// Non-default worker: only pick up tasks targeting this group.
+			if taskGroup != workerGroup {
+				continue
+			}
+		} else {
+			// Default worker: skip tasks targeting a specific non-default group.
+			if taskGroup != "" && taskGroup != "default" {
+				continue
 			}
 		}
 
@@ -1379,7 +1420,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	// Find stale workers first.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
 		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
 	if err != nil {
 		return nil, err
@@ -1392,7 +1433,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 		var gpuEnabled int
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
 			return nil, err
 		}
 		w.State = model.WorkerState(state)
