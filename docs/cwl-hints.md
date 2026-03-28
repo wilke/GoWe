@@ -35,6 +35,7 @@ hints:
 | Field | Type | Description |
 |-------|------|-------------|
 | `executor` | string | Execution backend: `local`, `worker`, `bvbrc` |
+| `worker_group` | string | Target worker group for task routing (e.g., `gpu`, `esmfold`) |
 | `bvbrc_app_id` | string | BV-BRC application ID (implies `executor: bvbrc`) |
 | `docker_image` | string | Container image override (takes priority over `DockerRequirement.dockerPull`) |
 
@@ -74,6 +75,23 @@ hints:
     executor: bvbrc
     bvbrc_app_id: GenomeAssembly2
 ```
+
+**Route to a specific worker group:**
+
+```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
+hints:
+  gowe:Execution:
+    worker_group: esmfold
+  DockerRequirement:
+    dockerPull: "esmfold.sif"
+```
+
+Only workers started with `--group esmfold` will pick up this task. Workers in the `default` group will skip it. This can also be combined with `gowe:ResourceData` for dataset affinity.
+
+The `--group` CLI flag on `gowe submit` sets a submission-level fallback: step-level `worker_group` hints take priority over the submission-level group.
 
 **Override container image:**
 
@@ -224,7 +242,7 @@ This tool:
 ```
 CWL hints
   ↓ parser/extractStepHints()
-model.StepHints (BVBRCAppID, ExecutorType, DockerImage, RequiredDatasets)
+model.StepHints (BVBRCAppID, ExecutorType, DockerImage, WorkerGroup, RequiredDatasets)
   ↓ scheduler/createTaskFromStep()
 model.Task.RuntimeHints
   ↓ store/CheckoutTask()
