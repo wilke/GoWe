@@ -140,8 +140,11 @@ var templateFuncs = template.FuncMap{
 		return s[:n]
 	},
 	"json": func(v any) string {
-		// Simple JSON output for debugging.
-		return fmt.Sprintf("%+v", v)
+		b, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			return fmt.Sprintf("%+v", v)
+		}
+		return string(b)
 	},
 	"seq": func(n int) []int {
 		// Generate a sequence 0..n-1 for iteration
@@ -1316,71 +1319,8 @@ var templates = map[string]string{
     </div>
     {{end}}
 
-    <!-- DAG Visualization -->
-    {{if and .Workflow (gt (len .Workflow.Steps) 0)}}
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
-        <div class="px-4 py-5 sm:px-6">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow Graph</h3>
-        </div>
-        <div class="border-t border-gray-200">
-            <div id="submission-dag-container"></div>
-        </div>
-    </div>
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const steps = {{toJSON .Workflow.Steps}};
-        const tasks = {{toJSON .Submission.Tasks}};
-        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
-            const app = Vue.createApp({
-                components: { DagEditor },
-                data() {
-                    return {
-                        steps: steps,
-                        tasks: tasks
-                    };
-                },
-                template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
-            });
-            app.mount('#submission-dag-container');
-        }
-    });
-    </script>
-    {{end}}
-
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
-        <div class="px-4 py-5 sm:px-6">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Submission Details</h3>
-        </div>
-        <div class="border-t border-gray-200">
-            <dl>
-                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Workflow</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
-                        <a href="/workflows/{{.Submission.WorkflowID}}" class="text-indigo-600 hover:text-indigo-500">
-                            {{.Submission.WorkflowName}}
-                        </a>
-                    </dd>
-                </div>
-                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Submitted By</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SubmittedBy}}</dd>
-                </div>
-                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Created</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Submission.CreatedAt}}</dd>
-                </div>
-                {{if .Submission.CompletedAt}}
-                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
-                    <dt class="text-sm font-medium text-gray-500">Completed</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTimePtr .Submission.CompletedAt}}</dd>
-                </div>
-                {{end}}
-            </dl>
-        </div>
-    </div>
-
     <!-- Tasks -->
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Tasks ({{len .Submission.Tasks}})</h3>
             {{if eq .Submission.State.String "FAILED"}}
@@ -1468,28 +1408,92 @@ var templates = map[string]string{
         </div>
     </div>
 
+    <!-- Submission Details -->
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Submission Details</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <dl>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Workflow</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                        <a href="/workflows/{{.Submission.WorkflowID}}" class="text-indigo-600 hover:text-indigo-500">
+                            {{.Submission.WorkflowName}}
+                        </a>
+                    </dd>
+                </div>
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Submitted By</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SubmittedBy}}</dd>
+                </div>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Created</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Submission.CreatedAt}}</dd>
+                </div>
+                {{if .Submission.CompletedAt}}
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Completed</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTimePtr .Submission.CompletedAt}}</dd>
+                </div>
+                {{end}}
+            </dl>
+        </div>
+    </div>
+
     <!-- Inputs -->
     {{if .Submission.Inputs}}
-    <div class="mt-6 bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Inputs</h3>
         </div>
         <div class="border-t border-gray-200 p-4">
-            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>{{json .Submission.Inputs}}</code></pre>
+            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm whitespace-pre-wrap break-words"><code>{{json .Submission.Inputs}}</code></pre>
         </div>
     </div>
     {{end}}
 
     <!-- Outputs -->
     {{if .Submission.Outputs}}
-    <div class="mt-6 bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900">Outputs</h3>
         </div>
         <div class="border-t border-gray-200 p-4">
-            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm"><code>{{json .Submission.Outputs}}</code></pre>
+            <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg text-sm whitespace-pre-wrap break-words"><code>{{json .Submission.Outputs}}</code></pre>
         </div>
     </div>
+    {{end}}
+
+    <!-- DAG Visualization -->
+    {{if and .Workflow (gt (len .Workflow.Steps) 0)}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Workflow Graph</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <div id="submission-dag-container"></div>
+        </div>
+    </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const steps = {{toJSON .Workflow.Steps}};
+        const tasks = {{toJSON .Submission.Tasks}};
+        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
+            const app = Vue.createApp({
+                components: { DagEditor },
+                data() {
+                    return {
+                        steps: steps,
+                        tasks: tasks
+                    };
+                },
+                template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
+            });
+            app.mount('#submission-dag-container');
+        }
+    });
+    </script>
     {{end}}
 </div>
 {{end}}`,
