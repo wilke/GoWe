@@ -313,6 +313,52 @@ bin/gowe-worker \
   --extra-bind /opt/licenses
 ```
 
+### Inject secrets into containers
+
+For tools that need authentication tokens (e.g., HuggingFace):
+
+```bash
+# Create a secrets file (chmod 600)
+cat > /path/to/secrets.env << 'EOF'
+# HuggingFace authentication
+HF_TOKEN=hf_abc123
+HUGGING_FACE_HUB_TOKEN=hf_abc123
+EOF
+chmod 600 /path/to/secrets.env
+
+# Start worker with secrets
+bin/gowe-worker \
+  --server http://localhost:8080 \
+  --runtime apptainer \
+  --image-dir /scout/containers/ \
+  --secret-file /path/to/secrets.env
+```
+
+Secrets are injected into every container but never sent to the server or stored in task data.
+
+### Route tasks to a specific worker group
+
+Use `gowe:Execution.worker_group` in CWL to target a group:
+
+```yaml
+hints:
+  gowe:Execution:
+    worker_group: esmfold
+```
+
+Then start a worker in that group:
+
+```bash
+bin/gowe-worker --server http://localhost:8080 --runtime apptainer \
+  --image-dir /scout/containers/ --group esmfold --gpu --gpu-id 3
+```
+
+Or override the group at submit time:
+
+```bash
+bin/gowe submit workflow.cwl -i job.json --group esmfold
+```
+
 ### Run multiple workers on one machine
 
 ```bash

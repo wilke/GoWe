@@ -5,12 +5,18 @@ The GoWe worker is a remote execution agent that polls the GoWe server for tasks
 ## Installation
 
 ```bash
-# From source
-go build -o gowe-worker ./cmd/worker
+# From source (with version tracking)
+COMMIT=$(git rev-parse HEAD)
+go build -ldflags "-X main.Version=$COMMIT" -o gowe-worker ./cmd/worker
+
+# Or via Makefile (automatically embeds git commit hash)
+make build
 
 # Or install globally
 go install github.com/me/gowe/cmd/worker@latest
 ```
+
+The worker reports its build version (git commit hash) during registration. This is visible in the workers UI and API, useful for verifying all workers run the same binary.
 
 ## Usage
 
@@ -77,6 +83,30 @@ gowe-worker --dataset boltz=/data/boltz --dataset chai=/data/chai
 # Comma-separated
 gowe-worker --extra-bind /scratch,/opt/licenses
 gowe-worker --dataset boltz=/data/boltz,chai=/data/chai
+```
+
+#### Secret Environment Variables
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--secret` | `""` | Secret env var `NAME=value` injected into containers (repeatable, never sent to server) |
+| `--secret-file` | `""` | File with secret env vars (`NAME=value` per line, `#` comments) |
+
+Secrets are injected into every container the worker runs. They are never sent to the server, stored in task data, or exposed in the API/UI/logs. Only secret names are logged at startup.
+
+```bash
+# Inline secrets (repeatable)
+gowe-worker --secret HF_TOKEN=hf_abc123 --secret API_KEY=xyz
+
+# From a file (CLI flags override file entries with same name)
+gowe-worker --secret-file /path/to/secrets.env
+```
+
+File format:
+```
+# HuggingFace authentication
+HF_TOKEN=hf_abc123
+HUGGING_FACE_HUB_TOKEN=hf_abc123
 ```
 
 #### TLS Configuration

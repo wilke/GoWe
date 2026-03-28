@@ -160,6 +160,8 @@ open http://localhost:8080/submissions
 | `--gpu` | Enable GPU passthrough | |
 | `--gpu-id` | Specific GPU device ID | `0` |
 | `--group` | Worker group for routing | `gpu-workers` |
+| `--secret` | Secret env var for containers (repeatable) | `HF_TOKEN=hf_abc` |
+| `--secret-file` | File with secret env vars | `/path/to/secrets.env` |
 
 ## Multi-Worker Setup
 
