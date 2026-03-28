@@ -76,6 +76,7 @@ type StepHints struct {
 	BVBRCAppID       string               `json:"bvbrc_app_id,omitempty"`
 	ExecutorType     ExecutorType          `json:"executor,omitempty"`
 	DockerImage      string               `json:"docker_image,omitempty"`
+	WorkerGroup      string               `json:"worker_group,omitempty"`
 	RequiredDatasets []DatasetRequirement  `json:"required_datasets,omitempty"`
 }
 

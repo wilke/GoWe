@@ -1,0 +1,7 @@
+{
+  "sequences": {
+    "class": "File",
+    "path": "test-esmfold/test.fasta"
+  },
+  "model_cache_dir": "/scout/wf/gowe/cache/hf"
+}

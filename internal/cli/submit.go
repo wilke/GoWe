@@ -15,6 +15,7 @@ func newSubmitCmd() *cobra.Command {
 	var inputsFile string
 	var dryRun bool
 	var noUpload bool
+	var workerGroup string
 
 	cmd := &cobra.Command{
 		Use:   "submit <workflow.cwl>",
@@ -85,9 +86,14 @@ func newSubmitCmd() *cobra.Command {
 			fmt.Printf("Workflow registered: %s\n", workflowID)
 
 			// 4. POST /api/v1/submissions
+			labels := map[string]string{}
+			if workerGroup != "" {
+				labels["worker_group"] = workerGroup
+			}
 			subReq := map[string]any{
 				"workflow_id": workflowID,
 				"inputs":      inputs,
+				"labels":      labels,
 			}
 
 			subPath := "/api/v1/submissions/"
@@ -122,6 +128,7 @@ func newSubmitCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&inputsFile, "inputs", "i", "", "Input values file (YAML/JSON)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate without executing")
 	cmd.Flags().BoolVar(&noUpload, "no-upload", false, "Disable file upload; assume files are accessible on workers")
+	cmd.Flags().StringVar(&workerGroup, "group", "", "Target worker group for task scheduling")
 	return cmd
 }
 

@@ -41,6 +41,7 @@ type Config struct {
 	OutDir                string              // Output directory for resolved output paths
 	RemoveDefaultListings bool                // Remove listings when loadListing is default (for worker/executor mode)
 	ExtraBinds            []toolexec.ExtraBind // Extra bind mounts for containers (pre-staged datasets, admin paths)
+	SecretEnvVars         map[string]string    // Secret env vars injected into containers (never logged or stored)
 }
 
 // Result holds the result of tool execution.
@@ -276,6 +277,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			Resources:         resources,
 			JobRequirements:   cfg.JobRequirements,
 			ExtraBinds:        cfg.ExtraBinds,
+			SecretEnvVars:     cfg.SecretEnvVars,
 		})
 
 	case "apptainer":
@@ -316,6 +318,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			Resources:       resources,
 			JobRequirements: cfg.JobRequirements,
 			ExtraBinds:      cfg.ExtraBinds,
+			SecretEnvVars:   cfg.SecretEnvVars,
 		})
 
 	default:
@@ -343,6 +346,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			Namespaces:      cfg.Namespaces,
 			JobRequirements: cfg.JobRequirements,
 			ExtraBinds:      cfg.ExtraBinds,
+			SecretEnvVars:   cfg.SecretEnvVars,
 		})
 	}
 

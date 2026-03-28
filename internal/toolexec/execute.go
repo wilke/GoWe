@@ -89,6 +89,11 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
 	}
 
+	// Add secret environment variables from worker config.
+	for name, value := range opts.SecretEnvVars {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+
 	// GPU support: set CUDA_VISIBLE_DEVICES for local execution.
 	if opts.GPU.Enabled && opts.GPU.DeviceID != "" {
 		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES="+opts.GPU.DeviceID)
@@ -392,6 +397,11 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
 
+	// Add secret environment variables from worker config.
+	for name, value := range opts.SecretEnvVars {
+		dockerArgs = append(dockerArgs, "-e", name+"="+value)
+	}
+
 	// Add image.
 	dockerArgs = append(dockerArgs, dockerImage)
 
@@ -601,6 +611,11 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// Set environment variables from EnvVarRequirement.
 	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
 	for name, value := range envVars {
+		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
+	}
+
+	// Add secret environment variables from worker config.
+	for name, value := range opts.SecretEnvVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
 

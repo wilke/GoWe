@@ -1927,6 +1927,7 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 			h.ExecutorType = model.ExecutorType(et)
 		}
 		h.DockerImage = stringField(goweMap, "docker_image")
+		h.WorkerGroup = stringField(goweMap, "worker_group")
 	}
 
 	// CWL standard DockerRequirement — check hints first, then requirements.
@@ -1976,7 +1977,7 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 		}
 	}
 
-	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && len(h.RequiredDatasets) == 0 {
+	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && h.WorkerGroup == "" && len(h.RequiredDatasets) == 0 {
 		return nil
 	}
 	return &h

@@ -13,16 +13,18 @@
 
 GO           := go
 GOFLAGS      ?=
-LDFLAGS      ?=
+VERSION      ?= $(shell git rev-parse HEAD 2>/dev/null || echo dev)
+LDFLAGS      ?= -X main.Version=$(VERSION)
 CGO_ENABLED  ?= 0
 
 BINDIR       := ./bin
 SCRIPTDIR    := ./scripts
 
-# Map cmd directory name -> binary name (cli -> gowe, rest unchanged)
-bin_name = $(if $(filter cli,$1),gowe,$1)
-# Map binary name -> cmd directory name (gowe -> cli, rest unchanged)
-cmd_for = $(if $(filter gowe,$1),cli,$1)
+# Map cmd directory name -> binary name
+# cli -> gowe, server -> gowe-server, worker -> gowe-worker, rest unchanged
+bin_name = $(if $(filter cli,$1),gowe,$(if $(filter server worker,$1),gowe-$1,$1))
+# Map binary name -> cmd directory name
+cmd_for = $(if $(filter gowe,$1),cli,$(if $(filter gowe-server,$1),server,$(if $(filter gowe-worker,$1),worker,$1)))
 
 COMMANDS     := cli server worker cwl-runner scheduler gen-cwl-tools smoke-test verify-bvbrc
 BINARIES     := $(foreach cmd,$(COMMANDS),$(BINDIR)/$(call bin_name,$(cmd)))
@@ -100,7 +102,7 @@ test-tier1: $(BINDIR)/cwl-runner $(BINDIR)/gowe
 	$(Q)$(SCRIPTDIR)/run-all-tests.sh -t 1 $(if $(filter 1,$(VERBOSE)),-v)
 
 ## test-tier2: Run Tier 2 tests only (server modes)
-test-tier2: $(BINDIR)/server $(BINDIR)/worker $(BINDIR)/gowe
+test-tier2: $(BINDIR)/gowe-server $(BINDIR)/gowe-worker $(BINDIR)/gowe
 	$(Q)$(SCRIPTDIR)/run-all-tests.sh -t 2 $(if $(filter 1,$(VERBOSE)),-v)
 
 ## test-staging: Run staging backend tests

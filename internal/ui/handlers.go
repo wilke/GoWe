@@ -150,42 +150,29 @@ func (ui *UI) HandleLogout(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	// Get workflow count.
+	// Get workflow count and recent workflows.
 	workflows, workflowCount, _ := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 5})
 
 	// Get recent submissions.
-	submissions, submissionCount, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 5})
+	submissions, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 5})
 
-	// Compute submission stats by state.
-	pendingCount := 0
-	runningCount := 0
-	completedCount := 0
-	failedCount := 0
-	for _, sub := range submissions {
-		switch sub.State {
-		case model.SubmissionStatePending:
-			pendingCount++
-		case model.SubmissionStateRunning:
-			runningCount++
-		case model.SubmissionStateCompleted:
-			completedCount++
-		case model.SubmissionStateFailed:
-			failedCount++
-		}
-	}
+	// Count submissions by state for the last 24 hours.
+	since24h := time.Now().UTC().Add(-24 * time.Hour)
+	stats24h, _ := ui.store.CountSubmissionsByState(r.Context(), since24h)
+
+	// Count currently running (all time — running is a live state).
+	allStats, _ := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
 
 	data := map[string]any{
 		"Title":             "Dashboard - GoWe",
 		"Session":           sess,
 		"WorkflowCount":     workflowCount,
-		"SubmissionCount":   submissionCount,
 		"RecentWorkflows":   workflows,
 		"RecentSubmissions": submissions,
 		"Stats": map[string]int{
-			"Pending":   pendingCount,
-			"Running":   runningCount,
-			"Completed": completedCount,
-			"Failed":    failedCount,
+			"Running":   allStats["RUNNING"],
+			"Completed": stats24h["COMPLETED"],
+			"Failed":    stats24h["FAILED"],
 		},
 		"Uptime": time.Since(ui.startTime).Round(time.Second).String(),
 	}
@@ -269,6 +256,19 @@ func (ui *UI) HandleWorkflowDelete(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
+	// View mode: "cards" (default) or "table".
+	viewMode := r.URL.Query().Get("view")
+	if viewMode != "table" {
+		viewMode = "cards"
+	}
+	// Default page sizes: 9 for cards (3x3 grid), 20 for table.
+	if r.URL.Query().Get("limit") == "" {
+		if viewMode == "table" {
+			opts.Limit = 20
+		} else {
+			opts.Limit = 9
+		}
+	}
 
 	// Parse date filters
 	dateStart := r.URL.Query().Get("date_start")
@@ -314,6 +314,7 @@ func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 		"StateFilter": opts.State,
 		"DateStart":   dateStart,
 		"DateEnd":     dateEnd,
+		"ViewMode":    viewMode,
 	}
 	ui.render(w, "submissions/list", data)
 }
@@ -787,18 +788,26 @@ func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Count offline workers for the purge button.
+	// Build task→submission map for linking current tasks.
 	offlineCount := 0
+	taskSubmission := map[string]string{}
 	for _, wk := range workers {
 		if wk.State == model.WorkerStateOffline {
 			offlineCount++
 		}
+		if wk.CurrentTask != "" {
+			if t, err := ui.store.GetTask(r.Context(), wk.CurrentTask); err == nil && t != nil {
+				taskSubmission[wk.CurrentTask] = t.SubmissionID
+			}
+		}
 	}
 
 	data := map[string]any{
-		"Title":        "Workers - GoWe",
-		"Session":      sess,
-		"Workers":      workers,
-		"OfflineCount": offlineCount,
+		"Title":          "Workers - GoWe",
+		"Session":        sess,
+		"Workers":        workers,
+		"OfflineCount":   offlineCount,
+		"TaskSubmission": taskSubmission,
 	}
 	ui.render(w, "workers", data)
 }
@@ -849,11 +858,48 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 	_, workflowCount, _ := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 1})
 	_, submissionCount, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 1})
 
-	// Get submissions by state.
-	pending, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{State: "PENDING", Limit: 1000})
-	running, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{State: "RUNNING", Limit: 1000})
-	completed, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{State: "COMPLETED", Limit: 1000})
-	failed, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{State: "FAILED", Limit: 1000})
+	// All-time stats (for Running/Pending which are live states).
+	allStats, _ := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+
+	// Time-period breakdowns.
+	now := time.Now().UTC()
+	periods := []struct {
+		Label string
+		Since time.Time
+	}{
+		{"Hour", now.Add(-1 * time.Hour)},
+		{"Day", now.Add(-24 * time.Hour)},
+		{"Week", now.Add(-7 * 24 * time.Hour)},
+		{"Month", now.Add(-30 * 24 * time.Hour)},
+		{"Year", now.Add(-365 * 24 * time.Hour)},
+		{"All", time.Time{}},
+	}
+
+	type periodStats struct {
+		Label     string
+		Running   int
+		Completed int
+		Failed    int
+		Cancelled int
+		Total     int
+	}
+
+	var breakdown []periodStats
+	for _, p := range periods {
+		counts, _ := ui.store.CountSubmissionsByState(r.Context(), p.Since)
+		total := 0
+		for _, c := range counts {
+			total += c
+		}
+		breakdown = append(breakdown, periodStats{
+			Label:     p.Label,
+			Running:   counts["RUNNING"],
+			Completed: counts["COMPLETED"],
+			Failed:    counts["FAILED"],
+			Cancelled: counts["CANCELLED"],
+			Total:     total,
+		})
+	}
 
 	data := map[string]any{
 		"Title":           "System Stats - GoWe",
@@ -861,12 +907,13 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 		"WorkflowCount":   workflowCount,
 		"SubmissionCount": submissionCount,
 		"SubmissionStats": map[string]int{
-			"Pending":   len(pending),
-			"Running":   len(running),
-			"Completed": len(completed),
-			"Failed":    len(failed),
+			"Pending":   allStats["PENDING"],
+			"Running":   allStats["RUNNING"],
+			"Completed": allStats["COMPLETED"],
+			"Failed":    allStats["FAILED"],
 		},
-		"Uptime": time.Since(ui.startTime).Round(time.Second).String(),
+		"Breakdown": breakdown,
+		"Uptime":    time.Since(ui.startTime).Round(time.Second).String(),
 	}
 	ui.render(w, "admin/stats", data)
 }
@@ -1343,6 +1390,12 @@ func (ui *UI) buildPagination(opts model.ListOptions, total int) map[string]any 
 	hasMore := opts.Offset+opts.Limit < total
 	hasPrev := opts.Offset > 0
 
+	// Last page offset: largest multiple of limit that is < total.
+	lastOffset := 0
+	if total > opts.Limit {
+		lastOffset = ((total - 1) / opts.Limit) * opts.Limit
+	}
+
 	return map[string]any{
 		"Total":      total,
 		"Limit":      opts.Limit,
@@ -1351,6 +1404,9 @@ func (ui *UI) buildPagination(opts model.ListOptions, total int) map[string]any 
 		"HasPrev":    hasPrev,
 		"NextOffset": opts.Offset + opts.Limit,
 		"PrevOffset": max(0, opts.Offset-opts.Limit),
+		"LastOffset": lastOffset,
+		"Page":       (opts.Offset / opts.Limit) + 1,
+		"TotalPages": ((total - 1) / max(opts.Limit, 1)) + 1,
 	}
 }
 

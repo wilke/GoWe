@@ -54,6 +54,7 @@ func (c *Client) WorkerID() string {
 type RegisterOptions struct {
 	GPUEnabled bool
 	GPUDevice  string
+	Version    string            // Build version (git commit hash)
 	Datasets   map[string]string // Dataset ID → host path
 }
 
@@ -69,6 +70,9 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		if opts[0].GPUEnabled {
 			reg["gpu_enabled"] = true
 			reg["gpu_device"] = opts[0].GPUDevice
+		}
+		if opts[0].Version != "" {
+			reg["version"] = opts[0].Version
 		}
 		if len(opts[0].Datasets) > 0 {
 			reg["datasets"] = opts[0].Datasets

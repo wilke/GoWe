@@ -830,6 +830,15 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		if step.Hints.BVBRCAppID != "" {
 			task.BVBRCAppID = step.Hints.BVBRCAppID
 		}
+		// Propagate worker group from step hints to task runtime hints.
+		if step.Hints.WorkerGroup != "" {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			if task.RuntimeHints.WorkerGroup == "" {
+				task.RuntimeHints.WorkerGroup = step.Hints.WorkerGroup
+			}
+		}
 		// Propagate dataset requirements from step hints to task runtime hints.
 		if len(step.Hints.RequiredDatasets) > 0 {
 			if task.RuntimeHints == nil {
@@ -837,6 +846,18 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 			}
 			if len(task.RuntimeHints.RequiredDatasets) == 0 {
 				task.RuntimeHints.RequiredDatasets = step.Hints.RequiredDatasets
+			}
+		}
+	}
+
+	// Submission-level worker group (from labels) as fallback.
+	if sub.Labels != nil {
+		if wg := sub.Labels["worker_group"]; wg != "" {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			if task.RuntimeHints.WorkerGroup == "" {
+				task.RuntimeHints.WorkerGroup = wg
 			}
 		}
 	}

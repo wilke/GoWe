@@ -42,6 +42,7 @@ type Worker struct {
 	inputPathMap      map[string]string // Input path mapping for host->container translation
 	extraBinds        []toolexec.ExtraBind // Extra bind mounts for containers
 	datasets          map[string]string   // Merged dataset map: ID → host path
+	secrets           map[string]string   // Secret env vars injected into containers
 	logger            *slog.Logger
 }
 
@@ -91,6 +92,13 @@ type Config struct {
 	// Datasets are explicit dataset aliases: id → path.
 	// Additive with auto-discovered datasets from PreStageDir.
 	Datasets map[string]string
+
+	// Secrets are environment variables injected into every container.
+	// Never sent to the server or stored in task data.
+	Secrets map[string]string
+
+	// Version is the build version (git commit hash), sent during registration.
+	Version string
 }
 
 // GPUWorkerConfig holds GPU settings for the worker.
@@ -325,6 +333,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		inputPathMap:      cfg.InputPathMap,
 		extraBinds:        extraBinds,
 		datasets:          datasets,
+		secrets:           cfg.Secrets,
 		logger:            logger.With("component", "worker"),
 	}, nil
 }
@@ -340,6 +349,7 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	regOpts := RegisterOptions{
 		GPUEnabled: w.gpu.Enabled,
 		GPUDevice:  w.gpu.DeviceID,
+		Version:    cfg.Version,
 		Datasets:   w.datasets,
 	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
@@ -492,6 +502,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		ResolveSecondary:      true,
 		RemoveDefaultListings: true,
 		ExtraBinds:            w.extraBinds,
+		SecretEnvVars:         w.secrets,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
