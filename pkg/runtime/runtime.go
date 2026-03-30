@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // Runtime executes commands, optionally inside a container.
@@ -72,7 +73,23 @@ func (r *osCommandRunner) Run(ctx context.Context, name string, args ...string) 
 
 // New creates a Runtime based on the runtime name.
 // Supported names: "docker", "apptainer", "none", "" (bare).
+// For comma-separated values (e.g. "none,apptainer"), the preferred container
+// runtime is selected (first docker/apptainer found), falling back to bare.
 func New(name string) (Runtime, error) {
+	// Handle comma-separated multi-runtime (e.g. "none,apptainer").
+	if strings.Contains(name, ",") {
+		for _, part := range strings.Split(name, ",") {
+			part = strings.TrimSpace(part)
+			switch part {
+			case "docker":
+				return NewDocker(), nil
+			case "apptainer":
+				return NewApptainer(), nil
+			}
+		}
+		// No container runtime found — fall back to bare.
+		return NewBare(), nil
+	}
 	switch name {
 	case "docker":
 		return NewDocker(), nil

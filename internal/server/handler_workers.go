@@ -66,10 +66,17 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runtime := model.ContainerRuntime(req.Runtime)
-	if runtime == "" {
-		runtime = model.RuntimeNone
+	runtimeStr := req.Runtime
+	if runtimeStr == "" {
+		runtimeStr = string(model.RuntimeNone)
 	}
+	if err := model.ValidateRuntimes(runtimeStr); err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError(err.Error(),
+				model.FieldError{Field: "runtime", Message: err.Error()}))
+		return
+	}
+	runtime := model.ContainerRuntime(runtimeStr)
 
 	now := time.Now().UTC()
 	worker := &model.Worker{

@@ -338,7 +338,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	return &Worker{
 		client:            client,
 		runtime:           rt,
-		containerRuntime:  cfg.Runtime,
+		containerRuntime:  model.PreferredContainerRuntime(model.ContainerRuntime(cfg.Runtime)),
 		stager:            stager,
 		httpStager:        httpStager,
 		wsStager:          wsStager,

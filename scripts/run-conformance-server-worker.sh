@@ -15,6 +15,8 @@
 # Options:
 #   -p, --port PORT          Port for server (default: 8094)
 #   -w, --workers N          Number of workers (default: 2)
+#   -r, --runtime RUNTIMES   Worker runtime(s), comma-separated (default: none)
+#                            Examples: none, apptainer, none,apptainer
 #   -g, --gpu-ids IDS        Comma-separated GPU IDs (e.g., "6,7")
 #   -j, --parallel N         Parallel cwltest jobs (default: 4)
 #   -t, --timeout SECS       Per-test timeout (default: 60)
@@ -24,7 +26,9 @@
 #   -h, --help               Show this help message
 #
 # Examples:
-#   ./scripts/run-conformance-server-worker.sh                       # All tests, 2 workers
+#   ./scripts/run-conformance-server-worker.sh                       # All tests, 2 workers, bare
+#   ./scripts/run-conformance-server-worker.sh -r apptainer          # Workers with apptainer
+#   ./scripts/run-conformance-server-worker.sh -r none,apptainer     # Workers with both runtimes
 #   ./scripts/run-conformance-server-worker.sh -g 6,7                # Workers on GPU 6,7
 #   ./scripts/run-conformance-server-worker.sh -n 87,239             # Specific tests
 #   ./scripts/run-conformance-server-worker.sh -w 1 -g 0 required   # 1 worker, required only
@@ -40,6 +44,7 @@ cd "$PROJECT_DIR"
 # Default values
 PORT=8094
 NUM_WORKERS=2
+WORKER_RUNTIME="none,apptainer"
 GPU_IDS=""
 PARALLEL=4
 TEST_TIMEOUT=60
@@ -70,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--port)       PORT="$2"; shift 2 ;;
         -w|--workers)    NUM_WORKERS="$2"; shift 2 ;;
+        -r|--runtime)    WORKER_RUNTIME="$2"; shift 2 ;;
         -g|--gpu-ids)    GPU_IDS="$2"; shift 2 ;;
         -j|--parallel)   PARALLEL="$2"; shift 2 ;;
         -t|--timeout)    TEST_TIMEOUT="$2"; shift 2 ;;
@@ -142,7 +148,7 @@ if curl -sf "${SERVER_URL}/api/v1/health" > /dev/null 2>&1; then
 fi
 
 log_header "CWL v1.2 Conformance Tests (Server-Worker)"
-log_info "Port: ${PORT}, Workers: ${NUM_WORKERS}, GPUs: ${GPU_IDS:-none}"
+log_info "Port: ${PORT}, Workers: ${NUM_WORKERS}, Runtime: ${WORKER_RUNTIME}, GPUs: ${GPU_IDS:-none}"
 log_info "Stall timeout: ${STALL_TIMEOUT}s"
 log_info "Report: ${REPORT}"
 
@@ -201,7 +207,7 @@ for i in $(seq 1 "$NUM_WORKERS"); do
 
     ./bin/gowe-worker \
         --server "$SERVER_URL" \
-        --runtime none \
+        --runtime "$WORKER_RUNTIME" \
         --name "worker-${i}" \
         --workdir "$WORK_DIR/workdir/w${i}" \
         --stage-out "file://$WORK_DIR/uploads" \

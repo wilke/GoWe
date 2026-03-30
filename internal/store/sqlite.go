@@ -1338,11 +1338,25 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	}
 
 	// Filter by runtime capability, worker group, and dataset affinity.
+	canRunContainers := model.HasContainerRuntime(runtime)
+
 	var selected *model.Task
 	bestCacheScore := -1
 	for _, task := range candidates {
-		// Runtime=none workers run tasks bare (ignoring container requirements).
-		// All container runtimes (docker/apptainer) can run any task.
+		// Check container runtime capability.
+		// If a task has a DockerImage (from DockerRequirement), the worker must
+		// have a container runtime (docker or apptainer) to execute it.
+		// Workers with only runtime=none cannot run containerized tasks.
+		taskNeedsContainer := false
+		if task.RuntimeHints != nil && task.RuntimeHints.DockerImage != "" {
+			taskNeedsContainer = true
+		}
+		if img, ok := task.Inputs["_docker_image"].(string); ok && img != "" {
+			taskNeedsContainer = true
+		}
+		if taskNeedsContainer && !canRunContainers {
+			continue
+		}
 
 		// Check worker group matching.
 		// A non-default worker only picks up tasks that target its group.

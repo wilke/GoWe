@@ -38,6 +38,9 @@ func main() {
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
 	workspaceStaging := flag.String("workspace-staging", "", "Workspace staging mode: 'server' (pre/post-stage ws:// on server) or empty (passthrough to workers)")
 	wsStagingURL := flag.String("workspace-url", "", "BV-BRC Workspace service URL for server-side staging (default: production)")
+	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
+	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
+	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
 
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
@@ -263,6 +266,9 @@ func main() {
 	schedCfg.PollInterval = *schedulerPoll
 	schedCfg.DefaultExecutor = cfg.DefaultExecutor
 	schedCfg.WorkspaceStaging = *workspaceStaging
+	schedCfg.PreflightDeferralTicks = *preflightDeferral
+	schedCfg.StuckTaskThreshold = *stuckTaskThreshold
+	schedCfg.StuckTaskAction = *stuckTaskAction
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
 	// Configure server-side workspace staging if requested.
