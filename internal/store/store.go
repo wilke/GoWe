@@ -23,6 +23,7 @@ type Store interface {
 	GetSubmission(ctx context.Context, id string) (*model.Submission, error)
 	ListSubmissions(ctx context.Context, opts model.ListOptions) ([]*model.Submission, int, error)
 	UpdateSubmission(ctx context.Context, sub *model.Submission) error
+	UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error
 	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)
 	CountSubmissionsByState(ctx context.Context, since time.Time) (map[string]int, error)
 

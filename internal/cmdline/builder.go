@@ -187,7 +187,7 @@ func (b *Builder) BuildWithOptions(tool *cwl.CommandLineTool, inputs map[string]
 			continue
 		}
 
-		if input.InputBinding == nil {
+		if input.InputBinding == nil && input.ItemInputBinding == nil {
 			continue
 		}
 
@@ -395,6 +395,22 @@ func (b *Builder) buildArgument(arg cwl.ArgumentEntry, index int, inputs map[str
 func (b *Builder) buildInputBinding(name string, input *cwl.ToolInputParam, value any, inputs map[string]any, runtime *cwlexpr.RuntimeContext) (*cmdPart, error) {
 	binding := input.InputBinding
 	if binding == nil {
+		// No top-level binding, but if there's an item-level binding for array items,
+		// we still need to process the value to generate per-item flags.
+		if input.ItemInputBinding != nil && value != nil {
+			ctx := cwlexpr.NewContext(inputs).WithSelf(value)
+			pos, _ := b.evaluatePosition(input.ItemInputBinding.Position, ctx)
+			if arrVal, ok := value.([]any); ok {
+				return b.buildArrayInputBinding(name, input, arrVal, pos, ctx)
+			}
+			if arrVal, ok := value.([]map[string]any); ok {
+				converted := make([]any, len(arrVal))
+				for i, v := range arrVal {
+					converted[i] = v
+				}
+				return b.buildArrayInputBinding(name, input, converted, pos, ctx)
+			}
+		}
 		return nil, nil
 	}
 
@@ -504,7 +520,7 @@ func (b *Builder) buildArrayInputBinding(name string, input *cwl.ToolInputParam,
 	itemBinding := input.ItemInputBinding
 
 	// If itemSeparator is set, join all values with that separator.
-	if binding.ItemSeparator != "" {
+	if binding != nil && binding.ItemSeparator != "" {
 		var items []string
 		for _, item := range values {
 			s := inputValueToString(item, "")
@@ -538,7 +554,7 @@ func (b *Builder) buildArrayInputBinding(name string, input *cwl.ToolInputParam,
 	var args []string
 
 	// Array-level prefix appears once before all items.
-	if binding.Prefix != "" {
+	if binding != nil && binding.Prefix != "" {
 		args = append(args, binding.Prefix)
 	}
 

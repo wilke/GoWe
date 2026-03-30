@@ -406,16 +406,21 @@ func (c *Client) WorkspaceGetDownloadURL(ctx context.Context, paths []string) (m
 		return nil, err
 	}
 
-	var rawResult []map[string]string
+	// The API returns [[url1], [url2], ...] — an array of single-element arrays,
+	// one per requested path, in the same order.
+	var rawResult [][]string
 	if err := json.Unmarshal(resp.Result, &rawResult); err != nil {
 		return nil, WrapError("WorkspaceGetDownloadURL", fmt.Errorf("unmarshaling result: %w", err))
 	}
 
-	if len(rawResult) == 0 {
-		return map[string]string{}, nil
+	result := make(map[string]string, len(paths))
+	for i, urls := range rawResult {
+		if i < len(paths) && len(urls) > 0 {
+			result[paths[i]] = urls[0]
+		}
 	}
 
-	return rawResult[0], nil
+	return result, nil
 }
 
 // parseWorkspaceObjectTuple parses a workspace object tuple into a WorkspaceObject.

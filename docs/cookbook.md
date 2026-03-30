@@ -564,3 +564,74 @@ Common causes:
 - Output glob pattern doesn't match actual filenames
 - Tool wrote to wrong directory (use `$(runtime.outdir)` in CWL)
 - Container exited with error but GoWe captured partial outputs
+
+---
+
+## BV-BRC Workspace Staging
+
+GoWe supports staging files to/from BV-BRC workspaces using `ws://` URIs. Two deployment modes are available.
+
+### Mode A: Worker-side staging (cloud/distributed workers)
+
+Workers download `ws://` inputs and upload outputs directly. Best when workers have internet access.
+
+```bash
+# Server (normal, no workspace flags needed)
+bin/gowe-server --addr :8080 --default-executor worker --allow-anonymous
+
+# Worker with workspace staging enabled
+bin/gowe-worker \
+  --server http://localhost:8080 \
+  --runtime apptainer \
+  --workspace-stager \
+  --image-dir /scout/containers/
+```
+
+Submit with workspace inputs — the user's BV-BRC token is passed via the Authorization header:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Authorization: $(cat ~/.bvbrc_token)" \
+  -d '{
+    "workflow_id": "wf_...",
+    "inputs": {
+      "seq": {"class": "File", "location": "ws:///awilke@bvbrc/home/test.fasta"}
+    }
+  }'
+```
+
+### Mode B: Server-side staging (HPC/isolated compute)
+
+The server pre-stages `ws://` inputs to local files before dispatching, and uploads outputs after completion. Best when workers run on isolated HPC nodes without internet.
+
+```bash
+# Server pre/post-stages workspace files
+bin/gowe-server --addr :8080 --workspace-staging server --default-executor worker
+
+# Worker (no workspace flags needed — never sees ws:// URIs)
+bin/gowe-worker \
+  --server http://localhost:8080 \
+  --runtime apptainer \
+  --image-dir /scout/containers/
+```
+
+Submit with an output destination to get results uploaded back to the workspace:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Authorization: $(cat ~/.bvbrc_token)" \
+  -d '{
+    "workflow_id": "wf_...",
+    "inputs": {
+      "seq": {"class": "File", "location": "ws:///awilke@bvbrc/home/test.fasta"}
+    },
+    "output_destination": "ws:///awilke@bvbrc/home/results/"
+  }'
+```
+
+Check output delivery status:
+
+```bash
+curl http://localhost:8080/api/v1/submissions/sub_... | jq '.data.output_state'
+# → "delivered"
+```

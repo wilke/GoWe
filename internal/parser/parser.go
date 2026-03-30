@@ -1225,7 +1225,20 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 
 	// Parse item-level inputBinding from array type definition.
 	// Example: type: { type: array, items: File, inputBinding: { prefix: "-YYY" } }
-	if typeMap, ok := val["type"].(map[string]any); ok {
+	// Also handles union types like ["null", {type: array, items: File, inputBinding: ...}].
+	typeMap, _ := val["type"].(map[string]any)
+	if typeMap == nil {
+		// Union type: find the array or record member.
+		if typeArr, ok := val["type"].([]any); ok {
+			for _, member := range typeArr {
+				if m, ok := member.(map[string]any); ok {
+					typeMap = m
+					break
+				}
+			}
+		}
+	}
+	if typeMap != nil {
 		if typeMap["type"] == "array" {
 			if itemIB, ok := typeMap["inputBinding"].(map[string]any); ok {
 				inp.ItemInputBinding = parseInputBinding(itemIB)

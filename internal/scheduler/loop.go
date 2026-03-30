@@ -26,9 +26,10 @@ import (
 
 // Config holds scheduler configuration.
 type Config struct {
-	PollInterval    time.Duration
-	MaxRetries      int    // Default max retries for tasks (0 = no retries).
-	DefaultExecutor string // Server-wide default executor (overrides CWL hints). Empty = hint-based.
+	PollInterval     time.Duration
+	MaxRetries       int    // Default max retries for tasks (0 = no retries).
+	DefaultExecutor  string // Server-wide default executor (overrides CWL hints). Empty = hint-based.
+	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 }
 
 // DefaultConfig returns sensible defaults.
@@ -48,6 +49,9 @@ type Loop struct {
 
 	// Cached per-tick: whether any online workers exist.
 	cachedHasWorkers *bool
+
+	// wsStager handles server-side workspace pre/post-staging (nil if disabled).
+	wsStager wsStagerInterface
 }
 
 // NewLoop creates a new scheduler loop.
@@ -107,6 +111,13 @@ func (l *Loop) Tick(ctx context.Context) error {
 		return fmt.Errorf("phase 1 (waiting): %w", err)
 	}
 
+	// Phase 1.5: Pre-stage workspace inputs for PENDING submissions (server-side mode).
+	if l.wsStager != nil {
+		if err := l.prestageWorkspaceInputs(ctx, affected); err != nil {
+			return fmt.Errorf("phase 1.5 (pre-stage): %w", err)
+		}
+	}
+
 	// Phase 2: Dispatch READY StepInstances — resolve inputs, create Tasks, submit to executors.
 	if err := l.dispatchReady(ctx, affected); err != nil {
 		return fmt.Errorf("phase 2 (dispatch): %w", err)
@@ -130,6 +141,13 @@ func (l *Loop) Tick(ctx context.Context) error {
 	// Phase 5: Finalize submissions where all StepInstances are terminal.
 	if err := l.finalizeSubmissions(ctx, affected); err != nil {
 		return fmt.Errorf("phase 5 (finalize): %w", err)
+	}
+
+	// Phase 5.5: Upload outputs to workspace for completed submissions (server-side mode).
+	if l.wsStager != nil {
+		if err := l.poststageWorkspaceOutputs(ctx, affected); err != nil {
+			return fmt.Errorf("phase 5.5 (post-stage): %w", err)
+		}
 	}
 
 	// Phase 6: Transition newly-FAILED tasks to RETRYING if retries remain.
@@ -926,6 +944,14 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 			Type:  "bearer",
 			Token: sub.UserToken,
 		}
+	}
+
+	// Propagate output destination so workers can stage outputs to the right place.
+	if sub.OutputDestination != "" {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
+		}
+		task.RuntimeHints.OutputDestination = sub.OutputDestination
 	}
 }
 

@@ -168,6 +168,25 @@ gowe-worker \
 | `--shock-token` | `""` | Shock authentication token (env: `SHOCK_TOKEN`) |
 | `--shock-use-http` | `false` | Use HTTP instead of HTTPS (local development) |
 
+#### Workspace Staging (BV-BRC)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace-stager` | `false` | Enable `ws://` workspace staging for BV-BRC files |
+| `--workspace-url` | `""` | BV-BRC Workspace service URL (default: production) |
+
+When enabled, the worker can stage files in/out of BV-BRC workspaces using `ws://` URIs. Authentication tokens are passed per-task from the submission's user token.
+
+```bash
+# Worker with workspace staging
+gowe-worker --server http://localhost:8080 --runtime apptainer \
+  --workspace-stager --image-dir /scout/containers/
+
+# Worker with workspace stage-out
+gowe-worker --server http://localhost:8080 --runtime apptainer \
+  --workspace-stager --stage-out ws:// --image-dir /scout/containers/
+```
+
 #### Shared Filesystem Staging
 
 | Flag | Default | Description |

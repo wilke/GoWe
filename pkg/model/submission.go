@@ -23,6 +23,13 @@ type Submission struct {
 	// scheduler to execute a sub-workflow step on behalf of a parent task.
 	ParentTaskID string `json:"parent_task_id,omitempty"`
 
+	// OutputDestination is a target URI for uploading outputs after completion
+	// (e.g., "ws:///user@bvbrc/home/results/").
+	OutputDestination string `json:"output_destination,omitempty"`
+
+	// OutputState tracks the output upload lifecycle: "" | "uploading" | "delivered" | "upload_failed".
+	OutputState string `json:"output_state,omitempty"`
+
 	// Authentication token fields (not serialized to JSON responses).
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time

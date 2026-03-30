@@ -108,6 +108,12 @@ func main() {
 	flag.BoolVar(&s3PathStyle, "s3-path-style", false, "Use path-style S3 addressing (required for MinIO)")
 	flag.BoolVar(&s3DisableSSL, "s3-disable-ssl", false, "Disable SSL for S3 (local development only)")
 
+	// Workspace stager flags.
+	var workspaceStager bool
+	var workspaceURL string
+	flag.BoolVar(&workspaceStager, "workspace-stager", false, "Enable workspace (ws://) staging for BV-BRC workspace files")
+	flag.StringVar(&workspaceURL, "workspace-url", "", "BV-BRC Workspace service URL (default: production)")
+
 	// Shock stager flags.
 	var shockHost string
 	var shockToken string
@@ -243,6 +249,10 @@ func main() {
 	cfg.Stager.S3.DefaultBucket = s3Bucket
 	cfg.Stager.S3.UsePathStyle = s3PathStyle
 	cfg.Stager.S3.DisableSSL = s3DisableSSL
+
+	// Workspace stager configuration.
+	cfg.WorkspaceStager = workspaceStager
+	cfg.WorkspaceURL = workspaceURL
 
 	// Shock configuration.
 	if shockToken == "" {
