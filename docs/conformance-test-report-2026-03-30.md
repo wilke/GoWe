@@ -1,7 +1,7 @@
 # CWL v1.2 Conformance Test Report
 
 - **Date**: 2026-03-30
-- **Version**: `0e80f8b` (branch: `feature/worker`)
+- **Version**: `0e80f8b` → `b12e015+fixes` (branch: `feature/worker`)
 - **Platform**: Linux 6.8.0-94-generic, Apptainer (no Docker)
 - **Test suite**: CWL v1.2 conformance (`testdata/cwl-v1.2/conformance_tests.yaml`, 378 tests)
 - **Parallelism**: `-j4`, timeout 60s per test
@@ -14,7 +14,7 @@
 |------|--------|--------|-----------|
 | **cwl-runner** (direct) | 377 | 1 | 99.7% |
 | **server-local** (executor: local) | 360 | 18 | 95.2% |
-| **server-worker** (executor: worker) | — | — | Blocked (scheduler spin loop) |
+| **server-worker** (executor: worker, runtime: none) | 368 | 10 | 97.4% |
 
 ---
 
@@ -245,13 +245,29 @@ Tests 87, 88, 90, 96, 140, 141, 239, 244, 247, 248, 371
 |---|------|-------|
 | 227 | `networkaccess_disabled` | Same platform limitation as cwl-runner |
 
-### server-worker: NOT COMPLETED
+### server-worker (runtime: none): 10 failures
 
-The scheduler entered a spin loop polling a sub-workflow task (child submission with `count-lines1-wf`). The scheduler's phase 4 (poll in-flight tasks) continuously queries the child task without advancing, blocking all other scheduler ticks. All 20 pending submissions remained in `PENDING` state with no step instances created.
+| # | Test | Category | Error |
+|---|------|----------|-------|
+| 54 | `revsort` | Sub-workflow | Multi-step sub-workflow timed out (scheduler blocks during child execution) |
+| 107 | `docker_output_dir` | Docker-specific | Requires container with `dockerOutputDirectory` — impossible with runtime=none |
+| 114 | `revsort-packed` | Sub-workflow | Same as 54 (packed format) |
+| 177 | `docker_run_cmd` | Docker-specific | Requires `CMD` from Docker image |
+| 207 | `secondary_files_missing` | Record secondaryFiles | Same as server-local (**required tag**) |
+| 227 | `networkaccess_disabled` | Network isolation | Same platform limitation as cwl-runner |
+| 235 | `symlink_illegal` | Symlink handling | Illegal symlink detection not enforced in worker staging |
+| 237 | `modify_file_content` | Inplace update | Same as server-local |
+| 238 | `modify_directory_content` | Inplace update | Same as server-local |
+| 335 | `iwd_container_entryname1` | IWDR container | InitialWorkDirRequirement with container entryname |
 
-**Root cause**: Scheduler spin loop when a sub-workflow child submission's task is assigned to a worker but never completed. The worker polls for work but gets 204 (no work), while the scheduler keeps re-reading the task state every tick (~100ms). This prevents the scheduler from processing any new submissions.
+**Notes**:
+- Tests 107, 177, 335 require a real container runtime — expected failures with `--runtime none`
+- Tests 54, 114 (sub-workflows) fail because `waitForStepCompletion` blocks the scheduler tick during child execution; with 2 workers, throughput is limited and tests timeout
+- The remaining failures (207, 227, 235, 237, 238) are shared with server-local or cwl-runner
 
-**Impact**: Worker mode is currently blocked for any workload that includes sub-workflows.
+**Fixes applied** (vs initial run):
+- Removed `requiresDocker` filter in `CheckoutTask` that prevented runtime=none workers from picking up tasks with DockerImage hints (was causing 356/378 failures)
+- Added 500ms minimum poll interval and 10-minute timeout to `waitForStepCompletion` to prevent infinite spin loop
 
 ---
 
@@ -268,15 +284,43 @@ These should be prioritized for server-mode compliance.
 
 ---
 
+## Cross-Mode Comparison
+
+| # | Test | cwl-runner | srv-local | srv-worker |
+|---|------|:----------:|:---------:|:----------:|
+| 51 | step_input_default_value_nosource | PASS | FAIL | PASS |
+| 54 | revsort (sub-workflow) | PASS | PASS | FAIL |
+| 85 | scatter_valuefrom | PASS | FAIL | PASS |
+| 87-96 | directory_input (6 tests) | PASS | FAIL | PASS |
+| 107 | docker_output_dir | PASS | PASS | FAIL |
+| 114 | revsort-packed | PASS | PASS | FAIL |
+| 115 | nameroot_nameext | PASS | FAIL | PASS |
+| 140-141 | secondary_subdirs (2 tests) | PASS | FAIL | PASS |
+| 177 | docker_run_cmd | PASS | PASS | FAIL |
+| 207 | secondary_files_missing | PASS | FAIL | FAIL |
+| 227 | networkaccess_disabled | FAIL | FAIL | FAIL |
+| 235 | symlink_illegal | PASS | PASS | FAIL |
+| 237-238 | inplace_update (2 tests) | PASS | FAIL | FAIL |
+| 239 | glob_directory | PASS | FAIL | PASS |
+| 244,247,248 | listing (3 tests) | PASS | FAIL | PASS |
+| 335 | iwd_container_entryname | PASS | PASS | FAIL |
+| 371 | capture_files_and_dirs | PASS | FAIL | PASS |
+
+Key observations:
+- 11 server-local failures (directory/listing) **pass** in server-worker — worker path handles Directory objects better
+- 5 server-worker failures (54,107,114,177,335) are either Docker-specific or sub-workflow timeouts — not shared with server-local
+- 3 failures shared across server modes: 207 (secondaryFiles), 237-238 (inplace update)
+- 1 failure shared across all modes: 227 (network isolation, platform limitation)
+
 ## Known Issues
 
-1. **Scheduler spin loop on sub-workflows** (server-worker): Blocks all scheduling when a child submission task can't complete. Needs investigation in `internal/scheduler/loop.go` phase 4/5.
+1. **Synchronous child submission execution** (server-worker): `waitForStepCompletion` blocks the scheduler tick during sub-workflow execution. Mitigated with 500ms poll interval and 10-minute timeout, but reduces throughput. Proper fix: make child submissions asynchronous (process through normal scheduler phases).
 
-2. **Directory object population gap** (server-local): The server executor path doesn't populate `path`, `listing`, `basename`, `nameroot`, `nameext` on File/Directory objects as completely as the cwl-runner path.
+2. **Directory object population gap** (server-local): The local executor path doesn't populate `path`, `listing`, `basename`, `nameroot`, `nameext` on File/Directory objects as completely as the cwl-runner or worker paths.
 
-3. **InplaceUpdateRequirement** not implemented in server executor path.
+3. **InplaceUpdateRequirement** not implemented in distributed execution modes.
 
-4. **Network isolation** (`networkaccess2`): Requires `unshare --net` which needs root or user namespaces — platform limitation on this machine.
+4. **Network isolation** (`networkaccess2`): Requires `unshare --net` which needs root or user namespaces — platform limitation.
 
 ---
 
@@ -286,4 +330,4 @@ These should be prioritized for server-mode compliance.
 |------|----------|---------|-------|
 | cwl-runner | 377/378 | 377/378 | No regression |
 | server-local | — | 360/378 | First full run |
-| server-worker | — | Blocked | First attempt |
+| server-worker | Blocked (22/378) | 368/378 | Fixed: CheckoutTask filter + spin loop timeout |

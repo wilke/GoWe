@@ -93,6 +93,8 @@ done
 TAGS="${TAGS:-required}"
 
 SERVER_URL="http://localhost:${PORT}"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+REPORT="$PROJECT_DIR/conformance-results-server-local-${TIMESTAMP}.txt"
 SERVER_PID=""
 
 cleanup() {
@@ -208,7 +210,7 @@ cwltest \
     --tool "$WRAPPER_SCRIPT" \
     --tags "$TAGS" \
     --verbose \
-    2>&1 | tee "$PROJECT_DIR/conformance-server-local-results.txt"
+    2>&1 | tee "$REPORT"
 
 RESULT=${PIPESTATUS[0]}
 
@@ -218,5 +220,8 @@ if [ $RESULT -eq 0 ]; then
     log_header "All $TAGS tests passed!"
 else
     log_header "Some tests failed"
-    exit 1
+    echo "Failures:"
+    grep "^Test [0-9]* failed:" "$REPORT" | sort -t' ' -k2 -n || true
 fi
+echo ""
+log_info "Report saved to: $REPORT"

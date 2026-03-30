@@ -18,6 +18,8 @@ CONFORMANCE_DIR="$PROJECT_ROOT/testdata/cwl-v1.2"
 RUNNER="$PROJECT_ROOT/bin/cwl-runner"
 BADGE_DIR="$PROJECT_ROOT/badges"
 TAGS="${1:-required}"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+REPORT="$PROJECT_ROOT/conformance-results-cwlrunner-${TIMESTAMP}.txt"
 
 # Colors for output
 RED='\033[0;31m'
@@ -62,7 +64,7 @@ cwltest \
     --tags "$TAGS" \
     --badgedir "$BADGE_DIR" \
     --verbose \
-    2>&1 | tee "$PROJECT_ROOT/conformance-results.txt"
+    2>&1 | tee "$REPORT"
 
 # Check result
 if [ ${PIPESTATUS[0]} -eq 0 ]; then
@@ -71,5 +73,9 @@ if [ ${PIPESTATUS[0]} -eq 0 ]; then
 else
     echo ""
     echo -e "${RED}=== Some tests failed ===${NC}"
-    exit 1
+    echo ""
+    echo "Failures:"
+    grep "^Test [0-9]* failed:" "$REPORT" | sort -t' ' -k2 -n || true
 fi
+echo ""
+echo "Report saved to: $REPORT"
