@@ -148,6 +148,10 @@ if curl -sf "${SERVER_URL}/api/v1/health" > /dev/null 2>&1; then
 fi
 
 log_header "CWL v1.2 Conformance Tests (Server-Worker)"
+log_info "Git commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+log_info "Server:  bin/gowe-server ($(date -r bin/gowe-server '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
+log_info "Worker:  bin/gowe-worker ($(date -r bin/gowe-worker '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
+log_info "CLI:     bin/gowe ($(date -r bin/gowe '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
 log_info "Port: ${PORT}, Workers: ${NUM_WORKERS}, Runtime: ${WORKER_RUNTIME}, GPUs: ${GPU_IDS:-none}"
 log_info "Stall timeout: ${STALL_TIMEOUT}s"
 log_info "Report: ${REPORT}"

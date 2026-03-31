@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/cwloutput"
+	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
@@ -2178,6 +2179,10 @@ func (l *Loop) executeExpressionTool(task *model.Task) (map[string]any, error) {
 	if err := json.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("unmarshal expression tool: %w", err)
 	}
+
+	// Populate directory listings for inputs with loadListing before evaluation.
+	// ExpressionTools need listings populated just like CommandLineTools.
+	cwltool.PopulateDirectoryListingsFromDefs(tool.Inputs, tool.Requirements, task.Job, false)
 
 	// Validate inputs before execution.
 	if err := validate.ExpressionToolInputs(&tool, task.Job); err != nil {

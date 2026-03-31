@@ -123,6 +123,10 @@ type Options struct {
 // Executor executes CWL CommandLineTools.
 type Executor struct {
 	logger *slog.Logger
+	// preExistingSymlinks tracks symlinks in the working directory created
+	// before tool execution (e.g., by IWDR staging). These are excluded from
+	// the CWL spec's "no symlinks outside output dir" check on output collection.
+	preExistingSymlinks map[string]bool
 }
 
 // NewExecutor creates a new Executor with the given logger.
@@ -133,8 +137,20 @@ func NewExecutor(logger *slog.Logger) *Executor {
 	return &Executor{logger: logger}
 }
 
+// SnapshotSymlinks records all symlinks currently in workDir so that
+// output collection can distinguish engine-staged symlinks from tool-created ones.
+// Call this after IWDR staging but before tool execution.
+func (e *Executor) SnapshotSymlinks(workDir string) {
+	e.preExistingSymlinks = scanSymlinks(workDir)
+}
+
 // Execute runs a CWL tool with the given options.
 func (e *Executor) Execute(ctx context.Context, opts *Options) (*Result, error) {
+	// Snapshot symlinks before execution so output collection can distinguish
+	// engine-staged symlinks (IWDR) from tool-created ones.
+	if e.preExistingSymlinks == nil {
+		e.SnapshotSymlinks(opts.WorkDir)
+	}
 	switch opts.Mode {
 	case ModeDocker:
 		return e.executeInDocker(ctx, opts)

@@ -89,9 +89,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Default tags to "required" if not specified
-TAGS="${TAGS:-required}"
+# Tags empty = run all tests
+TAGS="${TAGS:-}"
 
+WORK_DIR="/tmp/gowe-test-local-${PORT}"
 SERVER_URL="http://localhost:${PORT}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 REPORT="$PROJECT_DIR/conformance-results-server-local-${TIMESTAMP}.txt"
@@ -139,28 +140,41 @@ fi
 
 log_header "CWL v1.2 Conformance Tests (Server-Local)"
 
+log_info "Git commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+log_info "Server:     bin/gowe-server ($(date -r bin/gowe-server '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
+log_info "CLI:        bin/gowe ($(date -r bin/gowe '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
 log_info "Using port: $PORT"
-log_info "Tags: $TAGS"
+log_info "Tags: ${TAGS:-all}"
 
 check_port_available
 
-# Build the binaries
-log_info "Building server..."
-go build -o bin/server ./cmd/server
+# Build binaries if not present (requires go in PATH)
+if [ ! -x ./bin/gowe-server ] || [ ! -x ./bin/gowe ]; then
+    if command -v go &> /dev/null; then
+        log_info "Building binaries..."
+        go build -o bin/gowe-server ./cmd/server
+        go build -o bin/gowe ./cmd/cli
+    else
+        log_error "Binaries not found. Build first (make build or /build)"
+        exit 1
+    fi
+fi
 
-log_info "Building gowe CLI..."
-go build -o bin/gowe ./cmd/cli
+# Fresh work dir
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR"
 
 # Start server with local executor and fast polling for tests
 log_info "Starting server with local executor..."
-./bin/server \
-    -addr ":${PORT}" \
-    -default-executor local \
-    -allow-anonymous \
-    -anonymous-executors "local,docker,worker,container" \
-    -scheduler-poll 100ms \
-    -log-level warn \
-    &
+./bin/gowe-server \
+    --addr ":${PORT}" \
+    --db "$WORK_DIR/gowe.db" \
+    --default-executor local \
+    --allow-anonymous \
+    --anonymous-executors "local,docker,worker,container" \
+    --scheduler-poll 100ms \
+    --log-level warn \
+    > "$WORK_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 
 # Wait for server to be healthy
@@ -203,14 +217,18 @@ log_header "Running Conformance Tests"
 
 cd "$CONFORMANCE_DIR"
 
-log_info "Running cwltest with tags: $TAGS"
+log_info "Running cwltest${TAGS:+ with tags: $TAGS}"
 
-cwltest \
-    --test conformance_tests.yaml \
-    --tool "$WRAPPER_SCRIPT" \
-    --tags "$TAGS" \
-    --verbose \
-    2>&1 | tee "$REPORT"
+CWLTEST_ARGS=(
+    --test conformance_tests.yaml
+    --tool "$WRAPPER_SCRIPT"
+    --verbose
+)
+if [ -n "$TAGS" ]; then
+    CWLTEST_ARGS+=(--tags "$TAGS")
+fi
+
+cwltest "${CWLTEST_ARGS[@]}" 2>&1 | tee "$REPORT"
 
 RESULT=${PIPESTATUS[0]}
 

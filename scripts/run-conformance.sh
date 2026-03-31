@@ -17,7 +17,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CONFORMANCE_DIR="$PROJECT_ROOT/testdata/cwl-v1.2"
 RUNNER="$PROJECT_ROOT/bin/cwl-runner"
 BADGE_DIR="$PROJECT_ROOT/badges"
-TAGS="${1:-required}"
+TAGS="${1:-}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 REPORT="$PROJECT_ROOT/conformance-results-cwlrunner-${TIMESTAMP}.txt"
 
@@ -30,17 +30,29 @@ NC='\033[0m' # No Color
 echo "=== CWL v1.2 Conformance Tests ==="
 echo ""
 
+echo "Git commit: $(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "Binary:     $RUNNER ($(date -r "$RUNNER" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
+echo ""
+
 # Check if cwltest is installed
 if ! command -v cwltest &> /dev/null; then
     echo -e "${YELLOW}cwltest not found. Installing...${NC}"
     pip install cwltest
 fi
 
-# Build cwl-runner
-echo "Building cwl-runner..."
+# Build cwl-runner if not present (requires go in PATH or apptainer)
+if [ ! -x "$RUNNER" ]; then
+    echo "Building cwl-runner..."
+    if command -v go &> /dev/null; then
+        go build -o "$RUNNER" ./cmd/cwl-runner
+    else
+        echo -e "${RED}cwl-runner not found at $RUNNER. Build first (make build or /build)${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Built $RUNNER${NC}"
+fi
+
 cd "$PROJECT_ROOT"
-go build -o bin/cwl-runner ./cmd/cwl-runner
-echo -e "${GREEN}Built bin/cwl-runner${NC}"
 
 # Clone conformance tests if not present
 if [ ! -d "$CONFORMANCE_DIR" ]; then
@@ -58,13 +70,17 @@ echo ""
 
 cd "$CONFORMANCE_DIR"
 
-cwltest \
-    --test conformance_tests.yaml \
-    --tool "$RUNNER" \
-    --tags "$TAGS" \
-    --badgedir "$BADGE_DIR" \
-    --verbose \
-    2>&1 | tee "$REPORT"
+CWLTEST_ARGS=(
+    --test conformance_tests.yaml
+    --tool "$RUNNER"
+    --badgedir "$BADGE_DIR"
+    --verbose
+)
+if [ -n "$TAGS" ]; then
+    CWLTEST_ARGS+=(--tags "$TAGS")
+fi
+
+cwltest "${CWLTEST_ARGS[@]}" 2>&1 | tee "$REPORT"
 
 # Check result
 if [ ${PIPESTATUS[0]} -eq 0 ]; then

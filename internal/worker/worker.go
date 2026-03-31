@@ -521,7 +521,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		MaxMemMB:              w.resources.MaxMemMB,
 		ApptainerCgroups:      w.resources.ApptainerCgroups,
 		ImageDir:              w.imageDir,
-		ResolveSecondary:      true,
+		ResolveSecondary:      task.StepInstanceID == "",
 		RemoveDefaultListings: true,
 		ExtraBinds:            w.extraBinds,
 		SecretEnvVars:         w.secrets,

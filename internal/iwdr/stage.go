@@ -381,9 +381,10 @@ func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workD
 		stagedPaths[absSrc] = destPath
 	}
 
-	// Copy files when writable (unless inplaceUpdate) or when executing in container.
-	// With InplaceUpdateRequirement: writable files are symlinked so modifications affect original.
-	shouldCopy := (writable && !inplaceUpdate) || copyForContainer
+	// Copy files when writable or executing in container, but NOT when inplaceUpdate is active.
+	// With InplaceUpdateRequirement: files MUST be symlinked so mutations affect the original,
+	// regardless of container execution. The container must bind-mount the original location.
+	shouldCopy := !inplaceUpdate && (writable || copyForContainer)
 	if shouldCopy {
 		if err := copyFile(srcPath, destPath); err != nil {
 			return nil, err
@@ -400,6 +401,15 @@ func stageIWDFile(fileObj map[string]any, entryname string, writable bool, workD
 		return nil, err
 	}
 	stageIWDSecondaryFiles(fileObj, workDir, destName, writable, stagedPaths, copyForContainer, inplaceUpdate)
+
+	// When inplaceUpdate + container: the symlink target must be bind-mounted
+	// so the container can follow the symlink and write to the original file.
+	if inplaceUpdate && copyForContainer {
+		return []ContainerMount{{
+			HostPath:      filepath.Dir(absSrc),
+			ContainerPath: filepath.Dir(absSrc),
+		}}, nil
+	}
 	return nil, nil
 }
 
@@ -427,8 +437,8 @@ func stageIWDSecondaryFiles(fileObj map[string]any, workDir, destName string, wr
 		sfBasename := filepath.Base(sfPath)
 		sfDest := filepath.Join(workDir, sfBasename)
 		// If the primary file was renamed with entryname, don't rename secondaryFiles.
-		// Copy when writable (unless inplaceUpdate) or executing in container.
-		shouldCopy := (writable && !inplaceUpdate) || copyForContainer
+		// Copy when writable or container, but NOT when inplaceUpdate is active.
+		shouldCopy := !inplaceUpdate && (writable || copyForContainer)
 		if shouldCopy {
 			_ = copyFile(sfPath, sfDest)
 		} else {
@@ -505,9 +515,9 @@ func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, w
 		return mounts, nil
 	}
 
-	// Copy when writable (unless inplaceUpdate) or executing in container.
-	// With InplaceUpdateRequirement: writable dirs are symlinked so modifications affect original.
-	shouldCopy := (writable && !inplaceUpdate) || copyForContainer
+	// Copy when writable or executing in container, but NOT when inplaceUpdate is active.
+	// With InplaceUpdateRequirement: dirs MUST be symlinked so mutations affect the original.
+	shouldCopy := !inplaceUpdate && (writable || copyForContainer)
 	if shouldCopy {
 		return nil, copyDir(srcPath, destPath)
 	}
@@ -517,7 +527,18 @@ func stageIWDDirectory(dirObj map[string]any, entryname string, writable bool, w
 	if err != nil {
 		absSrc = srcPath
 	}
-	return nil, os.Symlink(absSrc, destPath)
+	if err := os.Symlink(absSrc, destPath); err != nil {
+		return nil, err
+	}
+
+	// When inplaceUpdate + container: bind-mount the original directory.
+	if inplaceUpdate && copyForContainer {
+		return []ContainerMount{{
+			HostPath:      absSrc,
+			ContainerPath: absSrc,
+		}}, nil
+	}
+	return nil, nil
 }
 
 // updateInputPathValue recursively updates paths for staged files.
