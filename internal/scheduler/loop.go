@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/cwlexpr"
 	"github.com/me/gowe/internal/cwloutput"
+	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
@@ -26,14 +28,43 @@ import (
 
 // Config holds scheduler configuration.
 type Config struct {
-	PollInterval    time.Duration
-	MaxRetries      int    // Default max retries for tasks (0 = no retries).
-	DefaultExecutor string // Server-wide default executor (overrides CWL hints). Empty = hint-based.
+	PollInterval     time.Duration
+	MaxRetries       int    // Default max retries for tasks (0 = no retries).
+	DefaultExecutor  string // Server-wide default executor (overrides CWL hints). Empty = hint-based.
+	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
+
+	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
+	// when no online worker can satisfy its requirements. After this many ticks,
+	// the step is failed with a descriptive error. 0 = disable pre-flight check.
+	PreflightDeferralTicks int
+
+	// StuckTaskThreshold is the number of consecutive ticks with zero progress
+	// before a class of QUEUED worker tasks is considered stuck. 0 = disable.
+	StuckTaskThreshold int
+
+	// StuckTaskAction is the action to take when stuck tasks are detected:
+	// "warn" (default) logs an error, "fail" also fails the oldest task.
+	StuckTaskAction string
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
-	return Config{PollInterval: 2 * time.Second, MaxRetries: 3}
+	return Config{
+		PollInterval:           2 * time.Second,
+		MaxRetries:             3,
+		PreflightDeferralTicks: 30,
+		StuckTaskThreshold:     30,
+		StuckTaskAction:        "warn",
+	}
+}
+
+// WorkerCapabilities summarizes what online workers can do. Built once per tick.
+type WorkerCapabilities struct {
+	OnlineCount  int
+	HasContainer bool              // any worker with docker/apptainer
+	Groups       map[string]int    // group → count of online workers
+	Datasets     map[string]int    // dataset ID → count of online workers
+	Workers      []*model.Worker   // full list of online workers
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -46,19 +77,47 @@ type Loop struct {
 	doneCh   chan struct{}
 	stopOnce sync.Once
 
-	// Cached per-tick: whether any online workers exist.
-	cachedHasWorkers *bool
+	// Cached per-tick: structured worker capability snapshot.
+	cachedWorkerCaps *WorkerCapabilities
+
+	// deferredSteps tracks how many ticks each step has been deferred due to
+	// pre-flight check failure (no capable worker). Key = stepInstanceID.
+	deferredSteps map[string]int
+
+	// stuckTracker detects classes of QUEUED tasks making zero progress.
+	stuck stuckTracker
+
+	// wsStager handles server-side workspace pre/post-staging (nil if disabled).
+	wsStager wsStagerInterface
+}
+
+// taskRequirementKey groups QUEUED tasks by their scheduling requirements
+// so stuck detection can identify WHICH class of tasks is stuck.
+type taskRequirementKey struct {
+	WorkerGroup string
+	PrestageIDs string // sorted, comma-joined
+}
+
+// stuckTracker tracks per-requirement-key progress of QUEUED tasks.
+type stuckTracker struct {
+	lastCounts map[taskRequirementKey]int
+	staleTicks map[taskRequirementKey]int
 }
 
 // NewLoop creates a new scheduler loop.
 func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Logger) *Loop {
 	return &Loop{
-		store:    st,
-		registry: reg,
-		config:   cfg,
-		logger:   logger.With("component", "scheduler"),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		store:         st,
+		registry:      reg,
+		config:        cfg,
+		logger:        logger.With("component", "scheduler"),
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
+		deferredSteps: make(map[string]int),
+		stuck: stuckTracker{
+			lastCounts: make(map[taskRequirementKey]int),
+			staleTicks: make(map[taskRequirementKey]int),
+		},
 	}
 }
 
@@ -99,12 +158,19 @@ func (l *Loop) Stop() error {
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
-	l.cachedHasWorkers = nil // Reset per-tick cache.
+	l.cachedWorkerCaps = nil // Reset per-tick cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
 	if err := l.advanceWaiting(ctx, affected); err != nil {
 		return fmt.Errorf("phase 1 (waiting): %w", err)
+	}
+
+	// Phase 1.5: Pre-stage workspace inputs for PENDING submissions (server-side mode).
+	if l.wsStager != nil {
+		if err := l.prestageWorkspaceInputs(ctx, affected); err != nil {
+			return fmt.Errorf("phase 1.5 (pre-stage): %w", err)
+		}
 	}
 
 	// Phase 2: Dispatch READY StepInstances — resolve inputs, create Tasks, submit to executors.
@@ -122,6 +188,13 @@ func (l *Loop) Tick(ctx context.Context) error {
 		return fmt.Errorf("phase 3 (poll): %w", err)
 	}
 
+	// Phase 3.5: Detect stuck QUEUED worker tasks (progress-based).
+	if l.config.StuckTaskThreshold > 0 {
+		if err := l.detectStuckTasks(ctx, affected); err != nil {
+			l.logger.Error("phase 3.5 (stuck detection)", "error", err)
+		}
+	}
+
 	// Phase 4: Advance DISPATCHED/RUNNING StepInstances when all their Tasks are terminal.
 	if err := l.advanceSteps(ctx, affected); err != nil {
 		return fmt.Errorf("phase 4 (advance steps): %w", err)
@@ -130,6 +203,13 @@ func (l *Loop) Tick(ctx context.Context) error {
 	// Phase 5: Finalize submissions where all StepInstances are terminal.
 	if err := l.finalizeSubmissions(ctx, affected); err != nil {
 		return fmt.Errorf("phase 5 (finalize): %w", err)
+	}
+
+	// Phase 5.5: Upload outputs to workspace for completed submissions (server-side mode).
+	if l.wsStager != nil {
+		if err := l.poststageWorkspaceOutputs(ctx, affected); err != nil {
+			return fmt.Errorf("phase 5.5 (post-stage): %w", err)
+		}
 	}
 
 	// Phase 6: Transition newly-FAILED tasks to RETRYING if retries remain.
@@ -344,6 +424,37 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
+
+	// Pre-flight check: if executor is "worker", verify a capable worker exists.
+	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
+		caps := l.workerCapabilities()
+		canMatch, reason := canMatchTask(caps, tmpTask.RuntimeHints)
+		if !canMatch {
+			l.deferredSteps[si.ID]++
+			count := l.deferredSteps[si.ID]
+			if count >= l.config.PreflightDeferralTicks {
+				delete(l.deferredSteps, si.ID)
+				now := time.Now().UTC()
+				si.State = model.StepStateFailed
+				si.CompletedAt = &now
+				l.logger.Error("step failed: no capable worker",
+					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+					"deferred_ticks", count)
+				return l.store.UpdateStepInstance(ctx, si)
+			}
+			if count == 1 {
+				l.logger.Warn("deferring step dispatch: no capable worker",
+					"si_id", si.ID, "step_id", si.StepID, "reason", reason)
+			} else {
+				l.logger.Debug("deferring step dispatch: no capable worker",
+					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+					"deferred_ticks", count)
+			}
+			return nil // Leave step in READY for next tick.
+		}
+		// Worker can match — clear any prior deferral.
+		delete(l.deferredSteps, si.ID)
+	}
 
 	// Check for InplaceUpdateRequirement in distributed mode.
 	// InplaceUpdate requires shared filesystem across steps which is not available
@@ -886,31 +997,133 @@ func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) mo
 	// Auto-promote container tasks to worker when workers are available.
 	// This covers DockerRequirement steps that don't have an explicit gowe:Execution hint.
 	if step.Hints != nil && step.Hints.DockerImage != "" {
-		if l.hasOnlineWorkers() {
+		caps := l.workerCapabilities()
+		if caps.OnlineCount > 0 {
 			return model.ExecutorTypeWorker
 		}
 	}
 	return model.ExecutorTypeLocal
 }
 
-// hasOnlineWorkers checks if any workers are currently online.
-// The result is cached per scheduler tick to avoid repeated DB queries.
-func (l *Loop) hasOnlineWorkers() bool {
-	if l.cachedHasWorkers != nil {
-		return *l.cachedHasWorkers
+// workerCapabilities returns a cached snapshot of online worker capabilities.
+// Built once per tick from ListWorkers().
+func (l *Loop) workerCapabilities() *WorkerCapabilities {
+	if l.cachedWorkerCaps != nil {
+		return l.cachedWorkerCaps
 	}
-	result := false
+	caps := &WorkerCapabilities{
+		Groups:   make(map[string]int),
+		Datasets: make(map[string]int),
+	}
 	workers, err := l.store.ListWorkers(context.TODO())
-	if err == nil {
-		for _, w := range workers {
-			if w.State == model.WorkerStateOnline {
-				result = true
-				break
+	if err != nil {
+		l.cachedWorkerCaps = caps
+		return caps
+	}
+	for _, w := range workers {
+		if w.State != model.WorkerStateOnline {
+			continue
+		}
+		caps.OnlineCount++
+		caps.Workers = append(caps.Workers, w)
+		if model.HasContainerRuntime(w.Runtime) {
+			caps.HasContainer = true
+		}
+		group := w.Group
+		if group == "" {
+			group = "default"
+		}
+		caps.Groups[group]++
+		for dsID := range w.Datasets {
+			caps.Datasets[dsID]++
+		}
+	}
+	l.cachedWorkerCaps = caps
+	return caps
+}
+
+// canMatchTask checks if any single online worker can satisfy ALL of a task's
+// scheduling constraints simultaneously. Returns (true, "") if at least one
+// worker matches, or (false, reason) with a human-readable explanation.
+//
+// Only GoWe-specific hard constraints are checked:
+//   - Worker group (gowe:Execution.worker_group)
+//   - Prestage datasets (gowe:ResourceData with mode=prestage)
+//
+// DockerRequirement (DockerImage) is NOT checked here because CWL treats it as
+// a hint — workers without container runtimes can still execute tools bare.
+// Container runtime matching is handled by CheckoutTask at checkout time.
+func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, string) {
+	if caps.OnlineCount == 0 {
+		return false, "no online workers"
+	}
+
+	wantGroup := ""
+	if hints != nil && hints.WorkerGroup != "" {
+		wantGroup = hints.WorkerGroup
+	}
+	var prestageIDs []string
+	if hints != nil {
+		for _, ds := range hints.RequiredDatasets {
+			if ds.Mode == "prestage" {
+				prestageIDs = append(prestageIDs, ds.ID)
 			}
 		}
 	}
-	l.cachedHasWorkers = &result
-	return result
+
+	// Fast path: no constraints beyond "any worker".
+	if wantGroup == "" && len(prestageIDs) == 0 {
+		return true, ""
+	}
+
+	for _, w := range caps.Workers {
+		// Check worker group.
+		if wantGroup != "" {
+			wGroup := w.Group
+			if wGroup == "" {
+				wGroup = "default"
+			}
+			if wGroup != wantGroup {
+				continue
+			}
+		}
+		// Check prestage datasets — worker must have ALL of them.
+		if len(prestageIDs) > 0 {
+			allPresent := true
+			for _, dsID := range prestageIDs {
+				if _, ok := w.Datasets[dsID]; !ok {
+					allPresent = false
+					break
+				}
+			}
+			if !allPresent {
+				continue
+			}
+		}
+		return true, ""
+	}
+
+	// Build descriptive reason.
+	var reasons []string
+	if wantGroup != "" {
+		if caps.Groups[wantGroup] == 0 {
+			reasons = append(reasons, fmt.Sprintf("no workers in group %q", wantGroup))
+		}
+	}
+	for _, dsID := range prestageIDs {
+		if caps.Datasets[dsID] == 0 {
+			reasons = append(reasons, fmt.Sprintf("no workers with prestage dataset %q", dsID))
+		}
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "no single worker satisfies all constraints simultaneously")
+	}
+	return false, strings.Join(reasons, "; ")
+}
+
+// hasOnlineWorkers checks if any workers are currently online.
+func (l *Loop) hasOnlineWorkers() bool {
+	return l.workerCapabilities().OnlineCount > 0
 }
 
 // addUserToken adds user authentication token to task runtime hints.
@@ -926,6 +1139,14 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 			Type:  "bearer",
 			Token: sub.UserToken,
 		}
+	}
+
+	// Propagate output destination so workers can stage outputs to the right place.
+	if sub.OutputDestination != "" {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
+		}
+		task.RuntimeHints.OutputDestination = sub.OutputDestination
 	}
 }
 
@@ -1154,6 +1375,133 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 	}
 
 	return nil
+}
+
+// detectStuckTasks identifies classes of QUEUED worker tasks making zero progress.
+// Tasks are grouped by their scheduling requirements; if a group's count hasn't
+// decreased for StuckTaskThreshold consecutive ticks AND no capable worker exists,
+// an error is logged and optionally the oldest task is failed.
+func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) error {
+	queuedTasks, err := l.store.GetTasksByState(ctx, model.TaskStateQueued)
+	if err != nil {
+		return err
+	}
+
+	// Group QUEUED worker tasks by requirement key.
+	currentCounts := make(map[taskRequirementKey]int)
+	tasksByKey := make(map[taskRequirementKey][]*model.Task)
+	for _, task := range queuedTasks {
+		if task.ExecutorType != model.ExecutorTypeWorker {
+			continue
+		}
+		key := requirementKeyForTask(task)
+		currentCounts[key]++
+		tasksByKey[key] = append(tasksByKey[key], task)
+	}
+
+	caps := l.workerCapabilities()
+
+	for key, count := range currentCounts {
+		lastCount, existed := l.stuck.lastCounts[key]
+		if existed && count >= lastCount {
+			// No progress (count didn't decrease).
+			l.stuck.staleTicks[key]++
+		} else {
+			// Progress made or new key.
+			l.stuck.staleTicks[key] = 0
+		}
+		l.stuck.lastCounts[key] = count
+
+		if l.stuck.staleTicks[key] < l.config.StuckTaskThreshold {
+			continue
+		}
+
+		// Build a synthetic RuntimeHints for canMatchTask from the key.
+		hints := hintsFromRequirementKey(key)
+		canMatch, reason := canMatchTask(caps, hints)
+
+		if !canMatch {
+			l.logger.Error("stuck tasks: no capable worker",
+				"count", count, "reason", reason,
+				"group", key.WorkerGroup,
+				"prestage", key.PrestageIDs,
+				"stale_ticks", l.stuck.staleTicks[key])
+		} else {
+			l.logger.Warn("stuck tasks: queued but not being picked up",
+				"count", count,
+				"group", key.WorkerGroup,
+				"prestage", key.PrestageIDs,
+				"stale_ticks", l.stuck.staleTicks[key])
+		}
+
+		if l.config.StuckTaskAction == "fail" && !canMatch {
+			// Fail the oldest task in this group (by CreatedAt).
+			oldest := tasksByKey[key][0]
+			for _, t := range tasksByKey[key][1:] {
+				if t.CreatedAt.Before(oldest.CreatedAt) {
+					oldest = t
+				}
+			}
+			// Only fail if retries remain, so recovery is possible.
+			if oldest.RetryCount < oldest.MaxRetries {
+				now := time.Now().UTC()
+				oldest.State = model.TaskStateFailed
+				oldest.Stderr = fmt.Sprintf("stuck task failed by scheduler: %s", reason)
+				oldest.CompletedAt = &now
+				if err := l.store.UpdateTask(ctx, oldest); err != nil {
+					l.logger.Error("fail stuck task", "task_id", oldest.ID, "error", err)
+				} else {
+					l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)
+					affected[oldest.SubmissionID] = true
+				}
+			}
+		}
+	}
+
+	// Clean up keys that no longer have queued tasks.
+	for key := range l.stuck.lastCounts {
+		if currentCounts[key] == 0 {
+			delete(l.stuck.lastCounts, key)
+			delete(l.stuck.staleTicks, key)
+		}
+	}
+
+	return nil
+}
+
+// requirementKeyForTask builds a taskRequirementKey from a task's runtime hints.
+func requirementKeyForTask(task *model.Task) taskRequirementKey {
+	key := taskRequirementKey{}
+	if task.RuntimeHints != nil {
+		key.WorkerGroup = task.RuntimeHints.WorkerGroup
+		var prestageIDs []string
+		for _, ds := range task.RuntimeHints.RequiredDatasets {
+			if ds.Mode == "prestage" {
+				prestageIDs = append(prestageIDs, ds.ID)
+			}
+		}
+		if len(prestageIDs) > 0 {
+			sort.Strings(prestageIDs)
+			key.PrestageIDs = strings.Join(prestageIDs, ",")
+		}
+	}
+	return key
+}
+
+// hintsFromRequirementKey reconstructs a RuntimeHints from a taskRequirementKey
+// for use with canMatchTask.
+func hintsFromRequirementKey(key taskRequirementKey) *model.RuntimeHints {
+	hints := &model.RuntimeHints{}
+	hints.WorkerGroup = key.WorkerGroup
+	if key.PrestageIDs != "" {
+		for _, id := range strings.Split(key.PrestageIDs, ",") {
+			hints.RequiredDatasets = append(hints.RequiredDatasets, model.DatasetRequirement{
+				ID:   id,
+				Mode: "prestage",
+			})
+		}
+	}
+	return hints
 }
 
 // advanceSteps checks DISPATCHED/RUNNING StepInstances and completes them
@@ -1831,6 +2179,10 @@ func (l *Loop) executeExpressionTool(task *model.Task) (map[string]any, error) {
 	if err := json.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("unmarshal expression tool: %w", err)
 	}
+
+	// Populate directory listings for inputs with loadListing before evaluation.
+	// ExpressionTools need listings populated just like CommandLineTools.
+	cwltool.PopulateDirectoryListingsFromDefs(tool.Inputs, tool.Requirements, task.Job, false)
 
 	// Validate inputs before execution.
 	if err := validate.ExpressionToolInputs(&tool, task.Job); err != nil {

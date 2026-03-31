@@ -261,16 +261,22 @@ func ResolveFileObject(obj map[string]any, baseDir string) map[string]any {
 // upload-created listings that need to be stripped. It should be false for cwl-runner where
 // inline directory literals must be preserved.
 func PopulateDirectoryListings(tool *cwl.CommandLineTool, inputs map[string]any, removeDefault bool) {
+	PopulateDirectoryListingsFromDefs(tool.Inputs, tool.Requirements, inputs, removeDefault)
+}
+
+// PopulateDirectoryListingsFromDefs is the shared implementation for populating directory
+// listings. It works with both CommandLineTool and ExpressionTool input definitions.
+func PopulateDirectoryListingsFromDefs(inputDefs map[string]cwl.ToolInputParam, requirements map[string]any, inputs map[string]any, removeDefault bool) {
 	defaultLoadListing := ""
-	if tool.Requirements != nil {
-		if llr, ok := tool.Requirements["LoadListingRequirement"].(map[string]any); ok {
+	if requirements != nil {
+		if llr, ok := requirements["LoadListingRequirement"].(map[string]any); ok {
 			if ll, ok := llr["loadListing"].(string); ok {
 				defaultLoadListing = ll
 			}
 		}
 	}
 
-	for inputID, inp := range tool.Inputs {
+	for inputID, inp := range inputDefs {
 		loadListing := inp.LoadListing
 		if loadListing == "" {
 			loadListing = defaultLoadListing

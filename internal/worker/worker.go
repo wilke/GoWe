@@ -43,6 +43,7 @@ type Worker struct {
 	extraBinds        []toolexec.ExtraBind // Extra bind mounts for containers
 	datasets          map[string]string   // Merged dataset map: ID → host path
 	secrets           map[string]string   // Secret env vars injected into containers
+	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
 	logger            *slog.Logger
 }
 
@@ -99,6 +100,12 @@ type Config struct {
 
 	// Version is the build version (git commit hash), sent during registration.
 	Version string
+
+	// WorkspaceStager enables the ws:// workspace stager for BV-BRC.
+	WorkspaceStager bool
+
+	// WorkspaceURL is the BV-BRC Workspace service URL (empty = default production).
+	WorkspaceURL string
 }
 
 // GPUWorkerConfig holds GPU settings for the worker.
@@ -225,6 +232,18 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		logger.Info("Shock stager enabled", "host", cfg.Stager.Shock.DefaultHost, "https", !cfg.Stager.Shock.UseHTTP)
 	}
 
+	// Add Workspace stager if enabled.
+	var wsStager *staging.WorkspaceStager
+	if cfg.WorkspaceStager {
+		wsStager = staging.NewWorkspaceStager(staging.WorkspaceConfig{
+			WorkspaceURL: cfg.WorkspaceURL,
+			Timeout:      5 * time.Minute,
+			MaxRetries:   3,
+		}, logger)
+		handlers["ws"] = wsStager
+		logger.Info("Workspace stager enabled", "url", wsStager.Config().WorkspaceURL)
+	}
+
 	// Add shared filesystem stager if configured.
 	if cfg.Stager.Shared.Enabled {
 		sharedStager := staging.NewSharedFileStager(staging.SharedFileStagerConfig{
@@ -249,6 +268,8 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		stageOutStager = handlers["s3"]
 	} else if strings.HasPrefix(cfg.StageOut, "shock://") {
 		stageOutStager = handlers["shock"]
+	} else if strings.HasPrefix(cfg.StageOut, "ws://") {
+		stageOutStager = handlers["ws"]
 	} else {
 		stageOutStager = fileStager
 	}
@@ -317,9 +338,10 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	return &Worker{
 		client:            client,
 		runtime:           rt,
-		containerRuntime:  cfg.Runtime,
+		containerRuntime:  model.PreferredContainerRuntime(model.ContainerRuntime(cfg.Runtime)),
 		stager:            stager,
 		httpStager:        httpStager,
+		wsStager:          wsStager,
 		parser:            parser.New(logger),
 		workDir:           cfg.WorkDir,
 		stageOut:          cfg.StageOut,
@@ -499,7 +521,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		MaxMemMB:              w.resources.MaxMemMB,
 		ApptainerCgroups:      w.resources.ApptainerCgroups,
 		ImageDir:              w.imageDir,
-		ResolveSecondary:      true,
+		ResolveSecondary:      task.StepInstanceID == "",
 		RemoveDefaultListings: true,
 		ExtraBinds:            w.extraBinds,
 		SecretEnvVars:         w.secrets,
@@ -528,9 +550,17 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 
 	// Stage out output files (worker owns this step).
+	// Use per-task stager if overrides exist (e.g., user token for ws:// uploads).
+	outStager := w.stager
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		outStager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
+		w.logger.Info("using per-task stager with overrides", "task_id", task.ID,
+			"has_ws_dest", task.RuntimeHints.OutputDestination != "")
+	}
 	stagedOutputs := make(map[string]any)
 	for outputID, output := range result.Outputs {
-		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task.ID)
+		w.logger.Debug("staging output", "task_id", task.ID, "output_id", outputID)
+		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task, outStager, "")
 	}
 
 	return w.client.ReportComplete(ctx, task.ID, TaskResult{
@@ -635,7 +665,10 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 }
 
 // stageOutputValue recursively stages File objects in output values.
-func (w *Worker) stageOutputValue(ctx context.Context, v any, taskID string) any {
+// The stager parameter allows per-task overrides (e.g., user token for ws:// uploads).
+// destSubPath tracks the relative directory path within a Directory output tree,
+// so that staged files preserve the original directory hierarchy.
+func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, stager execution.Stager, destSubPath string) any {
 	switch val := v.(type) {
 	case map[string]any:
 		class, _ := val["class"].(string)
@@ -643,33 +676,68 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, taskID string) any
 			// Stage the file and update location.
 			if path, ok := val["path"].(string); ok {
 				opts := execution.StageOptions{}
-				loc, err := w.stager.StageOut(ctx, path, taskID, opts)
+				if task.RuntimeHints != nil && task.RuntimeHints.OutputDestination != "" {
+					dest := task.RuntimeHints.OutputDestination
+					if destSubPath != "" {
+						dest = strings.TrimRight(dest, "/") + "/" + destSubPath
+					}
+					opts.Metadata = map[string]string{"destination": dest}
+					w.logger.Debug("staging file to ws", "file", filepath.Base(path), "dest", dest)
+				}
+				loc, err := stager.StageOut(ctx, path, task.ID, opts)
 				if err == nil {
+					w.logger.Debug("staged file", "file", filepath.Base(path), "location", loc)
 					val["location"] = loc
+				} else {
+					w.logger.Warn("stage-out failed", "path", path, "error", err)
 				}
 			}
 			// Also stage secondary files.
 			if secFiles, ok := val["secondaryFiles"].([]any); ok {
 				for i, sf := range secFiles {
-					secFiles[i] = w.stageOutputValue(ctx, sf, taskID)
+					secFiles[i] = w.stageOutputValue(ctx, sf, task, stager, destSubPath)
 				}
+			}
+			return val
+		}
+		if class == "Directory" {
+			// Recurse into listing, appending this directory's basename to the subpath.
+			childSubPath := destSubPath
+			if basename, ok := val["basename"].(string); ok && basename != "" {
+				if childSubPath != "" {
+					childSubPath = childSubPath + "/" + basename
+				} else {
+					childSubPath = basename
+				}
+			}
+			switch listing := val["listing"].(type) {
+			case []any:
+				for i, item := range listing {
+					listing[i] = w.stageOutputValue(ctx, item, task, stager, childSubPath)
+				}
+			case []map[string]any:
+				converted := make([]any, len(listing))
+				for i, item := range listing {
+					converted[i] = w.stageOutputValue(ctx, item, task, stager, childSubPath)
+				}
+				val["listing"] = converted
 			}
 			return val
 		}
 		// Recurse into other maps.
 		for k, v := range val {
-			val[k] = w.stageOutputValue(ctx, v, taskID)
+			val[k] = w.stageOutputValue(ctx, v, task, stager, destSubPath)
 		}
 		return val
 	case []any:
 		for i, item := range val {
-			val[i] = w.stageOutputValue(ctx, item, taskID)
+			val[i] = w.stageOutputValue(ctx, item, task, stager, destSubPath)
 		}
 		return val
 	case []map[string]any:
 		result := make([]any, len(val))
 		for i, item := range val {
-			result[i] = w.stageOutputValue(ctx, item, taskID)
+			result[i] = w.stageOutputValue(ctx, item, task, stager, destSubPath)
 		}
 		return result
 	default:
@@ -777,10 +845,21 @@ func (w *Worker) stagerWithOverrides(overrides *model.StagerOverrides) execution
 		"https": overriddenHTTP,
 	}
 
+	// Override workspace stager with per-task token if available.
+	if w.wsStager != nil {
+		if overrides.HTTPCredential != nil && overrides.HTTPCredential.Token != "" {
+			handlers["ws"] = w.wsStager.WithToken(overrides.HTTPCredential.Token)
+		} else {
+			handlers["ws"] = w.wsStager
+		}
+	}
+
 	// Determine fallback stager for stage-out.
 	var stageOutStager execution.Stager
 	if strings.HasPrefix(w.stageOut, "http://") || strings.HasPrefix(w.stageOut, "https://") {
 		stageOutStager = overriddenHTTP
+	} else if strings.HasPrefix(w.stageOut, "ws://") && handlers["ws"] != nil {
+		stageOutStager = handlers["ws"]
 	} else {
 		stageOutStager = fileStager
 	}

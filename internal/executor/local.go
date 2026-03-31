@@ -80,9 +80,12 @@ func (e *LocalExecutor) submitWithCWLTool(ctx context.Context, task *model.Task,
 	}
 
 	// Build cwltool configuration.
+	// Only resolve secondary files for bare tool submissions.
+	// Workflow steps should already have secondary files propagated by the scheduler;
+	// re-resolving them from disk masks missing secondaryFiles declarations.
 	cfg := cwltool.Config{
 		Logger:           e.logger,
-		ResolveSecondary: true,
+		ResolveSecondary: task.StepInstanceID == "",
 		ImageDir:         e.imageDir,
 	}
 	if task.RuntimeHints != nil {

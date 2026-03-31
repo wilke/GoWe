@@ -110,6 +110,33 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 
 	packedCWL := result.Packed
 
+	// Resolve secondary files for inputs (needed in both upload and no-upload modes).
+	// The executor skips resolution for workflow steps (ResolveSecondary=false),
+	// so the CLI must resolve them before submission.
+	cwlDir := filepath.Dir(cwlPath)
+	if absDir, err := filepath.Abs(cwlDir); err == nil {
+		cwlDir = absDir
+	}
+	if inputs != nil {
+		// Only resolve workflow-level secondaryFiles for real workflows.
+		// For bare CommandLineTools wrapped in a synthetic workflow,
+		// also resolve tool-level patterns (needed for SchemaDefRequirement
+		// types where record field secondaryFiles aren't on the workflow input).
+		// Do NOT resolve tool-level patterns for real workflows — that would
+		// incorrectly pass secondary files the workflow intentionally omits.
+		p := parser.New(slog.Default())
+		if graph, err := p.ParseGraphWithBase(packedCWL, cwlDir); err == nil {
+			if graph.Workflow != nil {
+				inputs = secondaryfiles.ResolveForInputDefs(graph.Workflow.Inputs, inputs, cwlDir)
+			}
+			if isSyntheticWorkflow(graph.Workflow) && len(graph.Tools) == 1 {
+				for _, tool := range graph.Tools {
+					inputs = secondaryfiles.ResolveForTool(tool, inputs, cwlDir)
+				}
+			}
+		}
+	}
+
 	if noUpload {
 		// Apply path remapping to packed CWL if GOWE_PATH_MAP is set.
 		// This remaps absolute host paths to container paths for distributed execution.
@@ -124,32 +151,8 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 			}
 		}
 	} else {
-		// Upload mode: resolve secondary files and upload inputs to server.
-		cwlDir := filepath.Dir(cwlPath)
-		if absDir, err := filepath.Abs(cwlDir); err == nil {
-			cwlDir = absDir
-		}
-
+		// Upload mode: upload inputs to server.
 		if inputs != nil {
-			// Resolve secondary files before uploading so they get included.
-			// Only resolve workflow-level secondaryFiles for real workflows.
-			// For bare CommandLineTools wrapped in a synthetic workflow,
-			// also resolve tool-level patterns (needed for SchemaDefRequirement
-			// types where record field secondaryFiles aren't on the workflow input).
-			// Do NOT resolve tool-level patterns for real workflows — that would
-			// incorrectly pass secondary files the workflow intentionally omits.
-			p := parser.New(slog.Default())
-			if graph, err := p.ParseGraphWithBase(packedCWL, cwlDir); err == nil {
-				if graph.Workflow != nil {
-					inputs = secondaryfiles.ResolveForInputDefs(graph.Workflow.Inputs, inputs, cwlDir)
-				}
-				if isSyntheticWorkflow(graph.Workflow) && len(graph.Tools) == 1 {
-					for _, tool := range graph.Tools {
-						inputs = secondaryfiles.ResolveForTool(tool, inputs, cwlDir)
-					}
-				}
-			}
-
 			if !quiet {
 				fmt.Fprintf(os.Stderr, "Uploading input files...\n")
 			}
@@ -468,6 +471,8 @@ func formatFileOutput(fileMap map[string]any, outDir string, outputPathMap map[s
 		// Copy to output directory if different from source.
 		destPath := filepath.Join(outDir, filepath.Base(localPath))
 		if destPath != localPath {
+			// Deduplicate: if destPath exists with different content, add suffix.
+			destPath = uniqueDestPath(destPath)
 			if err := copyFile(localPath, destPath); err == nil {
 				result["location"] = "file://" + destPath
 				result["path"] = destPath
@@ -526,27 +531,68 @@ func formatDirectoryOutput(dirMap map[string]any, outDir string, outputPathMap m
 	// Translate container path to host path for distributed execution.
 	localPath := translateOutputPath(dirPath, outputPathMap)
 
+	basename := filepath.Base(localPath)
+
+	// Copy directory to outDir if it exists and is not already there.
+	destPath := localPath
+	if filepath.IsAbs(localPath) {
+		if info, err := os.Stat(localPath); err == nil && info.IsDir() {
+			candidate := filepath.Join(outDir, basename)
+			if candidate != localPath {
+				destPath = uniqueDestPath(candidate)
+				// Only copy the full directory when there's no listing.
+				// When listing exists, individual entries are processed below
+				// and copying here would cause duplicate files with _2 suffixes.
+				if _, hasListing := dirMap["listing"].([]any); !hasListing {
+					_ = copyDir(localPath, destPath)
+				} else {
+					_ = os.MkdirAll(destPath, 0o755)
+				}
+			}
+		}
+	} else {
+		// Relative path (e.g., directory literal from ExpressionTool).
+		// Materialize in outDir so cwltest can verify the directory exists.
+		candidate := filepath.Join(outDir, basename)
+		destPath = uniqueDestPath(candidate)
+		_ = os.MkdirAll(destPath, 0o755)
+	}
+
+	// Use file:// prefix only for absolute paths. Relative paths (e.g., directory
+	// literal basenames like "a_directory") should be returned as-is.
+	loc := destPath
+	if filepath.IsAbs(destPath) {
+		loc = "file://" + destPath
+	}
 	result := map[string]any{
 		"class":    "Directory",
-		"location": "file://" + localPath,
-		"path":     localPath,
-		"basename": filepath.Base(localPath),
+		"location": loc,
+		"path":     destPath,
+		"basename": basename,
 	}
 
 	// Include listing if present, recursively formatting each entry.
+	// Use destPath as the outDir for listing entries so they nest under the directory.
 	if listing, ok := dirMap["listing"].([]any); ok {
 		formattedListing := make([]any, 0, len(listing))
 		for _, item := range listing {
 			if itemMap, ok := item.(map[string]any); ok {
-				formattedListing = append(formattedListing, formatCWLOutput(itemMap, outDir, outputPathMap))
+				processed := formatCWLOutput(itemMap, destPath, outputPathMap)
+				// Normalize listing item locations to basenames (CWL convention).
+				if pMap, ok := processed.(map[string]any); ok {
+					if loc, ok := pMap["location"].(string); ok {
+						pMap["location"] = filepath.Base(strings.TrimPrefix(loc, "file://"))
+					}
+				}
+				formattedListing = append(formattedListing, processed)
 			} else {
 				formattedListing = append(formattedListing, item)
 			}
 		}
 		result["listing"] = formattedListing
-	} else if info, err := os.Stat(localPath); err == nil && info.IsDir() {
+	} else if info, err := os.Stat(destPath); err == nil && info.IsDir() {
 		// If no listing in server response but directory exists, populate it.
-		result["listing"] = buildDirectoryListing(localPath, outDir, outputPathMap)
+		result["listing"] = buildDirectoryListing(destPath, destPath, outputPathMap)
 	}
 
 	return result
@@ -596,6 +642,22 @@ func translateOutputPath(path string, pathMap map[string]string) string {
 	return path
 }
 
+// uniqueDestPath returns a path that doesn't collide with existing files.
+// If destPath already exists, appends _2, _3, etc. before the extension.
+func uniqueDestPath(destPath string) string {
+	if _, err := os.Stat(destPath); os.IsNotExist(err) {
+		return destPath
+	}
+	ext := filepath.Ext(destPath)
+	base := strings.TrimSuffix(destPath, ext)
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+}
+
 // computeFileChecksum calculates the SHA1 checksum of a file.
 func computeFileChecksum(path string) (string, error) {
 	f, err := os.Open(path)
@@ -628,6 +690,29 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(dstFile, srcFile)
 	return err
+}
+
+// copyDir recursively copies a directory tree.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(src, path)
+		destPath := filepath.Join(dst, relPath)
+		if info.IsDir() {
+			return os.MkdirAll(destPath, info.Mode())
+		}
+		// Follow symlinks: use os.Stat (not Lstat) to get the real info.
+		realInfo, statErr := os.Stat(path)
+		if statErr != nil {
+			return statErr
+		}
+		if realInfo.IsDir() {
+			return os.MkdirAll(destPath, realInfo.Mode())
+		}
+		return copyFile(path, destPath)
+	})
 }
 
 // uploadInputFiles recursively walks input values, uploads File/Directory objects,

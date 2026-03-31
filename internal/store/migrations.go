@@ -257,6 +257,18 @@ var alterStatements = []struct {
 		column:   "version",
 		alterSQL: "ALTER TABLE workers ADD COLUMN version TEXT NOT NULL DEFAULT ''",
 	},
+	// Output destination for workspace result uploads
+	{
+		table:    "submissions",
+		column:   "output_destination",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN output_destination TEXT NOT NULL DEFAULT ''",
+	},
+	// Output upload state tracking
+	{
+		table:    "submissions",
+		column:   "output_state",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN output_state TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

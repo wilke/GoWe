@@ -565,3 +565,482 @@ func TestStart_StopsOnContextCancel(t *testing.T) {
 		t.Fatal("Start did not return within 5 seconds after context cancellation")
 	}
 }
+
+// --- Feature C: WorkerCapabilities / canMatchTask tests ---
+
+func TestCanMatchTask_NoWorkers(t *testing.T) {
+	caps := &WorkerCapabilities{
+		Groups:   make(map[string]int),
+		Datasets: make(map[string]int),
+	}
+	ok, reason := canMatchTask(caps, &model.RuntimeHints{DockerImage: "alpine"})
+	if ok {
+		t.Error("expected canMatchTask to return false with no workers")
+	}
+	if !strings.Contains(reason, "no online workers") {
+		t.Errorf("unexpected reason: %s", reason)
+	}
+}
+
+func TestCanMatchTask_NoConstraints(t *testing.T) {
+	caps := &WorkerCapabilities{
+		OnlineCount: 1,
+		Workers:     []*model.Worker{{State: model.WorkerStateOnline, Runtime: model.RuntimeNone}},
+		Groups:      map[string]int{"default": 1},
+		Datasets:    make(map[string]int),
+	}
+	ok, _ := canMatchTask(caps, &model.RuntimeHints{})
+	if !ok {
+		t.Error("expected canMatchTask to return true with no constraints")
+	}
+}
+
+func TestCanMatchTask_DockerImageNotChecked(t *testing.T) {
+	// DockerImage is NOT a hard constraint for canMatchTask — CWL treats
+	// DockerRequirement as a hint, and workers with runtime=none can run bare.
+	// Container runtime matching is handled by CheckoutTask instead.
+	caps := &WorkerCapabilities{
+		OnlineCount: 1,
+		Workers:     []*model.Worker{{State: model.WorkerStateOnline, Runtime: model.RuntimeNone}},
+		Groups:      map[string]int{"default": 1},
+		Datasets:    make(map[string]int),
+	}
+	ok, _ := canMatchTask(caps, &model.RuntimeHints{DockerImage: "alpine"})
+	if !ok {
+		t.Error("expected true: DockerImage should not be a hard constraint in canMatchTask")
+	}
+}
+
+func TestCanMatchTask_WorkerGroup(t *testing.T) {
+	caps := &WorkerCapabilities{
+		OnlineCount: 2,
+		Workers: []*model.Worker{
+			{State: model.WorkerStateOnline, Runtime: model.RuntimeApptainer, Group: "default"},
+			{State: model.WorkerStateOnline, Runtime: model.RuntimeApptainer, Group: "gpu"},
+		},
+		HasContainer: true,
+		Groups:       map[string]int{"default": 1, "gpu": 1},
+		Datasets:     make(map[string]int),
+	}
+
+	// Matching group.
+	ok, _ := canMatchTask(caps, &model.RuntimeHints{DockerImage: "alpine", WorkerGroup: "gpu"})
+	if !ok {
+		t.Error("expected true: gpu worker exists")
+	}
+
+	// Non-matching group.
+	ok, reason := canMatchTask(caps, &model.RuntimeHints{DockerImage: "alpine", WorkerGroup: "esmfold"})
+	if ok {
+		t.Error("expected false: no esmfold workers")
+	}
+	if !strings.Contains(reason, "esmfold") {
+		t.Errorf("unexpected reason: %s", reason)
+	}
+}
+
+func TestCanMatchTask_PrestageDatasets(t *testing.T) {
+	caps := &WorkerCapabilities{
+		OnlineCount: 1,
+		Workers: []*model.Worker{
+			{
+				State:    model.WorkerStateOnline,
+				Runtime:  model.RuntimeApptainer,
+				Datasets: map[string]string{"boltz": "/data/boltz", "alphafold": "/data/alphafold"},
+			},
+		},
+		HasContainer: true,
+		Groups:       map[string]int{"default": 1},
+		Datasets:     map[string]int{"boltz": 1, "alphafold": 1},
+	}
+
+	// Worker has the prestage dataset.
+	hints := &model.RuntimeHints{
+		DockerImage: "alpine",
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "boltz", Mode: "prestage"},
+		},
+	}
+	ok, _ := canMatchTask(caps, hints)
+	if !ok {
+		t.Error("expected true: worker has boltz dataset")
+	}
+
+	// Worker missing a prestage dataset.
+	hints = &model.RuntimeHints{
+		DockerImage: "alpine",
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "chai", Mode: "prestage"},
+		},
+	}
+	ok, reason := canMatchTask(caps, hints)
+	if ok {
+		t.Error("expected false: no worker with chai dataset")
+	}
+	if !strings.Contains(reason, "chai") {
+		t.Errorf("unexpected reason: %s", reason)
+	}
+
+	// Cache-mode datasets are NOT checked (preferences, not requirements).
+	hints = &model.RuntimeHints{
+		DockerImage: "alpine",
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "missing_ds", Mode: "cache"},
+		},
+	}
+	ok, _ = canMatchTask(caps, hints)
+	if !ok {
+		t.Error("expected true: cache-mode datasets are preferences, not requirements")
+	}
+}
+
+func TestCanMatchTask_CombinedConstraints(t *testing.T) {
+	// Worker in group "gpu" with boltz dataset, but NOT chai.
+	caps := &WorkerCapabilities{
+		OnlineCount: 1,
+		Workers: []*model.Worker{
+			{
+				State:    model.WorkerStateOnline,
+				Runtime:  model.RuntimeApptainer,
+				Group:    "gpu",
+				Datasets: map[string]string{"boltz": "/data/boltz"},
+			},
+		},
+		HasContainer: true,
+		Groups:       map[string]int{"gpu": 1},
+		Datasets:     map[string]int{"boltz": 1},
+	}
+
+	// All constraints match.
+	hints := &model.RuntimeHints{
+		WorkerGroup: "gpu",
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "boltz", Mode: "prestage"},
+		},
+	}
+	ok, _ := canMatchTask(caps, hints)
+	if !ok {
+		t.Error("expected true: worker satisfies all constraints")
+	}
+
+	// Group matches but dataset doesn't.
+	hints = &model.RuntimeHints{
+		WorkerGroup: "gpu",
+		RequiredDatasets: []model.DatasetRequirement{
+			{ID: "boltz", Mode: "prestage"},
+			{ID: "chai", Mode: "prestage"},
+		},
+	}
+	ok, reason := canMatchTask(caps, hints)
+	if ok {
+		t.Error("expected false: worker doesn't have chai")
+	}
+	if !strings.Contains(reason, "chai") {
+		t.Errorf("unexpected reason: %s", reason)
+	}
+}
+
+// --- Feature A: Pre-flight deferral tests ---
+
+func TestPreflightDeferral_NoWorker_DefersAndFails(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+
+	// Configure for worker executor and small deferral threshold.
+	sched.config.DefaultExecutor = "worker"
+	sched.config.PreflightDeferralTicks = 3
+	sched.config.MaxRetries = 0
+
+	steps := []model.Step{
+		{
+			ID: "container_step",
+			ToolInline: &model.Tool{
+				ID:          "tool1",
+				Class:       "CommandLineTool",
+				BaseCommand: []string{"echo", "hello"},
+			},
+			Hints: &model.StepHints{
+				DockerImage: "alpine",
+			},
+		},
+	}
+
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 0)
+
+	// Ticks 1 and 2: step should remain READY (deferred).
+	for tick := 1; tick <= 2; tick++ {
+		if err := sched.Tick(ctx); err != nil {
+			t.Fatalf("Tick %d: %v", tick, err)
+		}
+		siByStep := getStepInstancesByStep(t, st, subID)
+		if siByStep["container_step"].State != model.StepStateReady {
+			t.Errorf("after tick %d: expected READY, got %s", tick, siByStep["container_step"].State)
+		}
+		// No tasks should be created.
+		tasks, _ := st.ListTasksBySubmission(ctx, subID)
+		if len(tasks) != 0 {
+			t.Errorf("after tick %d: expected 0 tasks, got %d", tick, len(tasks))
+		}
+	}
+
+	// Tick 3: deferral threshold reached → step should be FAILED.
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatalf("Tick 3: %v", err)
+	}
+	siByStep := getStepInstancesByStep(t, st, subID)
+	if siByStep["container_step"].State != model.StepStateFailed {
+		t.Errorf("after tick 3: expected FAILED, got %s", siByStep["container_step"].State)
+	}
+}
+
+func TestPreflightDeferral_WorkerComesOnline(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+
+	// Register worker executor so it can be resolved.
+	workerExec := executor.NewWorkerExecutor(st, sched.logger)
+	sched.registry.Register(workerExec)
+
+	sched.config.DefaultExecutor = "worker"
+	sched.config.PreflightDeferralTicks = 5
+	sched.config.MaxRetries = 0
+
+	steps := []model.Step{
+		{
+			ID: "step1",
+			ToolInline: &model.Tool{
+				ID:          "tool1",
+				Class:       "CommandLineTool",
+				BaseCommand: []string{"echo", "hello"},
+			},
+			Hints: &model.StepHints{
+				DockerImage: "alpine",
+			},
+		},
+	}
+
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 0)
+
+	// Tick 1: no workers → deferred.
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatalf("Tick 1: %v", err)
+	}
+	siByStep := getStepInstancesByStep(t, st, subID)
+	if siByStep["step1"].State != model.StepStateReady {
+		t.Fatalf("after tick 1: expected READY, got %s", siByStep["step1"].State)
+	}
+
+	// Register a worker.
+	worker := &model.Worker{
+		ID:       "worker_" + uuid.New().String(),
+		Name:     "test-worker",
+		State:    model.WorkerStateOnline,
+		Runtime:  model.RuntimeApptainer,
+		LastSeen: time.Now().UTC(),
+	}
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatalf("CreateWorker: %v", err)
+	}
+
+	// Tick 2: worker online → step should be dispatched (QUEUED task created).
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatalf("Tick 2: %v", err)
+	}
+	siByStep = getStepInstancesByStep(t, st, subID)
+	if siByStep["step1"].State == model.StepStateReady {
+		t.Error("after tick 2: step should no longer be READY after worker came online")
+	}
+	tasks, _ := st.ListTasksBySubmission(ctx, subID)
+	if len(tasks) == 0 {
+		t.Error("after tick 2: expected at least 1 task created")
+	}
+}
+
+func TestPreflightDeferral_Disabled(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+
+	// Register worker executor.
+	workerExec := executor.NewWorkerExecutor(st, sched.logger)
+	sched.registry.Register(workerExec)
+
+	sched.config.DefaultExecutor = "worker"
+	sched.config.PreflightDeferralTicks = 0 // Disabled.
+	sched.config.MaxRetries = 0
+
+	steps := []model.Step{
+		{
+			ID: "step1",
+			ToolInline: &model.Tool{
+				ID:          "tool1",
+				Class:       "CommandLineTool",
+				BaseCommand: []string{"echo", "hello"},
+			},
+		},
+	}
+
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 0)
+
+	// With preflight disabled, task should be created even without workers.
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	tasks, _ := st.ListTasksBySubmission(ctx, subID)
+	if len(tasks) == 0 {
+		t.Error("expected task to be created when preflight is disabled")
+	}
+}
+
+// --- Feature B: Stuck task detector tests ---
+
+func TestDetectStuckTasks_ProgressResets(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	sched.config.StuckTaskThreshold = 3
+
+	// Create a QUEUED worker task manually.
+	now := time.Now().UTC()
+	task := &model.Task{
+		ID:           "task_stuck_test",
+		SubmissionID: "sub_test",
+		StepID:       "step1",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		RuntimeHints: &model.RuntimeHints{DockerImage: "alpine"},
+		Inputs:       map[string]any{},
+		Outputs:      map[string]any{},
+		CreatedAt:    now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected := make(map[string]bool)
+
+	// Run 3 ticks: first is baseline (staleTicks=0), then 2 stale ticks.
+	for i := 0; i < 3; i++ {
+		if err := sched.detectStuckTasks(ctx, affected); err != nil {
+			t.Fatalf("detectStuckTasks tick %d: %v", i, err)
+		}
+	}
+
+	key := requirementKeyForTask(task)
+	if sched.stuck.staleTicks[key] != 2 {
+		t.Errorf("expected 2 stale ticks, got %d", sched.stuck.staleTicks[key])
+	}
+
+	// Simulate progress by removing the task (count drops to 0).
+	task.State = model.TaskStateRunning
+	nt := time.Now().UTC()
+	task.StartedAt = &nt
+	if err := st.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	if err := sched.detectStuckTasks(ctx, affected); err != nil {
+		t.Fatalf("detectStuckTasks after progress: %v", err)
+	}
+
+	// Key should be cleaned up (0 queued tasks).
+	if _, exists := sched.stuck.staleTicks[key]; exists {
+		t.Error("expected stale ticks to be cleaned up after task left QUEUED")
+	}
+}
+
+func TestDetectStuckTasks_FailAction(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	sched.config.StuckTaskThreshold = 2
+	sched.config.StuckTaskAction = "fail"
+
+	now := time.Now().UTC()
+	task := &model.Task{
+		ID:           "task_stuck_fail",
+		SubmissionID: "sub_test",
+		StepID:       "step1",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		RuntimeHints: &model.RuntimeHints{
+			DockerImage: "alpine",
+			WorkerGroup: "nonexistent",
+		},
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		MaxRetries: 3,
+		CreatedAt:  now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected := make(map[string]bool)
+
+	// Run threshold+1 ticks to trigger (first tick is baseline).
+	for i := 0; i < 3; i++ {
+		if err := sched.detectStuckTasks(ctx, affected); err != nil {
+			t.Fatalf("detectStuckTasks tick %d: %v", i, err)
+		}
+	}
+
+	// Task should be failed.
+	updated, err := st.GetTask(ctx, "task_stuck_fail")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if updated.State != model.TaskStateFailed {
+		t.Errorf("expected task to be FAILED, got %s", updated.State)
+	}
+	if !strings.Contains(updated.Stderr, "stuck task failed") {
+		t.Errorf("expected stuck task reason in stderr, got: %s", updated.Stderr)
+	}
+}
+
+func TestRequirementKeyForTask(t *testing.T) {
+	tests := []struct {
+		name string
+		task *model.Task
+		want taskRequirementKey
+	}{
+		{
+			name: "no hints",
+			task: &model.Task{ExecutorType: model.ExecutorTypeWorker},
+			want: taskRequirementKey{},
+		},
+		{
+			name: "docker image ignored",
+			task: &model.Task{
+				ExecutorType: model.ExecutorTypeWorker,
+				RuntimeHints: &model.RuntimeHints{DockerImage: "alpine"},
+			},
+			want: taskRequirementKey{}, // DockerImage not part of key
+		},
+		{
+			name: "group and prestage",
+			task: &model.Task{
+				ExecutorType: model.ExecutorTypeWorker,
+				RuntimeHints: &model.RuntimeHints{
+					DockerImage: "alpine",
+					WorkerGroup: "gpu",
+					RequiredDatasets: []model.DatasetRequirement{
+						{ID: "chai", Mode: "prestage"},
+						{ID: "boltz", Mode: "prestage"},
+						{ID: "cache_ds", Mode: "cache"},
+					},
+				},
+			},
+			want: taskRequirementKey{
+				WorkerGroup: "gpu",
+				PrestageIDs: "boltz,chai", // sorted
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := requirementKeyForTask(tt.task)
+			if got != tt.want {
+				t.Errorf("requirementKeyForTask() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

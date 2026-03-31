@@ -12,6 +12,7 @@ import (
 
 	"github.com/me/gowe/internal/logging"
 	"github.com/me/gowe/internal/worker"
+	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
 
@@ -26,7 +27,7 @@ func main() {
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
 	flag.StringVar(&cfg.WorkerKey, "worker-key", "", "Shared secret for worker authentication")
-	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime (docker, apptainer, none)")
+	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime(s), comma-separated (docker, apptainer, none)")
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
 	flag.DurationVar(&cfg.Poll, "poll", 5*time.Second, "Poll interval")
@@ -108,6 +109,12 @@ func main() {
 	flag.BoolVar(&s3PathStyle, "s3-path-style", false, "Use path-style S3 addressing (required for MinIO)")
 	flag.BoolVar(&s3DisableSSL, "s3-disable-ssl", false, "Disable SSL for S3 (local development only)")
 
+	// Workspace stager flags.
+	var workspaceStager bool
+	var workspaceURL string
+	flag.BoolVar(&workspaceStager, "workspace-stager", false, "Enable workspace (ws://) staging for BV-BRC workspace files")
+	flag.StringVar(&workspaceURL, "workspace-url", "", "BV-BRC Workspace service URL (default: production)")
+
 	// Shock stager flags.
 	var shockHost string
 	var shockToken string
@@ -135,6 +142,12 @@ func main() {
 	}
 
 	logger := logging.NewLogger(logging.ParseLevel(*logLevel), *logFormat)
+
+	// Validate runtime flag.
+	if err := model.ValidateRuntimes(cfg.Runtime); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 
 	// Parse Docker host path map from flag or environment variable.
 	if dockerHostPathMapStr == "" {
@@ -243,6 +256,10 @@ func main() {
 	cfg.Stager.S3.DefaultBucket = s3Bucket
 	cfg.Stager.S3.UsePathStyle = s3PathStyle
 	cfg.Stager.S3.DisableSSL = s3DisableSSL
+
+	// Workspace stager configuration.
+	cfg.WorkspaceStager = workspaceStager
+	cfg.WorkspaceURL = workspaceURL
 
 	// Shock configuration.
 	if shockToken == "" {

@@ -213,3 +213,27 @@ func isArrayOutputType(outputType any) bool {
 func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any) map[string]string {
 	return requirements.ExtractEnvVars(tool, inputs, jobRequirements)
 }
+
+// scanSymlinks walks a directory and returns a set of absolute paths that are symlinks.
+// Uses os.Lstat (not Walk, which follows symlinks) to detect symlinks.
+func scanSymlinks(dir string) map[string]bool {
+	symlinks := make(map[string]bool)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return symlinks
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if linfo, err := os.Lstat(path); err == nil && linfo.Mode()&os.ModeSymlink != 0 {
+			abs, _ := filepath.Abs(path)
+			symlinks[abs] = true
+		}
+		// Recurse into real directories (not symlinked ones).
+		if entry.IsDir() {
+			for k, v := range scanSymlinks(path) {
+				symlinks[k] = v
+			}
+		}
+	}
+	return symlinks
+}

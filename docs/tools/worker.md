@@ -34,7 +34,7 @@ gowe-worker [flags]
 | `--name` | hostname | Worker name for identification |
 | `--group` | `default` | Worker group for targeted scheduling |
 | `--worker-key` | `""` | Shared secret for authentication |
-| `--runtime` | `none` | Container runtime: docker, apptainer, none |
+| `--runtime` | `none` | Container runtime(s), comma-separated: docker, apptainer, none |
 | `--workdir` | `$TMPDIR/gowe-worker` | Local working directory for task execution |
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
 | `--poll` | `5s` | Poll interval for checking new tasks |
@@ -167,6 +167,25 @@ gowe-worker \
 | `--shock-host` | `""` | Default Shock server host (e.g., `p3.theseed.org`) |
 | `--shock-token` | `""` | Shock authentication token (env: `SHOCK_TOKEN`) |
 | `--shock-use-http` | `false` | Use HTTP instead of HTTPS (local development) |
+
+#### Workspace Staging (BV-BRC)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace-stager` | `false` | Enable `ws://` workspace staging for BV-BRC files |
+| `--workspace-url` | `""` | BV-BRC Workspace service URL (default: production) |
+
+When enabled, the worker can stage files in/out of BV-BRC workspaces using `ws://` URIs. Authentication tokens are passed per-task from the submission's user token.
+
+```bash
+# Worker with workspace staging
+gowe-worker --server http://localhost:8080 --runtime apptainer \
+  --workspace-stager --image-dir /scout/containers/
+
+# Worker with workspace stage-out
+gowe-worker --server http://localhost:8080 --runtime apptainer \
+  --workspace-stager --stage-out ws:// --image-dir /scout/containers/
+```
 
 #### Shared Filesystem Staging
 
@@ -301,18 +320,36 @@ Tasks targeting the "gpu-workers" group will be distributed across all 8 workers
 
 ### Container runtime
 
+Workers advertise their runtime capabilities to the scheduler. The scheduler only
+dispatches tasks to workers that can execute them: tasks with `DockerRequirement`
+are only sent to workers with a container runtime (`docker` or `apptainer`).
+
+A worker can advertise multiple runtimes as a comma-separated list. Container
+runtimes implicitly include bare (local) execution — a task without
+`DockerRequirement` can run on any worker.
+
+| `--runtime` value | Container tasks | Bare tasks |
+|---|---|---|
+| `none` | Skipped | Yes |
+| `docker` | Yes (Docker) | Yes (implicit) |
+| `apptainer` | Yes (Apptainer) | Yes (implicit) |
+| `none,apptainer` | Yes (Apptainer) | Yes |
+
 ```bash
-# Use Docker for containerized tasks
+# Use Docker for containerized tasks (also handles bare tasks)
 gowe-worker --runtime docker
 
-# Use Apptainer (Singularity) for HPC environments
+# Use Apptainer for HPC environments (also handles bare tasks)
 gowe-worker --runtime apptainer
 
 # Apptainer with local SIF images
 gowe-worker --runtime apptainer --image-dir /scout/containers/
 
-# No containers - run directly on host
+# No containers - only bare execution (DockerRequirement tasks are skipped)
 gowe-worker --runtime none
+
+# Explicit multi-runtime: advertise both capabilities
+gowe-worker --runtime none,apptainer
 ```
 
 ### Custom work directory
@@ -423,12 +460,14 @@ $WORKDIR/
 
 ## Runtime Modes
 
+Workers declare their runtime capabilities at registration. The scheduler
+uses this to match tasks to capable workers.
+
 ### none (default)
 
-Executes commands directly on the host system. Suitable for:
-- Trusted workflows
-- Development and testing
-- Environments without containers
+Executes commands directly on the host system. Tasks with `DockerRequirement`
+are **not dispatched** to `none`-only workers — they stay queued until a
+container-capable worker picks them up.
 
 ```bash
 gowe-worker --runtime none
@@ -436,31 +475,32 @@ gowe-worker --runtime none
 
 ### docker
 
-Executes commands inside Docker containers. Requires:
-- Docker daemon running
-- User in docker group (or root)
+Executes containerized tasks via Docker. Also handles bare tasks (no
+`DockerRequirement`) by running commands locally. Requires Docker daemon
+running and user in docker group.
 
 ```bash
 gowe-worker --runtime docker
 ```
 
-CWL workflows specify container images via `DockerRequirement`:
-
-```yaml
-hints:
-  DockerRequirement:
-    dockerPull: ubuntu:22.04
-```
-
 ### apptainer
 
-Executes commands inside Apptainer (Singularity) containers. Suitable for:
-- HPC clusters
-- Rootless container execution
-- Shared multi-user systems
+Executes containerized tasks via Apptainer (Singularity). Also handles bare
+tasks. Suitable for HPC clusters and rootless container execution.
 
 ```bash
 gowe-worker --runtime apptainer
+```
+
+### Multi-runtime
+
+Workers can advertise multiple runtimes. The scheduler dispatches container
+tasks only to workers with a container runtime; bare tasks go to any worker.
+At execution time, the worker selects the appropriate runtime per task.
+
+```bash
+# Can handle both bare and Apptainer tasks
+gowe-worker --runtime none,apptainer
 ```
 
 ## Output Staging

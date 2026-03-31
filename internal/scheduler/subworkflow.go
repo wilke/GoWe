@@ -304,14 +304,29 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 // waitForStepCompletion polls an async step's tasks until all are terminal,
 // then updates the step instance state. This mirrors the pollInFlight + advanceSteps
 // logic from the main scheduler loop but scoped to a single step.
+//
+// NOTE: This runs synchronously inside Phase 2 (dispatchReady), blocking the
+// main scheduler loop. Use a slower poll interval than the main scheduler to
+// reduce DB contention, and enforce a timeout to prevent infinite blocking.
 func (l *Loop) waitForStepCompletion(ctx context.Context, si *model.StepInstance, wf *model.Workflow) error {
-	ticker := time.NewTicker(l.config.PollInterval)
+	// Use a slower poll interval for child steps (min 500ms) to reduce DB load
+	// and give workers more opportunity to check out tasks.
+	pollInterval := l.config.PollInterval
+	if pollInterval < 500*time.Millisecond {
+		pollInterval = 500 * time.Millisecond
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+
+	// Safety timeout: 10 minutes per child step to prevent infinite blocking.
+	timeout := time.After(10 * time.Minute)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-timeout:
+			return fmt.Errorf("child step %s timed out after 10 minutes", si.ID)
 		case <-ticker.C:
 			tasks, err := l.store.ListTasksByStepInstance(ctx, si.ID)
 			if err != nil {

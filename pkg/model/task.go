@@ -93,6 +93,10 @@ type RuntimeHints struct {
 	// RequiredDatasets lists reference datasets needed by this task.
 	// Parsed from the gowe:ResourceData CWL hint.
 	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`
+
+	// OutputDestination is the target URI for uploading task outputs
+	// (e.g., "ws:///user@bvbrc/home/results/"). Propagated from Submission.
+	OutputDestination string `json:"output_destination,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

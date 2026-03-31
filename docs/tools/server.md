@@ -27,8 +27,11 @@ gowe-server [flags]
 | `--addr` | `:8080` | Listen address (host:port) |
 | `--db` | `~/.gowe/gowe.db` | SQLite database path |
 | `--default-executor` | `""` | Default executor type: `local`, `container`, `worker`, `bvbrc` (empty = hint-based) |
-| `--config` | `~/.gowe/config.yaml` | Server configuration file |
+| `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths in `DockerRequirement` |
+| `--config` | `""` | Path to server config file (for admins, worker keys) |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
+| `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
+| `--workspace-url` | `""` | BV-BRC Workspace service URL for server-side staging (default: production) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
@@ -39,6 +42,7 @@ gowe-server [flags]
 |------|---------|-------------|
 | `--allow-anonymous` | `false` | Allow unauthenticated API requests |
 | `--anonymous-executors` | `local,container,worker` | Executors allowed for anonymous users |
+| `--admins` | `""` | Comma-separated list of admin usernames (also: `GOWE_ADMINS` env) |
 | `--worker-keys` | `""` | Path to worker keys JSON file |
 
 Environment variables:
@@ -84,6 +88,19 @@ gowe-server \
   --upload-backend local \
   --upload-local-dir /workdir/uploads \
   --upload-download-dirs /workdir/uploads,/workdir/outputs
+```
+
+#### Container Images
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths |
+
+When `--image-dir` is set, the local and Apptainer executors resolve relative `.sif` paths in `DockerRequirement.dockerPull` against this directory. This is required for HPC deployments where pre-built SIF images are stored in a shared location.
+
+```bash
+# Resolve tool.sif → /scout/containers/tool.sif
+gowe-server --image-dir /scout/containers/ --default-executor worker
 ```
 
 ## Examples
@@ -247,95 +264,17 @@ A tick-based scheduler loop that:
 - Dispatches tasks to appropriate executors (with user credentials)
 - Handles state transitions and retries
 
-## API Endpoints
+## API Reference
 
-All endpoints are prefixed with `/api/v1`.
-
-### Health & Discovery
-
-```bash
-# Health check
-curl http://localhost:8080/api/v1/health
-
-# API discovery
-curl http://localhost:8080/api/v1/
-```
-
-### Workflows
-
-```bash
-# List workflows
-curl http://localhost:8080/api/v1/workflows/
-
-# Create workflow
-curl -X POST http://localhost:8080/api/v1/workflows/ \
-  -H "Content-Type: application/json" \
-  -d '{"name": "my-workflow", "cwl": "..."}'
-
-# Get workflow
-curl http://localhost:8080/api/v1/workflows/wf_abc123/
-
-# Validate workflow
-curl -X POST http://localhost:8080/api/v1/workflows/wf_abc123/validate
-
-# Delete workflow
-curl -X DELETE http://localhost:8080/api/v1/workflows/wf_abc123/
-```
-
-### Submissions
-
-```bash
-# List submissions
-curl http://localhost:8080/api/v1/submissions/
-
-# Create submission
-curl -X POST http://localhost:8080/api/v1/submissions/ \
-  -H "Content-Type: application/json" \
-  -d '{"workflow_id": "wf_abc123", "inputs": {"param1": "value1"}}'
-
-# Get submission status
-curl http://localhost:8080/api/v1/submissions/sub_xyz789/
-
-# Cancel submission
-curl -X PUT http://localhost:8080/api/v1/submissions/sub_xyz789/cancel
-```
-
-### Tasks
-
-```bash
-# List tasks for a submission
-curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/
-
-# Get task details
-curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/task_123/
-
-# Get task logs
-curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/task_123/logs
-```
-
-### BV-BRC Proxy (requires token)
-
-```bash
-# List BV-BRC apps
-curl http://localhost:8080/api/v1/apps/
-
-# Get app details
-curl http://localhost:8080/api/v1/apps/GenomeAnnotation
-
-# Browse workspace
-curl http://localhost:8080/api/v1/workspace?path=/user@patricbrc.org/home/
-```
-
-## Response Format
-
-All API responses use a standard envelope:
+All endpoints are prefixed with `/api/v1`. All responses use a standard JSON envelope:
 
 ```json
 {
-  "status": "success",
+  "status": "ok",
   "request_id": "req_abc123",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "data": { ... }
+  "timestamp": "2026-03-28T12:34:56Z",
+  "data": { ... },
+  "pagination": { ... }
 }
 ```
 
@@ -345,12 +284,590 @@ Error responses:
 {
   "status": "error",
   "request_id": "req_abc123",
-  "timestamp": "2024-01-15T10:30:00Z",
+  "timestamp": "2026-03-28T12:34:56Z",
   "error": {
     "code": "NOT_FOUND",
     "message": "Workflow not found"
   }
 }
+```
+
+### Authentication
+
+Protected endpoints require one of:
+- `Authorization` header (BV-BRC token): `un=username|tokenid=...|expiry=...`
+- `X-MG-RAST-Token` header (MG-RAST token)
+- Anonymous access (if `--allow-anonymous` is set)
+
+Worker endpoints use `X-Worker-Key` header (if worker keys configured).
+
+### Error Codes
+
+| Code | HTTP Status | Meaning |
+|------|------------|---------|
+| `ErrValidation` | 400 | Invalid request body or query parameters |
+| `ErrUnauthorized` | 401 | No auth token or invalid token |
+| `ErrForbidden` | 403 | Authenticated but insufficient permissions |
+| `ErrNotFound` | 404 | Resource not found |
+| `ErrConflict` | 409 | Invalid state transition or resource conflict |
+| `ErrInternal` | 500 | Server error |
+
+---
+
+### Health & Discovery
+
+#### `GET /api/v1/health`
+
+Server health and version. No auth required.
+
+```bash
+curl http://localhost:8080/api/v1/health
+```
+
+```json
+{
+  "status": "healthy",
+  "version": "0.1.0",
+  "go_version": "go1.24",
+  "uptime": "2h15m30s",
+  "executors": {
+    "local": "available",
+    "worker": "available",
+    "bvbrc": "unavailable"
+  }
+}
+```
+
+#### `GET /api/v1/`
+
+API endpoint discovery. No auth required.
+
+---
+
+### Workflows
+
+#### `POST /api/v1/workflows`
+
+Create a workflow from CWL. If CWL content matches an existing workflow, returns the existing one (deduplication by content hash).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/workflows \
+  -H "Authorization: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-workflow",
+    "description": "optional description",
+    "cwl": "cwlVersion: v1.2\nclass: CommandLineTool\n..."
+  }'
+```
+
+Response (201):
+
+```json
+{
+  "id": "wf_abc123",
+  "name": "my-workflow",
+  "class": "Workflow",
+  "cwl_version": "v1.2",
+  "step_count": 3,
+  "content_hash": "sha256...",
+  "created_at": "2026-03-28T12:00:00Z"
+}
+```
+
+#### `GET /api/v1/workflows`
+
+List workflows (paginated).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `limit` | 20 | Max results (max: 100) |
+| `offset` | 0 | Skip N results |
+
+```bash
+curl http://localhost:8080/api/v1/workflows?limit=10
+```
+
+#### `GET /api/v1/workflows/{id}`
+
+Get workflow details (accepts ID or name). Returns full CWL, steps, inputs, outputs.
+
+```bash
+curl http://localhost:8080/api/v1/workflows/wf_abc123
+```
+
+#### `PUT /api/v1/workflows/{id}`
+
+Update workflow metadata or CWL content.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/workflows/wf_abc123 \
+  -H "Content-Type: application/json" \
+  -d '{"name": "new-name", "cwl": "cwlVersion: v1.2\n..."}'
+```
+
+If `cwl` is provided, the workflow is re-parsed and re-validated.
+
+#### `DELETE /api/v1/workflows/{id}`
+
+Delete a workflow.
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/workflows/wf_abc123
+```
+
+#### `POST /api/v1/workflows/{id}/validate`
+
+Validate a workflow without creating a submission.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/workflows/wf_abc123/validate
+```
+
+```json
+{
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}
+```
+
+---
+
+### Submissions
+
+#### `POST /api/v1/submissions`
+
+Submit a workflow for execution. Auth required (user token stored for per-task credential delegation).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/submissions \
+  -H "Authorization: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "wf_abc123",
+    "inputs": {
+      "sequences": {"class": "File", "path": "test.fasta"},
+      "num_recycles": 3
+    },
+    "labels": {"experiment": "pilot-1"}
+  }'
+```
+
+Response (201):
+
+```json
+{
+  "id": "sub_xyz789",
+  "workflow_id": "wf_abc123",
+  "workflow_name": "my-workflow",
+  "state": "pending",
+  "inputs": { ... },
+  "outputs": {},
+  "labels": { ... },
+  "submitted_by": "user@example.com",
+  "created_at": "2026-03-28T12:00:00Z",
+  "tasks": [ ... ]
+}
+```
+
+**Dry run** — validate inputs without executing:
+
+```bash
+curl -X POST 'http://localhost:8080/api/v1/submissions?dry_run=true' \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "wf_abc123", "inputs": { ... }}'
+```
+
+```json
+{
+  "dry_run": true,
+  "valid": true,
+  "workflow": {"id": "wf_abc123", "name": "my-workflow", "step_count": 3},
+  "dag_acyclic": true,
+  "execution_order": ["step1", "step2", "step3"],
+  "executor_availability": {
+    "local": "available",
+    "worker": "available"
+  }
+}
+```
+
+**File literals** — files with `contents` but no `path` are auto-materialized:
+
+```json
+{
+  "inputs": {
+    "config": {"class": "File", "basename": "params.yaml", "contents": "key: value\n"}
+  }
+}
+```
+
+#### `GET /api/v1/submissions`
+
+List submissions (paginated).
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `limit` | 20 | Max results (max: 100) |
+| `offset` | 0 | Skip N results |
+| `state` | | Filter: pending, running, completed, failed, cancelled |
+| `workflow_id` | | Filter by workflow (ID or name) |
+
+```bash
+curl 'http://localhost:8080/api/v1/submissions?state=running&limit=5'
+```
+
+#### `GET /api/v1/submissions/{id}`
+
+Get submission details including all tasks and step instances.
+
+```bash
+curl http://localhost:8080/api/v1/submissions/sub_xyz789
+```
+
+#### `PUT /api/v1/submissions/{id}/cancel`
+
+Cancel a running submission. Marks all non-terminal tasks as SKIPPED.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/submissions/sub_xyz789/cancel
+```
+
+```json
+{
+  "id": "sub_xyz789",
+  "state": "cancelled",
+  "steps_cancelled": 2,
+  "tasks_cancelled": 5,
+  "tasks_already_completed": 3
+}
+```
+
+---
+
+### Tasks
+
+#### `GET /api/v1/submissions/{sid}/tasks`
+
+List tasks in a submission.
+
+```bash
+curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks
+```
+
+#### `GET /api/v1/submissions/{sid}/tasks/{tid}`
+
+Get task details (state, executor type, runtime hints, inputs, outputs).
+
+```bash
+curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/task_123
+```
+
+#### `GET /api/v1/submissions/{sid}/tasks/{tid}/logs`
+
+Get task stdout, stderr, and exit code.
+
+```bash
+curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/task_123/logs
+```
+
+```json
+{
+  "task_id": "task_123",
+  "step_id": "step_1",
+  "stdout": "Processing...\nDone.",
+  "stderr": "",
+  "exit_code": 0
+}
+```
+
+---
+
+### Workers
+
+Worker endpoints use `X-Worker-Key` auth (if configured).
+
+#### `POST /api/v1/workers`
+
+Register a worker.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/workers \
+  -H "X-Worker-Key: secret-key-1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gpu-worker-01",
+    "hostname": "compute-01.example.com",
+    "group": "esmfold",
+    "runtime": "apptainer",
+    "version": "abc1234",
+    "gpu_enabled": true,
+    "gpu_device": "cuda:0",
+    "datasets": {
+      "boltz": "/local_databases/boltz",
+      "alphafold": "/local_databases/alphafold"
+    }
+  }'
+```
+
+Response (201):
+
+```json
+{
+  "id": "wrk_abc123",
+  "name": "gpu-worker-01",
+  "hostname": "compute-01.example.com",
+  "group": "esmfold",
+  "state": "online",
+  "runtime": "apptainer",
+  "version": "abc1234",
+  "gpu_enabled": true,
+  "gpu_device": "cuda:0",
+  "datasets": { ... },
+  "last_seen": "2026-03-28T12:34:56Z",
+  "registered_at": "2026-03-28T12:34:56Z"
+}
+```
+
+#### `GET /api/v1/workers`
+
+List all registered workers with state, group, runtime, GPU, and dataset info.
+
+```bash
+curl http://localhost:8080/api/v1/workers
+```
+
+#### `PUT /api/v1/workers/{id}/heartbeat`
+
+Worker keep-alive. Updates `last_seen`. Workers are marked offline after 30s without heartbeat.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/heartbeat \
+  -H "X-Worker-Key: secret-key-1"
+```
+
+#### `GET /api/v1/workers/{id}/work`
+
+Poll for a task. Returns 204 if no work available. Task matching considers: runtime capability, worker group, and dataset affinity (prestage=require, cache=prefer).
+
+```bash
+curl http://localhost:8080/api/v1/workers/wrk_abc123/work \
+  -H "X-Worker-Key: secret-key-1"
+```
+
+Response (200): Full task object with CWL tool, inputs, runtime hints.
+
+Response (204): No content — no work available.
+
+#### `PUT /api/v1/workers/{id}/tasks/{tid}/status`
+
+Report task progress.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/tasks/task_456/status \
+  -H "X-Worker-Key: secret-key-1" \
+  -H "Content-Type: application/json" \
+  -d '{"state": "running"}'
+```
+
+#### `PUT /api/v1/workers/{id}/tasks/{tid}/complete`
+
+Report task completion with results.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/tasks/task_456/complete \
+  -H "X-Worker-Key: secret-key-1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "state": "success",
+    "exit_code": 0,
+    "stdout": "Prediction complete.",
+    "stderr": "",
+    "outputs": {
+      "predictions": {
+        "class": "Directory",
+        "location": "file:///scratch/gowe/task_456/output"
+      }
+    }
+  }'
+```
+
+#### `DELETE /api/v1/workers/{id}`
+
+Deregister a worker.
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/workers/wrk_abc123 \
+  -H "X-Worker-Key: secret-key-1"
+```
+
+---
+
+### File Upload & Download
+
+Requires `--upload-backend` to be configured. See [File Upload Proxy](#file-upload-proxy) flags.
+
+#### `POST /api/v1/files`
+
+Upload a file. Forwarded to configured backend (local, shock, s3).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/files \
+  -H "Authorization: $TOKEN" \
+  -F "file=@input.fasta"
+```
+
+Response (201):
+
+```json
+{
+  "location": "file:///workdir/uploads/input.fasta",
+  "filename": "input.fasta",
+  "size": 12345
+}
+```
+
+The returned `location` URI can be used directly in submission inputs.
+
+#### `GET /api/v1/files/download`
+
+Download a file or list a directory. Only paths under `--upload-download-dirs` are allowed.
+
+```bash
+# Download a file
+curl 'http://localhost:8080/api/v1/files/download?location=file:///workdir/uploads/input.fasta' \
+  -H "Authorization: $TOKEN" -o input.fasta
+
+# List a directory
+curl 'http://localhost:8080/api/v1/files/download?location=file:///workdir/uploads/' \
+  -H "Authorization: $TOKEN"
+```
+
+Directory listing response:
+
+```json
+[
+  {"basename": "input.fasta", "location": "file:///workdir/uploads/input.fasta", "is_dir": false, "size": 12345},
+  {"basename": "results/", "location": "file:///workdir/uploads/results", "is_dir": true, "size": 0}
+]
+```
+
+---
+
+### BV-BRC Integration
+
+Requires a valid BV-BRC token (server-side or user-provided).
+
+#### `GET /api/v1/apps`
+
+List BV-BRC applications (cached 5 minutes).
+
+```bash
+curl http://localhost:8080/api/v1/apps -H "Authorization: $TOKEN"
+```
+
+#### `GET /api/v1/apps/{appID}`
+
+Get BV-BRC app details.
+
+```bash
+curl http://localhost:8080/api/v1/apps/GenomeAssembly2 -H "Authorization: $TOKEN"
+```
+
+#### `GET /api/v1/apps/{appID}/cwl-tool`
+
+Auto-generate a CWL CommandLineTool wrapper from the BV-BRC app schema.
+
+```bash
+curl http://localhost:8080/api/v1/apps/GenomeAssembly2/cwl-tool -H "Authorization: $TOKEN"
+```
+
+```json
+{
+  "app_id": "GenomeAssembly2",
+  "cwl_tool": "cwlVersion: v1.2\nclass: CommandLineTool\nhints:\n  gowe:Execution:\n    executor: bvbrc\n    bvbrc_app_id: GenomeAssembly2\n..."
+}
+```
+
+#### `GET /api/v1/workspace`
+
+Browse BV-BRC workspace.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `path` | user home | Workspace path to list |
+
+```bash
+curl 'http://localhost:8080/api/v1/workspace?path=/awilke@bvbrc/home/' \
+  -H "Authorization: $TOKEN"
+```
+
+---
+
+### Server-Sent Events (SSE)
+
+#### `GET /api/v1/sse/submissions/{id}`
+
+Stream real-time submission updates. Connection auto-closes when submission reaches terminal state.
+
+```bash
+curl -N http://localhost:8080/api/v1/sse/submissions/sub_xyz789 \
+  -H "Authorization: $TOKEN"
+```
+
+Events:
+
+| Event | When | Data |
+|-------|------|------|
+| `init` | Immediately on connect | Full submission state |
+| `update` | State changes | Updated submission state |
+| `complete` | Terminal state reached | Final submission state |
+| (heartbeat) | Every 2s when idle | Comment line (`: heartbeat`) |
+
+```
+event: init
+data: {"id":"sub_xyz789","state":"pending",...}
+
+event: update
+data: {"id":"sub_xyz789","state":"running",...}
+
+: heartbeat
+
+event: complete
+data: {"id":"sub_xyz789","state":"completed","outputs":{...}}
+```
+
+---
+
+### Admin
+
+Requires admin role (configured via `--admins`, `GOWE_ADMINS`, or config file).
+
+#### `GET /api/v1/admin/users`
+
+List all users.
+
+```bash
+curl http://localhost:8080/api/v1/admin/users -H "Authorization: $ADMIN_TOKEN"
+```
+
+```json
+[
+  {"username": "awilke@bvbrc", "provider": "bvbrc", "role": "admin", "created_at": "..."},
+  {"username": "user@bvbrc", "provider": "bvbrc", "role": "user", "created_at": "..."}
+]
+```
+
+#### `PUT /api/v1/admin/users/{username}/role`
+
+Update a user's role.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/admin/users/user@bvbrc/role \
+  -H "Authorization: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "admin"}'
 ```
 
 ## Graceful Shutdown

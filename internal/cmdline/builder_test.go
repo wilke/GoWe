@@ -248,6 +248,51 @@ func TestBuilder_ArrayInput(t *testing.T) {
 	}
 }
 
+func TestBuilder_NullableArrayItemBinding(t *testing.T) {
+	// Nullable array with only item-level inputBinding (no top-level inputBinding).
+	// CWL pattern: type: ["null", {type: array, items: File, inputBinding: {prefix: --protein}}]
+	// After parsing, this becomes: Type="File[]?", InputBinding=nil, ItemInputBinding={prefix: --protein}
+	tool := &cwl.CommandLineTool{
+		BaseCommand: "predict-structure",
+		Inputs: map[string]cwl.ToolInputParam{
+			"tool": {
+				Type: "string",
+				InputBinding: &cwl.InputBinding{
+					Position: -100,
+				},
+			},
+			"protein": {
+				Type:             "File[]?",
+				InputBinding:     nil, // No top-level binding
+				ItemInputBinding: &cwl.InputBinding{
+					Position: 2,
+					Prefix:   "--protein",
+				},
+				ArrayItemTypes: []string{"File"},
+			},
+		},
+	}
+
+	inputs := map[string]any{
+		"tool": "boltz",
+		"protein": []any{
+			map[string]any{"class": "File", "path": "/data/test.fasta"},
+		},
+	}
+
+	builder := NewBuilder(nil)
+	result, err := builder.Build(tool, inputs, nil)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	// Expected: predict-structure boltz --protein /data/test.fasta
+	want := []string{"predict-structure", "boltz", "--protein", "/data/test.fasta"}
+	if !reflect.DeepEqual(result.Command, want) {
+		t.Errorf("Command = %v, want %v", result.Command, want)
+	}
+}
+
 func TestBuilder_StdoutStderr(t *testing.T) {
 	tool := &cwl.CommandLineTool{
 		BaseCommand: "sort",

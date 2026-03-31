@@ -453,6 +453,22 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 				return nil, fmt.Errorf("output glob %q matched path %q which is outside the output directory", pattern, match)
 			}
 
+			// CWL spec: if a tool creates a symlink in the output directory pointing
+			// outside it, the engine must raise an error. Skip symlinks that existed
+			// before tool execution (e.g., from IWDR staging).
+			if linfo, lErr := os.Lstat(match); lErr == nil && linfo.Mode()&os.ModeSymlink != 0 {
+				absMatchSym, _ := filepath.Abs(match)
+				if !e.preExistingSymlinks[absMatchSym] {
+					resolved, rErr := filepath.EvalSymlinks(match)
+					if rErr == nil {
+						absResolved, _ := filepath.Abs(resolved)
+						if !strings.HasPrefix(absResolved, absWorkDir+string(filepath.Separator)) && absResolved != absWorkDir {
+							return nil, fmt.Errorf("output glob %q matched symlink %q pointing to %q which is outside the output directory", pattern, match, resolved)
+						}
+					}
+				}
+			}
+
 			info, statErr := os.Stat(match)
 			if statErr != nil {
 				return nil, statErr

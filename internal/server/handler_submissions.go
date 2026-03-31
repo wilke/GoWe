@@ -28,9 +28,10 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		WorkflowID string            `json:"workflow_id"`
-		Inputs     map[string]any    `json:"inputs"`
-		Labels     map[string]string `json:"labels"`
+		WorkflowID        string            `json:"workflow_id"`
+		Inputs            map[string]any    `json:"inputs"`
+		Labels            map[string]string `json:"labels"`
+		OutputDestination string            `json:"output_destination"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -78,18 +79,19 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 
 	now := time.Now().UTC()
 	sub := &model.Submission{
-		ID:           "sub_" + uuid.New().String(),
-		WorkflowID:   wf.ID,
-		WorkflowName: wf.Name,
-		State:        model.SubmissionStatePending,
-		Inputs:       req.Inputs,
-		Outputs:      map[string]any{},
-		Labels:       req.Labels,
-		SubmittedBy:  userCtx.User.Username,
-		UserToken:    userCtx.Token,
-		TokenExpiry:  userCtx.Expiry,
-		AuthProvider: string(userCtx.Provider),
-		CreatedAt:    now,
+		ID:                "sub_" + uuid.New().String(),
+		WorkflowID:        wf.ID,
+		WorkflowName:      wf.Name,
+		State:             model.SubmissionStatePending,
+		Inputs:            req.Inputs,
+		Outputs:           map[string]any{},
+		Labels:            req.Labels,
+		SubmittedBy:       userCtx.User.Username,
+		UserToken:         userCtx.Token,
+		TokenExpiry:       userCtx.Expiry,
+		AuthProvider:      string(userCtx.Provider),
+		OutputDestination: req.OutputDestination,
+		CreatedAt:         now,
 	}
 	if sub.Inputs == nil {
 		sub.Inputs = map[string]any{}

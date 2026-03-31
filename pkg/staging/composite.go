@@ -3,6 +3,7 @@ package staging
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // CompositeStager routes staging operations to scheme-specific handlers.
@@ -33,8 +34,17 @@ func (s *CompositeStager) StageIn(ctx context.Context, location string, destPath
 	return fmt.Errorf("no stager registered for scheme %q", scheme)
 }
 
-// StageOut uses the fallback stager (typically file-based).
+// StageOut routes to a scheme-specific handler if the destination metadata
+// indicates a known scheme (e.g., ws://, s3://), otherwise uses the fallback.
 func (s *CompositeStager) StageOut(ctx context.Context, srcPath string, taskID string, opts StageOptions) (string, error) {
+	// Check if metadata destination implies a specific scheme handler.
+	if dest := opts.Metadata["destination"]; dest != "" {
+		for scheme, handler := range s.handlers {
+			if scheme != "" && strings.HasPrefix(dest, scheme+"://") {
+				return handler.StageOut(ctx, srcPath, taskID, opts)
+			}
+		}
+	}
 	if s.fallback != nil {
 		return s.fallback.StageOut(ctx, srcPath, taskID, opts)
 	}

@@ -639,10 +639,13 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		}
 	}
 
-	// NOTE: Apptainer shares the host network by default and --net requires
-	// root or admin config. Network isolation (CWL spec default: no network
-	// when NetworkAccess requirement is absent) cannot be enforced. This is a
-	// known limitation — test 227 (networkaccess_disabled) will fail.
+	// Network isolation: disable network access unless NetworkAccess requirement enables it.
+	// CWL spec: NetworkAccess defaults to false (no network access).
+	// Apptainer --net requires unprivileged user namespace support (allow net users/groups
+	// in apptainer.conf). On systems without it, the flag is silently ignored.
+	if !hasNetworkAccess(tool) {
+		apptainerArgs = append(apptainerArgs, "--net", "--network", "none")
+	}
 
 	// Resolve image: local .sif files are used directly, others get docker:// prefix.
 	resolvedImage := resolveApptainerImage(dockerImage, opts.ImageDir)

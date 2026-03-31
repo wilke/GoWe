@@ -48,7 +48,7 @@ func (s StepInstanceState) IsTerminal() bool {
 // ValidStepTransitions defines the allowed state transitions for StepInstances.
 var ValidStepTransitions = map[StepInstanceState][]StepInstanceState{
 	StepStateWaiting:    {StepStateReady, StepStateSkipped},
-	StepStateReady:      {StepStateDispatched},
+	StepStateReady:      {StepStateDispatched, StepStateFailed, StepStateSkipped},
 	StepStateDispatched: {StepStateRunning, StepStateCompleted, StepStateFailed},
 	StepStateRunning:    {StepStateCompleted, StepStateFailed},
 }
