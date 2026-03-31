@@ -23,6 +23,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// UnsupportedRequirementError signals that the workflow requires a CWL feature
+// not supported by the current execution mode. Used to exit with code 33.
+type UnsupportedRequirementError struct{ Msg string }
+
+func (e *UnsupportedRequirementError) Error() string { return e.Msg }
+
 func newRunCmd() *cobra.Command {
 	var outDir string
 	var quiet bool
@@ -289,6 +295,10 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 					}
 				}
 			}
+		}
+
+		if subData.Error != nil && subData.Error.Code == string(model.ErrUnsupportedRequirement) {
+			return &UnsupportedRequirementError{Msg: subData.Error.Message}
 		}
 
 		errMsg := "submission failed"

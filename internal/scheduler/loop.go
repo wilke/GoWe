@@ -89,6 +89,12 @@ type Loop struct {
 
 	// wsStager handles server-side workspace pre/post-staging (nil if disabled).
 	wsStager wsStagerInterface
+
+	// unsupportedSteps tracks step instances that failed due to unsupported
+	// CWL requirements (e.g., InplaceUpdateRequirement). Key = stepInstanceID,
+	// value = human-readable reason. Used by buildSubmissionError to set the
+	// UNSUPPORTED_REQUIREMENT error code so the CLI can exit with code 33.
+	unsupportedSteps map[string]string
 }
 
 // taskRequirementKey groups QUEUED tasks by their scheduling requirements
@@ -107,13 +113,14 @@ type stuckTracker struct {
 // NewLoop creates a new scheduler loop.
 func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Logger) *Loop {
 	return &Loop{
-		store:         st,
-		registry:      reg,
-		config:        cfg,
-		logger:        logger.With("component", "scheduler"),
-		stopCh:        make(chan struct{}),
-		doneCh:        make(chan struct{}),
-		deferredSteps: make(map[string]int),
+		store:            st,
+		registry:         reg,
+		config:           cfg,
+		logger:           logger.With("component", "scheduler"),
+		stopCh:           make(chan struct{}),
+		doneCh:           make(chan struct{}),
+		deferredSteps:    make(map[string]int),
+		unsupportedSteps: make(map[string]string),
 		stuck: stuckTracker{
 			lastCounts: make(map[taskRequirementKey]int),
 			staleTicks: make(map[taskRequirementKey]int),
@@ -456,14 +463,17 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		delete(l.deferredSteps, si.ID)
 	}
 
-	// Check for InplaceUpdateRequirement in distributed mode.
-	// InplaceUpdate requires shared filesystem across steps which is not available
-	// in distributed execution. Fail early with a clear message.
-	if execType != model.ExecutorTypeLocal && hasInplaceUpdateReq(tmpTask.Tool) {
+	// InplaceUpdateRequirement requires in-process filesystem sharing between
+	// workflow steps. Server mode (both local and worker executors) stages outputs
+	// through the store, breaking the in-place mutation contract. Reject with a
+	// clear unsupported signal so cwltest classifies this as "unsupported" (exit 33).
+	if hasInplaceUpdateReq(tmpTask.Tool) {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
-		l.logger.Error("InplaceUpdateRequirement not supported in distributed mode", "si_id", si.ID)
+		reason := "InplaceUpdateRequirement is not supported in server execution mode"
+		l.unsupportedSteps[si.ID] = reason
+		l.logger.Warn("unsupported requirement", "requirement", "InplaceUpdateRequirement", "si_id", si.ID)
 		return l.store.UpdateStepInstance(ctx, si)
 	}
 
@@ -1714,6 +1724,16 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 		return &model.SubmissionError{
 			Code:    "STEP_FAILED",
 			Message: "one or more steps failed",
+		}
+	}
+
+	// Check if this step failed due to an unsupported requirement.
+	if reason, ok := l.unsupportedSteps[failedStep.ID]; ok {
+		delete(l.unsupportedSteps, failedStep.ID)
+		return &model.SubmissionError{
+			Code:    string(model.ErrUnsupportedRequirement),
+			Message: reason,
+			Context: &model.SubmissionErrDetail{StepID: failedStep.StepID},
 		}
 	}
 

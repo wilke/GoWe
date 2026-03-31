@@ -740,6 +740,89 @@ func TestCanMatchTask_CombinedConstraints(t *testing.T) {
 	}
 }
 
+// --- InplaceUpdateRequirement unsupported detection ---
+
+func TestTick_InplaceUpdateRequirement_UnsupportedError(t *testing.T) {
+	sched, st := testSetup(t)
+	sched.config.MaxRetries = 0
+	ctx := context.Background()
+
+	// CWL with InplaceUpdateRequirement enabled.
+	rawCWL := `{
+  "$graph": [
+    {
+      "id": "#main",
+      "class": "Workflow",
+      "inputs": [],
+      "outputs": [{"id": "out", "type": "File", "outputSource": "inplace_step/out"}],
+      "steps": {
+        "inplace_step": {
+          "run": "#inplace_tool",
+          "in": [],
+          "out": ["out"]
+        }
+      }
+    },
+    {
+      "id": "#inplace_tool",
+      "class": "CommandLineTool",
+      "baseCommand": ["echo", "hello"],
+      "requirements": {
+        "InplaceUpdateRequirement": {"inplaceUpdate": true}
+      },
+      "inputs": [],
+      "outputs": [{"id": "out", "type": "stdout"}],
+      "stdout": "output.txt"
+    }
+  ]
+}`
+
+	steps := []model.Step{
+		{
+			ID:      "inplace_step",
+			ToolRef: "inplace_tool",
+			ToolInline: &model.Tool{
+				ID:          "inplace_tool",
+				Class:       "CommandLineTool",
+				BaseCommand: []string{"echo", "hello"},
+			},
+		},
+	}
+
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 0)
+
+	// Set RawCWL on the workflow so populateToolAndJob can parse the tool.
+	sub, _ := st.GetSubmission(ctx, subID)
+	wf, _ := st.GetWorkflow(ctx, sub.WorkflowID)
+	wf.RawCWL = rawCWL
+	_ = st.UpdateWorkflow(ctx, wf)
+
+	// Run ticks until the submission reaches a terminal state.
+	for i := 0; i < 5; i++ {
+		if err := sched.Tick(ctx); err != nil {
+			t.Fatalf("Tick %d: %v", i+1, err)
+		}
+		sub, _ = st.GetSubmission(ctx, subID)
+		if sub.State.IsTerminal() {
+			break
+		}
+	}
+
+	// Verify submission is FAILED with UNSUPPORTED_REQUIREMENT error code.
+	if sub.State != model.SubmissionStateFailed {
+		t.Errorf("sub.State = %q, want FAILED", sub.State)
+	}
+	if sub.Error == nil {
+		t.Fatal("sub.Error is nil, expected UNSUPPORTED_REQUIREMENT error")
+	}
+	if sub.Error.Code != string(model.ErrUnsupportedRequirement) {
+		t.Errorf("sub.Error.Code = %q, want %q", sub.Error.Code, model.ErrUnsupportedRequirement)
+	}
+	if !strings.Contains(sub.Error.Message, "InplaceUpdateRequirement") {
+		t.Errorf("sub.Error.Message = %q, want it to mention InplaceUpdateRequirement", sub.Error.Message)
+	}
+}
+
 // --- Feature A: Pre-flight deferral tests ---
 
 func TestPreflightDeferral_NoWorker_DefersAndFails(t *testing.T) {
