@@ -103,7 +103,12 @@ func checkFilePathsRecursive(value any, fieldName string) error {
 		if class == "File" || class == "Directory" {
 			path, _ := v["path"].(string)
 			loc, _ := v["location"].(string)
-			if path == "" && loc == "" {
+			_, hasContents := v["contents"]
+			_, hasListing := v["listing"]
+			// Literal files (contents) and literal directories (listing with no
+			// path/location) are valid — they get materialized during IWDR staging.
+			isLiteral := hasContents || (class == "Directory" && hasListing)
+			if path == "" && loc == "" && !isLiteral {
 				return fmt.Errorf("%s input %q has no path or location", class, fieldName)
 			}
 		}

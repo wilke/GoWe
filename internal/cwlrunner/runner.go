@@ -2253,7 +2253,6 @@ func getToolTimeLimit(tool *cwl.CommandLineTool, inputs map[string]any) int {
 
 	// Return the result (negative values will be handled by caller)
 	return result
-	return 0
 }
 
 // mergeWorkflowRequirements merges workflow-level requirements into the tool.
