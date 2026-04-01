@@ -84,6 +84,44 @@ func IsOptionalType(t string) bool {
 	return false
 }
 
+// ValidateFileInputs checks that all File/Directory inputs have a path or location.
+// Returns an error if any File/Directory object is missing both fields, which would
+// cause the command builder to produce invalid arguments like "map[class:File]".
+func ValidateFileInputs(inputs map[string]any) error {
+	for inputID, value := range inputs {
+		if err := checkFilePathsRecursive(value, inputID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkFilePathsRecursive(value any, fieldName string) error {
+	switch v := value.(type) {
+	case map[string]any:
+		class, _ := v["class"].(string)
+		if class == "File" || class == "Directory" {
+			path, _ := v["path"].(string)
+			loc, _ := v["location"].(string)
+			if path == "" && loc == "" {
+				return fmt.Errorf("%s input %q has no path or location", class, fieldName)
+			}
+		}
+		for k, item := range v {
+			if err := checkFilePathsRecursive(item, fieldName+"."+k); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, item := range v {
+			if err := checkFilePathsRecursive(item, fmt.Sprintf("%s[%d]", fieldName, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ValidateFileFormat checks if File inputs have the required format.
 // Returns an error if a file's format doesn't match the required format.
 func ValidateFileFormat(tool *cwl.CommandLineTool, inputs map[string]any, namespaces map[string]string) error {

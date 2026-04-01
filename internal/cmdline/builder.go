@@ -1066,11 +1066,14 @@ func inputValueToString(value any, itemSeparator string) string {
 		return formatFloat(v)
 	case map[string]any:
 		// File or Directory object - use path.
-		if path, ok := v["path"].(string); ok {
+		if path, ok := v["path"].(string); ok && path != "" {
 			return path
 		}
-		if loc, ok := v["location"].(string); ok {
+		if loc, ok := v["location"].(string); ok && loc != "" {
 			return loc
+		}
+		if class, ok := v["class"].(string); ok && (class == "File" || class == "Directory") {
+			return "" // Missing path/location — caller should detect empty string
 		}
 		return fmt.Sprintf("%v", v)
 	case []any:

@@ -639,6 +639,11 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		return nil, err
 	}
 
+	// Validate File/Directory inputs have path or location.
+	if err := validate.ValidateFileInputs(mergedInputs); err != nil {
+		return nil, err
+	}
+
 	// Validate file formats.
 	if err := validate.ValidateFileFormat(tool, mergedInputs, r.namespaces); err != nil {
 		return nil, err

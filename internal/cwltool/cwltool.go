@@ -137,6 +137,11 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		return nil, err
 	}
 
+	// Validate File/Directory inputs have path or location.
+	if err := validate.ValidateFileInputs(mergedInputs); err != nil {
+		return nil, err
+	}
+
 	// Validate file formats.
 	if err := validate.ValidateFileFormat(tool, mergedInputs, cfg.Namespaces); err != nil {
 		return nil, err
