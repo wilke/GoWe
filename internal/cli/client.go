@@ -20,6 +20,7 @@ type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Logger     *slog.Logger
+	Token      string // Auth token sent as Authorization: Bearer header
 }
 
 // NewClient creates a GoWe API client.
@@ -28,6 +29,7 @@ func NewClient(baseURL string, logger *slog.Logger) *Client {
 		BaseURL:    baseURL,
 		HTTPClient: &http.Client{},
 		Logger:     logger,
+		Token:      LoadToken(),
 	}
 }
 
@@ -60,6 +62,9 @@ func (c *Client) do(method, path string, body any) (*apiResponse, error) {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
 	c.Logger.Debug("HTTP request", "method", method, "url", url)
@@ -139,6 +144,9 @@ func (c *Client) UploadFile(filePath string) (*UploadResult, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 
 	c.Logger.Debug("upload file", "path", filePath, "url", reqURL)
 
@@ -179,6 +187,9 @@ func (c *Client) DownloadFile(location, destPath string) error {
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 
 	resp, err := c.HTTPClient.Do(req)
