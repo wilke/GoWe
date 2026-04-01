@@ -69,6 +69,7 @@ echo "Starting GoWe (port=${GOWE_PORT}, base=${BASE_DIR}, workers=${NUM_WORKERS}
     --upload-download-dirs "$DOWNLOAD_DIRS" \
     --log-level "$LOG_LEVEL" \
     --admins "$ADMINS" \
+    --workspace-staging server \
     > "$LOG_DIR/server.log" 2>&1 &
 echo $! > "$PID_DIR/server.pid"
 echo "  server  PID=$(cat "$PID_DIR/server.pid")  port=${GOWE_PORT}"

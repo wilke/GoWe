@@ -47,7 +47,7 @@ endif
 # .PHONY
 # ==============================================================================
 
-.PHONY: build install \
+.PHONY: build dev install \
         test test-conformance test-all test-tier1 test-tier2 test-staging test-distributed \
         setup lint fmt vet \
         docker docker-compose-up docker-compose-down docker-test-up docker-test-down \
@@ -66,6 +66,20 @@ endif
 
 ## build: Build all binaries to ./bin/ (default)
 build: $(BINARIES)
+
+# Dev tag: YYYYMMDD-HHMMSS-<short commit hash>
+DEV_TAG := $(shell date +%Y%m%d-%H%M%S)-$(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+DEV_CMDS := cli server worker cwl-runner
+
+## dev: Build tagged dev binaries (bin/<name>-<date>-<hash>) without overwriting production
+dev:
+	$(Q)mkdir -p $(BINDIR)
+	$(Q)for cmd in $(DEV_CMDS); do \
+		name=$$(echo $$cmd | sed 's/^cli$$/gowe/; s/^server$$/gowe-server/; s/^worker$$/gowe-worker/'); \
+		echo "Building $$name-$(DEV_TAG)..."; \
+		CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BINDIR)/$$name-$(DEV_TAG) ./cmd/$$cmd; \
+	done
+	$(Q)echo "Dev binaries tagged: $(DEV_TAG)"
 
 $(BINDIR)/%: FORCE
 	$(Q)mkdir -p $(BINDIR)
@@ -223,6 +237,7 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make                    Build all binaries"
+	@echo "  make dev                Build tagged dev binaries (safe alongside production)"
 	@echo "  make test               Run unit tests"
 	@echo "  make test-all V=1       Run full suite (verbose)"
 	@echo "  make docker             Build all Docker images"
