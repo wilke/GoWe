@@ -112,14 +112,16 @@ func resolveGoweRefs(ctx context.Context, st store.Store, rawCWL string) (string
 			// Packed document: find the main tool/workflow.
 			// For a bare tool wrapped by the bundler, the graph has [tool, synthetic-workflow].
 			// We need the actual tool, not the synthetic wrapper.
-			toolItem, toolID := findMainTool(graphItems, wf.Name)
+			toolItem, _ := findMainTool(graphItems, wf.Name)
 			if toolItem == nil {
 				return "", fmt.Errorf("resolve %s: no tool found in packed document", ref)
 			}
 
 			// Use the workflow name as the graph ID, deconflicting if needed.
-			id := uniqueID(toolID, seen)
+			// toolID is often a synthetic bundler ID like "tool"; prefer wf.Name.
+			id := uniqueID(wf.Name, seen)
 			setMapField(toolItem, "id", id)
+			delete(toolItem, "cwlVersion")
 			seen[id] = true
 
 			rt.id = id

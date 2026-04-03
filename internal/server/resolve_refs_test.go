@@ -212,6 +212,9 @@ steps:
 	if toolEntry["class"] != "CommandLineTool" {
 		t.Errorf("expected CommandLineTool, got %v", toolEntry["class"])
 	}
+	if toolEntry["id"] != "predict-structure" {
+		t.Errorf("expected tool id 'predict-structure', got %v", toolEntry["id"])
+	}
 
 	// Workflow step should reference the tool by fragment.
 	wfEntry, ok := graph[1].(map[string]any)
