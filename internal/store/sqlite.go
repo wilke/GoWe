@@ -205,15 +205,45 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 	s.logger.Debug("sql", "op", "list", "table", "workflows", "limit", opts.Limit, "offset", opts.Offset)
 	opts.Clamp()
 
+	// Build WHERE clause for optional filters.
+	var where []string
+	var args []any
+
+	if opts.Class != "" {
+		if opts.Class == "Tool" {
+			where = append(where, `class IN ('CommandLineTool', 'ExpressionTool')`)
+		} else {
+			where = append(where, `class = ?`)
+			args = append(args, opts.Class)
+		}
+	}
+	if opts.Search != "" {
+		where = append(where, `(name LIKE ? OR id LIKE ? OR description LIKE ?)`)
+		pat := "%" + opts.Search + "%"
+		args = append(args, pat, pat, pat)
+	}
+
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflows`).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflows`+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
+	orderSQL := validatedOrderBy(opts.SortBy, opts.SortDir, map[string]string{
+		"name":       "name",
+		"class":      "class",
+		"created_at": "created_at",
+	}, "created_at DESC")
+
+	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
-		 FROM workflows ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-		opts.Limit, opts.Offset,
+		 FROM workflows`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
+		queryArgs...,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -416,6 +446,11 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		whereClauses = append(whereClauses, "created_at <= ?")
 		countArgs = append(countArgs, opts.DateEnd+"T23:59:59Z")
 	}
+	if opts.Search != "" {
+		whereClauses = append(whereClauses, `(workflow_name LIKE ? OR id LIKE ?)`)
+		pat := "%" + opts.Search + "%"
+		countArgs = append(countArgs, pat, pat)
+	}
 
 	whereSQL := ""
 	if len(whereClauses) > 0 {
@@ -429,9 +464,15 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		return nil, 0, err
 	}
 
+	orderSQL := validatedOrderBy(opts.SortBy, opts.SortDir, map[string]string{
+		"workflow_name": "workflow_name",
+		"state":         "state",
+		"created_at":    "created_at",
+	}, "created_at DESC")
+
 	// List query with pagination.
 	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, output_destination, output_state
-		FROM submissions` + whereSQL + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+		FROM submissions` + whereSQL + ` ORDER BY ` + orderSQL + ` LIMIT ? OFFSET ?`
 	listArgs := append(countArgs, opts.Limit, opts.Offset)
 
 	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
@@ -1684,4 +1725,17 @@ func sanitizeFloats(v any) {
 			}
 		}
 	}
+}
+
+// validatedOrderBy returns a safe ORDER BY clause using a whitelist of allowed columns.
+func validatedOrderBy(sortBy, sortDir string, allowed map[string]string, defaultSort string) string {
+	col, ok := allowed[sortBy]
+	if !ok {
+		return defaultSort
+	}
+	dir := "DESC"
+	if strings.EqualFold(sortDir, "asc") {
+		dir = "ASC"
+	}
+	return col + " " + dir
 }

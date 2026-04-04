@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -186,17 +187,39 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
 
+	// Workflow-specific filters.
+	if s := strings.TrimSpace(r.URL.Query().Get("search")); s != "" {
+		opts.Search = s
+	}
+	opts.Class = r.URL.Query().Get("class")
+
 	workflows, total, err := ui.store.ListWorkflows(r.Context(), opts)
 	if err != nil {
 		ui.renderError(w, "Failed to load workflows", err)
 		return
 	}
 
+	// Base filter params (without sort) for column header links.
+	filterBase := filterQuery(
+		"search", opts.Search,
+		"class", opts.Class,
+	)
+	// Full filter params (with sort) for pagination links.
+	filterParams := filterBase + filterQuery(
+		"sort", opts.SortBy,
+		"dir", opts.SortDir,
+	)
+
 	data := map[string]any{
-		"Title":      "Workflows - GoWe",
-		"Session":    sess,
-		"Workflows":  workflows,
-		"Pagination": ui.buildPagination(opts, total),
+		"Title":       "Workflows - GoWe",
+		"Session":     sess,
+		"Workflows":   workflows,
+		"Pagination":  ui.buildPagination(opts, total, len(workflows), filterParams, []int{10, 20, 50, 100}),
+		"SearchQuery": opts.Search,
+		"ClassFilter": opts.Class,
+		"SortBy":      opts.SortBy,
+		"SortDir":     opts.SortDir,
+		"FilterBase":  filterBase,
 	}
 	ui.render(w, "workflows/list", data)
 }
@@ -306,15 +329,39 @@ func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Page sizes depend on view mode.
+	pageSizes := []int{10, 20, 50, 100}
+	if viewMode == "cards" {
+		pageSizes = []int{9, 18, 36}
+	}
+
+	// Base filter params (without sort) for column header links.
+	filterBase := filterQuery(
+		"state", opts.State,
+		"search", opts.Search,
+		"date_start", dateStart,
+		"date_end", dateEnd,
+		"view", viewMode,
+	)
+	// Full filter params (with sort) for pagination links.
+	filterParams := filterBase + filterQuery(
+		"sort", opts.SortBy,
+		"dir", opts.SortDir,
+	)
+
 	data := map[string]any{
 		"Title":       "Submissions - GoWe",
 		"Session":     sess,
 		"Submissions": submissions,
-		"Pagination":  ui.buildPagination(opts, total),
+		"Pagination":  ui.buildPagination(opts, total, len(submissions), filterParams, pageSizes),
 		"StateFilter": opts.State,
+		"SearchQuery": opts.Search,
 		"DateStart":   dateStart,
 		"DateEnd":     dateEnd,
 		"ViewMode":    viewMode,
+		"SortBy":      opts.SortBy,
+		"SortDir":     opts.SortDir,
+		"FilterBase":  filterBase,
 	}
 	ui.render(w, "submissions/list", data)
 }
@@ -781,20 +828,47 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	workers, err := ui.store.ListWorkers(r.Context())
+	allWorkers, err := ui.store.ListWorkers(r.Context())
 	if err != nil {
 		ui.renderError(w, "Failed to load workers", err)
 		return
 	}
 
-	// Count offline workers for the purge button.
-	// Build task→submission map for linking current tasks.
+	// Parse filters.
+	searchQuery := strings.TrimSpace(r.URL.Query().Get("search"))
+	stateFilter := strings.ToLower(r.URL.Query().Get("state"))
+
+	// Count offline workers (from all workers, pre-filter) for the purge button.
 	offlineCount := 0
-	taskSubmission := map[string]string{}
-	for _, wk := range workers {
+	for _, wk := range allWorkers {
 		if wk.State == model.WorkerStateOffline {
 			offlineCount++
 		}
+	}
+
+	// Filter workers in memory.
+	var workers []*model.Worker
+	searchLower := strings.ToLower(searchQuery)
+	for _, wk := range allWorkers {
+		// State filter.
+		if stateFilter != "" && strings.ToLower(string(wk.State)) != stateFilter {
+			continue
+		}
+		// Search filter (name, hostname, group, ID).
+		if searchQuery != "" {
+			if !strings.Contains(strings.ToLower(wk.Name), searchLower) &&
+				!strings.Contains(strings.ToLower(wk.Hostname), searchLower) &&
+				!strings.Contains(strings.ToLower(wk.Group), searchLower) &&
+				!strings.Contains(strings.ToLower(wk.ID), searchLower) {
+				continue
+			}
+		}
+		workers = append(workers, wk)
+	}
+
+	// Build task→submission map for linking current tasks.
+	taskSubmission := map[string]string{}
+	for _, wk := range workers {
 		if wk.CurrentTask != "" {
 			if t, err := ui.store.GetTask(r.Context(), wk.CurrentTask); err == nil && t != nil {
 				taskSubmission[wk.CurrentTask] = t.SubmissionID
@@ -806,8 +880,11 @@ func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
 		"Title":          "Workers - GoWe",
 		"Session":        sess,
 		"Workers":        workers,
+		"AllCount":       len(allWorkers),
 		"OfflineCount":   offlineCount,
 		"TaskSubmission": taskSubmission,
+		"SearchQuery":    searchQuery,
+		"StateFilter":    stateFilter,
 	}
 	ui.render(w, "workers", data)
 }
@@ -1383,10 +1460,39 @@ func (ui *UI) parseListOptions(r *http.Request) model.ListOptions {
 		opts.State = strings.ToUpper(state)
 	}
 
+	if search := r.URL.Query().Get("search"); search != "" {
+		opts.Search = strings.TrimSpace(search)
+	}
+
+	if sortBy := r.URL.Query().Get("sort"); sortBy != "" {
+		opts.SortBy = sortBy
+	}
+
+	if sortDir := r.URL.Query().Get("dir"); sortDir != "" {
+		opts.SortDir = strings.ToLower(sortDir)
+	}
+
 	return opts
 }
 
-func (ui *UI) buildPagination(opts model.ListOptions, total int) map[string]any {
+// filterQuery builds a URL query suffix (&key=val&...) from non-empty key-value pairs.
+// Keys are added in the order given; empty values are skipped.
+// Returns template.URL so html/template won't double-encode in href attributes.
+func filterQuery(pairs ...string) template.URL {
+	v := url.Values{}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if pairs[i+1] != "" {
+			v.Set(pairs[i], pairs[i+1])
+		}
+	}
+	encoded := v.Encode()
+	if encoded == "" {
+		return ""
+	}
+	return template.URL("&" + encoded)
+}
+
+func (ui *UI) buildPagination(opts model.ListOptions, total, itemCount int, filterParams template.URL, pageSizes []int) map[string]any {
 	hasMore := opts.Offset+opts.Limit < total
 	hasPrev := opts.Offset > 0
 
@@ -1396,17 +1502,25 @@ func (ui *UI) buildPagination(opts model.ListOptions, total int) map[string]any 
 		lastOffset = ((total - 1) / opts.Limit) * opts.Limit
 	}
 
+	totalPages := 1
+	if total > 0 {
+		totalPages = ((total - 1) / max(opts.Limit, 1)) + 1
+	}
+
 	return map[string]any{
-		"Total":      total,
-		"Limit":      opts.Limit,
-		"Offset":     opts.Offset,
-		"HasMore":    hasMore,
-		"HasPrev":    hasPrev,
-		"NextOffset": opts.Offset + opts.Limit,
-		"PrevOffset": max(0, opts.Offset-opts.Limit),
-		"LastOffset": lastOffset,
-		"Page":       (opts.Offset / opts.Limit) + 1,
-		"TotalPages": ((total - 1) / max(opts.Limit, 1)) + 1,
+		"Total":        total,
+		"Limit":        opts.Limit,
+		"Offset":       opts.Offset,
+		"HasMore":      hasMore,
+		"HasPrev":      hasPrev,
+		"NextOffset":   opts.Offset + opts.Limit,
+		"PrevOffset":   max(0, opts.Offset-opts.Limit),
+		"LastOffset":   lastOffset,
+		"Page":         (opts.Offset / opts.Limit) + 1,
+		"TotalPages":   totalPages,
+		"FilterParams": filterParams,
+		"ItemCount":    itemCount,
+		"PageSizes":    pageSizes,
 	}
 }
 
