@@ -754,7 +754,10 @@ func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInst
 		completedAt = &v
 	}
 
-	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+	scatterDimsJSON, err := json.Marshal(si.ScatterDims)
+	if err != nil {
+		return fmt.Errorf("marshal scatter_dims: %w", err)
+	}
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
@@ -799,7 +802,10 @@ func (s *SQLiteStore) BatchCreateStepInstances(ctx context.Context, steps []*mod
 			completedAt = &v
 		}
 
-		scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+		scatterDimsJSON, err := json.Marshal(si.ScatterDims)
+		if err != nil {
+			return fmt.Errorf("marshal scatter_dims: %w", err)
+		}
 
 		_, err = stmt.ExecContext(ctx,
 			si.ID, si.SubmissionID, si.StepID, string(si.State),
@@ -870,7 +876,10 @@ func (s *SQLiteStore) UpdateStepInstance(ctx context.Context, si *model.StepInst
 		completedAt = &v
 	}
 
-	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+	scatterDimsJSON, err := json.Marshal(si.ScatterDims)
+	if err != nil {
+		return fmt.Errorf("marshal scatter_dims: %w", err)
+	}
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, completed_at=? WHERE id=?`,

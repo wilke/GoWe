@@ -235,10 +235,11 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	}
 
 	respondOK(w, reqID, map[string]any{
-		"id":              sub.ID,
-		"state":           sub.State,
-		"steps_cancelled": stepsCancelled,
-		"tasks_cancelled": tasksCancelled,
+		"id":                      sub.ID,
+		"state":                   sub.State,
+		"steps_cancelled":         stepsCancelled,
+		"tasks_cancelled":         tasksCancelled,
+		"tasks_already_completed": len(sub.Tasks) - tasksCancelled,
 	})
 }
 
