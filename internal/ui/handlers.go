@@ -563,7 +563,10 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 		})
 	}
 	if err := ui.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {
-		ui.logger.Error("batch create step instances failed", "error", err)
+		ui.logger.Error("batch create step instances failed", "error", err, "submission_id", sub.ID)
+		// Submission with zero steps is an orphan the scheduler can't progress — treat as hard failure.
+		http.Redirect(w, r, "/submissions/new?workflow_id="+workflowID+"&error=Failed+to+initialize+submission", http.StatusSeeOther)
+		return
 	}
 
 	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)

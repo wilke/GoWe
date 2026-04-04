@@ -239,7 +239,7 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 		"state":                   sub.State,
 		"steps_cancelled":         stepsCancelled,
 		"tasks_cancelled":         tasksCancelled,
-		"tasks_already_completed": len(sub.Tasks) - tasksCancelled,
+		"tasks_already_completed": max(0, len(sub.Tasks)-tasksCancelled),
 	})
 }
 
