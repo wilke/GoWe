@@ -54,6 +54,9 @@ func (m *mockStore) CountSubmissionsByState(_ context.Context, _ time.Time) (map
 }
 
 func (m *mockStore) CreateStepInstance(context.Context, *model.StepInstance) error  { return nil }
+func (m *mockStore) BatchCreateStepInstances(context.Context, []*model.StepInstance) error {
+	return nil
+}
 func (m *mockStore) GetStepInstance(context.Context, string) (*model.StepInstance, error) {
 	return nil, nil
 }
@@ -63,6 +66,9 @@ func (m *mockStore) ListStepsBySubmission(context.Context, string) ([]*model.Ste
 }
 func (m *mockStore) ListStepsByState(context.Context, model.StepInstanceState) ([]*model.StepInstance, error) {
 	return nil, nil
+}
+func (m *mockStore) CancelNonTerminalSteps(context.Context, string, time.Time) (int, error) {
+	return 0, nil
 }
 
 func (m *mockStore) CreateTask(context.Context, *model.Task) error           { return nil }
@@ -79,6 +85,9 @@ func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.T
 func (m *mockStore) UpdateTask(context.Context, *model.Task) error                         { return nil }
 func (m *mockStore) GetTasksByState(context.Context, model.TaskState) ([]*model.Task, error) {
 	return nil, nil
+}
+func (m *mockStore) CancelNonTerminalTasks(context.Context, string, time.Time) (int, error) {
+	return 0, nil
 }
 
 func (m *mockStore) CreateSession(context.Context, *model.Session) error            { return nil }

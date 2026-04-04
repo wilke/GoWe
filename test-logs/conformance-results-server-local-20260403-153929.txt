@@ -1,0 +1,1409 @@
+Test [1/378] cl_basic_generation: General test of command line generation
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2pej1o_c --quiet tests/bwa-mem-tool.cwl tests/bwa-mem-job.json
+Test [2/378] nested_prefixes_arrays: Test nested prefixes with arrays
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi2ysn4sn --quiet tests/binding-test.cwl tests/bwa-mem-job.json
+Test [3/378] nested_cl_bindings: Test nested command line bindings
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1hrxpuo8 --quiet tests/tmap-tool.cwl tests/tmap-job.json
+Test [4/378] cl_optional_inputs_missing: Test command line with optional input (missing)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0kzqhuop --quiet tests/cat1-testcli.cwl tests/cat-job.json
+Test [5/378] cl_optional_bindings_provided: Test command line with optional input (provided)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpdfh58pdb --quiet tests/cat1-testcli.cwl tests/cat-n-job.json
+Test [6/378] initworkdir_expreng_requirements: Test InitialWorkDirRequirement ExpressionEngineRequirement.engineConfig feature
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmavfwsmp --quiet tests/template-tool.cwl tests/cat-job.json
+Test [7/378] stdout_redirect_docker: Test command execution in Docker with stdout redirection
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpiltq4jda --quiet tests/cat3-tool.cwl tests/cat-job.json
+Test [8/378] stdout_redirect_shortcut_docker: Test command execution in Docker with shortcut stdout redirection
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_qpl92os --quiet tests/cat3-tool-shortcut.cwl tests/cat-job.json
+Test [9/378] stdout_redirect_mediumcut_docker: Test command execution in Docker with mediumcut stdout redirection
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2uyja9jf --quiet tests/cat3-tool-mediumcut.cwl tests/cat-job.json
+Test [10/378] stderr_redirect: Test command line with stderr redirection
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpr3wn5794 --quiet tests/stderr.cwl tests/empty.json
+Test [11/378] stderr_redirect_shortcut: Test command line with stderr redirection, brief syntax
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0rofrlx1 --quiet tests/stderr-shortcut.cwl tests/empty.json
+Test [12/378] stderr_redirect_mediumcut: Test command line with stderr redirection, named brief syntax
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0fw6vrge --quiet tests/stderr-mediumcut.cwl tests/empty.json
+Test [13/378] stdinout_redirect_docker: Test command execution in Docker with stdin and stdout redirection
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpqoce1ego --quiet tests/cat4-tool.cwl tests/cat-job.json
+Test [14/378] expression_any: Test default usage of Any in expressions.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd3b_ouyx --quiet tests/null-expression1-tool.cwl tests/empty.json
+Test [15/378] expression_any_null: Test explicitly passing null to Any type inputs with default values.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpialnmwtu --quiet tests/null-expression1-tool.cwl tests/null-expression1-job.json
+Test [16/378] expression_any_string: Testing the string 'null' does not trip up an Any with a default value.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3nj0yn4q --quiet tests/null-expression1-tool.cwl tests/null-expression2-job.json
+Test [17/378] expression_any_nodefaultany: Test Any without defaults cannot be unspecified.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpiql27bti --quiet tests/null-expression2-tool.cwl tests/empty.json
+Submission sub_2bf151e2-a5e8-44c1-829c-dd75926674f8 failed [STEP_FAILED]
+  Error: step 'run_tool' failed
+  Step:  run_tool
+Error: submission failed: [STEP_FAILED] step 'run_tool' failed
+submission failed: [STEP_FAILED] step 'run_tool' failed
+Test [18/378] expression_any_null_nodefaultany: Test explicitly passing null to Any type without a default value.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd9lwa_39 --quiet tests/null-expression2-tool.cwl tests/null-expression1-job.json
+Submission sub_a94aa9b3-220c-43ba-8a3f-0da113ac2a65 failed [STEP_FAILED]
+  Error: step 'run_tool' failed
+  Step:  run_tool
+Error: submission failed: [STEP_FAILED] step 'run_tool' failed
+submission failed: [STEP_FAILED] step 'run_tool' failed
+Test [19/378] expression_any_nullstring_nodefaultany: Testing the string 'null' does not trip up an Any without a default value.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8o_nz1be --quiet tests/null-expression2-tool.cwl tests/null-expression2-job.json
+Test [20/378] any_outputSource_compatibility: Testing Any type compatibility in outputSource
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpr3uteqzy --quiet tests/any-type-compat.cwl tests/any-type-job.json
+Test [21/378] stdinout_redirect: Test command execution in with stdin and stdout redirection
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmprrzz46xk --quiet tests/cat-tool.cwl tests/cat-job.json
+Test [22/378] expression_parseint: Test ExpressionTool with Javascript engine
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbsq9bffm --quiet tests/parseInt-tool.cwl tests/parseInt-job.json
+Test [23/378] expression_outputEval: Test outputEval to transform output
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp93dr51zk --quiet tests/wc2-tool.cwl tests/wc-job.json
+Test [24/378] wf_wc_parseInt: Test two step workflow with imported tools
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpcdw4en0o --quiet tests/count-lines1-wf.cwl tests/wc-job.json
+Test [25/378] wf_wc_expressiontool: Test two step workflow with inline tools
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjlb7mcmm --quiet tests/count-lines2-wf.cwl tests/wc-job.json
+Test [26/378] wf_wc_scatter: Test single step workflow with Scatter step
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_fwd10jy --quiet tests/count-lines3-wf.cwl tests/count-lines3-job.json
+Test [27/378] wf_wc_scatter_multiple_merge: Test single step workflow with Scatter step and two data links connected to same input, default merge behavior
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi75_5kvt --quiet tests/count-lines4-wf.cwl tests/count-lines4-job.json
+Test [28/378] wf_wc_scatter_multiple_nested: Test single step workflow with Scatter step and two data links connected to same input, nested merge behavior
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp51ngfdnh --quiet tests/count-lines6-wf.cwl tests/count-lines6-job.json
+Test [29/378] wf_wc_scatter_multiple_flattened: Test single step workflow with Scatter step and two data links connected to same input, flattened merge behavior
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3ir2_s6z --quiet tests/count-lines7-wf.cwl tests/count-lines6-job.json
+Test [30/378] wf_wc_nomultiple: Test when step source is a single-item list and there is no linkMerge, then it not wrapped in a list, and that MultipleInputFeatureRequirement is not required.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpkitll1b5 --quiet tests/count-lines13-wf.cwl tests/count-lines4-job.json
+Test [31/378] wf_wc_nomultiple_merge_nested: Test when step source is a single-item list and linkMerge is listed, then it is wrapped in a list.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxnv0fp1j --quiet tests/count-lines19-wf.cwl tests/count-lines4-job.json
+Test [32/378] wf_input_default_missing: Test workflow with default value for input parameter (missing)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpchjh8qsv --quiet tests/count-lines5-wf.cwl tests/empty.json
+Test [33/378] wf_input_default_provided: Test workflow with default value for input parameter (provided)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxweucxd4 --quiet tests/count-lines5-wf.cwl tests/wc-job.json
+Test [34/378] wf_default_tool_default: Test that workflow defaults override tool defaults
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpyope0qcw --quiet tests/echo-wf-default.cwl tests/empty.json
+Test [35/378] envvar_req: Test EnvVarRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfp9ltwp9 --quiet tests/env-tool1.cwl tests/env-job.json
+Test [36/378] wf_scatter_single_param: Test workflow scatter with single scatter parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpoyasnln8 --quiet tests/scatter-wf1.cwl tests/scatter-job1.json
+Test [37/378] wf_scatter_two_nested_crossproduct: Test workflow scatter with two scatter parameters and nested_crossproduct join method
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp5wezinq_ --quiet tests/scatter-wf2.cwl tests/scatter-job2.json
+Test [38/378] wf_scatter_two_flat_crossproduct: Test workflow scatter with two scatter parameters and flat_crossproduct join method
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8yjv8f6n --quiet tests/scatter-wf3.cwl#main tests/scatter-job2.json
+Test [39/378] wf_scatter_two_dotproduct: Test workflow scatter with two scatter parameters and dotproduct join method
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfbx1irvo --quiet tests/scatter-wf4.cwl#main tests/scatter-job2.json
+Test [40/378] wf_scatter_emptylist: Test workflow scatter with single empty list parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6yr9kuvn --quiet tests/scatter-wf1.cwl tests/scatter-empty-job1.json
+Test [41/378] wf_scatter_nested_crossproduct_secondempty: Test workflow scatter with two scatter parameters and nested_crossproduct join method with second list empty
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9cdt_bt4 --quiet tests/scatter-wf2.cwl tests/scatter-empty-job2.json
+Test [42/378] wf_scatter_nested_crossproduct_firstempty: Test workflow scatter with two scatter parameters and nested_crossproduct join method with first list empty
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpnawiggq_ --quiet tests/scatter-wf3.cwl#main tests/scatter-empty-job3.json
+Test [43/378] wf_scatter_flat_crossproduct_oneempty: Test workflow scatter with two scatter parameters, one of which is empty and flat_crossproduct join method
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2v4rup4z --quiet tests/scatter-wf3.cwl#main tests/scatter-empty-job2.json
+Test [44/378] wf_scatter_dotproduct_twoempty: Test workflow scatter with two empty scatter parameters and dotproduct join method
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpng6da28q --quiet tests/scatter-wf4.cwl#main tests/scatter-empty-job4.json
+Test [45/378] any_input_param: Test Any type input parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0k06plh3 --quiet tests/echo-tool.cwl tests/env-job.json
+Test [46/378] nested_workflow: Test nested workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpq1sispqb --quiet tests/count-lines8-wf.cwl tests/wc-job.json
+Test [47/378] requirement_priority: Test requirement priority
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpg2q8_0m1 --quiet tests/env-wf1.cwl tests/env-job.json
+Test [48/378] requirement_override_hints: Test requirements override hints
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6foegd51 --quiet tests/env-wf2.cwl tests/env-job.json
+Test [49/378] requirement_workflow_steps: Test requirements on workflow steps
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpc90ny853 --quiet tests/env-wf3.cwl tests/env-job.json
+Test [50/378] step_input_default_value: Test default value on step input parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0ofxh11b --quiet tests/count-lines9-wf.cwl tests/empty.json
+Test [51/378] step_input_default_value_nosource: Test use default value on step input parameter with empty source
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpkmvzz3w_ --quiet tests/count-lines11-wf.cwl tests/empty.json
+Test [52/378] step_input_default_value_nullsource: Test use default value on step input parameter with null source
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8a5jfm50 --quiet tests/count-lines11-wf.cwl tests/file1-null.json
+Test [53/378] step_input_default_value_overriden: Test default value on step input parameter overridden by provided source
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpr9am0y8o --quiet tests/count-lines11-wf.cwl tests/cat-job.json
+Test [54/378] wf_simple: Test simple workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp030wirx6 --quiet tests/revsort.cwl tests/revsort-job.json
+Test [55/378] hints_unknown_ignored: Test unknown hints are ignored.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpwl8el1th --quiet tests/cat5-tool.cwl tests/cat-job.json
+Test [56/378] initial_workdir_secondary_files_expr: Test InitialWorkDirRequirement linking input files and capturing secondaryFiles on input and output. Also tests the use of a variety of parameter references and expressions in the secondaryFiles field.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpm6pzh4ix --quiet tests/search.cwl#main tests/search-job.json
+Test [57/378] rename: Test InitialWorkDirRequirement with expression in filename.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp64zb5jtw --quiet tests/rename.cwl tests/rename-job.json
+Test [58/378] initial_workdir_trailingnl: Test if trailing newline is present in file entry in InitialWorkDir
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi4c4ckkk --quiet tests/iwdr-entry.cwl tests/string-job.json
+Test [59/378] inline_expressions: Test inline expressions
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpkbf5s929 --quiet tests/wc4-tool.cwl tests/wc-job.json
+Test [60/378] schemadef_req_tool_param: Test SchemaDefRequirement definition used in tool parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpitmjzhsb --quiet tests/schemadef-tool.cwl tests/schemadef-job.json
+Test [61/378] schemadef_req_wf_param: Test SchemaDefRequirement definition used in workflow parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphzsa6jmg --quiet tests/schemadef-wf.cwl tests/schemadef-job.json
+Test [62/378] param_evaluation_noexpr: Test parameter evaluation, no support for JS expressions
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfab152eb --quiet tests/params.cwl tests/empty.json
+Test [63/378] param_evaluation_expr: Test parameter evaluation, with support for JS expressions
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmef0u8ro --quiet tests/params2.cwl tests/empty.json
+Test [64/378] metadata: Test metadata
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpy6qi5lhi --quiet tests/metadata.cwl tests/cat-job.json
+Test [65/378] format_checking: Test simple format checking.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpz0vem6jm --quiet tests/formattest.cwl tests/formattest-job.json
+Test [66/378] format_checking_subclass: Test format checking against ontology using subclassOf.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp24s7044u --quiet tests/formattest2.cwl tests/formattest2-job.json
+Test [67/378] format_checking_equivalentclass: Test format checking against ontology using equivalentClass.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpaytzjcje --quiet tests/formattest3.cwl tests/formattest2-job.json
+Test [68/378] output_secondaryfile_optional: Test optional output file and optional secondaryFile on output.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpz_l2w1uu --quiet tests/optional-output.cwl tests/cat-job.json
+Test [69/378] valuefrom_ignored_null: Test that valueFrom is ignored when the parameter is null
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpozhvkkcx --quiet tests/vf-concat.cwl tests/empty.json
+Test [70/378] valuefrom_secondexpr_ignored: Test that second expression in concatenated valueFrom is not ignored
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpdgp_d9ol --quiet tests/vf-concat.cwl tests/cat-job.json
+Test [71/378] valuefrom_wf_step: Test valueFrom on workflow step.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpoi6un7f2 --quiet tests/step-valuefrom-wf.cwl tests/step-valuefrom-wf.json
+Test [72/378] valuefrom_wf_step_multiple: Test valueFrom on workflow step with multiple sources
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpj18l7abq --quiet tests/step-valuefrom2-wf.cwl tests/step-valuefrom-job.json
+Test [73/378] valuefrom_wf_step_other: Test valueFrom on workflow step referencing other inputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3vfmyq2c --quiet tests/step-valuefrom3-wf.cwl tests/step-valuefrom-job.json
+Test [74/378] record_output_binding: Test record type output binding.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpkwb9s6oi --quiet tests/record-output.cwl tests/record-output-job.json
+Test [75/378] docker_json_output_path: Test support for reading cwl.output.json when running in a Docker container and just 'path' is provided.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpp96tt9na --quiet tests/test-cwl-out.cwl tests/empty.json
+Test [76/378] docker_json_output_location: Test support for reading cwl.output.json when running in a Docker container and just 'location' is provided.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgn4o_nrq --quiet tests/test-cwl-out2.cwl tests/empty.json
+Test [77/378] json_output_path_relative: Test support for reading cwl.output.json where 'path' is relative path in output dir.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4c406tsy --quiet tests/test-cwl-out3.cwl tests/empty.json
+Test [78/378] json_output_location_relative: Test support for reading cwl.output.json where 'location' is relative reference to output dir.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpr41wl7ql --quiet tests/test-cwl-out4.cwl tests/empty.json
+Test [79/378] multiple_glob_expr_list: Test support for returning multiple glob patterns from expression
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd5xbmjbz --quiet tests/glob-expr-list.cwl tests/abc.json
+Test [80/378] wf_scatter_oneparam_valuefrom: Test workflow scatter with single scatter parameter and two valueFrom on step input (first and current el)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_rzulo1d --quiet tests/scatter-valuefrom-wf1.cwl tests/scatter-valuefrom-job1.json
+Test [81/378] wf_scatter_twoparam_nested_crossproduct_valuefrom: Test workflow scatter with two scatter parameters and nested_crossproduct join method and valueFrom on step input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1gqk4ktk --quiet tests/scatter-valuefrom-wf2.cwl tests/scatter-valuefrom-job2.json
+Test [82/378] wf_scatter_twoparam_flat_crossproduct_valuefrom: Test workflow scatter with two scatter parameters and flat_crossproduct join method and valueFrom on step input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpw62bi16v --quiet tests/scatter-valuefrom-wf3.cwl#main tests/scatter-valuefrom-job2.json
+Test [83/378] wf_scatter_twoparam_dotproduct_valuefrom: Test workflow scatter with two scatter parameters and dotproduct join method and valueFrom on step input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2ev5yjar --quiet tests/scatter-valuefrom-wf4.cwl#main tests/scatter-valuefrom-job2.json
+Test [84/378] wf_scatter_oneparam_valuefrom_twice_current_el: Test workflow scatter with single scatter parameter and two valueFrom on step input (current el twice)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxa335ha7 --quiet tests/scatter-valuefrom-wf5.cwl tests/scatter-valuefrom-job1.json
+Test [85/378] wf_scatter_oneparam_valueFrom: Test valueFrom eval on scattered input parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxjdpk8d4 --quiet tests/scatter-valuefrom-wf6.cwl tests/scatter-valuefrom-job3.json
+Test [86/378] wf_two_inputfiles_namecollision: Test workflow two input files with same name.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp44mvrcfw --quiet tests/conflict-wf.cwl#collision tests/conflict-job.json
+Test [87/378] directory_input_param_ref: Test directory input with parameter reference
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpv2yl8_yu --quiet tests/dir.cwl tests/dir-job.yml
+Test [88/378] directory_input_docker: Test directory input in Docker
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxj53daai --quiet tests/dir2.cwl tests/dir-job.yml
+Test [89/378] directory_output: Test directory output
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpn8x8jyzb --quiet tests/dir3.cwl tests/dir3-job.yml
+Test [90/378] directory_secondaryfiles: Test directories in secondaryFiles
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpees6qtik --quiet tests/dir4.cwl tests/dir4-job.yml
+Test [91/378] dynamic_initial_workdir: Test dynamic initial work dir
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_exoy9q8 --quiet tests/dir5.cwl tests/dir-job.yml
+Test [92/378] writable_stagedfiles: Test writable staged files.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpo6f45ftj --quiet tests/stagefile.cwl tests/stagefile-job.yml
+Test [93/378] input_file_literal: Test file literal as input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1ija6ix2 --quiet tests/cat3-tool.cwl tests/file-literal.yml
+Test [94/378] initial_workdir_expr: Test expression in InitialWorkDir listing
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp19hzs83_ --quiet tests/linkfile.cwl tests/arguments-job.yml
+Test [95/378] nameroot_nameext_stdout_expr: Test nameroot/nameext expression in arguments, stdout
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpz1dvyhtg --quiet tests/nameroot.cwl tests/wc-job.json
+Test [96/378] input_dir_inputbinding: Test directory input with inputBinding
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpea1h82sf --quiet tests/dir6.cwl tests/dir-job.yml
+Test [97/378] cl_gen_arrayofarrays: Test command line generation of array-of-arrays
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7i2rrxwg --quiet tests/nested-array.cwl tests/nested-array-job.yml
+Test [98/378] env_home_tmpdir: Test $HOME and $TMPDIR are set correctly
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplup07u5w --quiet tests/envvar.cwl tests/empty.json
+Test [99/378] env_home_tmpdir_docker: Test $HOME and $TMPDIR are set correctly in Docker
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmprfbq1bds --quiet tests/envvar2.cwl tests/empty.json
+Test [100/378] expressionlib_tool_wf_override: Test that expressionLib requirement of individual tool step overrides expressionLib of workflow.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmqjj16t_ --quiet tests/js-expr-req-wf.cwl#wf tests/empty.json
+Test [101/378] initial_workdir_output: Test output of InitialWorkDir
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphkuaq_an --quiet tests/initialworkdirrequirement-docker-out.cwl tests/initialworkdirrequirement-docker-out-job.json
+Test [102/378] embedded_subworkflow: Test embedded subworkflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmppg5gztdg --quiet tests/count-lines10-wf.cwl tests/wc-job.json
+Test [103/378] filesarray_secondaryfiles: Test required, optional and null secondaryFiles on array of files.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpzo9uzlzi --quiet tests/docker-array-secondaryfiles.cwl tests/docker-array-secondaryfiles-job.json
+Test [104/378] filesarray_secondaryfiles2: Test required, optional and null secondaryFiles on array of files.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_dwjzw67 --quiet tests/docker-array-secondaryfiles.cwl tests/docker-array-secondaryfiles-job2.json
+Submission sub_e06a642a-fb13-439c-a2dc-f523ddae6cb2 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_fed46b5f-2a48-4825-8a73-28efc657e649
+  Stderr:
+task task_fed46b5f-2a48-4825-8a73-28efc657e649: execute: process inputs: input "fasta_path[0]": missing required secondary file ".dat" (pattern: ${ if (inputs.require_dat) {return '.dat'} else {return null} })
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [105/378] exprtool_directory_literal: Test directory literal output created by ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplrpu019e --quiet tests/dir7.cwl tests/dir7.yml
+Test [106/378] exprtool_file_literal: Test file literal output created by ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmq7hott4 --quiet tests/file-literal-ex.cwl tests/empty.json
+Test [107/378] dockeroutputdir: Test dockerOutputDirectory
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_repeln6 --quiet tests/docker-output-dir.cwl tests/empty.json
+Test [108/378] hints_import: Test hints with $import
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmptrpm0bc2 --quiet tests/imported-hint.cwl tests/empty.json
+Test [109/378] default_path_notfound_warning: Test warning instead of error when default path is not found
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgfn7zezr --quiet tests/default_path.cwl tests/default_path_job.yml
+Test [110/378] inlinejs_req_expressions: Test InlineJavascriptRequirement with multiple expressions in the same tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbrm_syps --quiet tests/inline-js.cwl tests/empty.json
+Test [111/378] input_dir_recurs_copy_writable: Test if a writable input directory is recursively copied and writable
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfhf_6989 --quiet tests/recursive-input-directory.cwl tests/recursive-input-directory.yml
+Test [112/378] null_missing_params: Test that missing parameters are null (not undefined) in expression
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmptagyzsss --quiet tests/null-defined.cwl tests/empty.json
+Test [113/378] param_notnull_expr: Test that provided parameter is not null in expression
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7vbla7v4 --quiet tests/null-defined.cwl tests/cat-job.json
+Test [114/378] wf_compound_doc: Test compound workflow document
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpke148n_5 --quiet tests/revsort-packed.cwl#main tests/revsort-job.json
+Test [115/378] nameroot_nameext_generated: Test that nameroot and nameext are generated from basename at execution time by the runner
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpk9gvinq2 --quiet tests/basename-fields-test.cwl tests/basename-fields-job.yml
+Test [116/378] initialworkpath_output: Test that file path in $(inputs) for initialworkdir is in $(outdir).
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1qv8xtt_ --quiet tests/initialwork-path.cwl tests/wc-job.json
+Test [117/378] wf_scatter_twopar_oneinput_flattenedmerge: Test single step workflow with Scatter step and two data links connected to same input, flattened merge behavior. Workflow inputs are set as list
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp88gquxha --quiet tests/count-lines12-wf.cwl tests/count-lines6-job.json
+Test [118/378] wf_multiplesources_multipletypes: Test step input with multiple sources with multiple types
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_0qaqy6h --quiet tests/sum-wf.cwl tests/sum-job.json
+Test [119/378] shelldir_notinterpreted: Test that shell directives are not interpreted.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpokkh9iex --quiet tests/shellchar.cwl tests/empty.json
+Test [120/378] shelldir_quoted: Test that shell directives are quoted.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfjdb58k4 --quiet tests/shellchar2.cwl tests/empty.json
+Test [121/378] initial_workdir_empty_writable: Test empty writable dir with InitialWorkDirRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgqa84b1h --quiet tests/writable-dir.cwl tests/empty.json
+Test [122/378] initial_workdir_empty_writable_docker: Test empty writable dir with InitialWorkDirRequirement inside Docker
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjdlt5j3q --quiet tests/writable-dir-docker.cwl tests/empty.json
+Test [123/378] dynamic_resreq_inputs: Test dynamic resource reqs referencing inputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpga_625uj --quiet tests/dynresreq.cwl tests/dynresreq-job.yaml
+Test [124/378] fileliteral_input_docker: Test file literal as input without Docker
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjwx052gz --quiet tests/cat3-nodocker.cwl tests/file-literal.yml
+Test [125/378] outputbinding_glob_sorted: Test that OutputBinding.glob is sorted as specified by POSIX
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpvwx5xj97 --quiet tests/glob_test.cwl tests/empty.json
+Test [126/378] initialworkdir_nesteddir: Test InitialWorkDirRequirement with a nested directory structure from another step
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpwcez4s0f --quiet tests/iwdr_with_nested_dirs.cwl tests/empty.json
+Test [127/378] booleanflags_cl_noinputbinding: Test that boolean flags do not appear on command line if inputBinding is empty and not null
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmv4tho7o --quiet tests/bool-empty-inputbinding.cwl tests/bool-empty-inputbinding-job.json
+Test [128/378] expr_reference_self_noinput: Test that expression engine does not fail to evaluate reference to self with unprovided input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpa2_h_z89 --quiet tests/stage-unprovided-file.cwl tests/empty.json
+Test [129/378] success_codes: Test successCodes
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpt6siefdl --quiet tests/exit-success.cwl tests/empty.json
+Test [130/378] dynamic_resreq_wf: Test simple workflow with a dynamic resource requirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpivgeapgh --quiet tests/dynresreq-workflow.cwl tests/dynresreq-job.yaml
+Test [131/378] cl_empty_array_input: Test that empty array input does not add anything to command line
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpkkddaqgn --quiet tests/empty-array-input.cwl tests/empty-array-job.json
+Test [132/378] resreq_step_overrides_wf: Test that ResourceRequirement on a step level redefines requirement on the workflow level
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplw_wvvl0 --quiet tests/steplevel-resreq.cwl tests/empty.json
+Test [133/378] valuefrom_constant_overrides_inputs: Test valueFrom with constant value overriding provided array inputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfx0llnip --quiet tests/valueFrom-constant.cwl tests/array-of-strings-job.yml
+Test [134/378] dynamic_resreq_filesizes: Test dynamic resource reqs referencing the size of Files inside a Directory
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjmt1ebsx --quiet tests/dynresreq-dir.cwl tests/dynresreq-dir-job.yaml
+Test [135/378] wf_step_connect_undeclared_param: Test that it is not an error to connect a parameter to a workflow step, even if the parameter doesn't appear in the `run` process inputs.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp753ky9fg --quiet tests/pass-unconnected.cwl tests/empty.json
+Test [136/378] wf_step_access_undeclared_param: Test that parameters that don't appear in the `run` process inputs are not present in the input object used to run the tool.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpikehrr06 --quiet tests/fail-unconnected.cwl tests/empty.json
+Submission sub_ba7fa8d2-d88d-4ab4-8154-fe1b54161c6d failed [TASK_FAILED]
+  Error: step 'step1' task failed
+  Step:  step1
+  Task:  task_139057b1-e0fc-4d1f-91e3-3727ce3de90e
+  Stderr:
+task task_139057b1-e0fc-4d1f-91e3-3727ce3de90e: execute: build command: argument[2]: expression $(inputs.in2) returned undefined (invalid property access)
+Error: submission failed: [TASK_FAILED] step 'step1' task failed
+submission failed: [TASK_FAILED] step 'step1' task failed
+Test [137/378] env_home_tmpdir_docker_no_return_code: Test $HOME and $TMPDIR are set correctly in Docker without using return code
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjd6dbm4e --quiet tests/envvar3.cwl tests/empty.json
+Test [138/378] wf_scatter_oneparam_valuefrom_inputs: Test workflow scatter with single scatter parameter and two valueFrom using $inputs (first and current el)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4jumyu6b --quiet tests/scatter-valuefrom-inputs-wf1.cwl tests/scatter-valuefrom-job1.json
+Test [139/378] packed_import_schema: SchemaDefRequirement with $import, and packed
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4tfyej43 --quiet tests/import_schema-def_packed.cwl tests/import_schema-def_job.yml
+Test [140/378] job_input_secondary_subdirs: Test specifying secondaryFiles in subdirectories of the job input document.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpigfbg3q3 --quiet tests/dir4.cwl tests/dir4-subdir-1-job.yml
+Test [141/378] job_input_subdir_primary_and_secondary_subdirs: Test specifying secondaryFiles in same subdirectory of the job input as the primary input file.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8ndk9hj2 --quiet tests/dir4.cwl tests/dir4-subdir-2-job.yml
+Test [142/378] scatter_embedded_subworkflow: Test simple scatter over an embedded subworkflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxo2mzdxc --quiet tests/count-lines18-wf.cwl tests/count-lines3-job.json
+Test [143/378] scatter_multi_input_embedded_subworkflow: Test simple multiple input scatter over an embedded subworkflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6r0zfrfp --quiet tests/count-lines14-wf.cwl tests/count-lines4-job.json
+Test [144/378] workflow_embedded_subworkflow_embedded_subsubworkflow: Test twice nested subworkflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjamv14jp --quiet tests/count-lines15-wf.cwl tests/wc-job.json
+Test [145/378] workflow_embedded_subworkflow_with_tool_and_subsubworkflow: Test subworkflow of mixed depth with tool first
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4vc636r2 --quiet tests/count-lines16-wf.cwl tests/wc-job.json
+Test [146/378] workflow_embedded_subworkflow_with_subsubworkflow_and_tool: Test subworkflow of mixed depth with tool after
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjj57io7z --quiet tests/count-lines17-wf.cwl tests/wc-job.json
+Test [147/378] workflow_records_inputs_and_outputs: Test record type inputs to and outputs from workflows.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjldwoui0 --quiet tests/record-output-wf.cwl tests/record-output-job.json
+Test [148/378] workflow_integer_input: Test integer workflow input and outputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmprpu7uli4 --quiet tests/io-int-wf.cwl tests/io-int.json
+Test [149/378] workflow_integer_input_optional_specified: Test optional integer workflow inputs (specified)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpqm352jax --quiet tests/io-int-optional-wf.cwl tests/io-int.json
+Test [150/378] workflow_integer_input_optional_unspecified: Test optional integer workflow inputs (unspecified)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8qv__rm7 --quiet tests/io-int-optional-wf.cwl tests/empty.json
+Test [151/378] workflow_integer_input_default_specified: Test default integer workflow inputs (specified)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpple4kuld --quiet tests/io-int-default-wf.cwl tests/io-int.json
+Test [152/378] workflow_integer_input_default_unspecified: Test default integer workflow inputs (unspecified)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbh857x2h --quiet tests/io-int-default-wf.cwl tests/empty.json
+Test [153/378] workflow_integer_input_default_and_tool_integer_input_default: Test default integer tool and workflow inputs (unspecified)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpoky1lkcz --quiet tests/io-int-default-tool-and-wf.cwl tests/empty.json
+Test [154/378] workflow_file_input_default_unspecified: Test File input with default unspecified to workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_5d710xv --quiet tests/io-file-default-wf.cwl tests/empty.json
+Test [155/378] workflow_file_input_default_specified: Test File input with default specified to workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpng8k41xv --quiet tests/io-file-default-wf.cwl tests/default_path_job.yml
+Test [156/378] clt_optional_union_input_file_or_files_with_array_of_one_file_provided: Test input union type or File or File array to a tool with one file in array specified.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp73g4tywt --quiet tests/io-file-or-files.cwl tests/job-input-array-one-empty-file.json
+Test [157/378] clt_optional_union_input_file_or_files_with_many_files_provided: Test input union type or File or File array to a tool with a few files in array specified.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxuerwtlt --quiet tests/io-file-or-files.cwl tests/job-input-array-few-files.json
+Test [158/378] clt_optional_union_input_file_or_files_with_single_file_provided: Test input union type or File or File array to a tool with one file specified.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpkmgwtu75 --quiet tests/io-file-or-files.cwl tests/job-input-one-file.json
+Test [159/378] clt_optional_union_input_file_or_files_with_nothing_provided: Test input union type or File or File array to a tool with null specified.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpu8tpyy96 --quiet tests/io-file-or-files.cwl tests/job-input-null.json
+Test [160/378] clt_any_input_with_integer_provided: Test Any parameter with integer input to a tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpzy_wjm46 --quiet tests/io-any-1.cwl tests/io-any-int.json
+Test [161/378] clt_any_input_with_string_provided: Test Any parameter with string input to a tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpsm3_bx90 --quiet tests/io-any-1.cwl tests/io-any-string.json
+Test [162/378] clt_any_input_with_file_provided: Test Any parameter with file input to a tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplrbmzzfo --quiet tests/io-any-1.cwl tests/io-any-file.json
+Test [163/378] clt_any_input_with_mixed_array_provided: Test Any parameter with array input to a tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpf5wcxwsh --quiet tests/io-any-1.cwl tests/io-any-array.json
+Test [164/378] clt_any_input_with_record_provided: Test Any parameter with record input to a tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8v2t9mwg --quiet tests/io-any-1.cwl tests/io-any-record.json
+Test [165/378] workflow_any_input_with_integer_provided: Test Any parameter with integer input to a workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9qunx5ju --quiet tests/io-any-wf-1.cwl tests/io-any-int.json
+Test [166/378] workflow_any_input_with_string_provided: Test Any parameter with string input to a workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp47owek_z --quiet tests/io-any-wf-1.cwl tests/io-any-string.json
+Test [167/378] workflow_any_input_with_file_provided: Test Any parameter with file input to a workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgnpc8ww8 --quiet tests/io-any-wf-1.cwl tests/io-any-file.json
+Test [168/378] workflow_any_input_with_mixed_array_provided: Test Any parameter with array input to a workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2g0xrner --quiet tests/io-any-wf-1.cwl tests/io-any-array.json
+Test [169/378] workflow_any_input_with_record_provided: Test Any parameter with record input to a tool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphaluczel --quiet tests/io-any-wf-1.cwl tests/io-any-record.json
+Test [170/378] workflow_union_default_input_unspecified: Test union type input to workflow with default unspecified
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfpx9mhla --quiet tests/io-union-input-default-wf.cwl tests/empty.json
+Test [171/378] workflow_union_default_input_with_file_provided: Test union type input to workflow with default specified as file
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp45v91abg --quiet tests/io-union-input-default-wf.cwl tests/io-any-file.json
+Test [172/378] workflowstep_valuefrom_string: Test valueFrom on workflow step from literal (string).
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpop2isqg1 --quiet tests/step-valuefrom4-wf.cwl tests/empty.json
+Test [173/378] workflowstep_valuefrom_file_basename: Test valueFrom on workflow step using basename.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd42edvf8 --quiet tests/step-valuefrom5-wf.cwl tests/wc-job.json
+Test [174/378] expression_tool_int_array_output: Test output arrays in a tool (with ints).
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjtm_6o8z --quiet tests/output-arrays-int.cwl tests/output-arrays-int-job.json
+Test [175/378] workflowstep_int_array_input_output: Test output arrays in a workflow (with ints).
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3ilbaok6 --quiet tests/output-arrays-int-wf.cwl tests/output-arrays-int-job.json
+Test [176/378] workflow_file_array_output: Test output arrays in a workflow (with Files).
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpqspkt_or --quiet tests/output-arrays-file-wf.cwl tests/output-arrays-file-job.json
+Test [177/378] docker_entrypoint: Test Docker ENTRYPOINT usage
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4ixfroqr --quiet tests/docker-run-cmd.cwl tests/empty.json
+Test [178/378] clt_file_size_property_with_empty_file: Test use of size in expressions for an empty file
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpr13x9oon --quiet tests/size-expression-tool.cwl tests/job-input-array-one-empty-file.json
+Test [179/378] clt_file_size_property_with_multi_file: Test use of size in expressions for a few files
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0n7igc7t --quiet tests/size-expression-tool.cwl tests/job-input-array-few-files.json
+Test [180/378] any_without_defaults_unspecified_fails: Test Any without defaults, unspecified, should fail.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpo6iw9vyq --quiet tests/echo-tool.cwl tests/null-expression-echo-job.json
+Submission sub_f827b2f3-fdca-4259-b385-eca936433d84 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_1726780b-81b3-4538-b562-cbb6a6f24f07
+  Stderr:
+task task_1726780b-81b3-4538-b562-cbb6a6f24f07: execute: null is not valid for non-optional input: in (type: Any)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [181/378] any_without_defaults_specified_fails: Test Any without defaults, specified, should fail.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi1uentdt --quiet tests/echo-tool.cwl tests/null-expression1-job.json
+Submission sub_099db654-7bfe-46ca-a790-79af68473941 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_4c823f31-ad16-4c67-a814-0a6f8e8caef9
+  Stderr:
+task task_4c823f31-ad16-4c67-a814-0a6f8e8caef9: execute: null is not valid for non-optional input: in (type: Any)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [182/378] step_input_default_value_noexp: Test default value on step input parameter, no ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbkh1ik3x --quiet tests/count-lines9-wf-noET.cwl tests/empty.json
+Test [183/378] step_input_default_value_overriden_noexp: Test default value on step input parameter overridden by provided source, no ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpqgq7khh_ --quiet tests/count-lines11-wf-noET.cwl tests/cat-job.json
+Test [184/378] nested_workflow_noexp: Test nested workflow, without ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_m1qbsbw --quiet tests/count-lines8-wf-noET.cwl tests/wc-job.json
+Test [185/378] wf_multiplesources_multipletypes_noexp: Test step input with multiple sources with multiple types, without ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0bjl22aq --quiet tests/sum-wf-noET.cwl tests/sum-job.json
+Test [186/378] dynamic_resreq_wf_optional_file_default: Within a workflow, test accessing the size attribute of an optional input File as part of a CommandLineTool's ResourceRequirement calculation. The CommandLineTool input has a default value (a local file) and the workflow nor the workflow step does not provide any value for this input.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpsxwqnhg5 --quiet tests/dynresreq-workflow-tooldefault.cwl tests/empty.json
+Test [187/378] dynamic_resreq_wf_optional_file_step_default: Within a workflow, test accessing the size attribute of an optional input File as part of a CommandLineTool's ResourceRequirement calculation. The workflow step provides a default value (a local file) for this input and the workflow itself does not provide any value for this input.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjh8ko8a0 --quiet tests/dynresreq-workflow-stepdefault.cwl tests/empty.json
+Test [188/378] dynamic_resreq_wf_optional_file_wf_default: Within a workflow, test accessing the size attribute of an optional input File as part of a CommandLineTool's ResourceRequirement calculation. The workflow itelf provides a default value (a local file) for this input.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp8stj6vlg --quiet tests/dynresreq-workflow-inputdefault.cwl tests/empty.json
+Test [189/378] step_input_default_value_overriden_2nd_step: Test default value on step input parameter overridden by provided source. With passthrough first step
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmph291uveh --quiet tests/count-lines11-extra-step-wf.cwl tests/cat-job.json
+Test [190/378] step_input_default_value_overriden_2nd_step_noexp: Test default value on step input parameter overridden by provided source. With passthrough first step and no ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1wt7xxmn --quiet tests/count-lines11-extra-step-wf-noET.cwl tests/cat-job.json
+Test [191/378] step_input_default_value_overriden_2nd_step_null: Test default value on step input parameter overridden by provided source. With null producing first step
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpiyng38p9 --quiet tests/count-lines11-null-step-wf.cwl tests/empty.json
+Test [192/378] step_input_default_value_overriden_2nd_step_null_noexp: Test default value on step input parameter overridden by provided source. With null producing first step and no ExpressionTool
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpo6lkzokq --quiet tests/count-lines11-null-step-wf-noET.cwl tests/empty.json
+Test [193/378] stdin_from_directory_literal_with_local_file: Pipe to stdin from user provided local File via a Directory literal
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmprz2id7f_ --quiet tests/cat-from-dir.cwl tests/cat-from-dir-job.yaml
+Test [194/378] stdin_from_directory_literal_with_literal_file: Pipe to stdin from literal File via a Directory literal
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbreq2t38 --quiet tests/cat-from-dir.cwl tests/cat-from-dir-with-literal-file.yaml
+Test [195/378] directory_literal_with_literal_file_nostdin: Test non-stdin reference to literal File via a Directory literal
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmprdjueigf --quiet tests/cat3-from-dir.cwl tests/cat-from-dir-with-literal-file.yaml
+Test [196/378] no_inputs_commandlinetool: Test CommandLineTool without inputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6u506gud --quiet tests/no-inputs-tool.cwl
+Test [197/378] no_outputs_commandlinetool: Test CommandLineTool without outputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmps23_8cdn --quiet tests/no-outputs-tool.cwl tests/cat-job.json
+Test [198/378] no_inputs_workflow: Test Workflow without inputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpnj7mhnle --quiet tests/no-inputs-wf.cwl
+Test [199/378] no_outputs_workflow: Test Workflow without outputs
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9z4no1uo --quiet tests/no-outputs-wf.cwl tests/cat-job.json
+Test [200/378] anonymous_enum_in_array: Test an anonymous enum inside an array inside a record
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1lnop341 --quiet tests/anon_enum_inside_array.cwl tests/anon_enum_inside_array.yml
+Test [201/378] schema-def_anonymous_enum_in_array: Test an anonymous enum inside an array inside a record, SchemaDefRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxw5c5luz --quiet tests/anon_enum_inside_array_inside_schemadef.cwl tests/anon_enum_inside_array_inside_schemadef.yml
+Test [202/378] stdin_shorcut: Test command execution in with stdin and stdout redirection using stdin shortcut
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjm5o43oz --quiet tests/cat-tool-shortcut.cwl tests/wc-job.json
+Test [203/378] secondary_files_in_unnamed_records: Test secondaryFiles on anonymous record fields
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp411zjxev --quiet tests/record-in-secondaryFiles.cwl tests/record-secondaryFiles-job.yml
+Test [204/378] secondary_files_in_named_records: Test secondaryFiles on SchemaDefRequirement record fields
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7_p_75eg --quiet tests/record-sd-secondaryFiles.cwl tests/record-secondaryFiles-job.yml
+Test [205/378] secondary_files_in_output_records: Test secondaryFiles on output record fields
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmppf64tgnu --quiet tests/record-out-secondaryFiles.cwl tests/empty.json
+Test [206/378] secondary_files_workflow_propagation: Test secondaryFiles propagation through workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4l52z_u8 --quiet tests/record-in-secondaryFiles-wf.cwl tests/record-secondaryFiles-job.yml
+Test [207/378] secondary_files_missing: Test checking when secondaryFiles are missing
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpv6f65x7_ --quiet tests/record-in-secondaryFiles-missing-wf.cwl tests/record-secondaryFiles-job.yml
+Submission sub_1d5019b7-418a-42cc-be2d-1c4a49ee1d45 failed [TASK_FAILED]
+  Error: step 'step1' task failed
+  Step:  step1
+  Task:  task_d462adcf-6d54-4803-a96f-882fbf144ac5
+  Stderr:
+task task_d462adcf-6d54-4803-a96f-882fbf144ac5: execute: process inputs: input "record_input.f1": missing required secondary file "A.s2" (pattern: .s2)
+Error: submission failed: [TASK_FAILED] step 'step1' task failed
+submission failed: [TASK_FAILED] step 'step1' task failed
+Test [208/378] input_records_file_entry_with_format: Test format on anonymous record fields
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp5t363z24 --quiet tests/record-in-format.cwl tests/record-format-job.yml
+Test [209/378] input_records_file_entry_with_format_and_bad_regular_input_file_format: Test file format checking on parameter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpoh4atqg_ --quiet tests/record-in-format.cwl tests/record-format-job2.yml
+Submission sub_11cdf850-8cd2-49cb-bca8-964f06ffd7d8 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_6640fe5d-73e2-42a4-aa45-2ee0f0f0d60f
+  Stderr:
+task task_6640fe5d-73e2-42a4-aa45-2ee0f0f0d60f: execute: file format mismatch for regular_input: expected 'http://example.com/format1' but got 'http://example.com/formatZ'
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [210/378] input_records_file_entry_with_format_and_bad_entry_file_format: Test file format checking on record field
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpp8lu4_jh --quiet tests/record-in-format.cwl tests/record-format-job3.yml
+Submission sub_4c132dc7-0359-4602-b75a-c6cb98fa4ea2 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_52c4d344-ec41-4d89-a04d-d5b4fa5e4a29
+  Stderr:
+task task_52c4d344-ec41-4d89-a04d-d5b4fa5e4a29: execute: file format mismatch for record_input.f1: expected 'http://example.com/format1' but got 'http://example.com/formatZ'
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [211/378] input_records_file_entry_with_format_and_bad_entry_array_file_format: Test file format checking on array item
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6jmoxixm --quiet tests/record-in-format.cwl tests/record-format-job4.yml
+Submission sub_0031a5f5-d036-4325-8a2a-37cf866a5fbf failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_abf48597-a768-4db4-9e0c-63b51e207c63
+  Stderr:
+task task_abf48597-a768-4db4-9e0c-63b51e207c63: execute: file format mismatch for record_input.f2[1]: expected 'http://example.com/format2' but got 'http://example.com/formatZ'
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [212/378] record_output_file_entry_format: Test format on output record fields
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2nd8_1mz --quiet tests/record-out-format.cwl tests/record-secondaryFiles-job.yml
+Test [213/378] workflow_input_inputBinding_loadContents: Test WorkflowInputParameter.inputBinding.loadContents
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmpux8i94 --quiet tests/wf-loadContents.cwl tests/wf-loadContents-job.yml
+Test [214/378] workflow_input_loadContents_without_inputBinding: Test WorkflowInputParameter.loadContents
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmr2785gl --quiet tests/wf-loadContents2.cwl tests/wf-loadContents-job.yml
+Test [215/378] expression_tool_input_loadContents: Test loadContents on InputParameter.loadContents (expression)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpe_k7mop2 --quiet tests/wf-loadContents3.cwl tests/wf-loadContents-job.yml
+Test [216/378] workflow_step_in_loadContents: Test WorkflowStepInput.loadContents
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxqgj85zd --quiet tests/wf-loadContents4.cwl tests/wf-loadContents-job.yml
+Test [217/378] timelimit_basic: Test that job fails when exceeding time limit
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpnsdbo7pa --quiet tests/timelimit.cwl tests/empty.json
+Submission sub_0dfe5551-543b-48c9-9a28-57fd6f23c917 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_d0078498-e546-4354-9199-edddab7b4e63
+  Stderr:
+task task_d0078498-e546-4354-9199-edddab7b4e63: execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [218/378] timelimit_invalid: Test invalid time limit value
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpb2pzjchw --quiet tests/timelimit2.cwl tests/empty.json
+Submission sub_0b748a4f-5483-4b61-9160-40a87387ee28 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_4b37660f-ab33-49df-8e4d-5a36358af375
+  Stderr:
+task task_4b37660f-ab33-49df-8e4d-5a36358af375: execute: invalid ToolTimeLimit: timelimit must be non-negative, got -1
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [219/378] timelimit_zero_unlimited: Test zero timelimit means no limit
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmparz4yytq --quiet tests/timelimit3.cwl tests/empty.json
+Test [220/378] timelimit_from_expression: Test expression in time limit
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpras5xgo1 --quiet tests/timelimit4.cwl tests/empty.json
+Submission sub_f2c7aba4-03d8-4ea6-a8e0-4307883c26c1 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_8032111f-3e00-4b39-8e04-ff4eb656e752
+  Stderr:
+task task_8032111f-3e00-4b39-8e04-ff4eb656e752: execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [221/378] timelimit_expressiontool: Test timelimit in expressiontool is ignored
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfpe3p0f3 --quiet tests/timelimit5.cwl tests/empty.json
+Test [222/378] timelimit_basic_wf: Test that tool in workflow fails when exceeding time limit
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpf5r8iahd --quiet tests/timelimit-wf.cwl tests/empty.json
+Submission sub_a89e7393-a370-4851-b6db-e3ef3dcfd29c failed [TASK_FAILED]
+  Error: step 'step1' task failed
+  Step:  step1
+  Task:  task_9c858edf-1980-4cc4-932f-f54e227a0d8c
+  Stderr:
+task task_9c858edf-1980-4cc4-932f-f54e227a0d8c: execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'step1' task failed
+submission failed: [TASK_FAILED] step 'step1' task failed
+Test [223/378] timelimit_invalid_wf: Test that workflow level time limit is not applied to workflow execution time
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpajboxkcn --quiet tests/timelimit2-wf.cwl tests/empty.json
+Test [224/378] timelimit_zero_unlimited_wf: Test zero timelimit means no limit in workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpatc6nuo1 --quiet tests/timelimit3-wf.cwl tests/empty.json
+Test [225/378] timelimit_from_expression_wf: Test expression in time limit in workflow
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp03iiewae --quiet tests/timelimit4-wf.cwl tests/empty.json
+Submission sub_03aca78f-8cc4-49dd-a6db-2f1e69e1a322 failed [TASK_FAILED]
+  Error: step 'step1' task failed
+  Step:  step1
+  Task:  task_7f5ff138-e826-47e6-95cd-307ad6b90166
+  Stderr:
+task task_7f5ff138-e826-47e6-95cd-307ad6b90166: execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'step1' task failed
+submission failed: [TASK_FAILED] step 'step1' task failed
+Test [226/378] networkaccess: Test networkaccess enabled
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6kg4ng6l --quiet tests/networkaccess.cwl tests/empty.json
+Test [227/378] networkaccess_disabled: Test networkaccess is disabled by default
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp5kd7lsjq --quiet tests/networkaccess2.cwl tests/empty.json
+Submission sub_cb62596f-5784-47fe-add8-1b839324c50d failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_8425dea2-d084-469b-af67-5729e6a591d7
+  Stderr:
+task task_8425dea2-d084-469b-af67-5729e6a591d7: execute: apptainer command failed (exit 1): INFO:    Using cached SIF image
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.14/urllib/request.py", line 1321, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+              encode_chunked=req.has_header('Transfer-encoding'))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/http/client.py", line 1358, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/http/client.py", line 1404, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/http/client.py", line 1353, in endheaders
+    self._send_output(messa...(truncated)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [228/378] initial_work_dir_for_null_and_arrays: Test null and array input in InitialWorkDirRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpcakfmo57 --quiet tests/stage-array.cwl tests/stage-array-job.json
+Test [229/378] initial_work_dir_for_array_dirs: Test array of directories InitialWorkDirRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd9x0esfb --quiet tests/stage-array-dirs.cwl tests/stage-array-dirs-job.yml
+Test [230/378] cwl_requirements_addition: Test requirements in input document via EnvVarRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpo8f6aisq --quiet tests/env-tool3.cwl tests/env-job3.yaml
+Test [231/378] cwl_requirements_override_expression: Test conflicting requirements in input document via EnvVarRequirement and expression
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmucoj8qm --quiet tests/env-tool4.cwl tests/env-job3.yaml
+Test [232/378] cwl_requirements_override_static: Test conflicting requirements in input document via EnvVarRequirement
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpsanves1i --quiet tests/env-tool3.cwl tests/env-job4.yaml
+Test [233/378] initial_workdir_output_glob: Test full path glob output of InitialWorkDir
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6sfe069f --quiet tests/initialworkdir-glob-fullpath.cwl tests/initialworkdirrequirement-docker-out-job.json
+Test [234/378] glob_outside_outputs_fails: Test fail trying to glob outside output directory
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjkgvtc3k --quiet tests/glob-path-error.cwl tests/empty.json
+Submission sub_c8983a0a-08de-4586-8cb0-6c37af5c503a failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_b926261b-4b6d-4f6e-b5a7-ec944424d5ac
+  Stderr:
+task task_b926261b-4b6d-4f6e-b5a7-ec944424d5ac: execute: collect outputs: output OUTPUT: output glob "/etc/passwd" matched path "/etc/passwd" which is outside the output directory
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [235/378] illegal_symlink: symlink to file outside of working directory should NOT be retrieved
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpcx7xmyig --quiet tests/symlink-illegal.cwl tests/empty.json
+Submission sub_e76b12f3-8f29-494a-81e3-7f012602a433 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_e04b97e9-255f-4d35-ab38-6cb413a8965c
+  Stderr:
+task task_e04b97e9-255f-4d35-ab38-6cb413a8965c: execute: collect outputs: output output_file: output glob "symlink.txt" matched symlink "/tmp/task_e04b97e9-255f-4d35-ab38-6cb413a8965c/symlink.txt" pointing to "/tmp/original.txt" which is outside the output directory
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [236/378] legal_symlink: symlink to file inside of working directory should be retrieved
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpsvjsi30_ --quiet tests/symlink-legal.cwl tests/empty.json
+Test [237/378] modify_file_content: inplace update has side effect on file content
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmps7phhjkh --quiet tests/inp_update_wf.cwl tests/empty.json
+Submission sub_4efc973e-a1fe-406b-a733-ae6d1755e9c4 failed [UNSUPPORTED_REQUIREMENT]
+  Error: InplaceUpdateRequirement is not supported in server execution mode
+  Step:  step2
+Error: InplaceUpdateRequirement is not supported in server execution mode
+InplaceUpdateRequirement is not supported in server execution mode
+Test [238/378] modify_directory_content: inplace update has side effect on directory content
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6t4r6v6i --quiet tests/inpdir_update_wf.cwl tests/empty.json
+Submission sub_4f0371ff-b319-4999-ab28-49f1008d7a99 failed [UNSUPPORTED_REQUIREMENT]
+  Error: InplaceUpdateRequirement is not supported in server execution mode
+  Step:  step2
+Error: InplaceUpdateRequirement is not supported in server execution mode
+InplaceUpdateRequirement is not supported in server execution mode
+Test [239/378] outputbinding_glob_directory: Test that OutputBinding.glob accepts Directories
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplpu83ko9 --quiet tests/glob_directory.cwl tests/empty.json
+Test [240/378] stage_file_array: Test that array of input files can be staged to directory with entryname
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9ki_1me3 --quiet tests/stage_file_array.cwl tests/stage_file_array.job.json
+Test [241/378] stage_file_array_basename: Test that array of input files can be staged to directory with basename
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmph7y6zune --quiet tests/stage_file_array_basename.cwl tests/stage_file_array.job.json
+Test [242/378] stage_file_array_entryname_overrides: Test that if array of input files are staged to directory with basename and entryname, entryname overrides
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgjtmz7qk --quiet tests/stage_file_array_basename_and_entryname.cwl tests/stage_file_array.job.json
+Test [243/378] tmpdir_is_not_outdir: Test that runtime.tmpdir is not runtime.outdir
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphddd771r --quiet tests/runtime-paths-distinct.cwl tests/empty.json
+Test [244/378] listing_default_none: Test that default behavior is 'no_listing' if not specified
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpjepiqmpf --quiet tests/listing_none1.cwl tests/listing-job.yml
+Test [245/378] listing_requirement_none: Test that 'listing' is not present when LoadListingRequirement is 'no_listing'
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi0vblxok --quiet tests/listing_none2.cwl tests/listing-job.yml
+Test [246/378] listing_loadListing_none: Test that 'listing' is not present when loadListing on input parameter is 'no_listing'
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2lwgtyvb --quiet tests/listing_none3.cwl tests/listing-job.yml
+Test [247/378] listing_requirement_shallow: Test that 'listing' is present in top directory object but not subdirectory object when LoadListingRequirement is 'shallow_listing'
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpilzp3dt7 --quiet tests/listing_shallow1.cwl tests/listing-job.yml
+Test [248/378] listing_loadListing_shallow: Test that 'listing' is present in top directory object but not subdirectory object when loadListing on input parameter loadListing is 'shallow_listing'
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6wrpw6l8 --quiet tests/listing_shallow2.cwl tests/listing-job.yml
+Test [249/378] listing_outputBinding_loadListing: Test that loadListing works when used on outputBinding.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpzughlf55 --quiet tests/listing_shallow3.cwl tests/listing-job.yml
+Test [250/378] listing_requirement_deep: Test that 'listing' is present in top directory object and in subdirectory objects when LoadListingRequirement is 'deep_listing'
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpyut7carl --quiet tests/listing_deep1.cwl tests/listing-job.yml
+Test [251/378] listing_loadListing_deep: Test that 'listing' is present in top directory object and in subdirectory objects when input parameter loadListing is 'deep_listing'
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp70aorb0q --quiet tests/listing_deep2.cwl tests/listing-job.yml
+Test [252/378] inputBinding_position_expr: Test for expression in the InputBinding.position field; also test using emoji in CWL document and tool output
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9_6u_7v5 --quiet tests/echo-position-expr.cwl tests/echo-position-expr-job.yml
+Test [253/378] outputEval_exitCode: Can access exit code in outputEval
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpzmtrhj5g --quiet tests/exitcode.cwl tests/empty.json
+Test [254/378] any_input_param_graph_no_default: Test use of $graph without specifying which process to run
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpz61niqve --quiet tests/echo-tool-packed.cwl tests/env-job.json
+Test [255/378] any_input_param_graph_no_default_hashmain: Test use of $graph without specifying which process to run, hash-prefixed "main"
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmeqae3xk --quiet tests/echo-tool-packed2.cwl tests/env-job.json
+Test [256/378] optional_numerical_output_returns_0_not_null: Test that optional number output is returned as 0, not null
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9w3b18nk --quiet tests/optional-numerical-output-0.cwl tests/empty.json
+Test [257/378] cores_float: Test float value for coresMin(Max) is rounded up in runtime.cores
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphg9jpmlc --quiet tests/cores_float.cwl tests/empty.json
+Test [258/378] storage_float: Test float value for ram/tmpdir/outdir Min(Max) is rounded up
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgvm_3mqi --quiet tests/storage_float.cwl tests/empty.json
+Test [259/378] cat_synthetic_file: Test the generation of a synthetic file with inline contents.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4s3k5kku --quiet tests/synth-file.cwl tests/synth-file-job.yml
+Test [260/378] continuation: Line continuations in bash scripts should behave correctly
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7r8tpn87 --quiet tests/string-interpolation/bash-line-continuation.cwl
+Test [261/378] continuation_expression: Line continuations in bash scripts should always behave correctly
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpxz1wk8e7 --quiet tests/string-interpolation/bash-line-continuation-with-expression.cwl
+Test [262/378] quoting_multiple_backslashes: Test quoting multiple backslashes
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpffwgh5zn --quiet tests/string-interpolation/bash-dollar-quote.cwl
+Test [263/378] escaping_expression_no_extra_quotes: Strings returned from JS expressions should not have extra quotes around them
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_j_ztdlz --quiet tests/string-interpolation/js-quote.cwl
+Test [264/378] direct_optional_null_result: Simplest conditional pattern (False)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_iwbeu1f --quiet tests/conditionals/cond-wf-001.cwl tests/conditionals/val.1.job.yaml
+Test [265/378] direct_optional_nonnull_result: Simplest conditional pattern (True)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3_z6ewrj --quiet tests/conditionals/cond-wf-001.cwl tests/conditionals/val.3.job.yaml
+Test [266/378] direct_required: Conditional using intermediate WorkflowStep.in input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi03qj_mc --quiet tests/conditionals/cond-wf-002.cwl tests/conditionals/val.1.job.yaml
+Test [267/378] pass_through_required_false_when: Pass through pattern with pickValue: first_non_null; 'when' is false
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp56vqt526 --quiet tests/conditionals/cond-wf-003.cwl tests/conditionals/val.1.job.yaml
+Test [268/378] pass_through_required_true_when: pass through pattern with pickvalue: first_non_null; 'when' is true
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplxbnyn80 --quiet tests/conditionals/cond-wf-003.cwl tests/conditionals/val.3.job.yaml
+Test [269/378] first_non_null_first_non_null: pickValue: first_non_null first item is non null
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmptture6lo --quiet tests/conditionals/cond-wf-003.1.cwl tests/conditionals/val.0.job.yaml
+Test [270/378] first_non_null_all_null: pickValue: first_non_null needs at least one non null
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp2uyuzdj6 --quiet tests/conditionals/cond-wf-003.1.cwl tests/conditionals/val.1.job.yaml
+Submission sub_4d29e5f6-1504-440d-8e20-88903b7742aa failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue first_non_null: all sources are null
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+Test [271/378] first_non_null_second_non_null: pickValue: first_non_null second item is non null
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp_4u14qom --quiet tests/conditionals/cond-wf-003.1.cwl tests/conditionals/val.3.job.yaml
+Test [272/378] pass_through_required_the_only_non_null: pickvalue: the_only_non_null will pass, only for false condition
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp589t1jjf --quiet tests/conditionals/cond-wf-004.cwl tests/conditionals/val.1.job.yaml
+Test [273/378] pass_through_required_fail: pickValue: the_only_non_null will fail due to multiple non nulls
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp1i0k1jf9 --quiet tests/conditionals/cond-wf-004.cwl tests/conditionals/val.3.job.yaml
+Submission sub_c76ef209-567c-4857-b775-12a6dd4d4cfc failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [274/378] all_non_null_multi_with_non_array_output: pickValue: all_non_null will fail validation
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplrk3ql7a --quiet tests/conditionals/cond-wf-005.cwl tests/conditionals/val.3.job.yaml
+Error: create workflow: VALIDATION_ERROR: CWL validation failed
+create workflow: VALIDATION_ERROR: CWL validation failed
+Test [275/378] the_only_non_null_single_true: pickValue: the_only_non_null will pass for only one active node
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpuq530i6c --quiet tests/conditionals/cond-wf-006.cwl tests/conditionals/val.1.job.yaml
+Test [276/378] the_only_non_null_multi_true: pickValue: the_only_non_null will fail with two active nodes
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp059vqtqo --quiet tests/conditionals/cond-wf-006.cwl tests/conditionals/val.3.job.yaml
+Submission sub_471ecf04-6c02-486b-b70f-19cb9313fa5a failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [277/378] all_non_null_all_null: pickValue: all_non_null will produce a list, even if empty
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpc8uq4293 --quiet tests/conditionals/cond-wf-007.cwl tests/conditionals/val.0.job.yaml
+Test [278/378] all_non_null_one_non_null: pickValue: all_non_null will produce a list; even if single item list
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpylliadlc --quiet tests/conditionals/cond-wf-007.cwl tests/conditionals/val.1.job.yaml
+Test [279/378] all_non_null_multi_non_null: pickValue: all_non_null will produce a list
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmptcgdceim --quiet tests/conditionals/cond-wf-007.cwl tests/conditionals/val.3.job.yaml
+Test [280/378] condifional_scatter_on_nonscattered_false: Simple scatter: conditional on a non scattered variable (False)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3gy8o21u --quiet tests/conditionals/cond-wf-009.cwl tests/conditionals/cond15.job.yaml
+Test [281/378] condifional_scatter_on_nonscattered_true: Simple scatter: conditional on a non scattered variable (True)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpdycr62k9 --quiet tests/conditionals/cond-wf-009.cwl tests/conditionals/cond16.job.yaml
+Test [282/378] scatter_on_scattered_conditional: Simple scatter: Add conditional variable to scatter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgbv9hjg_ --quiet tests/conditionals/cond-wf-010.cwl tests/conditionals/val.6.list.job.yaml
+Test [283/378] conditionals_nested_cross_scatter: nested cross product scatter with condition on one dimension
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmppnclxdbb --quiet tests/conditionals/cond-wf-011.cwl tests/conditionals/cond18.job.yaml
+Test [284/378] conditionals_non_boolean_fail: Non-boolean values from "when" should fail
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpvz36l3h1 --quiet tests/conditionals/cond-wf-012.cwl tests/conditionals/val.1.job.yaml
+Submission sub_acbd8747-0f74-4004-b164-e5fc5f2c8352 failed [STEP_FAILED]
+  Error: step 'step1' failed
+  Step:  step1
+Error: submission failed: [STEP_FAILED] step 'step1' failed
+submission failed: [STEP_FAILED] step 'step1' failed
+Test [285/378] conditionals_multi_scatter: Scatter two steps, flatten result + pickValue
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpe1lakhin --quiet tests/conditionals/cond-wf-013.cwl tests/conditionals/cond20.job.yaml
+Test [286/378] direct_optional_null_result_nojs: simplest conditional pattern (true), no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp746qe7y5 --quiet tests/conditionals/cond-wf-001_nojs.cwl tests/conditionals/test-true.yml
+Test [287/378] direct_optional_nonnull_result_nojs: simplest conditional pattern (false), no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpf5f3s6xm --quiet tests/conditionals/cond-wf-001_nojs.cwl tests/conditionals/test-false.yml
+Test [288/378] direct_required_nojs: Conditional using intermediate WorkflowStep.in input; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp30b_ai6s --quiet tests/conditionals/cond-wf-002_nojs.cwl tests/conditionals/val.1.job.yaml
+Test [289/378] pass_through_required_false_when_nojs: Pass through pattern with pickValue: first_non_null; 'when' is false'; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp09xth5uj --quiet tests/conditionals/cond-wf-003_nojs.cwl tests/conditionals/test-false.yml
+Test [290/378] pass_through_required_true_when_nojs: pass through pattern with pickvalue: first_non_null; 'when' is true'; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphk8dyzk5 --quiet tests/conditionals/cond-wf-003_nojs.cwl tests/conditionals/test-true.yml
+Test [291/378] first_non_null_first_non_null_nojs: pickValue: first_non_null first item is non null; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpy66p1ak2 --quiet tests/conditionals/cond-wf-003.1_nojs.cwl tests/conditionals/first-true.yml
+Test [292/378] first_non_null_all_null_nojs: pickValue: first_non_null needs at least one non null; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp9k7dyhcx --quiet tests/conditionals/cond-wf-003.1_nojs.cwl tests/conditionals/both-false.yml
+Submission sub_b565ccf2-7cdf-450f-aabe-67f9bf9cda4f failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue first_non_null: all sources are null
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+Test [293/378] first_non_null_second_non_null_nojs: pickValue: first_non_null second item is non null; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpyo031h9y --quiet tests/conditionals/cond-wf-003.1_nojs.cwl tests/conditionals/second-true.yml
+Test [294/378] pass_through_required_the_only_non_null_nojs: pickvalue: the_only_non_null will pass, only for false condition; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpb60z4oju --quiet tests/conditionals/cond-wf-004_nojs.cwl tests/conditionals/test-false.yml
+Test [295/378] pass_through_required_fail_nojs: pickValue: the_only_non_null will fail due to multiple non nulls; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmeuro733 --quiet tests/conditionals/cond-wf-004_nojs.cwl tests/conditionals/test-true.yml
+Submission sub_29875b84-1c6e-4ed4-a654-cee3c665ce95 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [296/378] all_non_null_multi_with_non_array_output_nojs: pickValue: all_non_null will fail validation; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp403tp3r4 --quiet tests/conditionals/cond-wf-005_nojs.cwl tests/conditionals/test-true.yml
+Error: create workflow: VALIDATION_ERROR: CWL validation failed
+create workflow: VALIDATION_ERROR: CWL validation failed
+Test [297/378] the_only_non_null_single_true_nojs: pickValue: the_only_non_null will pass for only one active node; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpdszprm_z --quiet tests/conditionals/cond-wf-006_nojs.cwl tests/conditionals/second-true.yml
+Test [298/378] the_only_non_null_multi_true_nojs: pickValue: the_only_non_null will fail with two active nodes; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplmoz3f_7 --quiet tests/conditionals/cond-wf-006_nojs.cwl tests/conditionals/both-true.yml
+Submission sub_42bbf7a7-905b-4d38-9356-a3c1ec49d9aa failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [299/378] all_non_null_all_null_nojs: pickValue: all_non_null will produce a list, even if empty; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpgoe2f7fn --quiet tests/conditionals/cond-wf-007_nojs.cwl tests/conditionals/both-false.yml
+Test [300/378] all_non_null_one_non_null_nojs: pickValue: all_non_null will produce a list; even if single item list; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpif3zwnqc --quiet tests/conditionals/cond-wf-007_nojs.cwl tests/conditionals/second-true.yml
+Test [301/378] all_non_null_multi_non_null_nojs: pickValue: all_non_null will produce a list; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6kqwlk2x --quiet tests/conditionals/cond-wf-007_nojs.cwl tests/conditionals/both-true.yml
+Test [302/378] condifional_scatter_on_nonscattered_false_nojs: Simple scatter: conditional on a non scattered variable (False); no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpg69pdyfq --quiet tests/conditionals/cond-wf-009_nojs.cwl tests/conditionals/test-false.yml
+Test [303/378] condifional_scatter_on_nonscattered_true_nojs: Simple scatter: conditional on a non scattered variable (True); no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpzgoe8bxm --quiet tests/conditionals/cond-wf-009_nojs.cwl tests/conditionals/test-true.yml
+Test [304/378] scatter_on_scattered_conditional_nojs: Simple scatter: Add conditional variable to scatter; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpq41kksv_ --quiet tests/conditionals/cond-wf-010_nojs.cwl tests/empty.json
+Test [305/378] conditionals_nested_cross_scatter_nojs: nested cross product scatter with condition on one dimension; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpu3_0nj0j --quiet tests/conditionals/cond-wf-011_nojs.cwl tests/empty.json
+Test [306/378] conditionals_non_boolean_fail_nojs: Non-boolean values from "when" should fail; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpnrrheerk --quiet tests/conditionals/cond-wf-012_nojs.cwl tests/empty.json
+Submission sub_7ad26a13-58de-475d-a62a-eb17794d2c6e failed [STEP_FAILED]
+  Error: step 'step1' failed
+  Step:  step1
+Error: submission failed: [STEP_FAILED] step 'step1' failed
+submission failed: [STEP_FAILED] step 'step1' failed
+Test [307/378] conditionals_multi_scatter_nojs: Scatter two steps, flatten result + pickValue; no javascript
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplrdki8ta --quiet tests/conditionals/cond-wf-013_nojs.cwl tests/empty.json
+Test [308/378] cond-with-defaults-1: Default inputs, choose step to run based on what was provided, first case
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpu1dlypib --quiet tests/conditionals/cond-with-defaults.cwl tests/conditionals/cond-job.yaml
+Test [309/378] cond-with-defaults-2: Default inputs, choose step to run based on what was provided, second case
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7yobdg41 --quiet tests/conditionals/cond-with-defaults.cwl tests/conditionals/cond-job2.yaml
+Test [310/378] command_input_file_expression: Confirm CommandInputParameter expression can receive a File object
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpdd7_27dl --quiet tests/secondaryfiles/rename-inputs.cwl tests/secondaryfiles/rename-inputs.yml
+Test [311/378] command_output_file_expression: Confirm CommandOutputParameter expression can receive a File object
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpb5jljjij --quiet tests/secondaryfiles/rename-outputs.cwl
+Test [312/378] mixed_version_v10_wf: test v1.0 workflow document that runs other versions
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpabrz0arr --quiet tests/mixed-versions/wf-v10.cwl
+Test [313/378] mixed_version_v11_wf: test v1.1 workflow document that runs other versions
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpsul0svmu --quiet tests/mixed-versions/wf-v11.cwl
+Test [314/378] mixed_version_v12_wf: test v1.2 workflow document that runs other versions
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmprypydl08 --quiet tests/mixed-versions/wf-v12.cwl
+Test [315/378] invalid_syntax_v10_uses_v12_tool: test tool with v1.2 syntax marked as v1.0 (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpyd2qebb2 --quiet tests/mixed-versions/invalid-tool-v10.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+Test [316/378] invalid_syntax_v11_uses_v12_tool: test tool with v1.2 syntax marked as v1.1 (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpr6gd1k5j --quiet tests/mixed-versions/invalid-tool-v11.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): ResourceRequirement coresMin: non-integer values require cwlVersion v1.2 or later (document is v1.1)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): ResourceRequirement coresMin: non-integer values require cwlVersion v1.2 or later (document is v1.1)
+Test [317/378] invalid_syntax_v10_uses_v12_workflow: test wf with v1.2 syntax marked as v1.0 (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7ax9mgpu --quiet tests/mixed-versions/invalid-wf-v10.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.0)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.0)
+Test [318/378] invalid_syntax_v11_uses_v12_workflow: test wf with v1.2 syntax marked as v1.1 (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpmakw7g3t --quiet tests/mixed-versions/invalid-wf-v11.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.1)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.1)
+Test [319/378] invalid_syntax_mixed_v12_workflow: test 1.2 wf that includes tools that are marked as v1.0 and v1.1 that contain v1.2 features (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpask0of2n --quiet tests/mixed-versions/invalid-wf-v12.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+Test [320/378] cwloutput_nolimit: Test that loading from cwl.output.json isn't limited to 64k
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpcjlpl8h7 --quiet tests/loadContents/cwloutput-nolimit.cwl
+Test [321/378] loadcontents_limit: Test that loadContents on a file larger than 64k fails
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplxcnp3rd --quiet tests/loadContents/loadContents-limit.cwl tests/loadContents/input.yml
+Submission sub_1c2362a5-2b4f-426b-b3e9-900c63291dfd failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_c9074469-407c-426a-ab64-d2a1da7be2a5
+  Stderr:
+task task_c9074469-407c-426a-ab64-d2a1da7be2a5: execute: process inputs: input "filelist": loadContents: file "/scout/Experiments/GoWe/testdata/cwl-v1.2/tests/loadContents/inp-filelist.txt" is 268866 bytes, exceeds 64KB limit
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [322/378] iwd-nolimit: Test that InitialWorkDir contents can be bigger than 64k
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpw4bee5vz --quiet tests/iwd/iwd-nolimit.cwl
+Test [323/378] iwd-jsondump1: Test dump object to JSON in InitialWorkDir file contents, no trailing newline
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpyum3uset --quiet tests/iwd/iwd-jsondump1.cwl
+Test [324/378] iwd-jsondump1-nl: Test dump object to JSON in InitialWorkDir file contents, with trailing newline
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0k5kkxtf --quiet tests/iwd/iwd-jsondump1-nl.cwl
+Test [325/378] iwd-jsondump2: Test array to JSON in InitialWorkDir file contents, no trailing newline
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpm21lpd1a --quiet tests/iwd/iwd-jsondump2.cwl
+Test [326/378] iwd-jsondump2-nl: Test array to JSON in InitialWorkDir file contents, with trailing newline
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpa96a23ih --quiet tests/iwd/iwd-jsondump2-nl.cwl
+Test [327/378] iwd-jsondump3: Test number to JSON in InitialWorkDir file contents, no trailing newline
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpvxninl6r --quiet tests/iwd/iwd-jsondump3.cwl
+Test [328/378] iwd-jsondump3-nl: Test number to JSON in InitialWorkDir file contents, with trailing newline
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp96ilzo6f --quiet tests/iwd/iwd-jsondump3-nl.cwl
+Test [329/378] iwd-passthrough1: Test InitialWorkDir file passthrough
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpq4xvgfe7 --quiet tests/iwd/iwd-passthrough1.cwl tests/loadContents/input.yml
+Test [330/378] iwd-passthrough2: Test InitialWorkDir file object is serialized to json
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi0yerww3 --quiet tests/iwd/iwd-passthrough2.cwl tests/loadContents/input.yml
+Test [331/378] iwd-passthrough3: Test InitialWorkDir file object is passed through
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphqrwcfte --quiet tests/iwd/iwd-passthrough3.cwl tests/loadContents/input.yml
+Test [332/378] iwd-passthrough4: Test InitialWorkDir file object is passed through
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0yrxg5ed --quiet tests/iwd/iwd-passthrough4.cwl tests/loadContents/input.yml
+Test [333/378] iwd-fileobjs1: Test File and Directory object in listing
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp6ag7totq --quiet tests/iwd/iwd-fileobjs1.cwl
+Test [334/378] iwd-fileobjs2: Test File and Directory object in listing
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpig6raxi1 --quiet tests/iwd/iwd-fileobjs2.cwl
+Test [335/378] iwd-container-entryname1: Test input mount locations when container required
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi7m2dax0 --quiet tests/iwd/iwd-container-entryname1.cwl tests/loadContents/input.yml
+Test [336/378] iwd-container-entryname2: Test input mount locations when no container (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpapfsvkgn --quiet tests/iwd/iwd-container-entryname2.cwl tests/loadContents/input.yml
+Submission sub_fb3a3096-2cf5-4545-ab8f-7226f323da04 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_5778b95c-4641-4698-85a3-ef0af19fc434
+  Stderr:
+task task_5778b95c-4641-4698-85a3-ef0af19fc434: execute: stage InitialWorkDirRequirement: absolute entryname "/tmp2j3y7rpb/input/stuff.txt" requires DockerRequirement in requirements (not hints)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [337/378] iwd-container-entryname3: Test input mount locations when container is a hint (should fail)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpipntang_ --quiet tests/iwd/iwd-container-entryname3.cwl tests/loadContents/input.yml
+Submission sub_999d67b3-8a7b-4ec8-932a-d17c21273f82 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_3ebfcc37-982c-49fe-9576-75d6fe2461e8
+  Stderr:
+task task_3ebfcc37-982c-49fe-9576-75d6fe2461e8: execute: stage InitialWorkDirRequirement: absolute entryname "/tmp2j3y7rpb/input/stuff.txt" requires DockerRequirement in requirements (not hints)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [338/378] iwd-container-entryname4: Must fail if entryname starts with ../
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpwkunwcdg --quiet tests/iwd/iwd-container-entryname4.cwl tests/loadContents/input.yml
+Submission sub_ef1d1dc9-d831-4bcd-b0a1-901c16f64a77 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_075db5af-b263-40dc-b7da-8bbc610c7dcf
+  Stderr:
+task task_075db5af-b263-40dc-b7da-8bbc610c7dcf: execute: stage InitialWorkDirRequirement: entryname "../input/stuff.txt" is invalid: must not reference parent directory
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [339/378] iwdr_dir_literal_real_file: Test directory literal containing a real file
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpykzi0zpl --quiet tests/iwd/iwdr_dir_literal_real_file.cwl tests/loadContents/input.yml
+Test [340/378] iwd-subdir: Test emitting a subdirectory from initial workdir
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpm59zyks1 --quiet tests/iwd/iwd-subdir-wf.cwl tests/iwd/iwd-subdir-job.yml
+Test [341/378] simple_simple_scatter: Two level nested scatter
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbpffhdhn --quiet tests/scatter/simple-simple-scatter.cwl tests/scatter/scatter-job.yml
+Test [342/378] dotproduct_simple_scatter: Two level nested scatter: external dotproduct and internal simple
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpcbysmv7i --quiet tests/scatter/dotproduct-simple-scatter.cwl tests/scatter/scatter2-job.yml
+Test [343/378] simple_dotproduct_scatter: Two level nested scatter: external simple and internal dotproduct
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd24_1_iz --quiet tests/scatter/simple-dotproduct-scatter.cwl tests/scatter/scatter3-job.yml
+Test [344/378] dotproduct_dotproduct_scatter: Two level nested scatter: external dotproduct and internal dotproduct
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp456d0ukw --quiet tests/scatter/dotproduct-dotproduct-scatter.cwl tests/scatter/scatter4-job.yml
+Test [345/378] flat_crossproduct_simple_scatter: Two level nested scatter: external flat_crossproduct and internal simple
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpakmaz0tv --quiet tests/scatter/flat-crossproduct-simple-scatter.cwl tests/scatter/scatter2-job.yml
+Test [346/378] simple_flat_crossproduct_scatter: Two level nested scatter: external simple and internal flat_crossproduct
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpi3yy0dra --quiet tests/scatter/simple-flat-crossproduct-scatter.cwl tests/scatter/scatter3-job.yml
+Test [347/378] flat_crossproduct_flat_crossproduct_scatter: Two level nested scatter: external flat_crossproduct and internal flat_crossproduct
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpy15wmgzn --quiet tests/scatter/flat-crossproduct-flat-crossproduct-scatter.cwl tests/scatter/scatter4-job.yml
+Test [348/378] nested_crossproduct_simple_scatter: Two level nested scatter: external nested_crossproduct and internal simple
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpo42eme8c --quiet tests/scatter/nested-crossproduct-simple-scatter.cwl tests/scatter/scatter2-job.yml
+Test [349/378] simple_nested_crossproduct_scatter: Two level nested scatter: external simple and internal nested_crossproduct
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp5b09bqa6 --quiet tests/scatter/simple-nested-crossproduct-scatter.cwl tests/scatter/scatter3-job.yml
+Test [350/378] nested_crossproduct_nested_crossproduct_scatter: Two level nested scatter: external nested_crossproduct and internal nested_crossproduct
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpa263_cmg --quiet tests/scatter/nested-crossproduct-nested-crossproduct-scatter.cwl tests/scatter/scatter4-job.yml
+Test [351/378] params_broken_null: Test parameter reference that refers to null.something
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp51am9qsv --quiet tests/params_broken_null.cwl tests/empty.json
+Submission sub_5716571b-71bb-4951-9d1c-2b6e2bb33f4d failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_b86519f1-2561-427a-b38a-441b016cb93b
+  Stderr:
+task task_b86519f1-2561-427a-b38a-441b016cb93b: execute: collect outputs: output output1: expression error in $(null.something): TypeError: Cannot read property 'something' of undefined at <eval>:1:6(1)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [352/378] length_for_non_array: Test parameter reference that refers to length of non-array input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3em0tqu4 --quiet tests/params_broken_length_of_non_list.cwl tests/empty.json
+Submission sub_d52a0b99-5e31-492f-9c4d-ee405b4a6c97 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_2c6010ed-5fa3-434d-860f-27da3426548a
+  Stderr:
+task task_2c6010ed-5fa3-434d-860f-27da3426548a: execute: collect outputs: output output1: cannot access .length on non-array value of type int64 in expression: inputs.bar.length
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [353/378] user_defined_length_in_parameter_reference: Test 'length' in parameter reference where it does not refer to length of an array input
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpntzx2wpv --quiet tests/params_input_length_non_array.cwl tests/length_non_array_input.yml
+Test [354/378] directory_literal_with_literal_file_in_subdir_nostdin: Test non-stdin reference to literal File via a nested Directory literal
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpc2nr1pne --quiet tests/cat4-from-dir.cwl tests/cat-from-dir-with-literal-file-in-subdir.yaml
+Test [355/378] colon_in_paths: Confirm that colons are tolerated in input paths, string values, stdout shortcut, and output file & directory names
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpqedxba9h --quiet tests/colon:test.cwl tests/colon:test:job.yaml
+Test [356/378] colon_in_output_path: Confirm that colons are tolerated in output directory names
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmptnl4pocs --quiet tests/colon_test_output.cwl tests/colon_test_output_job.yaml
+Test [357/378] record_with_default: Confirm that records with defaults are accepted
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpe3m4347s --quiet tests/paramref_arguments_roundtrip.cwl
+Test [358/378] record_outputeval: Use of outputEval on a record itself, not the fields of the record
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpaljrbbd0 --quiet tests/record_outputeval.cwl
+Test [359/378] record_outputeval_nojs: Use of outputEval on a record itself, not the fields of the record (without javascript)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp0jb6ci72 --quiet tests/record_outputeval_nojs.cwl
+Test [360/378] staging-basename: Use of expression tool to change basename of file, then correctly staging the file using the new name.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpd357hnof --quiet tests/staging-basename/wf_ren.cwl
+Test [361/378] runtime-outdir: Use of $(runtime.outdir) for outputBinding glob.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpb4royrcu --quiet tests/runtime-outdir.cwl
+Test [362/378] record_order_with_input_bindings: Test sorting arguments at each level (inputBinding for all levels)
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpg7ziy8vo --quiet tests/record-order.cwl tests/record-order-job.json
+Test [363/378] output_reference_workflow_input: Direct use of Workflow level input fields in the outputs.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3p0gucc4 --quiet tests/output_reference_workflow_input.cwl
+Test [364/378] stdout_chained_commands: Test that chaining two echo calls causes the workflow tool to emit the output to stdout. This is to confirm that the workflow tool will **not** create an expression such as `echo a && echo b > out.txt`, but instead will produce the correct `echo a && echo b`, and capture the output correctly.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpj80eixf2 --quiet tests/stdout_chained_commands.cwl
+Test [365/378] multiple-input-feature-requirement: MultipleInputFeatureRequirement on workflow outputs.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4smuzj1z --quiet tests/multiple_input_feature_requirement.cwl
+Test [366/378] js-input-record: A test case for JS with an input record.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpulv8sk3x --quiet tests/js-input-record.cwl tests/js-input-record.json
+Test [367/378] schemadef_types_with_import: Test SchemaDefRequirement with a workflow, with the `$import` under types. It is similar to schemadef-wf, but the `$import` is different.
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp604q9axm --quiet tests/schemadef_types_with_import-wf.cwl tests/schemadef_types_with_import-job.json
+Test [368/378] filename_with_hash_mark: Test for correct handling of URL-quoting in filename to refer to filename containing a hash mark
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpo_cor2bx --quiet tests/cat-tool.cwl tests/octo.yml
+Test [369/378] capture_files: Test that a type error is raised if directories are returned by glob evaluation when type is File
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpbf3pho72 --quiet tests/capture-files.cwl tests/dir-job.yml
+Submission sub_c3feae69-2eba-40c2-91e5-518f51ff4aa1 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_22cc8497-e7eb-4956-aff8-699923f1c7b5
+  Stderr:
+task task_22cc8497-e7eb-4956-aff8-699923f1c7b5: execute: collect outputs: output result: type error: output type is File but glob matched directory "/tmp/task_22cc8497-e7eb-4956-aff8-699923f1c7b5/testdir/c"
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [370/378] capture_dirs: Test that a type error is raised if files are returned by glob evaluation when type is Directory
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpnvnxuse4 --quiet tests/capture-dirs.cwl tests/dir-job.yml
+Submission sub_5bba2c2f-f6da-466d-a7ea-82decaffe722 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed
+  Step:  run_tool
+  Task:  task_753a5793-f00c-44a6-9378-9e48ea9009c8
+  Stderr:
+task task_753a5793-f00c-44a6-9378-9e48ea9009c8: execute: collect outputs: output result: type error: output type is Directory but glob matched file "/tmp/task_753a5793-f00c-44a6-9378-9e48ea9009c8/testdir/a"
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed
+submission failed: [TASK_FAILED] step 'run_tool' task failed
+Test [371/378] capture_files_and_dirs: Test that both files and directories are captured by glob evaluation when type is [Directory, File]
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmplulm9b7y --quiet tests/capture-files-and-dirs.cwl tests/dir-job.yml
+Test [372/378] very_big_and_very_floats: Confirm that very big and very small numbers are represented using decimals, not scientific notation
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpapmzgewu --quiet tests/floats_small_and_large.cwl tests/empty.json
+Test [373/378] very_big_and_very_floats_nojs: Confirm that very big and very small numbers are represented using decimals, not scientific notation
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp7fc3qz4n --quiet tests/floats_small_and_large_nojs.cwl tests/empty.json
+Test [374/378] default_with_falsey_value: Confirms that "false"-like (but not 'null') values override any default
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpqjvnakiu --quiet tests/default_with_falsey_value.cwl tests/empty.json
+Test [375/378] nested_types: demonstrate usage of nested types
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmpfo02t3_q --quiet tests/nested_types.cwl tests/nested_types.yaml
+Test [376/378] paramref_arguments_runtime: confirm that $runtime is available to parameter references in arguments
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmphm1uwv8e --quiet tests/paramref_arguments_runtime.cwl tests/empty.json
+Test [377/378] paramref_arguments_self: confirm that $self is available and set to null in arguments
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp3ob82jpj --quiet tests/paramref_arguments_self.cwl tests/empty.json
+Test [378/378] paramref_arguments_inputs: confirm that $inputs is available to parameter references in arguments
+
+Running: /tmp/tmp.hPBt74r5ga --outdir=/tmp/tmp4yp96ndd --quiet tests/paramref_arguments_inputs.cwl tests/empty.json
+376 tests passed, 2 unsupported features

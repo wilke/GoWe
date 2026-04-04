@@ -95,6 +95,10 @@ type Loop struct {
 	// value = human-readable reason. Used by buildSubmissionError to set the
 	// UNSUPPORTED_REQUIREMENT error code so the CLI can exit with code 33.
 	unsupportedSteps map[string]string
+
+	// cache provides per-tick memoization for frequently-read DB entities
+	// (submissions, workflows, step instances). Reset at the start of each Tick().
+	cache *tickCache
 }
 
 // taskRequirementKey groups QUEUED tasks by their scheduling requirements
@@ -162,10 +166,29 @@ func (l *Loop) Stop() error {
 	return nil
 }
 
+// updateStepInstance persists a step instance update and invalidates the tick cache.
+func (l *Loop) updateStepInstance(ctx context.Context, si *model.StepInstance) error {
+	err := l.store.UpdateStepInstance(ctx, si)
+	if err == nil && l.cache != nil {
+		l.cache.invalidateSteps(si.SubmissionID)
+	}
+	return err
+}
+
+// updateSubmission persists a submission update and invalidates the tick cache.
+func (l *Loop) updateSubmission(ctx context.Context, sub *model.Submission) error {
+	err := l.store.UpdateSubmission(ctx, sub)
+	if err == nil && l.cache != nil {
+		l.cache.invalidateSubmission(sub.ID)
+	}
+	return err
+}
+
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
-	l.cachedWorkerCaps = nil // Reset per-tick cache.
+	l.cachedWorkerCaps = nil // Reset per-tick worker capability cache.
+	l.cache = newTickCache() // Reset per-tick entity cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
@@ -245,7 +268,7 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 
 	for subID, steps := range bySubmission {
 		// Load all step instances for this submission to check dependencies.
-		allSteps, err := l.store.ListStepsBySubmission(ctx, subID)
+		allSteps, err := l.cache.listStepsBySubmission(ctx, l.store, subID)
 		if err != nil {
 			l.logger.Error("list steps for submission", "submission_id", subID, "error", err)
 			continue
@@ -256,12 +279,12 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 		}
 
 		// Load workflow to get step dependencies.
-		sub, err := l.store.GetSubmission(ctx, subID)
+		sub, err := l.cache.getSubmission(ctx, l.store, subID)
 		if err != nil || sub == nil {
 			l.logger.Error("get submission for advance", "submission_id", subID, "error", err)
 			continue
 		}
-		wf, err := l.store.GetWorkflow(ctx, sub.WorkflowID)
+		wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
 		if err != nil || wf == nil {
 			l.logger.Error("get workflow for advance", "submission_id", subID, "error", err)
 			continue
@@ -283,7 +306,7 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 				now := time.Now().UTC()
 				si.State = model.StepStateSkipped
 				si.CompletedAt = &now
-				if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+				if err := l.updateStepInstance(ctx, si); err != nil {
 					l.logger.Error("skip step", "si_id", si.ID, "error", err)
 					continue
 				}
@@ -291,7 +314,7 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 				affected[subID] = true
 			} else if satisfied {
 				si.State = model.StepStateReady
-				if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+				if err := l.updateStepInstance(ctx, si); err != nil {
 					l.logger.Error("ready step", "si_id", si.ID, "error", err)
 					continue
 				}
@@ -334,12 +357,12 @@ func (l *Loop) dispatchReady(ctx context.Context, affected map[string]bool) erro
 	}
 
 	for _, si := range ready {
-		sub, err := l.store.GetSubmission(ctx, si.SubmissionID)
+		sub, err := l.cache.getSubmission(ctx, l.store, si.SubmissionID)
 		if err != nil || sub == nil {
 			l.logger.Error("get submission for dispatch", "si_id", si.ID, "error", err)
 			continue
 		}
-		wf, err := l.store.GetWorkflow(ctx, sub.WorkflowID)
+		wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
 		if err != nil || wf == nil {
 			l.logger.Error("get workflow for dispatch", "si_id", si.ID, "error", err)
 			continue
@@ -363,7 +386,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
 		l.logger.Warn("step failed due to token expiry", "si_id", si.ID, "submission_id", sub.ID)
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	// Find the step definition.
@@ -373,7 +396,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	}
 
 	// Build upstream outputs from completed sibling StepInstances.
-	allSteps, err := l.store.ListStepsBySubmission(ctx, si.SubmissionID)
+	allSteps, err := l.cache.listStepsBySubmission(ctx, l.store, si.SubmissionID)
 	if err != nil {
 		return fmt.Errorf("list sibling steps: %w", err)
 	}
@@ -400,14 +423,14 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
 			l.logger.Error("when condition evaluation failed", "si_id", si.ID, "error", err)
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		} else if !shouldRun {
 			now := time.Now().UTC()
 			si.State = model.StepStateSkipped
 			si.Outputs = make(map[string]any)
 			si.CompletedAt = &now
 			l.logger.Info("step skipped (when condition false)", "si_id", si.ID, "step_id", si.StepID)
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 	}
 
@@ -447,7 +470,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 				l.logger.Error("step failed: no capable worker",
 					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
 					"deferred_ticks", count)
-				return l.store.UpdateStepInstance(ctx, si)
+				return l.updateStepInstance(ctx, si)
 			}
 			if count == 1 {
 				l.logger.Warn("deferring step dispatch: no capable worker",
@@ -474,7 +497,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		reason := "InplaceUpdateRequirement is not supported in server execution mode"
 		l.unsupportedSteps[si.ID] = reason
 		l.logger.Warn("unsupported requirement", "requirement", "InplaceUpdateRequirement", "si_id", si.ID)
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	// Sub-workflow dispatch.
@@ -513,7 +536,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			si.CompletedAt = &now
 			l.logger.Info("expression tool completed", "si_id", si.ID)
 		}
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	// Normal CommandLineTool dispatch — create a single Task.
@@ -524,7 +547,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	// Add user token.
@@ -550,7 +573,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		si.CompletedAt = &now
 	}
 
-	return l.store.UpdateStepInstance(ctx, si)
+	return l.updateStepInstance(ctx, si)
 }
 
 // dispatchScatterStep handles scatter dispatch for CommandLineTools and ExpressionTools.
@@ -581,7 +604,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 		scatterArrays[scatterInput] = arr
 	}
@@ -598,7 +621,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	// Apply valueFrom per-iteration.
@@ -612,7 +635,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
 				si.CompletedAt = &now
-				return l.store.UpdateStepInstance(ctx, si)
+				return l.updateStepInstance(ctx, si)
 			}
 		}
 	}
@@ -644,7 +667,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
 				si.CompletedAt = &now
-				return l.store.UpdateStepInstance(ctx, si)
+				return l.updateStepInstance(ctx, si)
 			}
 			// Materialize file/directory literals in scatter iteration outputs.
 			if tmpDir, mkErr := os.MkdirTemp("", fmt.Sprintf("exprtool-%s-%d-", si.ID, i)); mkErr == nil {
@@ -659,7 +682,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		si.State = model.StepStateCompleted
 		si.CompletedAt = &now
 		l.logger.Info("scatter expression tool completed", "si_id", si.ID, "iterations", len(combinations))
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	// For CommandLineTools, create and submit individual Tasks.
@@ -676,7 +699,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				si.State = model.StepStateFailed
 				si.CompletedAt = &now
 				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
-				return l.store.UpdateStepInstance(ctx, si)
+				return l.updateStepInstance(ctx, si)
 			} else if !shouldRun {
 				nullOutputs := make(map[string]any)
 				for _, outID := range step.Out {
@@ -693,7 +716,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 					now := time.Now().UTC()
 					si.State = model.StepStateFailed
 					si.CompletedAt = &now
-					return l.store.UpdateStepInstance(ctx, si)
+					return l.updateStepInstance(ctx, si)
 				}
 				results = append(results, nullOutputs)
 				continue
@@ -709,7 +732,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 
 		l.submitAndUpdateTask(ctx, task)
@@ -722,7 +745,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
 				si.CompletedAt = &now
-				return l.store.UpdateStepInstance(ctx, si)
+				return l.updateStepInstance(ctx, si)
 			}
 		} else {
 			allCompleted = false
@@ -746,7 +769,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		}
 	}
 
-	return l.store.UpdateStepInstance(ctx, si)
+	return l.updateStepInstance(ctx, si)
 }
 
 // dispatchSubWorkflowStep handles a non-scatter sub-workflow step.
@@ -783,14 +806,14 @@ func (l *Loop) dispatchSubWorkflowStep(ctx context.Context, si *model.StepInstan
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	if err := l.executeChildSubmission(ctx, childSub); err != nil {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
-		return l.store.UpdateStepInstance(ctx, si)
+		return l.updateStepInstance(ctx, si)
 	}
 
 	now := time.Now().UTC()
@@ -802,7 +825,7 @@ func (l *Loop) dispatchSubWorkflowStep(ctx context.Context, si *model.StepInstan
 	}
 	si.CompletedAt = &now
 
-	return l.store.UpdateStepInstance(ctx, si)
+	return l.updateStepInstance(ctx, si)
 }
 
 // dispatchScatterSubWorkflow handles scatter over a sub-workflow.
@@ -840,7 +863,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 		scatterArrays[scatterInput] = arr
 	}
@@ -863,7 +886,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
 				si.CompletedAt = &now
-				return l.store.UpdateStepInstance(ctx, si)
+				return l.updateStepInstance(ctx, si)
 			}
 		}
 	}
@@ -896,21 +919,21 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 
 		if err := l.executeChildSubmission(ctx, childSub); err != nil {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 
 		if childSub.State != model.SubmissionStateCompleted {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
 			si.CompletedAt = &now
-			return l.store.UpdateStepInstance(ctx, si)
+			return l.updateStepInstance(ctx, si)
 		}
 
 		results = append(results, childSub.Outputs)
@@ -922,7 +945,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 	si.CompletedAt = &now
 	l.logger.Info("scatter sub-workflow completed", "si_id", si.ID, "iterations", len(combinations))
 
-	return l.store.UpdateStepInstance(ctx, si)
+	return l.updateStepInstance(ctx, si)
 }
 
 // createTaskFromStep creates a new Task linked to a StepInstance.
@@ -1025,7 +1048,7 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 		Groups:   make(map[string]int),
 		Datasets: make(map[string]int),
 	}
-	workers, err := l.store.ListWorkers(context.TODO())
+	workers, err := l.store.ListWorkers(context.Background())
 	if err != nil {
 		l.cachedWorkerCaps = caps
 		return caps
@@ -1553,7 +1576,7 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 				// Update to RUNNING if any task is running.
 				if anyRunning && si.State == model.StepStateDispatched {
 					si.State = model.StepStateRunning
-					if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+					if err := l.updateStepInstance(ctx, si); err != nil {
 						l.logger.Error("update step running", "si_id", si.ID, "error", err)
 					}
 					affected[si.SubmissionID] = true
@@ -1572,9 +1595,9 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 				if si.ScatterCount > 0 {
 					// Scatter step: merge by scatter index.
 					// Load step definition for output IDs.
-					sub, _ := l.store.GetSubmission(ctx, si.SubmissionID)
+					sub, _ := l.cache.getSubmission(ctx, l.store, si.SubmissionID)
 					if sub != nil {
-						wf, _ := l.store.GetWorkflow(ctx, sub.WorkflowID)
+						wf, _ := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
 						if wf != nil {
 							step := findStep(wf, si.StepID)
 							if step != nil {
@@ -1598,7 +1621,7 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 			}
 			si.CompletedAt = &now
 
-			if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+			if err := l.updateStepInstance(ctx, si); err != nil {
 				l.logger.Error("complete step", "si_id", si.ID, "error", err)
 				continue
 			}
@@ -1625,7 +1648,7 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 	}
 
 	for subID := range affected {
-		sub, err := l.store.GetSubmission(ctx, subID)
+		sub, err := l.cache.getSubmission(ctx, l.store, subID)
 		if err != nil {
 			l.logger.Error("get submission for finalize", "submission_id", subID, "error", err)
 			continue
@@ -1635,7 +1658,7 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 		}
 
 		// Load step instances instead of tasks.
-		steps, err := l.store.ListStepsBySubmission(ctx, subID)
+		steps, err := l.cache.listStepsBySubmission(ctx, l.store, subID)
 		if err != nil {
 			l.logger.Error("list steps for finalize", "submission_id", subID, "error", err)
 			continue
@@ -1665,7 +1688,7 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 				sub.State = model.SubmissionStateCompleted
 
 				// Collect workflow outputs from step instance outputs.
-				wf, wfErr := l.store.GetWorkflow(ctx, sub.WorkflowID)
+				wf, wfErr := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
 				if wfErr != nil {
 					l.logger.Error("get workflow for output collection", "submission_id", subID, "error", wfErr)
 				} else if wf != nil {
@@ -1691,14 +1714,14 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 			}
 			now := time.Now().UTC()
 			sub.CompletedAt = &now
-			if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+			if err := l.updateSubmission(ctx, sub); err != nil {
 				l.logger.Error("finalize submission", "submission_id", subID, "error", err)
 			} else {
 				l.logger.Info("submission finalized", "submission_id", subID, "state", sub.State)
 			}
 		} else if (anyActive || anyFailed) && sub.State == model.SubmissionStatePending {
 			sub.State = model.SubmissionStateRunning
-			if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+			if err := l.updateSubmission(ctx, sub); err != nil {
 				l.logger.Error("activate submission", "submission_id", subID, "error", err)
 			} else {
 				l.logger.Info("submission running", "submission_id", subID)

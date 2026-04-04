@@ -15,6 +15,29 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// unmarshalJSON unmarshals a JSON string into dest. field is used in the error message.
+func unmarshalJSON(data string, dest any, field string) error {
+	if data == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(data), dest); err != nil {
+		return fmt.Errorf("corrupt %s JSON: %w", field, err)
+	}
+	return nil
+}
+
+// parseTimeOrZero parses an RFC3339Nano time string, returning zero time for empty strings.
+func parseTimeOrZero(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("corrupt timestamp %q: %w", value, err)
+	}
+	return t, nil
+}
+
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
 	db     *sql.DB
@@ -116,17 +139,21 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 		return nil, err
 	}
 
-	if err := json.Unmarshal([]byte(inputsJSON), &wf.Inputs); err != nil {
-		return nil, fmt.Errorf("unmarshal inputs: %w", err)
+	if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(outputsJSON), &wf.Outputs); err != nil {
-		return nil, fmt.Errorf("unmarshal outputs: %w", err)
+	if err := unmarshalJSON(outputsJSON, &wf.Outputs, "outputs"); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(stepsJSON), &wf.Steps); err != nil {
-		return nil, fmt.Errorf("unmarshal steps: %w", err)
+	if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+		return nil, err
 	}
-	wf.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	wf.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+		return nil, err
+	}
+	if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
 }
@@ -151,17 +178,21 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 		return nil, err
 	}
 
-	if err := json.Unmarshal([]byte(inputsJSON), &wf.Inputs); err != nil {
-		return nil, fmt.Errorf("unmarshal inputs: %w", err)
+	if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(outputsJSON), &wf.Outputs); err != nil {
-		return nil, fmt.Errorf("unmarshal outputs: %w", err)
+	if err := unmarshalJSON(outputsJSON, &wf.Outputs, "outputs"); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(stepsJSON), &wf.Steps); err != nil {
-		return nil, fmt.Errorf("unmarshal steps: %w", err)
+	if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+		return nil, err
 	}
-	wf.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	wf.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+		return nil, err
+	}
+	if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
 }
@@ -186,17 +217,21 @@ func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*mode
 		return nil, err
 	}
 
-	if err := json.Unmarshal([]byte(inputsJSON), &wf.Inputs); err != nil {
-		return nil, fmt.Errorf("unmarshal inputs: %w", err)
+	if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(outputsJSON), &wf.Outputs); err != nil {
-		return nil, fmt.Errorf("unmarshal outputs: %w", err)
+	if err := unmarshalJSON(outputsJSON, &wf.Outputs, "outputs"); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(stepsJSON), &wf.Steps); err != nil {
-		return nil, fmt.Errorf("unmarshal steps: %w", err)
+	if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+		return nil, err
 	}
-	wf.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	wf.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+		return nil, err
+	}
+	if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
 }
@@ -260,11 +295,26 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 			&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt); err != nil {
 			return nil, 0, err
 		}
-		json.Unmarshal([]byte(inputsJSON), &wf.Inputs)
-		json.Unmarshal([]byte(outputsJSON), &wf.Outputs)
-		json.Unmarshal([]byte(stepsJSON), &wf.Steps)
-		wf.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-		wf.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+		if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(outputsJSON, &wf.Outputs, "outputs"); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
+		if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
+		if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
 
 		workflows = append(workflows, &wf)
 	}
@@ -392,18 +442,30 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	}
 
 	sub.State = model.SubmissionState(state)
-	json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
-	json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
-	json.Unmarshal([]byte(labelsJSON), &sub.Labels)
+	if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(outputsJSON, &sub.Outputs, "outputs"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(labelsJSON, &sub.Labels, "labels"); err != nil {
+		return nil, err
+	}
 	if errorJSON != "" {
 		var subErr model.SubmissionError
-		if json.Unmarshal([]byte(errorJSON), &subErr) == nil {
-			sub.Error = &subErr
+		if err := unmarshalJSON(errorJSON, &subErr, "error"); err != nil {
+			return nil, err
 		}
+		sub.Error = &subErr
 	}
-	sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if sub.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+		return nil, err
+	}
 	if completedAt != nil {
-		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+		t, err := parseTimeOrZero(*completedAt)
+		if err != nil {
+			return nil, err
+		}
 		sub.CompletedAt = &t
 	}
 	if tokenExpiry > 0 {
@@ -498,12 +560,28 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		}
 
 		sub.State = model.SubmissionState(state)
-		json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
-		json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
-		json.Unmarshal([]byte(labelsJSON), &sub.Labels)
-		sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(outputsJSON, &sub.Outputs, "outputs"); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(labelsJSON, &sub.Labels, "labels"); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
 		if completedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			t, err := parseTimeOrZero(*completedAt)
+			if err != nil {
+				slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+				continue
+			}
 			sub.CompletedAt = &t
 		}
 		if tokenExpiry > 0 {
@@ -630,12 +708,28 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 		}
 
 		sub.State = model.SubmissionState(state)
-		json.Unmarshal([]byte(inputsJSON), &sub.Inputs)
-		json.Unmarshal([]byte(outputsJSON), &sub.Outputs)
-		json.Unmarshal([]byte(labelsJSON), &sub.Labels)
-		sub.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(outputsJSON, &sub.Outputs, "outputs"); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(labelsJSON, &sub.Labels, "labels"); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
 		if completedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			t, err := parseTimeOrZero(*completedAt)
+			if err != nil {
+				slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+				continue
+			}
 			sub.CompletedAt = &t
 		}
 
@@ -660,7 +754,10 @@ func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInst
 		completedAt = &v
 	}
 
-	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+	scatterDimsJSON, err := json.Marshal(si.ScatterDims)
+	if err != nil {
+		return fmt.Errorf("marshal scatter_dims: %w", err)
+	}
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
@@ -670,6 +767,57 @@ func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInst
 		si.CreatedAt.Format(time.RFC3339Nano), completedAt,
 	)
 	return err
+}
+
+func (s *SQLiteStore) BatchCreateStepInstances(ctx context.Context, steps []*model.StepInstance) error {
+	if len(steps) == 0 {
+		return nil
+	}
+
+	s.logger.Debug("sql", "op", "batch_insert", "table", "step_instances", "count", len(steps))
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, si := range steps {
+		outputsJSON, err := json.Marshal(si.Outputs)
+		if err != nil {
+			return fmt.Errorf("marshal outputs: %w", err)
+		}
+
+		var completedAt *string
+		if si.CompletedAt != nil {
+			v := si.CompletedAt.Format(time.RFC3339Nano)
+			completedAt = &v
+		}
+
+		scatterDimsJSON, err := json.Marshal(si.ScatterDims)
+		if err != nil {
+			return fmt.Errorf("marshal scatter_dims: %w", err)
+		}
+
+		_, err = stmt.ExecContext(ctx,
+			si.ID, si.SubmissionID, si.StepID, string(si.State),
+			si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON),
+			si.CreatedAt.Format(time.RFC3339Nano), completedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("insert step instance %s: %w", si.ID, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.StepInstance, error) {
@@ -694,13 +842,20 @@ func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.St
 	}
 
 	si.State = model.StepInstanceState(state)
-	json.Unmarshal([]byte(outputsJSON), &si.Outputs)
-	if scatterDimsJSON != "" {
-		json.Unmarshal([]byte(scatterDimsJSON), &si.ScatterDims)
+	if err := unmarshalJSON(outputsJSON, &si.Outputs, "outputs"); err != nil {
+		return nil, err
 	}
-	si.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if err := unmarshalJSON(scatterDimsJSON, &si.ScatterDims, "scatter_dims"); err != nil {
+		return nil, err
+	}
+	if si.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+		return nil, err
+	}
 	if completedAt != nil {
-		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+		t, err := parseTimeOrZero(*completedAt)
+		if err != nil {
+			return nil, err
+		}
 		si.CompletedAt = &t
 	}
 
@@ -721,7 +876,10 @@ func (s *SQLiteStore) UpdateStepInstance(ctx context.Context, si *model.StepInst
 		completedAt = &v
 	}
 
-	scatterDimsJSON, _ := json.Marshal(si.ScatterDims)
+	scatterDimsJSON, err := json.Marshal(si.ScatterDims)
+	if err != nil {
+		return fmt.Errorf("marshal scatter_dims: %w", err)
+	}
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, completed_at=? WHERE id=?`,
@@ -765,6 +923,27 @@ func (s *SQLiteStore) ListStepsByState(ctx context.Context, state model.StepInst
 	return s.scanStepInstances(rows)
 }
 
+func (s *SQLiteStore) CancelNonTerminalSteps(ctx context.Context, submissionID string, completedAt time.Time) (int, error) {
+	s.logger.Debug("sql", "op", "cancel_non_terminal_steps", "submission_id", submissionID)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE step_instances
+		 SET state = ?, completed_at = ?
+		 WHERE submission_id = ? AND state NOT IN (?, ?, ?)`,
+		string(model.StepStateSkipped), completedAt.Format(time.RFC3339Nano),
+		submissionID,
+		string(model.StepStateCompleted), string(model.StepStateFailed), string(model.StepStateSkipped))
+	if err != nil {
+		return 0, fmt.Errorf("cancel non-terminal steps: %w", err)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cancel non-terminal steps rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
 func (s *SQLiteStore) scanStepInstances(rows *sql.Rows) ([]*model.StepInstance, error) {
 	var items []*model.StepInstance
 	for rows.Next() {
@@ -779,13 +958,26 @@ func (s *SQLiteStore) scanStepInstances(rows *sql.Rows) ([]*model.StepInstance, 
 		}
 
 		si.State = model.StepInstanceState(state)
-		json.Unmarshal([]byte(outputsJSON), &si.Outputs)
-		if scatterDimsJSON != "" {
-			json.Unmarshal([]byte(scatterDimsJSON), &si.ScatterDims)
+		if err := unmarshalJSON(outputsJSON, &si.Outputs, "outputs"); err != nil {
+			slog.Error("skipping corrupt step_instance row", "id", si.ID, "error", err)
+			continue
 		}
-		si.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if err := unmarshalJSON(scatterDimsJSON, &si.ScatterDims, "scatter_dims"); err != nil {
+			slog.Error("skipping corrupt step_instance row", "id", si.ID, "error", err)
+			continue
+		}
+		if t, err := parseTimeOrZero(createdAt); err != nil {
+			slog.Error("skipping corrupt step_instance row", "id", si.ID, "error", err)
+			continue
+		} else {
+			si.CreatedAt = t
+		}
 		if completedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			t, err := parseTimeOrZero(*completedAt)
+			if err != nil {
+				slog.Error("skipping corrupt step_instance row", "id", si.ID, "error", err)
+				continue
+			}
 			si.CompletedAt = &t
 		}
 
@@ -1020,6 +1212,27 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	return s.scanTasks(rows)
 }
 
+func (s *SQLiteStore) CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error) {
+	s.logger.Debug("sql", "op", "cancel_non_terminal_tasks", "submission_id", submissionID)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks
+		 SET state = ?, completed_at = ?
+		 WHERE submission_id = ? AND state NOT IN (?, ?, ?)`,
+		string(model.TaskStateSkipped), completedAt.Format(time.RFC3339Nano),
+		submissionID,
+		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped))
+	if err != nil {
+		return 0, fmt.Errorf("cancel non-terminal tasks: %w", err)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cancel non-terminal tasks rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
 // --- scan helpers ---
 
 type scanner interface {
@@ -1052,19 +1265,39 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 
 	task.State = model.TaskState(state)
 	task.ExecutorType = model.ExecutorType(executorType)
-	json.Unmarshal([]byte(inputsJSON), &task.Inputs)
-	json.Unmarshal([]byte(outputsJSON), &task.Outputs)
-	json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
-	json.Unmarshal([]byte(toolJSON), &task.Tool)
-	json.Unmarshal([]byte(jobJSON), &task.Job)
-	json.Unmarshal([]byte(runtimeHintsJSON), &task.RuntimeHints)
-	task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(outputsJSON, &task.Outputs, "outputs"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(dependsOnJSON, &task.DependsOn, "depends_on"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(toolJSON, &task.Tool, "tool"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(jobJSON, &task.Job, "job"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
+		return nil, err
+	}
+	if task.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+		return nil, err
+	}
 	if startedAt != nil {
-		t, _ := time.Parse(time.RFC3339Nano, *startedAt)
+		t, err := parseTimeOrZero(*startedAt)
+		if err != nil {
+			return nil, err
+		}
 		task.StartedAt = &t
 	}
 	if completedAt != nil {
-		t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+		t, err := parseTimeOrZero(*completedAt)
+		if err != nil {
+			return nil, err
+		}
 		task.CompletedAt = &t
 	}
 
@@ -1095,19 +1328,50 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 
 		task.State = model.TaskState(state)
 		task.ExecutorType = model.ExecutorType(executorType)
-		json.Unmarshal([]byte(inputsJSON), &task.Inputs)
-		json.Unmarshal([]byte(outputsJSON), &task.Outputs)
-		json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
-		json.Unmarshal([]byte(toolJSON), &task.Tool)
-		json.Unmarshal([]byte(jobJSON), &task.Job)
-		json.Unmarshal([]byte(runtimeHintsJSON), &task.RuntimeHints)
-		task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(outputsJSON, &task.Outputs, "outputs"); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(dependsOnJSON, &task.DependsOn, "depends_on"); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(toolJSON, &task.Tool, "tool"); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(jobJSON, &task.Job, "job"); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		}
+		if t, err := parseTimeOrZero(createdAt); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		} else {
+			task.CreatedAt = t
+		}
 		if startedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *startedAt)
+			t, err := parseTimeOrZero(*startedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+				continue
+			}
 			task.StartedAt = &t
 		}
 		if completedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			t, err := parseTimeOrZero(*completedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+				continue
+			}
 			task.CompletedAt = &t
 		}
 
@@ -1246,10 +1510,18 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	w.State = model.WorkerState(state)
 	w.Runtime = model.ContainerRuntime(runtime)
 	w.GPUEnabled = gpuEnabled != 0
-	json.Unmarshal([]byte(labelsJSON), &w.Labels)
-	json.Unmarshal([]byte(datasetsJSON), &w.Datasets)
-	w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
-	w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+	if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
+		return nil, err
+	}
+	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
+		return nil, err
+	}
+	if w.RegisteredAt, err = parseTimeOrZero(registeredAt); err != nil {
+		return nil, err
+	}
 
 	return &w, nil
 }
@@ -1328,10 +1600,26 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		w.State = model.WorkerState(state)
 		w.Runtime = model.ContainerRuntime(runtime)
 		w.GPUEnabled = gpuEnabled != 0
-		json.Unmarshal([]byte(labelsJSON), &w.Labels)
-		json.Unmarshal([]byte(datasetsJSON), &w.Datasets)
-		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
-		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+		if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		}
+		if t, err := parseTimeOrZero(lastSeen); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		} else {
+			w.LastSeen = t
+		}
+		if t, err := parseTimeOrZero(registeredAt); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		} else {
+			w.RegisteredAt = t
+		}
 
 		workers = append(workers, &w)
 	}
@@ -1391,19 +1679,50 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 
 		task.State = model.TaskState(stateStr)
 		task.ExecutorType = model.ExecutorType(executorType)
-		json.Unmarshal([]byte(inputsJSON), &task.Inputs)
-		json.Unmarshal([]byte(outputsJSON), &task.Outputs)
-		json.Unmarshal([]byte(dependsOnJSON), &task.DependsOn)
-		json.Unmarshal([]byte(toolJSON), &task.Tool)
-		json.Unmarshal([]byte(jobJSON), &task.Job)
-		json.Unmarshal([]byte(runtimeHintsJSON), &task.RuntimeHints)
-		task.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(outputsJSON, &task.Outputs, "outputs"); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(dependsOnJSON, &task.DependsOn, "depends_on"); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(toolJSON, &task.Tool, "tool"); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(jobJSON, &task.Job, "job"); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		}
+		if t, err := parseTimeOrZero(createdAt); err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			continue
+		} else {
+			task.CreatedAt = t
+		}
 		if startedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *startedAt)
+			t, err := parseTimeOrZero(*startedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+				continue
+			}
 			task.StartedAt = &t
 		}
 		if completedAt != nil {
-			t, _ := time.Parse(time.RFC3339Nano, *completedAt)
+			t, err := parseTimeOrZero(*completedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+				continue
+			}
 			task.CompletedAt = &t
 		}
 
@@ -1559,10 +1878,26 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 		w.State = model.WorkerState(state)
 		w.Runtime = model.ContainerRuntime(runtime)
 		w.GPUEnabled = gpuEnabled != 0
-		json.Unmarshal([]byte(labelsJSON), &w.Labels)
-		json.Unmarshal([]byte(datasetsJSON), &w.Datasets)
-		w.LastSeen, _ = time.Parse(time.RFC3339Nano, lastSeen)
-		w.RegisteredAt, _ = time.Parse(time.RFC3339Nano, registeredAt)
+		if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		}
+		if t, err := parseTimeOrZero(lastSeen); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		} else {
+			w.LastSeen = t
+		}
+		if t, err := parseTimeOrZero(registeredAt); err != nil {
+			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
+			continue
+		} else {
+			w.RegisteredAt = t
+		}
 		stale = append(stale, &w)
 	}
 	if err := rows.Err(); err != nil {

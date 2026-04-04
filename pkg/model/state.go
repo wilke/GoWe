@@ -1,5 +1,20 @@
 package model
 
+// canTransition checks whether transitioning from one state to another is valid
+// according to the provided transition map.
+func canTransition[S comparable](transitions map[S][]S, from, to S) bool {
+	allowed, ok := transitions[from]
+	if !ok {
+		return false
+	}
+	for _, s := range allowed {
+		if s == to {
+			return true
+		}
+	}
+	return false
+}
+
 // TaskState represents the lifecycle state of a Task.
 type TaskState string
 
@@ -42,12 +57,7 @@ var ValidTaskTransitions = map[TaskState][]TaskState{
 
 // CanTransitionTo returns true if moving from the current state to next is valid.
 func (s TaskState) CanTransitionTo(next TaskState) bool {
-	for _, allowed := range ValidTaskTransitions[s] {
-		if allowed == next {
-			return true
-		}
-	}
-	return false
+	return canTransition(ValidTaskTransitions, s, next)
 }
 
 // SubmissionState represents the lifecycle state of a Submission.
@@ -83,12 +93,7 @@ var ValidSubmissionTransitions = map[SubmissionState][]SubmissionState{
 
 // CanTransitionTo returns true if moving from the current state to next is valid.
 func (s SubmissionState) CanTransitionTo(next SubmissionState) bool {
-	for _, allowed := range ValidSubmissionTransitions[s] {
-		if allowed == next {
-			return true
-		}
-	}
-	return false
+	return canTransition(ValidSubmissionTransitions, s, next)
 }
 
 // ExecutorType identifies which executor backend runs a Task.

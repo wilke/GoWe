@@ -20,6 +20,9 @@ type Pagination struct {
 	HasMore bool `json:"has_more"`
 }
 
+// MaxListLimit is the maximum number of items a list endpoint will return per page.
+const MaxListLimit = 100
+
 // ListOptions configures list queries with pagination and filtering.
 type ListOptions struct {
 	Limit      int
@@ -39,13 +42,13 @@ func DefaultListOptions() ListOptions {
 	return ListOptions{Limit: 20, Offset: 0}
 }
 
-// Clamp enforces limits (max 100, min 1).
+// Clamp enforces limits (max MaxListLimit, min 1).
 func (o *ListOptions) Clamp() {
 	if o.Limit <= 0 {
 		o.Limit = 20
 	}
-	if o.Limit > 100 {
-		o.Limit = 100
+	if o.Limit > MaxListLimit {
+		o.Limit = MaxListLimit
 	}
 	if o.Offset < 0 {
 		o.Offset = 0

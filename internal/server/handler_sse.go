@@ -46,7 +46,10 @@ func (s *Server) handleSSESubmission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Poll for updates until submission is terminal or client disconnects.
-	ticker := time.NewTicker(2 * time.Second)
+	pollInterval := 2 * time.Second
+	maxInterval := 30 * time.Second
+
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	lastState := sub.State
@@ -60,10 +63,19 @@ func (s *Server) handleSSESubmission(w http.ResponseWriter, r *http.Request) {
 			sub, err = s.store.GetSubmission(r.Context(), id)
 			if err != nil {
 				s.logger.Error("sse fetch error", "id", id, "error", err)
+				// Exponential backoff on DB error.
+				pollInterval = min(pollInterval*2, maxInterval)
+				ticker.Reset(pollInterval)
 				continue
 			}
 			if sub == nil {
 				return
+			}
+
+			// Reset interval on success.
+			if pollInterval != 2*time.Second {
+				pollInterval = 2 * time.Second
+				ticker.Reset(pollInterval)
 			}
 
 			// Send update if state changed.

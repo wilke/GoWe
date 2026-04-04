@@ -1,0 +1,13 @@
+Test [207/378] secondary_files_missing: Test checking when secondaryFiles are missing
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpz9ple6b9 --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-missing-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Submission sub_24d07a49-3e55-4d65-82f4-da440fe9b103 failed [TASK_FAILED]
+  Error: step 'step1' task failed with exit code -1
+  Step:  step1
+  Task:  task_dd2aee4f-c5ac-4373-bd27-b4f282fa1440
+  Exit:  -1
+  Stderr:
+execute: process inputs: input "record_input.f1": missing required secondary file "A.s2" (pattern: .s2)
+Error: submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+All tests passed

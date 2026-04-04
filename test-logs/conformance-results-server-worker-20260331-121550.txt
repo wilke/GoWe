@@ -1,0 +1,17 @@
+Test [237/378] modify_file_content: inplace update has side effect on file content
+
+Test [238/378] modify_directory_content: inplace update has side effect on directory content
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvvsk6rr9 --quiet testdata/cwl-v1.2/tests/inp_update_wf.cwl testdata/cwl-v1.2/tests/empty.json
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2fwajxv1 --quiet testdata/cwl-v1.2/tests/inpdir_update_wf.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_bbaee0a6-4740-4a64-b3fb-cb34be46d2b0 failed [UNSUPPORTED_REQUIREMENT]
+  Error: InplaceUpdateRequirement is not supported in server execution mode
+  Step:  step2
+Error: InplaceUpdateRequirement is not supported in server execution mode
+InplaceUpdateRequirement is not supported in server execution mode
+Submission sub_63cbc6cf-d9e6-4203-8e50-9e955e0ddfa0 failed [UNSUPPORTED_REQUIREMENT]
+  Error: InplaceUpdateRequirement is not supported in server execution mode
+  Step:  step2
+Error: InplaceUpdateRequirement is not supported in server execution mode
+InplaceUpdateRequirement is not supported in server execution mode
+0 tests passed, 2 unsupported features

@@ -120,52 +120,40 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	// Create a StepInstance for each workflow step (3-level state architecture).
 	// StepInstances track step lifecycle; Tasks are created later by the scheduler
 	// when a step is dispatched.
+	stepInstances := make([]*model.StepInstance, 0, len(wf.Steps))
 	for _, step := range wf.Steps {
-		si := &model.StepInstance{
+		stepInstances = append(stepInstances, &model.StepInstance{
 			ID:           "si_" + uuid.New().String(),
 			SubmissionID: sub.ID,
 			StepID:       step.ID,
 			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
 			CreatedAt:    now,
-		}
-
-		if err := s.store.CreateStepInstance(r.Context(), si); err != nil {
-			respondError(w, reqID, http.StatusInternalServerError,
-				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-			return
-		}
+		})
 	}
-
-	s.logger.Info("submission created", "id", sub.ID, "workflow_id", wf.ID, "steps", len(wf.Steps))
-
-	// Re-read to include tasks in response.
-	full, err := s.store.GetSubmission(r.Context(), sub.ID)
-	if err != nil {
+	if err := s.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 		return
 	}
 
-	respondCreated(w, reqID, full)
+	s.logger.Info("submission created", "id", sub.ID, "workflow_id", wf.ID, "steps", len(wf.Steps))
+
+	// Tasks is empty for a newly created submission (tasks are created later
+	// by the scheduler), but set it to a non-nil slice for clean JSON output.
+	sub.Tasks = []model.Task{}
+
+	respondCreated(w, reqID, sub)
 }
 
 func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
 	opts := parseListOptions(r)
-	if dateStart := r.URL.Query().Get("date_start"); dateStart != "" {
-		opts.DateStart = dateStart
-	}
-	if dateEnd := r.URL.Query().Get("date_end"); dateEnd != "" {
-		opts.DateEnd = dateEnd
-	}
-	if wfFilter := r.URL.Query().Get("workflow_id"); wfFilter != "" {
+	if opts.WorkflowID != "" {
 		// Resolve workflow name to ID: try by ID first, fall back to name.
-		if wf, err := s.resolveWorkflow(r.Context(), wfFilter); err == nil && wf != nil {
+		if wf, err := s.resolveWorkflow(r.Context(), opts.WorkflowID); err == nil && wf != nil {
 			opts.WorkflowID = wf.ID
-		} else {
-			opts.WorkflowID = wfFilter // pass through; query will return 0 results
 		}
 	}
 
@@ -234,36 +222,16 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Cancel non-terminal step instances.
-	stepsCancelled := 0
-	steps, _ := s.store.ListStepsBySubmission(r.Context(), sub.ID)
-	for _, si := range steps {
-		if si.State == model.StepStateCompleted || si.State == model.StepStateFailed || si.State == model.StepStateSkipped {
-			continue
-		}
-		si.State = model.StepStateSkipped
-		si.CompletedAt = &now
-		if err := s.store.UpdateStepInstance(r.Context(), si); err != nil {
-			s.logger.Error("cancel step instance", "si_id", si.ID, "error", err)
-		}
-		stepsCancelled++
+	// Cancel all non-terminal step instances in a single UPDATE.
+	stepsCancelled, err := s.store.CancelNonTerminalSteps(r.Context(), sub.ID, now)
+	if err != nil {
+		s.logger.Error("cancel non-terminal steps", "submission_id", sub.ID, "error", err)
 	}
 
-	// Cancel non-terminal tasks.
-	tasksCancelled := 0
-	tasksAlreadyCompleted := 0
-	for i := range sub.Tasks {
-		t := &sub.Tasks[i]
-		if t.State.IsTerminal() {
-			tasksAlreadyCompleted++
-			continue
-		}
-		t.State = model.TaskStateSkipped
-		t.CompletedAt = &now
-		if err := s.store.UpdateTask(r.Context(), t); err != nil {
-			s.logger.Error("cancel task", "task_id", t.ID, "error", err)
-		}
-		tasksCancelled++
+	// Cancel all non-terminal tasks in a single UPDATE.
+	tasksCancelled, err := s.store.CancelNonTerminalTasks(r.Context(), sub.ID, now)
+	if err != nil {
+		s.logger.Error("cancel non-terminal tasks", "submission_id", sub.ID, "error", err)
 	}
 
 	respondOK(w, reqID, map[string]any{
@@ -271,7 +239,7 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 		"state":                   sub.State,
 		"steps_cancelled":         stepsCancelled,
 		"tasks_cancelled":         tasksCancelled,
-		"tasks_already_completed": tasksAlreadyCompleted,
+		"tasks_already_completed": max(0, len(sub.Tasks)-tasksCancelled),
 	})
 }
 

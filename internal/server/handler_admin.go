@@ -36,14 +36,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	total := len(filtered)
-	start := opts.Offset
-	if start > total {
-		start = total
-	}
-	end := start + opts.Limit
-	if end > total {
-		end = total
-	}
+	start, end := paginateBounds(total, opts.Offset, opts.Limit)
 	page := filtered[start:end]
 
 	respondList(w, reqID, page, &model.Pagination{

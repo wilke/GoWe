@@ -29,10 +29,12 @@ type Store interface {
 
 	// StepInstance operations
 	CreateStepInstance(ctx context.Context, si *model.StepInstance) error
+	BatchCreateStepInstances(ctx context.Context, steps []*model.StepInstance) error
 	GetStepInstance(ctx context.Context, id string) (*model.StepInstance, error)
 	UpdateStepInstance(ctx context.Context, si *model.StepInstance) error
 	ListStepsBySubmission(ctx context.Context, submissionID string) ([]*model.StepInstance, error)
 	ListStepsByState(ctx context.Context, state model.StepInstanceState) ([]*model.StepInstance, error)
+	CancelNonTerminalSteps(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
 
 	// Task operations
 	CreateTask(ctx context.Context, task *model.Task) error
@@ -42,6 +44,7 @@ type Store interface {
 	ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error)
 	UpdateTask(ctx context.Context, task *model.Task) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
+	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
 
 	// Session operations
 	CreateSession(ctx context.Context, sess *model.Session) error

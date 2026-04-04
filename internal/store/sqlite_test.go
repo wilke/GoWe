@@ -1051,3 +1051,251 @@ func TestCheckoutTask_CacheDatasetPreference(t *testing.T) {
 		t.Errorf("task id = %q, want %q", got.ID, task.ID)
 	}
 }
+
+// --- BatchCreateStepInstances tests ---
+
+func TestBatchCreateStepInstances(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	steps := []*model.StepInstance{
+		{
+			ID:            "si_batch-1",
+			SubmissionID:  sub.ID,
+			StepID:        "step1",
+			State:         model.StepStateWaiting,
+			ScatterCount:  2,
+			ScatterMethod: "dotproduct",
+			ScatterDims:   []int{3, 4},
+			Outputs:       map[string]any{"out": "val1"},
+			CreatedAt:     now,
+		},
+		{
+			ID:           "si_batch-2",
+			SubmissionID: sub.ID,
+			StepID:       "step2",
+			State:        model.StepStateWaiting,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		},
+		{
+			ID:           "si_batch-3",
+			SubmissionID: sub.ID,
+			StepID:       "step3",
+			State:        model.StepStateReady,
+			Outputs:      map[string]any{"x": 42.0},
+			CreatedAt:    now,
+		},
+	}
+
+	if err := st.BatchCreateStepInstances(ctx, steps); err != nil {
+		t.Fatalf("batch create: %v", err)
+	}
+
+	// Verify all rows were created.
+	got, err := st.ListStepsBySubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("row count = %d, want 3", len(got))
+	}
+
+	// Verify fields persisted correctly on the first step.
+	var si1 *model.StepInstance
+	for _, si := range got {
+		if si.ID == "si_batch-1" {
+			si1 = si
+			break
+		}
+	}
+	if si1 == nil {
+		t.Fatal("si_batch-1 not found")
+	}
+	if si1.StepID != "step1" {
+		t.Errorf("step_id = %q, want step1", si1.StepID)
+	}
+	if si1.State != model.StepStateWaiting {
+		t.Errorf("state = %q, want WAITING", si1.State)
+	}
+	if si1.ScatterCount != 2 {
+		t.Errorf("scatter_count = %d, want 2", si1.ScatterCount)
+	}
+	if si1.ScatterMethod != "dotproduct" {
+		t.Errorf("scatter_method = %q, want dotproduct", si1.ScatterMethod)
+	}
+	if len(si1.ScatterDims) != 2 || si1.ScatterDims[0] != 3 || si1.ScatterDims[1] != 4 {
+		t.Errorf("scatter_dims = %v, want [3,4]", si1.ScatterDims)
+	}
+	if si1.Outputs["out"] != "val1" {
+		t.Errorf("outputs = %v, want {out:val1}", si1.Outputs)
+	}
+}
+
+func TestBatchCreateStepInstances_Empty(t *testing.T) {
+	st := testStore(t)
+	if err := st.BatchCreateStepInstances(context.Background(), nil); err != nil {
+		t.Fatalf("empty batch should not error: %v", err)
+	}
+}
+
+// --- CancelNonTerminalSteps tests ---
+
+func TestCancelNonTerminalSteps(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	cancelTime := now.Add(time.Minute)
+
+	// Create steps in various states.
+	allStates := []struct {
+		id    string
+		state model.StepInstanceState
+	}{
+		{"si_waiting", model.StepStateWaiting},
+		{"si_ready", model.StepStateReady},
+		{"si_dispatched", model.StepStateDispatched},
+		{"si_running", model.StepStateRunning},
+		{"si_completed", model.StepStateCompleted},
+		{"si_failed", model.StepStateFailed},
+		{"si_skipped", model.StepStateSkipped},
+	}
+
+	for _, s := range allStates {
+		si := &model.StepInstance{
+			ID:           s.id,
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        s.state,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("create %s: %v", s.id, err)
+		}
+	}
+
+	cancelled, err := st.CancelNonTerminalSteps(ctx, sub.ID, cancelTime)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	// 4 non-terminal (WAITING, READY, DISPATCHED, RUNNING) should be cancelled.
+	if cancelled != 4 {
+		t.Errorf("cancelled = %d, want 4", cancelled)
+	}
+
+	// Verify terminal states are preserved.
+	steps, err := st.ListStepsBySubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	stateMap := map[string]model.StepInstanceState{}
+	for _, si := range steps {
+		stateMap[si.ID] = si.State
+	}
+
+	// Non-terminal should be SKIPPED now.
+	for _, id := range []string{"si_waiting", "si_ready", "si_dispatched", "si_running"} {
+		if stateMap[id] != model.StepStateSkipped {
+			t.Errorf("%s state = %q, want SKIPPED", id, stateMap[id])
+		}
+	}
+	// Terminal states should be unchanged.
+	if stateMap["si_completed"] != model.StepStateCompleted {
+		t.Errorf("si_completed state = %q, want COMPLETED", stateMap["si_completed"])
+	}
+	if stateMap["si_failed"] != model.StepStateFailed {
+		t.Errorf("si_failed state = %q, want FAILED", stateMap["si_failed"])
+	}
+	if stateMap["si_skipped"] != model.StepStateSkipped {
+		t.Errorf("si_skipped state = %q, want SKIPPED", stateMap["si_skipped"])
+	}
+}
+
+// --- CancelNonTerminalTasks tests ---
+
+func TestCancelNonTerminalTasks(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	cancelTime := now.Add(time.Minute)
+
+	// Create tasks in various states.
+	allStates := []struct {
+		id    string
+		state model.TaskState
+	}{
+		{"task_pending", model.TaskStatePending},
+		{"task_scheduled", model.TaskStateScheduled},
+		{"task_queued", model.TaskStateQueued},
+		{"task_running", model.TaskStateRunning},
+		{"task_success", model.TaskStateSuccess},
+		{"task_failed", model.TaskStateFailed},
+		{"task_skipped", model.TaskStateSkipped},
+	}
+
+	for _, s := range allStates {
+		task := sampleTask(sub.ID)
+		task.ID = s.id
+		task.State = s.state
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create %s: %v", s.id, err)
+		}
+	}
+
+	cancelled, err := st.CancelNonTerminalTasks(ctx, sub.ID, cancelTime)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	// 4 non-terminal (PENDING, SCHEDULED, QUEUED, RUNNING) should be cancelled.
+	if cancelled != 4 {
+		t.Errorf("cancelled = %d, want 4", cancelled)
+	}
+
+	// Verify terminal states are preserved.
+	tasks, err := st.ListTasksBySubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	stateMap := map[string]model.TaskState{}
+	for _, task := range tasks {
+		stateMap[task.ID] = task.State
+	}
+
+	// Non-terminal should be SKIPPED now.
+	for _, id := range []string{"task_pending", "task_scheduled", "task_queued", "task_running"} {
+		if stateMap[id] != model.TaskStateSkipped {
+			t.Errorf("%s state = %q, want SKIPPED", id, stateMap[id])
+		}
+	}
+	// Terminal states should be unchanged.
+	if stateMap["task_success"] != model.TaskStateSuccess {
+		t.Errorf("task_success state = %q, want SUCCESS", stateMap["task_success"])
+	}
+	if stateMap["task_failed"] != model.TaskStateFailed {
+		t.Errorf("task_failed state = %q, want FAILED", stateMap["task_failed"])
+	}
+	if stateMap["task_skipped"] != model.TaskStateSkipped {
+		t.Errorf("task_skipped state = %q, want SKIPPED", stateMap["task_skipped"])
+	}
+}
