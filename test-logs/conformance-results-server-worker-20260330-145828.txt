@@ -1,0 +1,410 @@
+Test [1/84] cl_basic_generation: General test of command line generation
+
+Test [2/84] nested_prefixes_arrays: Test nested prefixes with arrays
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpyz12rzod --quiet testdata/cwl-v1.2/tests/bwa-mem-tool.cwl testdata/cwl-v1.2/tests/bwa-mem-job.json
+Test [3/84] cl_optional_inputs_missing: Test command line with optional input (missing)
+
+Test [4/84] cl_optional_bindings_provided: Test command line with optional input (provided)
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpsyubaux5 --quiet testdata/cwl-v1.2/tests/binding-test.cwl testdata/cwl-v1.2/tests/bwa-mem-job.json
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpd0rz_rqy --quiet testdata/cwl-v1.2/tests/cat1-testcli.cwl testdata/cwl-v1.2/tests/cat-job.json
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpx_1sq5md --quiet testdata/cwl-v1.2/tests/cat1-testcli.cwl testdata/cwl-v1.2/tests/cat-n-job.json
+Error: create workflow: INTERNAL_ERROR: constraint failed: UNIQUE constraint failed: workflows.content_hash (2067)
+create workflow: INTERNAL_ERROR: constraint failed: UNIQUE constraint failed: workflows.content_hash (2067)
+Test 4 failed: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpx_1sq5md --quiet testdata/cwl-v1.2/tests/cat1-testcli.cwl testdata/cwl-v1.2/tests/cat-n-job.json
+Test command line with optional input (provided)
+Returned non-zero
+Test [5/84] stdinout_redirect_docker: Test command execution in Docker with stdin and stdout redirection
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2c_ls_a2 --quiet testdata/cwl-v1.2/tests/cat4-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test 1 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpyz12rzod --quiet testdata/cwl-v1.2/tests/bwa-mem-tool.cwl testdata/cwl-v1.2/tests/bwa-mem-job.json
+General test of command line generation
+Test [6/84] any_outputSource_compatibility: Testing Any type compatibility in outputSource
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpuhoxxcxg --quiet testdata/cwl-v1.2/tests/any-type-compat.cwl testdata/cwl-v1.2/tests/any-type-job.json
+Test 3 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpd0rz_rqy --quiet testdata/cwl-v1.2/tests/cat1-testcli.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test 2 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpsyubaux5 --quiet testdata/cwl-v1.2/tests/binding-test.cwl testdata/cwl-v1.2/tests/bwa-mem-job.json
+Test command line with optional input (missing)
+Test nested prefixes with arrays
+Test [7/84] stdinout_redirect: Test command execution in with stdin and stdout redirection
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpf5ws8_ti --quiet testdata/cwl-v1.2/tests/cat-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [8/84] wf_default_tool_default: Test that workflow defaults override tool defaults
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpq0bxczxt --quiet testdata/cwl-v1.2/tests/echo-wf-default.cwl testdata/cwl-v1.2/tests/empty.json
+Test 5 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2c_ls_a2 --quiet testdata/cwl-v1.2/tests/cat4-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test command execution in Docker with stdin and stdout redirection
+Test [9/84] any_input_param: Test Any type input parameter
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp03dzpafs --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [10/84] wf_simple: Test simple workflow
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfx4e9zd4 --quiet testdata/cwl-v1.2/tests/revsort.cwl testdata/cwl-v1.2/tests/revsort-job.json
+Test [11/84] hints_unknown_ignored: Test unknown hints are ignored.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpsj873w_y --quiet testdata/cwl-v1.2/tests/cat5-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [12/84] param_evaluation_noexpr: Test parameter evaluation, no support for JS expressions
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpitbi_60y --quiet testdata/cwl-v1.2/tests/params.cwl testdata/cwl-v1.2/tests/empty.json
+Test [13/84] metadata: Test metadata
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpiklp12n0 --quiet testdata/cwl-v1.2/tests/metadata.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [14/84] format_checking: Test simple format checking.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpsgsktrh2 --quiet testdata/cwl-v1.2/tests/formattest.cwl testdata/cwl-v1.2/tests/formattest-job.json
+Test [15/84] format_checking_subclass: Test format checking against ontology using subclassOf.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphjkxwikf --quiet testdata/cwl-v1.2/tests/formattest2.cwl testdata/cwl-v1.2/tests/formattest2-job.json
+Test 10 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfx4e9zd4 --quiet testdata/cwl-v1.2/tests/revsort.cwl testdata/cwl-v1.2/tests/revsort-job.json
+Test simple workflow
+Test [16/84] format_checking_equivalentclass: Test format checking against ontology using equivalentClass.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp5w13047q --quiet testdata/cwl-v1.2/tests/formattest3.cwl testdata/cwl-v1.2/tests/formattest2-job.json
+Test 11 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpsj873w_y --quiet testdata/cwl-v1.2/tests/cat5-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test unknown hints are ignored.
+Test [17/84] json_output_path_relative: Test support for reading cwl.output.json where 'path' is relative path in output dir.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2p0cdw3i --quiet testdata/cwl-v1.2/tests/test-cwl-out3.cwl testdata/cwl-v1.2/tests/empty.json
+Test 13 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpiklp12n0 --quiet testdata/cwl-v1.2/tests/metadata.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test metadata
+Test [18/84] json_output_location_relative: Test support for reading cwl.output.json where 'location' is relative reference to output dir.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp0lwtjhfp --quiet testdata/cwl-v1.2/tests/test-cwl-out4.cwl testdata/cwl-v1.2/tests/empty.json
+Test 15 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphjkxwikf --quiet testdata/cwl-v1.2/tests/formattest2.cwl testdata/cwl-v1.2/tests/formattest2-job.json
+Test format checking against ontology using subclassOf.
+Test [19/84] multiple_glob_expr_list: Test support for returning multiple glob patterns from expression
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmph9b68veh --quiet testdata/cwl-v1.2/tests/glob-expr-list.cwl testdata/cwl-v1.2/tests/abc.json
+Test 16 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp5w13047q --quiet testdata/cwl-v1.2/tests/formattest3.cwl testdata/cwl-v1.2/tests/formattest2-job.json
+Test format checking against ontology using equivalentClass.
+Test [20/84] wf_two_inputfiles_namecollision: Test workflow two input files with same name.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpogmhcxze --quiet testdata/cwl-v1.2/tests/conflict-wf.cwl#collision testdata/cwl-v1.2/tests/conflict-job.json
+Test 17 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2p0cdw3i --quiet testdata/cwl-v1.2/tests/test-cwl-out3.cwl testdata/cwl-v1.2/tests/empty.json
+Test support for reading cwl.output.json where 'path' is relative path in output dir.
+Test [21/84] directory_output: Test directory output
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpzsb96974 --quiet testdata/cwl-v1.2/tests/dir3.cwl testdata/cwl-v1.2/tests/dir3-job.yml
+Test 18 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp0lwtjhfp --quiet testdata/cwl-v1.2/tests/test-cwl-out4.cwl testdata/cwl-v1.2/tests/empty.json
+Test support for reading cwl.output.json where 'location' is relative reference to output dir.
+Test [22/84] input_file_literal: Test file literal as input
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpo9htod0i --quiet testdata/cwl-v1.2/tests/cat3-tool.cwl testdata/cwl-v1.2/tests/file-literal.yml
+Test 19 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmph9b68veh --quiet testdata/cwl-v1.2/tests/glob-expr-list.cwl testdata/cwl-v1.2/tests/abc.json
+Test support for returning multiple glob patterns from expression
+Test [23/84] nameroot_nameext_stdout_expr: Test nameroot/nameext expression in arguments, stdout
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpq_tpnaix --quiet testdata/cwl-v1.2/tests/nameroot.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test 20 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpogmhcxze --quiet 'testdata/cwl-v1.2/tests/conflict-wf.cwl#collision' testdata/cwl-v1.2/tests/conflict-job.json
+Test workflow two input files with same name.
+Test [24/84] cl_gen_arrayofarrays: Test command line generation of array-of-arrays
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpwsvi7irf --quiet testdata/cwl-v1.2/tests/nested-array.cwl testdata/cwl-v1.2/tests/nested-array-job.yml
+Test 21 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpzsb96974 --quiet testdata/cwl-v1.2/tests/dir3.cwl testdata/cwl-v1.2/tests/dir3-job.yml
+Test directory output
+Test [25/84] hints_import: Test hints with $import
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpw9v0ycee --quiet testdata/cwl-v1.2/tests/imported-hint.cwl testdata/cwl-v1.2/tests/empty.json
+Test 22 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpo9htod0i --quiet testdata/cwl-v1.2/tests/cat3-tool.cwl testdata/cwl-v1.2/tests/file-literal.yml
+Test file literal as input
+Test [26/84] default_path_notfound_warning: Test warning instead of error when default path is not found
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpgkht45gf --quiet testdata/cwl-v1.2/tests/default_path.cwl testdata/cwl-v1.2/tests/default_path_job.yml
+Test 23 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpq_tpnaix --quiet testdata/cwl-v1.2/tests/nameroot.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test nameroot/nameext expression in arguments, stdout
+Test [27/84] wf_compound_doc: Test compound workflow document
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp13mkgo4c --quiet testdata/cwl-v1.2/tests/revsort-packed.cwl#main testdata/cwl-v1.2/tests/revsort-job.json
+Test 24 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpwsvi7irf --quiet testdata/cwl-v1.2/tests/nested-array.cwl testdata/cwl-v1.2/tests/nested-array-job.yml
+Test command line generation of array-of-arrays
+Test [28/84] shelldir_notinterpreted: Test that shell directives are not interpreted.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpvfqda_qq --quiet testdata/cwl-v1.2/tests/shellchar.cwl testdata/cwl-v1.2/tests/empty.json
+Test 25 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpw9v0ycee --quiet testdata/cwl-v1.2/tests/imported-hint.cwl testdata/cwl-v1.2/tests/empty.json
+Test hints with $import
+Test [29/84] fileliteral_input_docker: Test file literal as input without Docker
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpi4txrra_ --quiet testdata/cwl-v1.2/tests/cat3-nodocker.cwl testdata/cwl-v1.2/tests/file-literal.yml
+Test 26 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpgkht45gf --quiet testdata/cwl-v1.2/tests/default_path.cwl testdata/cwl-v1.2/tests/default_path_job.yml
+Test warning instead of error when default path is not found
+Test [30/84] outputbinding_glob_sorted: Test that OutputBinding.glob is sorted as specified by POSIX
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfoz4hwv4 --quiet testdata/cwl-v1.2/tests/glob_test.cwl testdata/cwl-v1.2/tests/empty.json
+Test 27 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp13mkgo4c --quiet 'testdata/cwl-v1.2/tests/revsort-packed.cwl#main' testdata/cwl-v1.2/tests/revsort-job.json
+Test compound workflow document
+Test [31/84] booleanflags_cl_noinputbinding: Test that boolean flags do not appear on command line if inputBinding is empty and not null
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2hsragxo --quiet testdata/cwl-v1.2/tests/bool-empty-inputbinding.cwl testdata/cwl-v1.2/tests/bool-empty-inputbinding-job.json
+Test 28 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpvfqda_qq --quiet testdata/cwl-v1.2/tests/shellchar.cwl testdata/cwl-v1.2/tests/empty.json
+Test that shell directives are not interpreted.
+Test [32/84] expr_reference_self_noinput: Test that expression engine does not fail to evaluate reference to self with unprovided input
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpqc7f83mw --quiet testdata/cwl-v1.2/tests/stage-unprovided-file.cwl testdata/cwl-v1.2/tests/empty.json
+Test 29 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpi4txrra_ --quiet testdata/cwl-v1.2/tests/cat3-nodocker.cwl testdata/cwl-v1.2/tests/file-literal.yml
+Test file literal as input without Docker
+Test [33/84] success_codes: Test successCodes
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp0zxmgqdc --quiet testdata/cwl-v1.2/tests/exit-success.cwl testdata/cwl-v1.2/tests/empty.json
+Test 30 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfoz4hwv4 --quiet testdata/cwl-v1.2/tests/glob_test.cwl testdata/cwl-v1.2/tests/empty.json
+Test that OutputBinding.glob is sorted as specified by POSIX
+Test [34/84] cl_empty_array_input: Test that empty array input does not add anything to command line
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphl9sb1u4 --quiet testdata/cwl-v1.2/tests/empty-array-input.cwl testdata/cwl-v1.2/tests/empty-array-job.json
+Test 31 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2hsragxo --quiet testdata/cwl-v1.2/tests/bool-empty-inputbinding.cwl testdata/cwl-v1.2/tests/bool-empty-inputbinding-job.json
+Test that boolean flags do not appear on command line if inputBinding is empty and not null
+Test [35/84] valuefrom_constant_overrides_inputs: Test valueFrom with constant value overriding provided array inputs
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp9qxn4yti --quiet testdata/cwl-v1.2/tests/valueFrom-constant.cwl testdata/cwl-v1.2/tests/array-of-strings-job.yml
+Test 32 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpqc7f83mw --quiet testdata/cwl-v1.2/tests/stage-unprovided-file.cwl testdata/cwl-v1.2/tests/empty.json
+Test that expression engine does not fail to evaluate reference to self with unprovided input
+Test [36/84] wf_step_connect_undeclared_param: Test that it is not an error to connect a parameter to a workflow step, even if the parameter doesn't appear in the `run` process inputs.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp24la57ux --quiet testdata/cwl-v1.2/tests/pass-unconnected.cwl testdata/cwl-v1.2/tests/empty.json
+Test 33 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp0zxmgqdc --quiet testdata/cwl-v1.2/tests/exit-success.cwl testdata/cwl-v1.2/tests/empty.json
+Test successCodes
+Test [37/84] wf_step_access_undeclared_param: Test that parameters that don't appear in the `run` process inputs are not present in the input object used to run the tool.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp16xu_fwn --quiet testdata/cwl-v1.2/tests/fail-unconnected.cwl testdata/cwl-v1.2/tests/empty.json
+Test 34 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphl9sb1u4 --quiet testdata/cwl-v1.2/tests/empty-array-input.cwl testdata/cwl-v1.2/tests/empty-array-job.json
+Test that empty array input does not add anything to command line
+Test [38/84] any_without_defaults_unspecified_fails: Test Any without defaults, unspecified, should fail.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp6l7914lu --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/null-expression-echo-job.json
+Test 35 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp9qxn4yti --quiet testdata/cwl-v1.2/tests/valueFrom-constant.cwl testdata/cwl-v1.2/tests/array-of-strings-job.yml
+Test valueFrom with constant value overriding provided array inputs
+Test [39/84] any_without_defaults_specified_fails: Test Any without defaults, specified, should fail.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpda255tvr --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/null-expression1-job.json
+Test 36 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp24la57ux --quiet testdata/cwl-v1.2/tests/pass-unconnected.cwl testdata/cwl-v1.2/tests/empty.json
+Test 38 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp6l7914lu --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/null-expression-echo-job.json
+Test that it is not an error to connect a parameter to a workflow step, even if the parameter doesn't appear in the `run` process inputs.
+Test Any without defaults, unspecified, should fail.
+Test [40/84] step_input_default_value_noexp: Test default value on step input parameter, no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpa0n9o_9e --quiet testdata/cwl-v1.2/tests/count-lines9-wf-noET.cwl testdata/cwl-v1.2/tests/empty.json
+Test [41/84] step_input_default_value_overriden_noexp: Test default value on step input parameter overridden by provided source, no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpyanl64ip --quiet testdata/cwl-v1.2/tests/count-lines11-wf-noET.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test 37 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp16xu_fwn --quiet testdata/cwl-v1.2/tests/fail-unconnected.cwl testdata/cwl-v1.2/tests/empty.json
+Test that parameters that don't appear in the `run` process inputs are not present in the input object used to run the tool.
+Test [42/84] step_input_default_value_overriden_2nd_step_noexp: Test default value on step input parameter overridden by provided source. With passthrough first step and no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp5qo90doy --quiet testdata/cwl-v1.2/tests/count-lines11-extra-step-wf-noET.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test 39 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpda255tvr --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/null-expression1-job.json
+Test Any without defaults, specified, should fail.
+Test [43/84] step_input_default_value_overriden_2nd_step_null_noexp: Test default value on step input parameter overridden by provided source. With null producing first step and no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp25aclci1 --quiet testdata/cwl-v1.2/tests/count-lines11-null-step-wf-noET.cwl testdata/cwl-v1.2/tests/empty.json
+Test 42 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp5qo90doy --quiet testdata/cwl-v1.2/tests/count-lines11-extra-step-wf-noET.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test default value on step input parameter overridden by provided source. With passthrough first step and no ExpressionTool
+Test [44/84] stdin_from_directory_literal_with_local_file: Pipe to stdin from user provided local File via a Directory literal
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpv2teppw9 --quiet testdata/cwl-v1.2/tests/cat-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-job.yaml
+Test 40 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpa0n9o_9e --quiet testdata/cwl-v1.2/tests/count-lines9-wf-noET.cwl testdata/cwl-v1.2/tests/empty.json
+Test 41 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpyanl64ip --quiet testdata/cwl-v1.2/tests/count-lines11-wf-noET.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test default value on step input parameter, no ExpressionTool
+Test default value on step input parameter overridden by provided source, no ExpressionTool
+Test [45/84] stdin_from_directory_literal_with_literal_file: Pipe to stdin from literal File via a Directory literal
+
+Test [46/84] directory_literal_with_literal_file_nostdin: Test non-stdin reference to literal File via a Directory literal
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpv48qf2rg --quiet testdata/cwl-v1.2/tests/cat-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file.yaml
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpl5gdledv --quiet testdata/cwl-v1.2/tests/cat3-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file.yaml
+Test 43 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp25aclci1 --quiet testdata/cwl-v1.2/tests/count-lines11-null-step-wf-noET.cwl testdata/cwl-v1.2/tests/empty.json
+Test default value on step input parameter overridden by provided source. With null producing first step and no ExpressionTool
+Test [47/84] no_inputs_commandlinetool: Test CommandLineTool without inputs
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpqq3wxbc3 --quiet testdata/cwl-v1.2/tests/no-inputs-tool.cwl
+Test 44 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpv2teppw9 --quiet testdata/cwl-v1.2/tests/cat-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-job.yaml
+Pipe to stdin from user provided local File via a Directory literal
+Test [48/84] no_outputs_commandlinetool: Test CommandLineTool without outputs
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpw_7nmxnl --quiet testdata/cwl-v1.2/tests/no-outputs-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test 45 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpv48qf2rg --quiet testdata/cwl-v1.2/tests/cat-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file.yaml
+Pipe to stdin from literal File via a Directory literal
+Test 46 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpl5gdledv --quiet testdata/cwl-v1.2/tests/cat3-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file.yaml
+Test non-stdin reference to literal File via a Directory literal
+Test [49/84] no_inputs_workflow: Test Workflow without inputs
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpqiim8vdf --quiet testdata/cwl-v1.2/tests/no-inputs-wf.cwl
+Test [50/84] no_outputs_workflow: Test Workflow without outputs
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpxev8vlpx --quiet testdata/cwl-v1.2/tests/no-outputs-wf.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test 47 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpqq3wxbc3 --quiet testdata/cwl-v1.2/tests/no-inputs-tool.cwl
+Test CommandLineTool without inputs
+Test [51/84] anonymous_enum_in_array: Test an anonymous enum inside an array inside a record
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2ft84ik2 --quiet testdata/cwl-v1.2/tests/anon_enum_inside_array.cwl testdata/cwl-v1.2/tests/anon_enum_inside_array.yml
+Test 48 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpw_7nmxnl --quiet testdata/cwl-v1.2/tests/no-outputs-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test CommandLineTool without outputs
+Test [52/84] secondary_files_in_unnamed_records: Test secondaryFiles on anonymous record fields
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpx298g1uu --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test 49 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpqiim8vdf --quiet testdata/cwl-v1.2/tests/no-inputs-wf.cwl
+Test Workflow without inputs
+Test 50 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpxev8vlpx --quiet testdata/cwl-v1.2/tests/no-outputs-wf.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test Workflow without outputs
+Test [53/84] secondary_files_in_output_records: Test secondaryFiles on output record fields
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpd3m9milf --quiet testdata/cwl-v1.2/tests/record-out-secondaryFiles.cwl testdata/cwl-v1.2/tests/empty.json
+Test [54/84] secondary_files_workflow_propagation: Test secondaryFiles propagation through workflow
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp384i1p9m --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test 51 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp2ft84ik2 --quiet testdata/cwl-v1.2/tests/anon_enum_inside_array.cwl testdata/cwl-v1.2/tests/anon_enum_inside_array.yml
+Test an anonymous enum inside an array inside a record
+Test [55/84] secondary_files_missing: Test checking when secondaryFiles are missing
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpzzp00rui --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-missing-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test 52 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpx298g1uu --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test secondaryFiles on anonymous record fields
+Test [56/84] input_records_file_entry_with_format: Test format on anonymous record fields
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpjwaqgzz6 --quiet testdata/cwl-v1.2/tests/record-in-format.cwl testdata/cwl-v1.2/tests/record-format-job.yml
+Test 53 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpd3m9milf --quiet testdata/cwl-v1.2/tests/record-out-secondaryFiles.cwl testdata/cwl-v1.2/tests/empty.json
+Test secondaryFiles on output record fields
+Test 54 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp384i1p9m --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test secondaryFiles propagation through workflow
+Test [57/84] outputbinding_glob_directory: Test that OutputBinding.glob accepts Directories
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpigvmpfic --quiet testdata/cwl-v1.2/tests/glob_directory.cwl testdata/cwl-v1.2/tests/empty.json
+Test [58/84] inputBinding_position_expr: Test for expression in the InputBinding.position field; also test using emoji in CWL document and tool output
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp9n6ycche --quiet testdata/cwl-v1.2/tests/echo-position-expr.cwl testdata/cwl-v1.2/tests/echo-position-expr-job.yml
+Test 55 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpzzp00rui --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-missing-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test checking when secondaryFiles are missing
+Test [59/84] outputEval_exitCode: Can access exit code in outputEval
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpm_nrcwzw --quiet testdata/cwl-v1.2/tests/exitcode.cwl testdata/cwl-v1.2/tests/empty.json
+Test 56 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpjwaqgzz6 --quiet testdata/cwl-v1.2/tests/record-in-format.cwl testdata/cwl-v1.2/tests/record-format-job.yml
+Test format on anonymous record fields
+Test [60/84] any_input_param_graph_no_default: Test use of $graph without specifying which process to run
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpa7dg_y44 --quiet testdata/cwl-v1.2/tests/echo-tool-packed.cwl testdata/cwl-v1.2/tests/env-job.json
+Test 57 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpigvmpfic --quiet testdata/cwl-v1.2/tests/glob_directory.cwl testdata/cwl-v1.2/tests/empty.json
+Test that OutputBinding.glob accepts Directories
+Test 58 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp9n6ycche --quiet testdata/cwl-v1.2/tests/echo-position-expr.cwl testdata/cwl-v1.2/tests/echo-position-expr-job.yml
+Test for expression in the InputBinding.position field; also test using emoji in CWL document and tool output
+Test [61/84] any_input_param_graph_no_default_hashmain: Test use of $graph without specifying which process to run, hash-prefixed "main"
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpb2ko4x59 --quiet testdata/cwl-v1.2/tests/echo-tool-packed2.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [62/84] cat_synthetic_file: Test the generation of a synthetic file with inline contents.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpgyj9y43z --quiet testdata/cwl-v1.2/tests/synth-file.cwl testdata/cwl-v1.2/tests/synth-file-job.yml
+Test 59 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpm_nrcwzw --quiet testdata/cwl-v1.2/tests/exitcode.cwl testdata/cwl-v1.2/tests/empty.json
+Can access exit code in outputEval
+Test [63/84] cwloutput_nolimit: Test that loading from cwl.output.json isn't limited to 64k
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp62ub8hdx --quiet testdata/cwl-v1.2/tests/loadContents/cwloutput-nolimit.cwl
+Test 60 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpa7dg_y44 --quiet testdata/cwl-v1.2/tests/echo-tool-packed.cwl testdata/cwl-v1.2/tests/env-job.json
+Test use of $graph without specifying which process to run
+Test [64/84] loadcontents_limit: Test that loadContents on a file larger than 64k fails
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphvpsoxjo --quiet testdata/cwl-v1.2/tests/loadContents/loadContents-limit.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test 61 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpb2ko4x59 --quiet testdata/cwl-v1.2/tests/echo-tool-packed2.cwl testdata/cwl-v1.2/tests/env-job.json
+Test use of $graph without specifying which process to run, hash-prefixed "main"
+Test [65/84] params_broken_null: Test parameter reference that refers to null.something
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp3vgn96t5 --quiet testdata/cwl-v1.2/tests/params_broken_null.cwl testdata/cwl-v1.2/tests/empty.json
+Test 62 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpgyj9y43z --quiet testdata/cwl-v1.2/tests/synth-file.cwl testdata/cwl-v1.2/tests/synth-file-job.yml
+Test the generation of a synthetic file with inline contents.
+Test [66/84] length_for_non_array: Test parameter reference that refers to length of non-array input
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpb570l_07 --quiet testdata/cwl-v1.2/tests/params_broken_length_of_non_list.cwl testdata/cwl-v1.2/tests/empty.json
+Test 63 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp62ub8hdx --quiet testdata/cwl-v1.2/tests/loadContents/cwloutput-nolimit.cwl
+Test that loading from cwl.output.json isn't limited to 64k
+Test [67/84] user_defined_length_in_parameter_reference: Test 'length' in parameter reference where it does not refer to length of an array input
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfco7vy0l --quiet testdata/cwl-v1.2/tests/params_input_length_non_array.cwl testdata/cwl-v1.2/tests/length_non_array_input.yml
+Test 65 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp3vgn96t5 --quiet testdata/cwl-v1.2/tests/params_broken_null.cwl testdata/cwl-v1.2/tests/empty.json
+Test parameter reference that refers to null.something
+Test [68/84] directory_literal_with_literal_file_in_subdir_nostdin: Test non-stdin reference to literal File via a nested Directory literal
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpr03ffk67 --quiet testdata/cwl-v1.2/tests/cat4-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file-in-subdir.yaml
+Test 64 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphvpsoxjo --quiet testdata/cwl-v1.2/tests/loadContents/loadContents-limit.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test that loadContents on a file larger than 64k fails
+Test [69/84] colon_in_paths: Confirm that colons are tolerated in input paths, string values, stdout shortcut, and output file & directory names
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpah2gvfs0 --quiet testdata/cwl-v1.2/tests/colon:test.cwl testdata/cwl-v1.2/tests/colon:test:job.yaml
+Test 66 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpb570l_07 --quiet testdata/cwl-v1.2/tests/params_broken_length_of_non_list.cwl testdata/cwl-v1.2/tests/empty.json
+Test parameter reference that refers to length of non-array input
+Test [70/84] colon_in_output_path: Confirm that colons are tolerated in output directory names
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpv4v56k0_ --quiet testdata/cwl-v1.2/tests/colon_test_output.cwl testdata/cwl-v1.2/tests/colon_test_output_job.yaml
+Test 67 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfco7vy0l --quiet testdata/cwl-v1.2/tests/params_input_length_non_array.cwl testdata/cwl-v1.2/tests/length_non_array_input.yml
+Test 'length' in parameter reference where it does not refer to length of an array input
+Test [71/84] record_with_default: Confirm that records with defaults are accepted
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpe3e1r2z7 --quiet testdata/cwl-v1.2/tests/paramref_arguments_roundtrip.cwl
+Test 68 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpr03ffk67 --quiet testdata/cwl-v1.2/tests/cat4-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file-in-subdir.yaml
+Test non-stdin reference to literal File via a nested Directory literal
+Test [72/84] record_outputeval_nojs: Use of outputEval on a record itself, not the fields of the record (without javascript)
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpvpbqfc_b --quiet testdata/cwl-v1.2/tests/record_outputeval_nojs.cwl
+Test 69 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpah2gvfs0 --quiet testdata/cwl-v1.2/tests/colon:test.cwl testdata/cwl-v1.2/tests/colon:test:job.yaml
+Confirm that colons are tolerated in input paths, string values, stdout shortcut, and output file & directory names
+Test [73/84] runtime-outdir: Use of $(runtime.outdir) for outputBinding glob.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpf2uihx7z --quiet testdata/cwl-v1.2/tests/runtime-outdir.cwl
+Test 70 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpv4v56k0_ --quiet testdata/cwl-v1.2/tests/colon_test_output.cwl testdata/cwl-v1.2/tests/colon_test_output_job.yaml
+Confirm that colons are tolerated in output directory names
+Test [74/84] record_order_with_input_bindings: Test sorting arguments at each level (inputBinding for all levels)
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp_3fqvgx5 --quiet testdata/cwl-v1.2/tests/record-order.cwl testdata/cwl-v1.2/tests/record-order-job.json
+Test 71 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpe3e1r2z7 --quiet testdata/cwl-v1.2/tests/paramref_arguments_roundtrip.cwl
+Confirm that records with defaults are accepted
+Test [75/84] output_reference_workflow_input: Direct use of Workflow level input fields in the outputs.
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpfnd6qvqz --quiet testdata/cwl-v1.2/tests/output_reference_workflow_input.cwl
+Test [76/84] filename_with_hash_mark: Test for correct handling of URL-quoting in filename to refer to filename containing a hash mark
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp3mi8y5a5 --quiet testdata/cwl-v1.2/tests/cat-tool.cwl testdata/cwl-v1.2/tests/octo.yml
+Test 72 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpvpbqfc_b --quiet testdata/cwl-v1.2/tests/record_outputeval_nojs.cwl
+Use of outputEval on a record itself, not the fields of the record (without javascript)
+Test [77/84] capture_files: Test that a type error is raised if directories are returned by glob evaluation when type is File
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp1uucy7zy --quiet testdata/cwl-v1.2/tests/capture-files.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test 73 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpf2uihx7z --quiet testdata/cwl-v1.2/tests/runtime-outdir.cwl
+Use of $(runtime.outdir) for outputBinding glob.
+Test [78/84] capture_dirs: Test that a type error is raised if files are returned by glob evaluation when type is Directory
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpyd0bz2qr --quiet testdata/cwl-v1.2/tests/capture-dirs.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test 74 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp_3fqvgx5 --quiet testdata/cwl-v1.2/tests/record-order.cwl testdata/cwl-v1.2/tests/record-order-job.json
+Test sorting arguments at each level (inputBinding for all levels)
+Test [79/84] capture_files_and_dirs: Test that both files and directories are captured by glob evaluation when type is [Directory, File]
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpita0dsfw --quiet testdata/cwl-v1.2/tests/capture-files-and-dirs.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test 76 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp3mi8y5a5 --quiet testdata/cwl-v1.2/tests/cat-tool.cwl testdata/cwl-v1.2/tests/octo.yml
+Test for correct handling of URL-quoting in filename to refer to filename containing a hash mark
+Test [80/84] very_big_and_very_floats_nojs: Confirm that very big and very small numbers are represented using decimals, not scientific notation
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp_e2m834e --quiet testdata/cwl-v1.2/tests/floats_small_and_large_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Test 77 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp1uucy7zy --quiet testdata/cwl-v1.2/tests/capture-files.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test that a type error is raised if directories are returned by glob evaluation when type is File
+Test [81/84] nested_types: demonstrate usage of nested types
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpuba3me7e --quiet testdata/cwl-v1.2/tests/nested_types.cwl testdata/cwl-v1.2/tests/nested_types.yaml
+Test 78 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpyd0bz2qr --quiet testdata/cwl-v1.2/tests/capture-dirs.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test that a type error is raised if files are returned by glob evaluation when type is Directory
+Test [82/84] paramref_arguments_runtime: confirm that $runtime is available to parameter references in arguments
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphe9bcani --quiet testdata/cwl-v1.2/tests/paramref_arguments_runtime.cwl testdata/cwl-v1.2/tests/empty.json
+Test 79 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpita0dsfw --quiet testdata/cwl-v1.2/tests/capture-files-and-dirs.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test that both files and directories are captured by glob evaluation when type is [Directory, File]
+Test [83/84] paramref_arguments_self: confirm that $self is available and set to null in arguments
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmppi9gwj6_ --quiet testdata/cwl-v1.2/tests/paramref_arguments_self.cwl testdata/cwl-v1.2/tests/empty.json
+Test 80 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp_e2m834e --quiet testdata/cwl-v1.2/tests/floats_small_and_large_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Confirm that very big and very small numbers are represented using decimals, not scientific notation
+Test [84/84] paramref_arguments_inputs: confirm that $inputs is available to parameter references in arguments
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpomyjqt06 --quiet testdata/cwl-v1.2/tests/paramref_arguments_inputs.cwl testdata/cwl-v1.2/tests/empty.json
+Test 81 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpuba3me7e --quiet testdata/cwl-v1.2/tests/nested_types.cwl testdata/cwl-v1.2/tests/nested_types.yaml
+demonstrate usage of nested types
+Test 82 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmphe9bcani --quiet testdata/cwl-v1.2/tests/paramref_arguments_runtime.cwl testdata/cwl-v1.2/tests/empty.json
+confirm that $runtime is available to parameter references in arguments
+Test 83 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmppi9gwj6_ --quiet testdata/cwl-v1.2/tests/paramref_arguments_self.cwl testdata/cwl-v1.2/tests/empty.json
+confirm that $self is available and set to null in arguments
+Test 84 timed out: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmpomyjqt06 --quiet testdata/cwl-v1.2/tests/paramref_arguments_inputs.cwl testdata/cwl-v1.2/tests/empty.json
+confirm that $inputs is available to parameter references in arguments
+7 tests passed, 77 failures, 0 unsupported features

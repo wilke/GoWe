@@ -1,0 +1,4 @@
+Test [105/378] exprtool_directory_literal: Test directory literal output created by ExpressionTool
+
+Running: /tmp/gowe-test-worker-8094/wrapper.sh --outdir=/tmp/tmp4j8r1vm1 --quiet testdata/cwl-v1.2/tests/dir7.cwl testdata/cwl-v1.2/tests/dir7.yml
+All tests passed

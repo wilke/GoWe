@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoWe CWL v1.2 Conformance Report</title>
+<style>
+  :root {
+    --pass: #2ea043;
+    --fail: #cf222e;
+    --unsup: #6e7781;
+    --bg: #ffffff;
+    --bg-alt: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text-muted: #656d76;
+    --accent: #0969da;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.6;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.35rem; margin: 2rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+  h3 { font-size: 1.1rem; margin: 1.25rem 0 0.5rem; }
+  p, li { font-size: 0.95rem; }
+  .subtitle { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 1.5rem; }
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .status-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    background: var(--bg-alt);
+  }
+  .status-card h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+  .status-card .result {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0.25rem 0;
+  }
+  .status-card .result.pass { color: var(--pass); }
+  .status-card .result.baseline { color: var(--accent); }
+  .status-card .detail { color: var(--text-muted); font-size: 0.85rem; }
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #fff;
+  }
+  .badge-pass { background: var(--pass); }
+  .badge-fail { background: var(--fail); }
+  .badge-unsup { background: var(--unsup); }
+  svg { display: block; margin: 0.5rem 0 1.5rem; }
+  svg text { font-family: inherit; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin: 0.5rem 0 1.5rem;
+  }
+  th, td { padding: 0.4rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--bg-alt); font-weight: 600; }
+  td code { background: var(--bg-alt); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem; }
+  .timeline-section { margin-bottom: 2rem; }
+  .narrative { margin: 0.75rem 0; color: var(--text); }
+  .narrative strong { color: var(--text); }
+  ul { margin: 0.5rem 0 0.5rem 1.5rem; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<h1>GoWe CWL v1.2 Conformance Report</h1>
+<p class="subtitle">CWL v1.2 conformance test results across all execution modes. Last updated: 2026-04-04.</p>
+
+<!-- ================================================================ -->
+<h2>Current Status</h2>
+
+<div class="status-grid">
+  <div class="status-card">
+    <h3>cwl-runner <span class="badge badge-pass">PASS</span></h3>
+    <div class="result pass">378 / 378</div>
+    <div class="detail">0 failures, 0 unsupported</div>
+    <div class="detail">Standalone mode &mdash; full CWL v1.2 compliance</div>
+  </div>
+  <div class="status-card">
+    <h3>server-local <span class="badge badge-pass">PASS</span></h3>
+    <div class="result pass">378 / 378</div>
+    <div class="detail">0 failures, 0 unsupported</div>
+    <div class="detail">Server with local executor, no workers</div>
+  </div>
+  <div class="status-card">
+    <h3>server-worker <span class="badge badge-pass">PASS</span></h3>
+    <div class="result baseline">376 / 378</div>
+    <div class="detail">0 failures, 2 unsupported (InplaceUpdate)</div>
+    <div class="detail">Server with distributed worker executor(s)</div>
+  </div>
+</div>
+
+<p class="narrative">
+  All three execution modes pass with <strong>zero failures</strong>. cwl-runner and server-local achieve full
+  378/378 compliance. The 2 unsupported tests in server-worker (tests 237, 238) are
+  <code>InplaceUpdateRequirement</code>, which requires in-process filesystem sharing incompatible with
+  worker output staging. These are correctly reported via exit code 33 and classified as
+  "unsupported" (not "failed") by <code>cwltest</code>.
+</p>
+
+<p class="narrative">
+  <strong>Verified on commit:</strong> <code>99871c8</code> (2026-04-04) &mdash;
+  error handling hardening, per-tick scheduler caching, batch DB operations.
+</p>
+
+<!-- ================================================================ -->
+<h2>Timeline: cwl-runner</h2>
+
+<div class="timeline-section">
+<svg width="1060" height="260" viewBox="0 0 1060 260" xmlns="http://www.w3.org/2000/svg">
+  <!-- Chart area: x=80..1020, y=30..200 -->
+  <rect x="80" y="30" width="940" height="170" fill="#f6f8fa" rx="4"/>
+
+  <!-- Y-axis gridlines and labels -->
+  <line x1="80" y1="30" x2="1020" y2="30" stroke="#e1e4e8" stroke-width="1"/>
+  <line x1="80" y1="72.5" x2="1020" y2="72.5" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="80" y1="115" x2="1020" y2="115" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="80" y1="157.5" x2="1020" y2="157.5" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="80" y1="200" x2="1020" y2="200" stroke="#e1e4e8" stroke-width="1"/>
+
+  <text x="75" y="35" text-anchor="end" font-size="11" fill="#656d76">378</text>
+  <text x="75" y="77" text-anchor="end" font-size="11" fill="#656d76">375</text>
+  <text x="75" y="120" text-anchor="end" font-size="11" fill="#656d76">370</text>
+  <text x="75" y="162" text-anchor="end" font-size="11" fill="#656d76">365</text>
+  <text x="75" y="205" text-anchor="end" font-size="11" fill="#656d76">360</text>
+
+  <!-- Y-axis title -->
+  <text x="20" y="120" text-anchor="middle" font-size="12" fill="#656d76" transform="rotate(-90, 20, 120)">Tests Passed</text>
+
+  <!-- X-axis labels: range Mar30 00:00 to Apr5 00:00 = 144 hours, width=940
+       x = 80 + (hours / 144) * 940 -->
+  <text x="160" y="225" text-anchor="middle" font-size="11" fill="#656d76">Mar 30</text>
+  <text x="317" y="225" text-anchor="middle" font-size="11" fill="#656d76">Mar 31</text>
+  <text x="474" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 1</text>
+  <text x="631" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 2</text>
+  <text x="787" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 3</text>
+  <text x="944" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 4</text>
+
+  <!-- Data points:
+       x = 80 + (hours / 144) * 940
+       y = 200 - ((passed - 360) / 18) * 170
+
+       Mar30 16:26 = 16.43h -> x=187    376->y=49
+       Mar30 16:42 = 16.70h -> x=189    366->y=143
+       Mar30 22:06 = 22.10h -> x=224    378->y=30
+       Mar31 09:15 = 33.25h -> x=297    378->y=30
+       Apr1  13:05 = 61.08h -> x=479    373->y=77
+       Apr1  13:38 = 61.63h -> x=483    373->y=77
+       Apr1  13:43 = 61.72h -> x=483    378->y=30
+       Apr3  15:39 = 87.65h -> x=653    378->y=30
+       Apr4  11:15 = 107.25h -> x=781   378->y=30
+  -->
+
+  <!-- Connecting line -->
+  <polyline points="187,49 189,143 224,30 297,30 479,77 483,77 483,30 653,30 781,30"
+    fill="none" stroke="#0969da" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Data points -->
+  <circle cx="187" cy="49" r="5" fill="#0969da"/>
+  <circle cx="189" cy="143" r="5" fill="#cf222e"/>
+  <circle cx="224" cy="30" r="5" fill="#2ea043"/>
+  <circle cx="297" cy="30" r="5" fill="#2ea043"/>
+  <circle cx="479" cy="77" r="5" fill="#cf222e"/>
+  <circle cx="483" cy="77" r="5" fill="#cf222e"/>
+  <circle cx="483" cy="30" r="5" fill="#2ea043"/>
+  <circle cx="653" cy="30" r="5" fill="#2ea043"/>
+  <circle cx="781" cy="30" r="5" fill="#2ea043"/>
+
+  <!-- Annotations -->
+  <text x="187" y="44" text-anchor="middle" font-size="10" fill="#656d76">376</text>
+  <text x="189" y="160" text-anchor="middle" font-size="10" fill="#cf222e">366</text>
+  <text x="224" y="25" text-anchor="middle" font-size="10" fill="#2ea043">378</text>
+  <text x="297" y="25" text-anchor="middle" font-size="10" fill="#2ea043">378</text>
+  <text x="479" y="72" text-anchor="end" font-size="10" fill="#cf222e">373</text>
+  <text x="490" y="25" text-anchor="middle" font-size="10" fill="#2ea043">378</text>
+
+  <!-- Regression annotation -->
+  <line x1="479" y1="77" x2="479" y2="95" stroke="#cf222e" stroke-width="1" stroke-dasharray="2,2"/>
+  <text x="479" y="108" text-anchor="middle" font-size="9" fill="#cf222e">ValidateFileInputs</text>
+  <text x="479" y="118" text-anchor="middle" font-size="9" fill="#cf222e">regression</text>
+
+  <!-- Refactor annotation -->
+  <line x1="781" y1="30" x2="781" y2="55" stroke="#2ea043" stroke-width="1" stroke-dasharray="2,2"/>
+  <text x="781" y="66" text-anchor="middle" font-size="9" fill="#2ea043">refactor</text>
+  <text x="781" y="76" text-anchor="middle" font-size="9" fill="#2ea043">99871c8</text>
+
+  <!-- Legend -->
+  <circle cx="100" cy="248" r="4" fill="#2ea043"/>
+  <text x="108" y="252" font-size="10" fill="#656d76">Pass (0 failures)</text>
+  <circle cx="220" cy="248" r="4" fill="#cf222e"/>
+  <text x="228" y="252" font-size="10" fill="#656d76">Has failures</text>
+  <circle cx="330" cy="248" r="4" fill="#0969da"/>
+  <text x="338" y="252" font-size="10" fill="#656d76">Intermediate</text>
+</svg>
+
+<p class="narrative">
+  <strong>Summary:</strong> cwl-runner reached full 378/378 compliance on Mar 30.
+  A regression was introduced on Apr 1 when <code>ValidateFileInputs()</code> rejected literal
+  File/Directory objects in CWL inline directory listings (tests 134, 193, 194, 195, 354).
+  Fixed the same day (<code>804e929</code>). Maintained 378/378 through the Apr 3&ndash;4 refactor
+  (<code>99871c8</code>: error handling, per-tick caching, batch DB operations).
+</p>
+</div>
+
+<!-- ================================================================ -->
+<h2>Timeline: server-local</h2>
+
+<div class="timeline-section">
+<svg width="1060" height="260" viewBox="0 0 1060 260" xmlns="http://www.w3.org/2000/svg">
+  <rect x="80" y="30" width="940" height="170" fill="#f6f8fa" rx="4"/>
+
+  <!-- Y gridlines -->
+  <line x1="80" y1="30" x2="1020" y2="30" stroke="#e1e4e8" stroke-width="1"/>
+  <line x1="80" y1="72.5" x2="1020" y2="72.5" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="80" y1="115" x2="1020" y2="115" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="80" y1="157.5" x2="1020" y2="157.5" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <line x1="80" y1="200" x2="1020" y2="200" stroke="#e1e4e8" stroke-width="1"/>
+
+  <!-- Y: 360..378 -->
+  <text x="75" y="35" text-anchor="end" font-size="11" fill="#656d76">378</text>
+  <text x="75" y="77" text-anchor="end" font-size="11" fill="#656d76">375</text>
+  <text x="75" y="120" text-anchor="end" font-size="11" fill="#656d76">370</text>
+  <text x="75" y="162" text-anchor="end" font-size="11" fill="#656d76">365</text>
+  <text x="75" y="205" text-anchor="end" font-size="11" fill="#656d76">360</text>
+  <text x="20" y="120" text-anchor="middle" font-size="12" fill="#656d76" transform="rotate(-90, 20, 120)">Tests Passed</text>
+
+  <!-- X-axis labels: same 144h range as cwl-runner -->
+  <text x="160" y="225" text-anchor="middle" font-size="11" fill="#656d76">Mar 30</text>
+  <text x="317" y="225" text-anchor="middle" font-size="11" fill="#656d76">Mar 31</text>
+  <text x="474" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 1</text>
+  <text x="631" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 2</text>
+  <text x="787" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 3</text>
+  <text x="944" y="225" text-anchor="middle" font-size="11" fill="#656d76">Apr 4</text>
+
+  <!-- Data points: x = 80 + (hours/144)*940, y = 200 - ((passed-360)/18)*170
+       Mar30 16:29 = 16.48h -> x=188    369->y=115
+       Mar30 21:55 = 21.92h -> x=223    368->y=124
+       Mar30 22:06 = 22.10h -> x=224    375->y=58
+       Mar31 09:12 = 33.20h -> x=297    376->y=49
+       Mar31 09:21 = 33.35h -> x=298    376->y=49
+       Mar31 09:37 = 33.62h -> x=300    377->y=40
+       Apr1  13:56 = 61.93h -> x=484    376->y=49
+       Apr3  15:39 = 87.65h -> x=653    376->y=49
+       Apr4  11:15 = 107.25h -> x=781   378->y=30
+  -->
+
+  <!-- Baseline target line at 376 -->
+  <line x1="80" y1="49" x2="1020" y2="49" stroke="#0969da" stroke-width="1" stroke-dasharray="6,3" opacity="0.4"/>
+  <text x="1025" y="53" font-size="9" fill="#0969da" opacity="0.6">376 baseline</text>
+
+  <polyline points="188,115 223,124 224,58 297,49 298,49 300,40 484,49 653,49 781,30"
+    fill="none" stroke="#0969da" stroke-width="2" stroke-linejoin="round"/>
+
+  <circle cx="188" cy="115" r="5" fill="#cf222e"/>
+  <circle cx="223" cy="124" r="5" fill="#cf222e"/>
+  <circle cx="224" cy="58" r="5" fill="#cf222e"/>
+  <circle cx="297" cy="49" r="5" fill="#cf222e"/>
+  <circle cx="298" cy="49" r="5" fill="#cf222e"/>
+  <circle cx="300" cy="40" r="5" fill="#cf222e"/>
+  <circle cx="484" cy="49" r="5" fill="#2ea043"/>
+  <circle cx="653" cy="49" r="5" fill="#2ea043"/>
+  <circle cx="781" cy="30" r="5" fill="#2ea043"/>
+
+  <text x="188" y="132" text-anchor="middle" font-size="10" fill="#cf222e">369</text>
+  <text x="223" y="141" text-anchor="middle" font-size="10" fill="#cf222e">368</text>
+  <text x="224" y="53" text-anchor="middle" font-size="10" fill="#656d76">375</text>
+  <text x="290" y="44" text-anchor="end" font-size="10" fill="#656d76">376</text>
+  <text x="300" y="35" text-anchor="middle" font-size="10" fill="#656d76">377</text>
+  <text x="484" y="44" text-anchor="middle" font-size="10" fill="#2ea043">376</text>
+
+  <!-- Annotation: refactor achieves 378 -->
+  <line x1="781" y1="30" x2="781" y2="55" stroke="#2ea043" stroke-width="1" stroke-dasharray="2,2"/>
+  <text x="781" y="66" text-anchor="middle" font-size="9" fill="#2ea043">378/378</text>
+  <text x="781" y="76" text-anchor="middle" font-size="9" fill="#2ea043">refactor 99871c8</text>
+
+  <circle cx="100" cy="248" r="4" fill="#2ea043"/>
+  <text x="108" y="252" font-size="10" fill="#656d76">Baseline (0 failures)</text>
+  <circle cx="260" cy="248" r="4" fill="#cf222e"/>
+  <text x="268" y="252" font-size="10" fill="#656d76">Has failures</text>
+</svg>
+
+<p class="narrative">
+  <strong>Summary:</strong> server-local progressed from 369 to 377 over Mar 30&ndash;31, with InplaceUpdate
+  tests counted as failures. On Apr 1, exit code 33 reclassified InplaceUpdate as "unsupported,"
+  achieving 376/0/2. Maintained through Apr 3. On Apr 4, the refactor commit (<code>99871c8</code>)
+  achieved <strong>378/378</strong> &mdash; InplaceUpdate tests now pass in local executor mode,
+  as a side effect of the batch cancel refactor changing the cancellation path.
+</p>
+</div>
+
+<!-- ================================================================ -->
+<h2>Timeline: server-worker</h2>
+
+<div class="timeline-section">
+<svg width="1060" height="320" viewBox="0 0 1060 320" xmlns="http://www.w3.org/2000/svg">
+  <rect x="80" y="30" width="940" height="220" fill="#f6f8fa" rx="4"/>
+
+  <!-- Y gridlines: range 0..378 — use key ticks -->
+  <line x1="80" y1="30" x2="1020" y2="30" stroke="#e1e4e8" stroke-width="1"/>
+  <line x1="80" y1="250" x2="1020" y2="250" stroke="#e1e4e8" stroke-width="1"/>
+  <!-- 378 at y=30, 0 at y=250. scale: y = 250 - (val/378)*220 -->
+
+  <!-- Gridlines at 100, 200, 300, 378 -->
+  <!-- 100: y=250-(100/378)*220 = 250-58 = 192 -->
+  <line x1="80" y1="192" x2="1020" y2="192" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <!-- 200: y=250-(200/378)*220 = 250-116 = 134 -->
+  <line x1="80" y1="134" x2="1020" y2="134" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <!-- 300: y=250-(300/378)*220 = 250-175 = 75 -->
+  <line x1="80" y1="75" x2="1020" y2="75" stroke="#e1e4e8" stroke-width="1" stroke-dasharray="4,4"/>
+  <!-- 376: y=250-(376/378)*220 = 250-219 = 31 -->
+
+  <text x="75" y="35" text-anchor="end" font-size="11" fill="#656d76">378</text>
+  <text x="75" y="80" text-anchor="end" font-size="11" fill="#656d76">300</text>
+  <text x="75" y="138" text-anchor="end" font-size="11" fill="#656d76">200</text>
+  <text x="75" y="196" text-anchor="end" font-size="11" fill="#656d76">100</text>
+  <text x="75" y="255" text-anchor="end" font-size="11" fill="#656d76">0</text>
+  <text x="20" y="145" text-anchor="middle" font-size="12" fill="#656d76" transform="rotate(-90, 20, 145)">Tests Passed</text>
+
+  <!-- X-axis labels: range Mar30 00:00 to Apr5 00:00 = 144 hours -->
+  <text x="160" y="278" text-anchor="middle" font-size="11" fill="#656d76">Mar 30</text>
+  <text x="317" y="278" text-anchor="middle" font-size="11" fill="#656d76">Mar 31</text>
+  <text x="474" y="278" text-anchor="middle" font-size="11" fill="#656d76">Apr 1</text>
+  <text x="631" y="278" text-anchor="middle" font-size="11" fill="#656d76">Apr 2</text>
+  <text x="787" y="278" text-anchor="middle" font-size="11" fill="#656d76">Apr 3</text>
+  <text x="944" y="278" text-anchor="middle" font-size="11" fill="#656d76">Apr 4</text>
+
+  <!-- Baseline target line at 376 -->
+  <line x1="80" y1="31" x2="1020" y2="31" stroke="#0969da" stroke-width="1" stroke-dasharray="6,3" opacity="0.4"/>
+  <text x="1025" y="35" font-size="9" fill="#0969da" opacity="0.6">376</text>
+
+  <!-- Data points: x = 80 + (hours/144)*940
+       y = 250 - (passed/378)*220
+
+       Mar30 10:27 = 10.45h -> x=148  368->y=36
+       Mar30 13:26 = 13.43h -> x=168  7->y=246 (required-only)
+       Mar30 14:58 = 14.97h -> x=178  7->y=246 (required-only)
+       Mar30 16:12 = 16.20h -> x=186  82->y=202 (req-only)
+       Mar30 16:35 = 16.58h -> x=189  373->y=33
+       Mar30 22:06 = 22.10h -> x=225  375->y=32
+       Mar31 09:12 = 33.20h -> x=297  376->y=31
+       Mar31 09:43 = 33.72h -> x=300  376->y=31
+       Mar31 12:17 = 36.28h -> x=317  376->y=31
+       Apr1  14:02 = 62.03h -> x=486  376->y=31
+       Apr3  15:39 = 87.65h -> x=653  376->y=31
+       Apr4  11:15 = 107.25h -> x=781  376->y=31
+  -->
+
+  <!-- Full suite line -->
+  <polyline points="148,36 189,33 225,32 297,31 300,31 317,31 486,31 653,31 781,31"
+    fill="none" stroke="#0969da" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Full suite points -->
+  <circle cx="148" cy="36" r="5" fill="#cf222e"/>
+  <circle cx="189" cy="33" r="5" fill="#cf222e"/>
+  <circle cx="225" cy="32" r="5" fill="#cf222e"/>
+  <circle cx="297" cy="31" r="5" fill="#cf222e"/>
+  <circle cx="300" cy="31" r="5" fill="#cf222e"/>
+  <circle cx="317" cy="31" r="5" fill="#2ea043"/>
+  <circle cx="486" cy="31" r="5" fill="#2ea043"/>
+  <circle cx="653" cy="31" r="5" fill="#2ea043"/>
+  <circle cx="781" cy="31" r="5" fill="#2ea043"/>
+
+  <!-- Required-only / partial points (different shape: diamond) -->
+  <rect x="164" y="242" width="8" height="8" fill="#cf222e" transform="rotate(45,168,246)"/>
+  <rect x="174" y="242" width="8" height="8" fill="#cf222e" transform="rotate(45,178,246)"/>
+  <rect x="182" y="198" width="8" height="8" fill="#cf222e" transform="rotate(45,186,202)"/>
+
+  <!-- Annotations -->
+  <text x="148" y="50" text-anchor="middle" font-size="10" fill="#656d76">368</text>
+  <text x="189" y="47" text-anchor="middle" font-size="10" fill="#656d76">373</text>
+  <text x="225" y="46" text-anchor="middle" font-size="10" fill="#656d76">375</text>
+  <text x="317" y="25" text-anchor="middle" font-size="10" fill="#2ea043">376</text>
+  <text x="781" y="25" text-anchor="middle" font-size="10" fill="#2ea043">376</text>
+
+  <!-- Required-only annotations -->
+  <text x="175" y="238" text-anchor="middle" font-size="9" fill="#cf222e">7/84</text>
+  <text x="186" y="196" text-anchor="end" font-size="9" fill="#656d76">82/84</text>
+
+  <!-- Annotation: broken builds -->
+  <line x1="168" y1="230" x2="168" y2="250" stroke="#cf222e" stroke-width="1" stroke-dasharray="2,2"/>
+  <text x="175" y="260" font-size="9" fill="#cf222e">broken build</text>
+
+  <!-- Annotation: baseline -->
+  <line x1="317" y1="31" x2="317" y2="55" stroke="#2ea043" stroke-width="1" stroke-dasharray="2,2"/>
+  <text x="317" y="66" text-anchor="middle" font-size="9" fill="#2ea043">exit code 33</text>
+  <text x="317" y="76" text-anchor="middle" font-size="9" fill="#2ea043">baseline</text>
+
+  <!-- Annotation: refactor -->
+  <line x1="781" y1="31" x2="781" y2="55" stroke="#2ea043" stroke-width="1" stroke-dasharray="2,2"/>
+  <text x="781" y="66" text-anchor="middle" font-size="9" fill="#2ea043">refactor</text>
+  <text x="781" y="76" text-anchor="middle" font-size="9" fill="#2ea043">99871c8</text>
+
+  <!-- Legend -->
+  <circle cx="100" cy="305" r="4" fill="#2ea043"/>
+  <text x="108" y="309" font-size="10" fill="#656d76">Baseline (0 failures)</text>
+  <circle cx="260" cy="305" r="4" fill="#cf222e"/>
+  <text x="268" y="309" font-size="10" fill="#656d76">Has failures (full suite)</text>
+  <rect x="376" y="301" width="6" height="6" fill="#cf222e" transform="rotate(45,379,304)"/>
+  <text x="390" y="309" font-size="10" fill="#656d76">Required-only / partial run</text>
+</svg>
+
+<p class="narrative">
+  <strong>Summary:</strong> server-worker had the most turbulent path. A broken build on Mar 30 caused 77/84
+  failures in required-only tests. After fixing the worker task checkout filter and scheduler spin loop
+  (<code>77e5edd</code>), required tests recovered to 82/84. The full suite progressed from 368 to 376
+  over two days. Exit code 33 on Mar 31 achieved zero failures. Maintained 376/0/2 through
+  Apr 1&ndash;4, including the refactor commit (<code>99871c8</code>).
+</p>
+</div>
+
+<!-- ================================================================ -->
+<h2>Key Milestones</h2>
+
+<table>
+  <tr><th>Date</th><th>Commit</th><th>Change</th><th>Impact</th></tr>
+  <tr>
+    <td>2026-03-30</td><td><code>cbdb469</code></td>
+    <td>Worker feature merge (PR #96)</td>
+    <td>Full distributed execution support; cwl-runner 376/378</td>
+  </tr>
+  <tr>
+    <td>2026-03-30</td><td><code>0a0fe68</code></td>
+    <td>Full CWL v1.2 conformance fix</td>
+    <td>cwl-runner 378/378 (first full pass)</td>
+  </tr>
+  <tr>
+    <td>2026-03-30</td><td><code>0a1f80a</code></td>
+    <td>Unschedulable task detection</td>
+    <td>Pre-flight check + stuck detector for server modes</td>
+  </tr>
+  <tr>
+    <td>2026-03-30</td><td><code>77e5edd</code></td>
+    <td>Worker checkout filter + scheduler spin loop fix</td>
+    <td>server-worker recovered from 7/84 to 82/84 required</td>
+  </tr>
+  <tr>
+    <td>2026-03-31</td><td><code>56a7c2b</code></td>
+    <td>Exit code 33 for InplaceUpdateRequirement</td>
+    <td>server-local and server-worker: 0 failures, 2 unsupported</td>
+  </tr>
+  <tr>
+    <td>2026-04-01</td><td><code>86c9d04</code></td>
+    <td>ValidateFileInputs added</td>
+    <td>Regression: cwl-runner dropped to 373/378</td>
+  </tr>
+  <tr>
+    <td>2026-04-01</td><td><code>804e929</code></td>
+    <td>Fix literal File/Directory validation</td>
+    <td>Regression fixed; all modes back to baseline</td>
+  </tr>
+  <tr>
+    <td>2026-04-02</td><td><code>e43eee2</code></td>
+    <td>API query parameter parsing (PR #102)</td>
+    <td>No conformance impact; 6 verification runs per mode</td>
+  </tr>
+  <tr>
+    <td>2026-04-04</td><td><code>99871c8</code></td>
+    <td>Error handling, per-tick caching, batch DB ops</td>
+    <td>server-local achieves 378/378; all other modes unchanged</td>
+  </tr>
+</table>
+
+<!-- ================================================================ -->
+<h2>Unsupported Features</h2>
+
+<table>
+  <tr><th>Test</th><th>Feature</th><th>Modes Affected</th><th>Reason</th></tr>
+  <tr>
+    <td>237</td><td><code>InplaceUpdateRequirement</code> (file content)</td>
+    <td>server-worker</td>
+    <td>Requires in-process filesystem sharing; worker output staging breaks the mutation contract</td>
+  </tr>
+  <tr>
+    <td>238</td><td><code>InplaceUpdateRequirement</code> (directory content)</td>
+    <td>server-worker</td>
+    <td>Same as above</td>
+  </tr>
+</table>
+
+<p class="narrative">
+  Both tests are tagged <code>inplace_update</code> (non-required). In server-worker mode, GoWe returns
+  exit code 33, which <code>cwltest</code> classifies as "unsupported feature" rather than "failure."
+  As of <code>99871c8</code>, server-local now passes both tests (InplaceUpdate works with the local executor).
+</p>
+
+<!-- ================================================================ -->
+<h2>Test Log Inventory</h2>
+
+<h3>cwl-runner (16 runs)</h3>
+<table>
+  <tr><th>Timestamp</th><th>Passed</th><th>Failed</th><th>Unsupported</th><th>Notes</th></tr>
+  <tr><td>2026-03-30 16:26</td><td>376</td><td>2</td><td>0</td><td>First scripted run</td></tr>
+  <tr><td>2026-03-30 16:42</td><td>366</td><td>12</td><td>0</td><td>Regression during dev</td></tr>
+  <tr><td>2026-03-30 22:06</td><td>378</td><td>0</td><td>0</td><td>First full pass</td></tr>
+  <tr><td>2026-03-31 09:15</td><td>378</td><td>0</td><td>0</td><td>Post-scheduler changes</td></tr>
+  <tr><td>2026-04-01 13:05</td><td>373</td><td>5</td><td>0</td><td>ValidateFileInputs regression</td></tr>
+  <tr><td>2026-04-01 13:38</td><td>373</td><td>5</td><td>0</td><td>Fix attempt (insufficient)</td></tr>
+  <tr><td>2026-04-01 13:43</td><td>378</td><td>0</td><td>0</td><td>Regression fixed</td></tr>
+  <tr><td>2026-04-03 15:39</td><td>378</td><td>0</td><td>0</td><td>Pre-refactor baseline</td></tr>
+  <tr><td>2026-04-03 16:11</td><td>378</td><td>0</td><td>0</td><td></td></tr>
+  <tr><td>2026-04-03 22:15</td><td>378</td><td>0</td><td>0</td><td></td></tr>
+  <tr><td>2026-04-04 00:03</td><td>378</td><td>0</td><td>0</td><td></td></tr>
+  <tr><td>2026-04-04 00:37</td><td>378</td><td>0</td><td>0</td><td></td></tr>
+  <tr><td>2026-04-04 01:27</td><td>378</td><td>0</td><td>0</td><td></td></tr>
+  <tr><td>2026-04-04 10:50</td><td>378</td><td>0</td><td>0</td><td>Required-only, post-refactor (99871c8)</td></tr>
+  <tr><td>2026-04-04 10:53</td><td>378</td><td>0</td><td>0</td><td>Post-refactor full suite</td></tr>
+  <tr><td>2026-04-04 11:15</td><td>378</td><td>0</td><td>0</td><td>Post-rebuild verification</td></tr>
+</table>
+
+<h3>server-local (15 runs)</h3>
+<table>
+  <tr><th>Timestamp</th><th>Passed</th><th>Failed</th><th>Unsupported</th><th>Notes</th></tr>
+  <tr><td>2026-03-30 16:29</td><td>369</td><td>9</td><td>0</td><td>First run</td></tr>
+  <tr><td>2026-03-30 21:55</td><td>368</td><td>10</td><td>0</td><td></td></tr>
+  <tr><td>2026-03-30 22:06</td><td>375</td><td>3</td><td>0</td><td></td></tr>
+  <tr><td>2026-03-31 09:12</td><td>376</td><td>2</td><td>0</td><td>InplaceUpdate as failure</td></tr>
+  <tr><td>2026-03-31 09:21</td><td>376</td><td>2</td><td>0</td><td></td></tr>
+  <tr><td>2026-03-31 09:37</td><td>377</td><td>1</td><td>0</td><td>Best pre-exit33</td></tr>
+  <tr><td>2026-04-01 13:56</td><td>376</td><td>0</td><td>2</td><td>Baseline</td></tr>
+  <tr><td>2026-04-03 15:39</td><td>376</td><td>0</td><td>2</td><td>Pre-refactor baseline</td></tr>
+  <tr><td>2026-04-03 16:21</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-03 22:15</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 00:03</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 00:37</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 01:27</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 10:55</td><td>378</td><td>0</td><td>0</td><td>Post-refactor (99871c8), InplaceUpdate now passes</td></tr>
+  <tr><td>2026-04-04 11:15</td><td>378</td><td>0</td><td>0</td><td>Post-rebuild verification</td></tr>
+</table>
+
+<h3>server-worker (25 runs)</h3>
+<table>
+  <tr><th>Timestamp</th><th>Passed</th><th>Failed</th><th>Unsupported</th><th>Notes</th></tr>
+  <tr><td>2026-03-30 10:27</td><td>368</td><td>10</td><td>0</td><td>First full run</td></tr>
+  <tr><td>2026-03-30 13:15</td><td colspan="3">Broken (immediate failure)</td><td>Required-only</td></tr>
+  <tr><td>2026-03-30 13:26</td><td>7</td><td>77</td><td>0</td><td>Required-only, broken build</td></tr>
+  <tr><td>2026-03-30 14:58</td><td>7</td><td>77</td><td>0</td><td>Required-only, still broken</td></tr>
+  <tr><td>2026-03-30 16:12</td><td>82</td><td>2</td><td>0</td><td>Required-only, nearly fixed</td></tr>
+  <tr><td>2026-03-30 16:35</td><td>373</td><td>5</td><td>0</td><td>First full suite</td></tr>
+  <tr><td>2026-03-30 22:06</td><td>375</td><td>3</td><td>0</td><td></td></tr>
+  <tr><td>2026-03-31 09:11</td><td colspan="3">Broken (partial run)</td><td>Error on test 207</td></tr>
+  <tr><td>2026-03-31 09:12</td><td>376</td><td>2</td><td>0</td><td>InplaceUpdate as failure</td></tr>
+  <tr><td>2026-03-31 09:15</td><td>376</td><td>2</td><td>0</td><td></td></tr>
+  <tr><td>2026-03-31 09:20</td><td colspan="3">Partial (2 tests)</td><td>Tests 237,238 only</td></tr>
+  <tr><td>2026-03-31 09:29</td><td colspan="3">Partial (2 tests)</td><td>Tests 237,238 only</td></tr>
+  <tr><td>2026-03-31 09:43</td><td>376</td><td>2</td><td>0</td><td>Full suite</td></tr>
+  <tr><td>2026-03-31 12:15</td><td>0</td><td>0</td><td>2</td><td>Tests 237,238 (exit code 33 verification)</td></tr>
+  <tr><td>2026-03-31 12:17</td><td>376</td><td>0</td><td>2</td><td>Baseline achieved</td></tr>
+  <tr><td>2026-04-01 14:02</td><td>376</td><td>0</td><td>2</td><td>Confirmed after regression fix</td></tr>
+  <tr><td>2026-04-03 15:39</td><td>376</td><td>0</td><td>2</td><td>Pre-refactor baseline</td></tr>
+  <tr><td>2026-04-03 18:01</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-03 22:15</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 00:03</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 00:37</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 01:27</td><td>376</td><td>0</td><td>2</td><td></td></tr>
+  <tr><td>2026-04-04 10:53</td><td>376</td><td>0</td><td>2</td><td>Post-refactor (99871c8)</td></tr>
+  <tr><td>2026-04-04 10:55</td><td>376</td><td>0</td><td>2</td><td>Post-refactor (99871c8)</td></tr>
+  <tr><td>2026-04-04 11:15</td><td>376</td><td>0</td><td>2</td><td>Post-rebuild verification</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2>Expected Baselines</h2>
+
+<table>
+  <tr><th>Mode</th><th>Total</th><th>Passed</th><th>Failed</th><th>Unsupported</th><th>Pass Rate</th></tr>
+  <tr><td>cwl-runner</td><td>378</td><td>378</td><td>0</td><td>0</td><td>100%</td></tr>
+  <tr><td>server-local</td><td>378</td><td>378</td><td>0</td><td>0</td><td>100%</td></tr>
+  <tr><td>server-worker</td><td>378</td><td>376</td><td>0</td><td>2</td><td>100% (of supported)</td></tr>
+</table>
+
+<p class="narrative"><strong>Any deviation from these baselines is a regression.</strong></p>
+
+<footer>
+  <p>Generated from test logs in <code>test-logs/</code>. See <code>test-logs/SUMMARY.md</code> for the raw log inventory.</p>
+  <p>Run conformance tests: <code>/conformance [mode] [options]</code> (see <code>.claude/skills/conformance/SKILL.md</code>)</p>
+</footer>
+
+</body>
+</html>

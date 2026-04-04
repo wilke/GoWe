@@ -1,0 +1,1434 @@
+Test [1/378] cl_basic_generation: General test of command line generation
+
+Test [2/378] nested_prefixes_arrays: Test nested prefixes with arrays
+
+Test [3/378] nested_cl_bindings: Test nested command line bindings
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcfanax1v --quiet testdata/cwl-v1.2/tests/bwa-mem-tool.cwl testdata/cwl-v1.2/tests/bwa-mem-job.json
+Test [4/378] cl_optional_inputs_missing: Test command line with optional input (missing)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp3ki41up0 --quiet testdata/cwl-v1.2/tests/tmap-tool.cwl testdata/cwl-v1.2/tests/tmap-job.json
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplf_ikqz7 --quiet testdata/cwl-v1.2/tests/binding-test.cwl testdata/cwl-v1.2/tests/bwa-mem-job.json
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpom56pj_e --quiet testdata/cwl-v1.2/tests/cat1-testcli.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [5/378] cl_optional_bindings_provided: Test command line with optional input (provided)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpmfdg0w9l --quiet testdata/cwl-v1.2/tests/cat1-testcli.cwl testdata/cwl-v1.2/tests/cat-n-job.json
+Test [6/378] initworkdir_expreng_requirements: Test InitialWorkDirRequirement ExpressionEngineRequirement.engineConfig feature
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpaafw72fr --quiet testdata/cwl-v1.2/tests/template-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [7/378] stdout_redirect_docker: Test command execution in Docker with stdout redirection
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvjzp1uf7 --quiet testdata/cwl-v1.2/tests/cat3-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [8/378] stdout_redirect_shortcut_docker: Test command execution in Docker with shortcut stdout redirection
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprgdyc707 --quiet testdata/cwl-v1.2/tests/cat3-tool-shortcut.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [9/378] stdout_redirect_mediumcut_docker: Test command execution in Docker with mediumcut stdout redirection
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp3cdpma5p --quiet testdata/cwl-v1.2/tests/cat3-tool-mediumcut.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [10/378] stderr_redirect: Test command line with stderr redirection
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpmqdv62dg --quiet testdata/cwl-v1.2/tests/stderr.cwl testdata/cwl-v1.2/tests/empty.json
+Test [11/378] stderr_redirect_shortcut: Test command line with stderr redirection, brief syntax
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppilymymw --quiet testdata/cwl-v1.2/tests/stderr-shortcut.cwl testdata/cwl-v1.2/tests/empty.json
+Test [12/378] stderr_redirect_mediumcut: Test command line with stderr redirection, named brief syntax
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvrtz77aw --quiet testdata/cwl-v1.2/tests/stderr-mediumcut.cwl testdata/cwl-v1.2/tests/empty.json
+Test [13/378] stdinout_redirect_docker: Test command execution in Docker with stdin and stdout redirection
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9zfzz4zb --quiet testdata/cwl-v1.2/tests/cat4-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [14/378] expression_any: Test default usage of Any in expressions.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqpc7wdrk --quiet testdata/cwl-v1.2/tests/null-expression1-tool.cwl testdata/cwl-v1.2/tests/empty.json
+Test [15/378] expression_any_null: Test explicitly passing null to Any type inputs with default values.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0zthkwq0 --quiet testdata/cwl-v1.2/tests/null-expression1-tool.cwl testdata/cwl-v1.2/tests/null-expression1-job.json
+Test [16/378] expression_any_string: Testing the string 'null' does not trip up an Any with a default value.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptyabuale --quiet testdata/cwl-v1.2/tests/null-expression1-tool.cwl testdata/cwl-v1.2/tests/null-expression2-job.json
+Test [17/378] expression_any_nodefaultany: Test Any without defaults cannot be unspecified.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpeqepk94s --quiet testdata/cwl-v1.2/tests/null-expression2-tool.cwl testdata/cwl-v1.2/tests/empty.json
+Test [18/378] expression_any_null_nodefaultany: Test explicitly passing null to Any type without a default value.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpyfjg_vzd --quiet testdata/cwl-v1.2/tests/null-expression2-tool.cwl testdata/cwl-v1.2/tests/null-expression1-job.json
+Test [19/378] expression_any_nullstring_nodefaultany: Testing the string 'null' does not trip up an Any without a default value.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpn1teqjpv --quiet testdata/cwl-v1.2/tests/null-expression2-tool.cwl testdata/cwl-v1.2/tests/null-expression2-job.json
+Test [20/378] any_outputSource_compatibility: Testing Any type compatibility in outputSource
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpt4rf02a_ --quiet testdata/cwl-v1.2/tests/any-type-compat.cwl testdata/cwl-v1.2/tests/any-type-job.json
+Submission sub_a29250e1-3273-4911-bb3a-a997aec6bfaf failed [STEP_FAILED]
+  Error: step 'run_tool' failed
+  Step:  run_tool
+Error: submission failed: [STEP_FAILED] step 'run_tool' failed
+submission failed: [STEP_FAILED] step 'run_tool' failed
+Test [21/378] stdinout_redirect: Test command execution in with stdin and stdout redirection
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9_n0fc0i --quiet testdata/cwl-v1.2/tests/cat-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Submission sub_3a1b966d-fbe7-4c21-ac2f-e89fd1e92c23 failed [STEP_FAILED]
+  Error: step 'run_tool' failed
+  Step:  run_tool
+Error: submission failed: [STEP_FAILED] step 'run_tool' failed
+submission failed: [STEP_FAILED] step 'run_tool' failed
+Test [22/378] expression_parseint: Test ExpressionTool with Javascript engine
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpyx692vd7 --quiet testdata/cwl-v1.2/tests/parseInt-tool.cwl testdata/cwl-v1.2/tests/parseInt-job.json
+Test [23/378] expression_outputEval: Test outputEval to transform output
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpu0jhskua --quiet testdata/cwl-v1.2/tests/wc2-tool.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [24/378] wf_wc_parseInt: Test two step workflow with imported tools
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxcrqe2mr --quiet testdata/cwl-v1.2/tests/count-lines1-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [25/378] wf_wc_expressiontool: Test two step workflow with inline tools
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp8lf4ett3 --quiet testdata/cwl-v1.2/tests/count-lines2-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [26/378] wf_wc_scatter: Test single step workflow with Scatter step
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpdqgiwa2r --quiet testdata/cwl-v1.2/tests/count-lines3-wf.cwl testdata/cwl-v1.2/tests/count-lines3-job.json
+Test [27/378] wf_wc_scatter_multiple_merge: Test single step workflow with Scatter step and two data links connected to same input, default merge behavior
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpbokd60y4 --quiet testdata/cwl-v1.2/tests/count-lines4-wf.cwl testdata/cwl-v1.2/tests/count-lines4-job.json
+Test [28/378] wf_wc_scatter_multiple_nested: Test single step workflow with Scatter step and two data links connected to same input, nested merge behavior
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1o6wbfmq --quiet testdata/cwl-v1.2/tests/count-lines6-wf.cwl testdata/cwl-v1.2/tests/count-lines6-job.json
+Test [29/378] wf_wc_scatter_multiple_flattened: Test single step workflow with Scatter step and two data links connected to same input, flattened merge behavior
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqr8t4ypi --quiet testdata/cwl-v1.2/tests/count-lines7-wf.cwl testdata/cwl-v1.2/tests/count-lines6-job.json
+Test [30/378] wf_wc_nomultiple: Test when step source is a single-item list and there is no linkMerge, then it not wrapped in a list, and that MultipleInputFeatureRequirement is not required.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpg2q7ihf0 --quiet testdata/cwl-v1.2/tests/count-lines13-wf.cwl testdata/cwl-v1.2/tests/count-lines4-job.json
+Test [31/378] wf_wc_nomultiple_merge_nested: Test when step source is a single-item list and linkMerge is listed, then it is wrapped in a list.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprfm5enrr --quiet testdata/cwl-v1.2/tests/count-lines19-wf.cwl testdata/cwl-v1.2/tests/count-lines4-job.json
+Test [32/378] wf_input_default_missing: Test workflow with default value for input parameter (missing)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpb3ns30sm --quiet testdata/cwl-v1.2/tests/count-lines5-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [33/378] wf_input_default_provided: Test workflow with default value for input parameter (provided)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmph0033_f9 --quiet testdata/cwl-v1.2/tests/count-lines5-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [34/378] wf_default_tool_default: Test that workflow defaults override tool defaults
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcx6ctbgb --quiet testdata/cwl-v1.2/tests/echo-wf-default.cwl testdata/cwl-v1.2/tests/empty.json
+Test [35/378] envvar_req: Test EnvVarRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpg415_k30 --quiet testdata/cwl-v1.2/tests/env-tool1.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [36/378] wf_scatter_single_param: Test workflow scatter with single scatter parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2es7wuoh --quiet testdata/cwl-v1.2/tests/scatter-wf1.cwl testdata/cwl-v1.2/tests/scatter-job1.json
+Test [37/378] wf_scatter_two_nested_crossproduct: Test workflow scatter with two scatter parameters and nested_crossproduct join method
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgu9cm963 --quiet testdata/cwl-v1.2/tests/scatter-wf2.cwl testdata/cwl-v1.2/tests/scatter-job2.json
+Test [38/378] wf_scatter_two_flat_crossproduct: Test workflow scatter with two scatter parameters and flat_crossproduct join method
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzkptyb1u --quiet testdata/cwl-v1.2/tests/scatter-wf3.cwl#main testdata/cwl-v1.2/tests/scatter-job2.json
+Test [39/378] wf_scatter_two_dotproduct: Test workflow scatter with two scatter parameters and dotproduct join method
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcf1eilp3 --quiet testdata/cwl-v1.2/tests/scatter-wf4.cwl#main testdata/cwl-v1.2/tests/scatter-job2.json
+Test [40/378] wf_scatter_emptylist: Test workflow scatter with single empty list parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpu19zcaat --quiet testdata/cwl-v1.2/tests/scatter-wf1.cwl testdata/cwl-v1.2/tests/scatter-empty-job1.json
+Test [41/378] wf_scatter_nested_crossproduct_secondempty: Test workflow scatter with two scatter parameters and nested_crossproduct join method with second list empty
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxnzr1n2u --quiet testdata/cwl-v1.2/tests/scatter-wf2.cwl testdata/cwl-v1.2/tests/scatter-empty-job2.json
+Test [42/378] wf_scatter_nested_crossproduct_firstempty: Test workflow scatter with two scatter parameters and nested_crossproduct join method with first list empty
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpm4u3udnx --quiet testdata/cwl-v1.2/tests/scatter-wf3.cwl#main testdata/cwl-v1.2/tests/scatter-empty-job3.json
+Test [43/378] wf_scatter_flat_crossproduct_oneempty: Test workflow scatter with two scatter parameters, one of which is empty and flat_crossproduct join method
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpsnpy3hc2 --quiet testdata/cwl-v1.2/tests/scatter-wf3.cwl#main testdata/cwl-v1.2/tests/scatter-empty-job2.json
+Test [44/378] wf_scatter_dotproduct_twoempty: Test workflow scatter with two empty scatter parameters and dotproduct join method
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7muihf_7 --quiet testdata/cwl-v1.2/tests/scatter-wf4.cwl#main testdata/cwl-v1.2/tests/scatter-empty-job4.json
+Test [45/378] any_input_param: Test Any type input parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplmxw978y --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [46/378] nested_workflow: Test nested workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcn8os0if --quiet testdata/cwl-v1.2/tests/count-lines8-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [47/378] requirement_priority: Test requirement priority
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmphymnwijw --quiet testdata/cwl-v1.2/tests/env-wf1.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [48/378] requirement_override_hints: Test requirements override hints
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpj11tn6tu --quiet testdata/cwl-v1.2/tests/env-wf2.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [49/378] requirement_workflow_steps: Test requirements on workflow steps
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_c861t8g --quiet testdata/cwl-v1.2/tests/env-wf3.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [50/378] step_input_default_value: Test default value on step input parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzmi9q3i4 --quiet testdata/cwl-v1.2/tests/count-lines9-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [51/378] step_input_default_value_nosource: Test use default value on step input parameter with empty source
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7bzfcdf7 --quiet testdata/cwl-v1.2/tests/count-lines11-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [52/378] step_input_default_value_nullsource: Test use default value on step input parameter with null source
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmph06h8u1d --quiet testdata/cwl-v1.2/tests/count-lines11-wf.cwl testdata/cwl-v1.2/tests/file1-null.json
+Test [53/378] step_input_default_value_overriden: Test default value on step input parameter overridden by provided source
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmphoe8jgmt --quiet testdata/cwl-v1.2/tests/count-lines11-wf.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [54/378] wf_simple: Test simple workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_kwdji6i --quiet testdata/cwl-v1.2/tests/revsort.cwl testdata/cwl-v1.2/tests/revsort-job.json
+Test [55/378] hints_unknown_ignored: Test unknown hints are ignored.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpw2y6jzc9 --quiet testdata/cwl-v1.2/tests/cat5-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [56/378] initial_workdir_secondary_files_expr: Test InitialWorkDirRequirement linking input files and capturing secondaryFiles on input and output. Also tests the use of a variety of parameter references and expressions in the secondaryFiles field.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpid47hz1m --quiet testdata/cwl-v1.2/tests/search.cwl#main testdata/cwl-v1.2/tests/search-job.json
+Test [57/378] rename: Test InitialWorkDirRequirement with expression in filename.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpkiudygtm --quiet testdata/cwl-v1.2/tests/rename.cwl testdata/cwl-v1.2/tests/rename-job.json
+Test [58/378] initial_workdir_trailingnl: Test if trailing newline is present in file entry in InitialWorkDir
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpn7pd2ihd --quiet testdata/cwl-v1.2/tests/iwdr-entry.cwl testdata/cwl-v1.2/tests/string-job.json
+Test [59/378] inline_expressions: Test inline expressions
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpg3bcy8l3 --quiet testdata/cwl-v1.2/tests/wc4-tool.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [60/378] schemadef_req_tool_param: Test SchemaDefRequirement definition used in tool parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpf0zgv3ee --quiet testdata/cwl-v1.2/tests/schemadef-tool.cwl testdata/cwl-v1.2/tests/schemadef-job.json
+Test [61/378] schemadef_req_wf_param: Test SchemaDefRequirement definition used in workflow parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp4xti8jiq --quiet testdata/cwl-v1.2/tests/schemadef-wf.cwl testdata/cwl-v1.2/tests/schemadef-job.json
+Test [62/378] param_evaluation_noexpr: Test parameter evaluation, no support for JS expressions
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp730zw3vb --quiet testdata/cwl-v1.2/tests/params.cwl testdata/cwl-v1.2/tests/empty.json
+Test [63/378] param_evaluation_expr: Test parameter evaluation, with support for JS expressions
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcwiocx54 --quiet testdata/cwl-v1.2/tests/params2.cwl testdata/cwl-v1.2/tests/empty.json
+Test [64/378] metadata: Test metadata
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpsu_6fzxq --quiet testdata/cwl-v1.2/tests/metadata.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [65/378] format_checking: Test simple format checking.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpizb58u6y --quiet testdata/cwl-v1.2/tests/formattest.cwl testdata/cwl-v1.2/tests/formattest-job.json
+Test [66/378] format_checking_subclass: Test format checking against ontology using subclassOf.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpaat62npk --quiet testdata/cwl-v1.2/tests/formattest2.cwl testdata/cwl-v1.2/tests/formattest2-job.json
+Test [67/378] format_checking_equivalentclass: Test format checking against ontology using equivalentClass.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpnwu61g6e --quiet testdata/cwl-v1.2/tests/formattest3.cwl testdata/cwl-v1.2/tests/formattest2-job.json
+Test [68/378] output_secondaryfile_optional: Test optional output file and optional secondaryFile on output.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp5jqdb6yo --quiet testdata/cwl-v1.2/tests/optional-output.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [69/378] valuefrom_ignored_null: Test that valueFrom is ignored when the parameter is null
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpsc00ndnn --quiet testdata/cwl-v1.2/tests/vf-concat.cwl testdata/cwl-v1.2/tests/empty.json
+Test [70/378] valuefrom_secondexpr_ignored: Test that second expression in concatenated valueFrom is not ignored
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpq_pubht5 --quiet testdata/cwl-v1.2/tests/vf-concat.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [71/378] valuefrom_wf_step: Test valueFrom on workflow step.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9c11fydz --quiet testdata/cwl-v1.2/tests/step-valuefrom-wf.cwl testdata/cwl-v1.2/tests/step-valuefrom-wf.json
+Test [72/378] valuefrom_wf_step_multiple: Test valueFrom on workflow step with multiple sources
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpx5kehr8n --quiet testdata/cwl-v1.2/tests/step-valuefrom2-wf.cwl testdata/cwl-v1.2/tests/step-valuefrom-job.json
+Test [73/378] valuefrom_wf_step_other: Test valueFrom on workflow step referencing other inputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxs9a081u --quiet testdata/cwl-v1.2/tests/step-valuefrom3-wf.cwl testdata/cwl-v1.2/tests/step-valuefrom-job.json
+Test [74/378] record_output_binding: Test record type output binding.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplu79a5ou --quiet testdata/cwl-v1.2/tests/record-output.cwl testdata/cwl-v1.2/tests/record-output-job.json
+Test [75/378] docker_json_output_path: Test support for reading cwl.output.json when running in a Docker container and just 'path' is provided.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqu7rs_1r --quiet testdata/cwl-v1.2/tests/test-cwl-out.cwl testdata/cwl-v1.2/tests/empty.json
+Test [76/378] docker_json_output_location: Test support for reading cwl.output.json when running in a Docker container and just 'location' is provided.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6khrfoyo --quiet testdata/cwl-v1.2/tests/test-cwl-out2.cwl testdata/cwl-v1.2/tests/empty.json
+Test [77/378] json_output_path_relative: Test support for reading cwl.output.json where 'path' is relative path in output dir.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp4hdxflv4 --quiet testdata/cwl-v1.2/tests/test-cwl-out3.cwl testdata/cwl-v1.2/tests/empty.json
+Test [78/378] json_output_location_relative: Test support for reading cwl.output.json where 'location' is relative reference to output dir.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcn3ng7vh --quiet testdata/cwl-v1.2/tests/test-cwl-out4.cwl testdata/cwl-v1.2/tests/empty.json
+Test [79/378] multiple_glob_expr_list: Test support for returning multiple glob patterns from expression
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqhn_7eea --quiet testdata/cwl-v1.2/tests/glob-expr-list.cwl testdata/cwl-v1.2/tests/abc.json
+Test [80/378] wf_scatter_oneparam_valuefrom: Test workflow scatter with single scatter parameter and two valueFrom on step input (first and current el)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe9bxfvc5 --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-wf1.cwl testdata/cwl-v1.2/tests/scatter-valuefrom-job1.json
+Test [81/378] wf_scatter_twoparam_nested_crossproduct_valuefrom: Test workflow scatter with two scatter parameters and nested_crossproduct join method and valueFrom on step input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpr75haryq --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-wf2.cwl testdata/cwl-v1.2/tests/scatter-valuefrom-job2.json
+Test [82/378] wf_scatter_twoparam_flat_crossproduct_valuefrom: Test workflow scatter with two scatter parameters and flat_crossproduct join method and valueFrom on step input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpp_d_vjwh --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-wf3.cwl#main testdata/cwl-v1.2/tests/scatter-valuefrom-job2.json
+Test [83/378] wf_scatter_twoparam_dotproduct_valuefrom: Test workflow scatter with two scatter parameters and dotproduct join method and valueFrom on step input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0sfagpvm --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-wf4.cwl#main testdata/cwl-v1.2/tests/scatter-valuefrom-job2.json
+Test [84/378] wf_scatter_oneparam_valuefrom_twice_current_el: Test workflow scatter with single scatter parameter and two valueFrom on step input (current el twice)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp81ugdpse --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-wf5.cwl testdata/cwl-v1.2/tests/scatter-valuefrom-job1.json
+Test [85/378] wf_scatter_oneparam_valueFrom: Test valueFrom eval on scattered input parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpo26mp52x --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-wf6.cwl testdata/cwl-v1.2/tests/scatter-valuefrom-job3.json
+Test [86/378] wf_two_inputfiles_namecollision: Test workflow two input files with same name.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp90qq5cew --quiet testdata/cwl-v1.2/tests/conflict-wf.cwl#collision testdata/cwl-v1.2/tests/conflict-job.json
+Test [87/378] directory_input_param_ref: Test directory input with parameter reference
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpeguff_en --quiet testdata/cwl-v1.2/tests/dir.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [88/378] directory_input_docker: Test directory input in Docker
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpt2075sth --quiet testdata/cwl-v1.2/tests/dir2.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [89/378] directory_output: Test directory output
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp4uw2jo8_ --quiet testdata/cwl-v1.2/tests/dir3.cwl testdata/cwl-v1.2/tests/dir3-job.yml
+Test [90/378] directory_secondaryfiles: Test directories in secondaryFiles
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_b19upco --quiet testdata/cwl-v1.2/tests/dir4.cwl testdata/cwl-v1.2/tests/dir4-job.yml
+Test [91/378] dynamic_initial_workdir: Test dynamic initial work dir
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpk8nj6e1a --quiet testdata/cwl-v1.2/tests/dir5.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [92/378] writable_stagedfiles: Test writable staged files.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpa449avcc --quiet testdata/cwl-v1.2/tests/stagefile.cwl testdata/cwl-v1.2/tests/stagefile-job.yml
+Test [93/378] input_file_literal: Test file literal as input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpbwxj3rx2 --quiet testdata/cwl-v1.2/tests/cat3-tool.cwl testdata/cwl-v1.2/tests/file-literal.yml
+Test [94/378] initial_workdir_expr: Test expression in InitialWorkDir listing
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpkluu25f4 --quiet testdata/cwl-v1.2/tests/linkfile.cwl testdata/cwl-v1.2/tests/arguments-job.yml
+Test [95/378] nameroot_nameext_stdout_expr: Test nameroot/nameext expression in arguments, stdout
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0ld1z2ja --quiet testdata/cwl-v1.2/tests/nameroot.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [96/378] input_dir_inputbinding: Test directory input with inputBinding
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpeq1d2vvv --quiet testdata/cwl-v1.2/tests/dir6.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [97/378] cl_gen_arrayofarrays: Test command line generation of array-of-arrays
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcotddbaa --quiet testdata/cwl-v1.2/tests/nested-array.cwl testdata/cwl-v1.2/tests/nested-array-job.yml
+Test [98/378] env_home_tmpdir: Test $HOME and $TMPDIR are set correctly
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9z_9zgwn --quiet testdata/cwl-v1.2/tests/envvar.cwl testdata/cwl-v1.2/tests/empty.json
+Test [99/378] env_home_tmpdir_docker: Test $HOME and $TMPDIR are set correctly in Docker
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxaa6mol5 --quiet testdata/cwl-v1.2/tests/envvar2.cwl testdata/cwl-v1.2/tests/empty.json
+Test [100/378] expressionlib_tool_wf_override: Test that expressionLib requirement of individual tool step overrides expressionLib of workflow.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpi8bw5rlw --quiet testdata/cwl-v1.2/tests/js-expr-req-wf.cwl#wf testdata/cwl-v1.2/tests/empty.json
+Test [101/378] initial_workdir_output: Test output of InitialWorkDir
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpdairw2tg --quiet testdata/cwl-v1.2/tests/initialworkdirrequirement-docker-out.cwl testdata/cwl-v1.2/tests/initialworkdirrequirement-docker-out-job.json
+Test [102/378] embedded_subworkflow: Test embedded subworkflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp5f7_ggb1 --quiet testdata/cwl-v1.2/tests/count-lines10-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [103/378] filesarray_secondaryfiles: Test required, optional and null secondaryFiles on array of files.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzeer867j --quiet testdata/cwl-v1.2/tests/docker-array-secondaryfiles.cwl testdata/cwl-v1.2/tests/docker-array-secondaryfiles-job.json
+Test [104/378] filesarray_secondaryfiles2: Test required, optional and null secondaryFiles on array of files.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmps34qh0p5 --quiet testdata/cwl-v1.2/tests/docker-array-secondaryfiles.cwl testdata/cwl-v1.2/tests/docker-array-secondaryfiles-job2.json
+Test [105/378] exprtool_directory_literal: Test directory literal output created by ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpy504teeq --quiet testdata/cwl-v1.2/tests/dir7.cwl testdata/cwl-v1.2/tests/dir7.yml
+Test [106/378] exprtool_file_literal: Test file literal output created by ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpt5nhyvmn --quiet testdata/cwl-v1.2/tests/file-literal-ex.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_5830d4f6-51d0-4ad8-8c22-a168745cbe65 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_57b7149d-1224-4035-9dcf-36f4687199bf
+  Exit:  -1
+  Stderr:
+execute: process inputs: input "fasta_path[0]": missing required secondary file ".dat" (pattern: ${ if (inputs.require_dat) {return '.dat'} else {return null} })
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [107/378] dockeroutputdir: Test dockerOutputDirectory
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1ob4paw_ --quiet testdata/cwl-v1.2/tests/docker-output-dir.cwl testdata/cwl-v1.2/tests/empty.json
+Test [108/378] hints_import: Test hints with $import
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp25d124gr --quiet testdata/cwl-v1.2/tests/imported-hint.cwl testdata/cwl-v1.2/tests/empty.json
+Test [109/378] default_path_notfound_warning: Test warning instead of error when default path is not found
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzhs3fmiy --quiet testdata/cwl-v1.2/tests/default_path.cwl testdata/cwl-v1.2/tests/default_path_job.yml
+Test [110/378] inlinejs_req_expressions: Test InlineJavascriptRequirement with multiple expressions in the same tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpjimdgdh7 --quiet testdata/cwl-v1.2/tests/inline-js.cwl testdata/cwl-v1.2/tests/empty.json
+Test [111/378] input_dir_recurs_copy_writable: Test if a writable input directory is recursively copied and writable
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzb0kxf5u --quiet testdata/cwl-v1.2/tests/recursive-input-directory.cwl testdata/cwl-v1.2/tests/recursive-input-directory.yml
+Test [112/378] null_missing_params: Test that missing parameters are null (not undefined) in expression
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpmoqv81sq --quiet testdata/cwl-v1.2/tests/null-defined.cwl testdata/cwl-v1.2/tests/empty.json
+Test [113/378] param_notnull_expr: Test that provided parameter is not null in expression
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpw70fhtcd --quiet testdata/cwl-v1.2/tests/null-defined.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [114/378] wf_compound_doc: Test compound workflow document
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpuezq1qbj --quiet testdata/cwl-v1.2/tests/revsort-packed.cwl#main testdata/cwl-v1.2/tests/revsort-job.json
+Test [115/378] nameroot_nameext_generated: Test that nameroot and nameext are generated from basename at execution time by the runner
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp60sf1leo --quiet testdata/cwl-v1.2/tests/basename-fields-test.cwl testdata/cwl-v1.2/tests/basename-fields-job.yml
+Test [116/378] initialworkpath_output: Test that file path in $(inputs) for initialworkdir is in $(outdir).
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpoc6n00hk --quiet testdata/cwl-v1.2/tests/initialwork-path.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [117/378] wf_scatter_twopar_oneinput_flattenedmerge: Test single step workflow with Scatter step and two data links connected to same input, flattened merge behavior. Workflow inputs are set as list
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp55pyn7jr --quiet testdata/cwl-v1.2/tests/count-lines12-wf.cwl testdata/cwl-v1.2/tests/count-lines6-job.json
+Test [118/378] wf_multiplesources_multipletypes: Test step input with multiple sources with multiple types
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp49ni4pol --quiet testdata/cwl-v1.2/tests/sum-wf.cwl testdata/cwl-v1.2/tests/sum-job.json
+Test [119/378] shelldir_notinterpreted: Test that shell directives are not interpreted.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpen7jdw0y --quiet testdata/cwl-v1.2/tests/shellchar.cwl testdata/cwl-v1.2/tests/empty.json
+Test [120/378] shelldir_quoted: Test that shell directives are quoted.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpn1px7ro9 --quiet testdata/cwl-v1.2/tests/shellchar2.cwl testdata/cwl-v1.2/tests/empty.json
+Test [121/378] initial_workdir_empty_writable: Test empty writable dir with InitialWorkDirRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpphdsbpkq --quiet testdata/cwl-v1.2/tests/writable-dir.cwl testdata/cwl-v1.2/tests/empty.json
+Test [122/378] initial_workdir_empty_writable_docker: Test empty writable dir with InitialWorkDirRequirement inside Docker
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe30taumq --quiet testdata/cwl-v1.2/tests/writable-dir-docker.cwl testdata/cwl-v1.2/tests/empty.json
+Test [123/378] dynamic_resreq_inputs: Test dynamic resource reqs referencing inputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpojr3eh5p --quiet testdata/cwl-v1.2/tests/dynresreq.cwl testdata/cwl-v1.2/tests/dynresreq-job.yaml
+Test [124/378] fileliteral_input_docker: Test file literal as input without Docker
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgl3a3vpi --quiet testdata/cwl-v1.2/tests/cat3-nodocker.cwl testdata/cwl-v1.2/tests/file-literal.yml
+Test [125/378] outputbinding_glob_sorted: Test that OutputBinding.glob is sorted as specified by POSIX
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpprp7_ntb --quiet testdata/cwl-v1.2/tests/glob_test.cwl testdata/cwl-v1.2/tests/empty.json
+Test [126/378] initialworkdir_nesteddir: Test InitialWorkDirRequirement with a nested directory structure from another step
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe66corb9 --quiet testdata/cwl-v1.2/tests/iwdr_with_nested_dirs.cwl testdata/cwl-v1.2/tests/empty.json
+Test [127/378] booleanflags_cl_noinputbinding: Test that boolean flags do not appear on command line if inputBinding is empty and not null
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpk9yshvs0 --quiet testdata/cwl-v1.2/tests/bool-empty-inputbinding.cwl testdata/cwl-v1.2/tests/bool-empty-inputbinding-job.json
+Test [128/378] expr_reference_self_noinput: Test that expression engine does not fail to evaluate reference to self with unprovided input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzqeg2aby --quiet testdata/cwl-v1.2/tests/stage-unprovided-file.cwl testdata/cwl-v1.2/tests/empty.json
+Test [129/378] success_codes: Test successCodes
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwvz4qr86 --quiet testdata/cwl-v1.2/tests/exit-success.cwl testdata/cwl-v1.2/tests/empty.json
+Test [130/378] dynamic_resreq_wf: Test simple workflow with a dynamic resource requirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp76sr6ioa --quiet testdata/cwl-v1.2/tests/dynresreq-workflow.cwl testdata/cwl-v1.2/tests/dynresreq-job.yaml
+Test [131/378] cl_empty_array_input: Test that empty array input does not add anything to command line
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7jjwyqts --quiet testdata/cwl-v1.2/tests/empty-array-input.cwl testdata/cwl-v1.2/tests/empty-array-job.json
+Test [132/378] resreq_step_overrides_wf: Test that ResourceRequirement on a step level redefines requirement on the workflow level
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptgnco0xe --quiet testdata/cwl-v1.2/tests/steplevel-resreq.cwl testdata/cwl-v1.2/tests/empty.json
+Test [133/378] valuefrom_constant_overrides_inputs: Test valueFrom with constant value overriding provided array inputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2zclk3wi --quiet testdata/cwl-v1.2/tests/valueFrom-constant.cwl testdata/cwl-v1.2/tests/array-of-strings-job.yml
+Test [134/378] dynamic_resreq_filesizes: Test dynamic resource reqs referencing the size of Files inside a Directory
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpynee3c6q --quiet testdata/cwl-v1.2/tests/dynresreq-dir.cwl testdata/cwl-v1.2/tests/dynresreq-dir-job.yaml
+Test [135/378] wf_step_connect_undeclared_param: Test that it is not an error to connect a parameter to a workflow step, even if the parameter doesn't appear in the `run` process inputs.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2ncntc_x --quiet testdata/cwl-v1.2/tests/pass-unconnected.cwl testdata/cwl-v1.2/tests/empty.json
+Test [136/378] wf_step_access_undeclared_param: Test that parameters that don't appear in the `run` process inputs are not present in the input object used to run the tool.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgzxv5gxc --quiet testdata/cwl-v1.2/tests/fail-unconnected.cwl testdata/cwl-v1.2/tests/empty.json
+Test [137/378] env_home_tmpdir_docker_no_return_code: Test $HOME and $TMPDIR are set correctly in Docker without using return code
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6k1d39md --quiet testdata/cwl-v1.2/tests/envvar3.cwl testdata/cwl-v1.2/tests/empty.json
+Test [138/378] wf_scatter_oneparam_valuefrom_inputs: Test workflow scatter with single scatter parameter and two valueFrom using $inputs (first and current el)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpz7hk7x1b --quiet testdata/cwl-v1.2/tests/scatter-valuefrom-inputs-wf1.cwl testdata/cwl-v1.2/tests/scatter-valuefrom-job1.json
+Submission sub_284e9821-43da-458f-b015-b34f25c664c6 failed [TASK_FAILED]
+  Error: step 'step1' task failed with exit code -1
+  Step:  step1
+  Task:  task_25389f6c-8457-4162-8d14-eddfab3a0bc7
+  Exit:  -1
+  Stderr:
+execute: build command: argument[2]: expression $(inputs.in2) returned undefined (invalid property access)
+Error: submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+Test [139/378] packed_import_schema: SchemaDefRequirement with $import, and packed
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvidl6w9h --quiet testdata/cwl-v1.2/tests/import_schema-def_packed.cwl testdata/cwl-v1.2/tests/import_schema-def_job.yml
+Test [140/378] job_input_secondary_subdirs: Test specifying secondaryFiles in subdirectories of the job input document.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp3mbe8hhw --quiet testdata/cwl-v1.2/tests/dir4.cwl testdata/cwl-v1.2/tests/dir4-subdir-1-job.yml
+Test [141/378] job_input_subdir_primary_and_secondary_subdirs: Test specifying secondaryFiles in same subdirectory of the job input as the primary input file.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpo6r1yotf --quiet testdata/cwl-v1.2/tests/dir4.cwl testdata/cwl-v1.2/tests/dir4-subdir-2-job.yml
+Test [142/378] scatter_embedded_subworkflow: Test simple scatter over an embedded subworkflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpjs7jmzgh --quiet testdata/cwl-v1.2/tests/count-lines18-wf.cwl testdata/cwl-v1.2/tests/count-lines3-job.json
+Test [143/378] scatter_multi_input_embedded_subworkflow: Test simple multiple input scatter over an embedded subworkflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1puaczpu --quiet testdata/cwl-v1.2/tests/count-lines14-wf.cwl testdata/cwl-v1.2/tests/count-lines4-job.json
+Test [144/378] workflow_embedded_subworkflow_embedded_subsubworkflow: Test twice nested subworkflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpztg9beu5 --quiet testdata/cwl-v1.2/tests/count-lines15-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [145/378] workflow_embedded_subworkflow_with_tool_and_subsubworkflow: Test subworkflow of mixed depth with tool first
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpjm1ok_k0 --quiet testdata/cwl-v1.2/tests/count-lines16-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [146/378] workflow_embedded_subworkflow_with_subsubworkflow_and_tool: Test subworkflow of mixed depth with tool after
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgvpc9kr8 --quiet testdata/cwl-v1.2/tests/count-lines17-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [147/378] workflow_records_inputs_and_outputs: Test record type inputs to and outputs from workflows.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptogfvwwj --quiet testdata/cwl-v1.2/tests/record-output-wf.cwl testdata/cwl-v1.2/tests/record-output-job.json
+Test [148/378] workflow_integer_input: Test integer workflow input and outputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6iaalpvx --quiet testdata/cwl-v1.2/tests/io-int-wf.cwl testdata/cwl-v1.2/tests/io-int.json
+Test [149/378] workflow_integer_input_optional_specified: Test optional integer workflow inputs (specified)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1rr_1pc0 --quiet testdata/cwl-v1.2/tests/io-int-optional-wf.cwl testdata/cwl-v1.2/tests/io-int.json
+Test [150/378] workflow_integer_input_optional_unspecified: Test optional integer workflow inputs (unspecified)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6ww8o_or --quiet testdata/cwl-v1.2/tests/io-int-optional-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [151/378] workflow_integer_input_default_specified: Test default integer workflow inputs (specified)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmph07qcnpe --quiet testdata/cwl-v1.2/tests/io-int-default-wf.cwl testdata/cwl-v1.2/tests/io-int.json
+Test [152/378] workflow_integer_input_default_unspecified: Test default integer workflow inputs (unspecified)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpw7jdr5v8 --quiet testdata/cwl-v1.2/tests/io-int-default-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [153/378] workflow_integer_input_default_and_tool_integer_input_default: Test default integer tool and workflow inputs (unspecified)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprnbdl8g8 --quiet testdata/cwl-v1.2/tests/io-int-default-tool-and-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [154/378] workflow_file_input_default_unspecified: Test File input with default unspecified to workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp962nnt5v --quiet testdata/cwl-v1.2/tests/io-file-default-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [155/378] workflow_file_input_default_specified: Test File input with default specified to workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp16jyexnr --quiet testdata/cwl-v1.2/tests/io-file-default-wf.cwl testdata/cwl-v1.2/tests/default_path_job.yml
+Test [156/378] clt_optional_union_input_file_or_files_with_array_of_one_file_provided: Test input union type or File or File array to a tool with one file in array specified.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqr28c_4u --quiet testdata/cwl-v1.2/tests/io-file-or-files.cwl testdata/cwl-v1.2/tests/job-input-array-one-empty-file.json
+Test [157/378] clt_optional_union_input_file_or_files_with_many_files_provided: Test input union type or File or File array to a tool with a few files in array specified.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgb_3cnp0 --quiet testdata/cwl-v1.2/tests/io-file-or-files.cwl testdata/cwl-v1.2/tests/job-input-array-few-files.json
+Test [158/378] clt_optional_union_input_file_or_files_with_single_file_provided: Test input union type or File or File array to a tool with one file specified.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0_ze_78p --quiet testdata/cwl-v1.2/tests/io-file-or-files.cwl testdata/cwl-v1.2/tests/job-input-one-file.json
+Test [159/378] clt_optional_union_input_file_or_files_with_nothing_provided: Test input union type or File or File array to a tool with null specified.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwr6pqd_a --quiet testdata/cwl-v1.2/tests/io-file-or-files.cwl testdata/cwl-v1.2/tests/job-input-null.json
+Test [160/378] clt_any_input_with_integer_provided: Test Any parameter with integer input to a tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpiu9c4ald --quiet testdata/cwl-v1.2/tests/io-any-1.cwl testdata/cwl-v1.2/tests/io-any-int.json
+Test [161/378] clt_any_input_with_string_provided: Test Any parameter with string input to a tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpya61hpip --quiet testdata/cwl-v1.2/tests/io-any-1.cwl testdata/cwl-v1.2/tests/io-any-string.json
+Test [162/378] clt_any_input_with_file_provided: Test Any parameter with file input to a tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpem1ad0_x --quiet testdata/cwl-v1.2/tests/io-any-1.cwl testdata/cwl-v1.2/tests/io-any-file.json
+Test [163/378] clt_any_input_with_mixed_array_provided: Test Any parameter with array input to a tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp649056pq --quiet testdata/cwl-v1.2/tests/io-any-1.cwl testdata/cwl-v1.2/tests/io-any-array.json
+Test [164/378] clt_any_input_with_record_provided: Test Any parameter with record input to a tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpk2htg4y4 --quiet testdata/cwl-v1.2/tests/io-any-1.cwl testdata/cwl-v1.2/tests/io-any-record.json
+Test [165/378] workflow_any_input_with_integer_provided: Test Any parameter with integer input to a workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1izoxwfe --quiet testdata/cwl-v1.2/tests/io-any-wf-1.cwl testdata/cwl-v1.2/tests/io-any-int.json
+Test [166/378] workflow_any_input_with_string_provided: Test Any parameter with string input to a workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmphcicitan --quiet testdata/cwl-v1.2/tests/io-any-wf-1.cwl testdata/cwl-v1.2/tests/io-any-string.json
+Test [167/378] workflow_any_input_with_file_provided: Test Any parameter with file input to a workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_09bngfv --quiet testdata/cwl-v1.2/tests/io-any-wf-1.cwl testdata/cwl-v1.2/tests/io-any-file.json
+Test [168/378] workflow_any_input_with_mixed_array_provided: Test Any parameter with array input to a workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxn4vki_c --quiet testdata/cwl-v1.2/tests/io-any-wf-1.cwl testdata/cwl-v1.2/tests/io-any-array.json
+Test [169/378] workflow_any_input_with_record_provided: Test Any parameter with record input to a tool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpyfqtdolw --quiet testdata/cwl-v1.2/tests/io-any-wf-1.cwl testdata/cwl-v1.2/tests/io-any-record.json
+Test [170/378] workflow_union_default_input_unspecified: Test union type input to workflow with default unspecified
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp3hbvmz4s --quiet testdata/cwl-v1.2/tests/io-union-input-default-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [171/378] workflow_union_default_input_with_file_provided: Test union type input to workflow with default specified as file
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe5q7u9i3 --quiet testdata/cwl-v1.2/tests/io-union-input-default-wf.cwl testdata/cwl-v1.2/tests/io-any-file.json
+Test [172/378] workflowstep_valuefrom_string: Test valueFrom on workflow step from literal (string).
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpc23w9qh1 --quiet testdata/cwl-v1.2/tests/step-valuefrom4-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [173/378] workflowstep_valuefrom_file_basename: Test valueFrom on workflow step using basename.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2vqpld2b --quiet testdata/cwl-v1.2/tests/step-valuefrom5-wf.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [174/378] expression_tool_int_array_output: Test output arrays in a tool (with ints).
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpir5e5asa --quiet testdata/cwl-v1.2/tests/output-arrays-int.cwl testdata/cwl-v1.2/tests/output-arrays-int-job.json
+Test [175/378] workflowstep_int_array_input_output: Test output arrays in a workflow (with ints).
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpuuwvk15d --quiet testdata/cwl-v1.2/tests/output-arrays-int-wf.cwl testdata/cwl-v1.2/tests/output-arrays-int-job.json
+Test [176/378] workflow_file_array_output: Test output arrays in a workflow (with Files).
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppdv6ihnt --quiet testdata/cwl-v1.2/tests/output-arrays-file-wf.cwl testdata/cwl-v1.2/tests/output-arrays-file-job.json
+Test [177/378] docker_entrypoint: Test Docker ENTRYPOINT usage
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpy52hdntk --quiet testdata/cwl-v1.2/tests/docker-run-cmd.cwl testdata/cwl-v1.2/tests/empty.json
+Test [178/378] clt_file_size_property_with_empty_file: Test use of size in expressions for an empty file
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpv6izy9f8 --quiet testdata/cwl-v1.2/tests/size-expression-tool.cwl testdata/cwl-v1.2/tests/job-input-array-one-empty-file.json
+Test [179/378] clt_file_size_property_with_multi_file: Test use of size in expressions for a few files
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpsq2k1pzf --quiet testdata/cwl-v1.2/tests/size-expression-tool.cwl testdata/cwl-v1.2/tests/job-input-array-few-files.json
+Test [180/378] any_without_defaults_unspecified_fails: Test Any without defaults, unspecified, should fail.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqomn_r0o --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/null-expression-echo-job.json
+Test [181/378] any_without_defaults_specified_fails: Test Any without defaults, specified, should fail.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpr3r8ulpu --quiet testdata/cwl-v1.2/tests/echo-tool.cwl testdata/cwl-v1.2/tests/null-expression1-job.json
+Test [182/378] step_input_default_value_noexp: Test default value on step input parameter, no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp16w3mf2s --quiet testdata/cwl-v1.2/tests/count-lines9-wf-noET.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_bff7803f-714e-4f8f-b154-7c0a12eef57f failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_382afda0-6ad5-46ae-a0bd-3becfb8fa22b
+  Exit:  -1
+  Stderr:
+execute: null is not valid for non-optional input: in (type: Any)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [183/378] step_input_default_value_overriden_noexp: Test default value on step input parameter overridden by provided source, no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpfaetp792 --quiet testdata/cwl-v1.2/tests/count-lines11-wf-noET.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [184/378] nested_workflow_noexp: Test nested workflow, without ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcobtp9z6 --quiet testdata/cwl-v1.2/tests/count-lines8-wf-noET.cwl testdata/cwl-v1.2/tests/wc-job.json
+Submission sub_0ba89bcc-71c8-49d4-b323-e78b36a60ef1 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_1e07edd8-6486-4702-b09c-cfa0cb7ec810
+  Exit:  -1
+  Stderr:
+execute: null is not valid for non-optional input: in (type: Any)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [185/378] wf_multiplesources_multipletypes_noexp: Test step input with multiple sources with multiple types, without ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmphmu3ivc0 --quiet testdata/cwl-v1.2/tests/sum-wf-noET.cwl testdata/cwl-v1.2/tests/sum-job.json
+Test [186/378] dynamic_resreq_wf_optional_file_default: Within a workflow, test accessing the size attribute of an optional input File as part of a CommandLineTool's ResourceRequirement calculation. The CommandLineTool input has a default value (a local file) and the workflow nor the workflow step does not provide any value for this input.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmph1zd66vc --quiet testdata/cwl-v1.2/tests/dynresreq-workflow-tooldefault.cwl testdata/cwl-v1.2/tests/empty.json
+Test [187/378] dynamic_resreq_wf_optional_file_step_default: Within a workflow, test accessing the size attribute of an optional input File as part of a CommandLineTool's ResourceRequirement calculation. The workflow step provides a default value (a local file) for this input and the workflow itself does not provide any value for this input.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvh4o_xkp --quiet testdata/cwl-v1.2/tests/dynresreq-workflow-stepdefault.cwl testdata/cwl-v1.2/tests/empty.json
+Test [188/378] dynamic_resreq_wf_optional_file_wf_default: Within a workflow, test accessing the size attribute of an optional input File as part of a CommandLineTool's ResourceRequirement calculation. The workflow itelf provides a default value (a local file) for this input.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpbs2s55hq --quiet testdata/cwl-v1.2/tests/dynresreq-workflow-inputdefault.cwl testdata/cwl-v1.2/tests/empty.json
+Test [189/378] step_input_default_value_overriden_2nd_step: Test default value on step input parameter overridden by provided source. With passthrough first step
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp8beuhbkx --quiet testdata/cwl-v1.2/tests/count-lines11-extra-step-wf.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [190/378] step_input_default_value_overriden_2nd_step_noexp: Test default value on step input parameter overridden by provided source. With passthrough first step and no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6jv68z0b --quiet testdata/cwl-v1.2/tests/count-lines11-extra-step-wf-noET.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [191/378] step_input_default_value_overriden_2nd_step_null: Test default value on step input parameter overridden by provided source. With null producing first step
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpr435m66e --quiet testdata/cwl-v1.2/tests/count-lines11-null-step-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [192/378] step_input_default_value_overriden_2nd_step_null_noexp: Test default value on step input parameter overridden by provided source. With null producing first step and no ExpressionTool
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgng3crfu --quiet testdata/cwl-v1.2/tests/count-lines11-null-step-wf-noET.cwl testdata/cwl-v1.2/tests/empty.json
+Test [193/378] stdin_from_directory_literal_with_local_file: Pipe to stdin from user provided local File via a Directory literal
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_rl13ecd --quiet testdata/cwl-v1.2/tests/cat-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-job.yaml
+Test [194/378] stdin_from_directory_literal_with_literal_file: Pipe to stdin from literal File via a Directory literal
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpag916675 --quiet testdata/cwl-v1.2/tests/cat-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file.yaml
+Test [195/378] directory_literal_with_literal_file_nostdin: Test non-stdin reference to literal File via a Directory literal
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqvfmd92e --quiet testdata/cwl-v1.2/tests/cat3-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file.yaml
+Test [196/378] no_inputs_commandlinetool: Test CommandLineTool without inputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp5b748n5k --quiet testdata/cwl-v1.2/tests/no-inputs-tool.cwl
+Test [197/378] no_outputs_commandlinetool: Test CommandLineTool without outputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpku1y4bhv --quiet testdata/cwl-v1.2/tests/no-outputs-tool.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [198/378] no_inputs_workflow: Test Workflow without inputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcu3k7p3a --quiet testdata/cwl-v1.2/tests/no-inputs-wf.cwl
+Test [199/378] no_outputs_workflow: Test Workflow without outputs
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2ukk6kp0 --quiet testdata/cwl-v1.2/tests/no-outputs-wf.cwl testdata/cwl-v1.2/tests/cat-job.json
+Test [200/378] anonymous_enum_in_array: Test an anonymous enum inside an array inside a record
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpx3i7_egt --quiet testdata/cwl-v1.2/tests/anon_enum_inside_array.cwl testdata/cwl-v1.2/tests/anon_enum_inside_array.yml
+Test [201/378] schema-def_anonymous_enum_in_array: Test an anonymous enum inside an array inside a record, SchemaDefRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppt4dcar7 --quiet testdata/cwl-v1.2/tests/anon_enum_inside_array_inside_schemadef.cwl testdata/cwl-v1.2/tests/anon_enum_inside_array_inside_schemadef.yml
+Test [202/378] stdin_shorcut: Test command execution in with stdin and stdout redirection using stdin shortcut
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2w24k_h7 --quiet testdata/cwl-v1.2/tests/cat-tool-shortcut.cwl testdata/cwl-v1.2/tests/wc-job.json
+Test [203/378] secondary_files_in_unnamed_records: Test secondaryFiles on anonymous record fields
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp8edh6zox --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test [204/378] secondary_files_in_named_records: Test secondaryFiles on SchemaDefRequirement record fields
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpk9ntf5zi --quiet testdata/cwl-v1.2/tests/record-sd-secondaryFiles.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test [205/378] secondary_files_in_output_records: Test secondaryFiles on output record fields
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpsjyx1ouf --quiet testdata/cwl-v1.2/tests/record-out-secondaryFiles.cwl testdata/cwl-v1.2/tests/empty.json
+Test [206/378] secondary_files_workflow_propagation: Test secondaryFiles propagation through workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppqortvx_ --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test [207/378] secondary_files_missing: Test checking when secondaryFiles are missing
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppg4r1o6x --quiet testdata/cwl-v1.2/tests/record-in-secondaryFiles-missing-wf.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Test [208/378] input_records_file_entry_with_format: Test format on anonymous record fields
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp__qqrklk --quiet testdata/cwl-v1.2/tests/record-in-format.cwl testdata/cwl-v1.2/tests/record-format-job.yml
+Test [209/378] input_records_file_entry_with_format_and_bad_regular_input_file_format: Test file format checking on parameter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpm525ar0g --quiet testdata/cwl-v1.2/tests/record-in-format.cwl testdata/cwl-v1.2/tests/record-format-job2.yml
+Submission sub_9386b719-04c5-4c9a-a16a-d84aa8f56f6a failed [TASK_FAILED]
+  Error: step 'step1' task failed with exit code -1
+  Step:  step1
+  Task:  task_90dcc6e1-ffd5-4a7a-b2ad-59f2c622a99b
+  Exit:  -1
+  Stderr:
+execute: process inputs: input "record_input.f1": missing required secondary file "A.s2" (pattern: .s2)
+Error: submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+Test [210/378] input_records_file_entry_with_format_and_bad_entry_file_format: Test file format checking on record field
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpx07nm1c7 --quiet testdata/cwl-v1.2/tests/record-in-format.cwl testdata/cwl-v1.2/tests/record-format-job3.yml
+Test [211/378] input_records_file_entry_with_format_and_bad_entry_array_file_format: Test file format checking on array item
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpkvzoisn3 --quiet testdata/cwl-v1.2/tests/record-in-format.cwl testdata/cwl-v1.2/tests/record-format-job4.yml
+Test [212/378] record_output_file_entry_format: Test format on output record fields
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpfc3jljtl --quiet testdata/cwl-v1.2/tests/record-out-format.cwl testdata/cwl-v1.2/tests/record-secondaryFiles-job.yml
+Submission sub_249a4175-60cf-407d-952f-b242367ffa53 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_6389f9cf-4190-4e20-ab97-4f11417fa408
+  Exit:  -1
+  Stderr:
+execute: file format mismatch for regular_input: expected 'http://example.com/format1' but got 'http://example.com/formatZ'
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [213/378] workflow_input_inputBinding_loadContents: Test WorkflowInputParameter.inputBinding.loadContents
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppgg5hp21 --quiet testdata/cwl-v1.2/tests/wf-loadContents.cwl testdata/cwl-v1.2/tests/wf-loadContents-job.yml
+Test [214/378] workflow_input_loadContents_without_inputBinding: Test WorkflowInputParameter.loadContents
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp645arruw --quiet testdata/cwl-v1.2/tests/wf-loadContents2.cwl testdata/cwl-v1.2/tests/wf-loadContents-job.yml
+Submission sub_3c23324e-7169-46a8-a1dc-81203f7cb9e6 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_644ae040-8208-4a89-8e29-e8bcf3bdbdb1
+  Exit:  -1
+  Stderr:
+execute: file format mismatch for record_input.f1: expected 'http://example.com/format1' but got 'http://example.com/formatZ'
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [215/378] expression_tool_input_loadContents: Test loadContents on InputParameter.loadContents (expression)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpihqemz_s --quiet testdata/cwl-v1.2/tests/wf-loadContents3.cwl testdata/cwl-v1.2/tests/wf-loadContents-job.yml
+Test [216/378] workflow_step_in_loadContents: Test WorkflowStepInput.loadContents
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6vk9cne3 --quiet testdata/cwl-v1.2/tests/wf-loadContents4.cwl testdata/cwl-v1.2/tests/wf-loadContents-job.yml
+Submission sub_008dcd2a-f692-4c25-8452-eb911730bed3 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_1443d5df-3151-4090-a1c7-583f56a25fd0
+  Exit:  -1
+  Stderr:
+execute: file format mismatch for record_input.f2[1]: expected 'http://example.com/format2' but got 'http://example.com/formatZ'
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [217/378] timelimit_basic: Test that job fails when exceeding time limit
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmphmmq1xqm --quiet testdata/cwl-v1.2/tests/timelimit.cwl testdata/cwl-v1.2/tests/empty.json
+Test [218/378] timelimit_invalid: Test invalid time limit value
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmphh9p1ozd --quiet testdata/cwl-v1.2/tests/timelimit2.cwl testdata/cwl-v1.2/tests/empty.json
+Test [219/378] timelimit_zero_unlimited: Test zero timelimit means no limit
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpq5b2vet0 --quiet testdata/cwl-v1.2/tests/timelimit3.cwl testdata/cwl-v1.2/tests/empty.json
+Test [220/378] timelimit_from_expression: Test expression in time limit
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1rxkhhsr --quiet testdata/cwl-v1.2/tests/timelimit4.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_3143f9a4-7770-483f-9295-7a6394ca6fd9 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_bbf39327-92dc-435e-b5b4-1402b3478288
+  Exit:  -1
+  Stderr:
+execute: invalid ToolTimeLimit: timelimit must be non-negative, got -1
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [221/378] timelimit_expressiontool: Test timelimit in expressiontool is ignored
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpeoe1_e5p --quiet testdata/cwl-v1.2/tests/timelimit5.cwl testdata/cwl-v1.2/tests/empty.json
+Test [222/378] timelimit_basic_wf: Test that tool in workflow fails when exceeding time limit
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzo_mcx0a --quiet testdata/cwl-v1.2/tests/timelimit-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_98b9158a-1bfd-4e74-a677-f0a3c78b1b2f failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_b7f3d597-7a36-4939-bf7b-f7986a9fd1b3
+  Exit:  -1
+  Stderr:
+execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [223/378] timelimit_invalid_wf: Test that workflow level time limit is not applied to workflow execution time
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2alkqhzv --quiet testdata/cwl-v1.2/tests/timelimit2-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_5e56ee08-8c1f-4837-9328-44b5b9c87d34 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_7898f478-308b-42d4-ab7b-00aaac90ed10
+  Exit:  -1
+  Stderr:
+execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [224/378] timelimit_zero_unlimited_wf: Test zero timelimit means no limit in workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpyuxlvg1u --quiet testdata/cwl-v1.2/tests/timelimit3-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [225/378] timelimit_from_expression_wf: Test expression in time limit in workflow
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9rvpttdk --quiet testdata/cwl-v1.2/tests/timelimit4-wf.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_e0afefe4-2e4a-4aa5-9bec-f397e34d3df8 failed [TASK_FAILED]
+  Error: step 'step1' task failed with exit code -1
+  Step:  step1
+  Task:  task_1e88a489-33a9-4f81-8833-3bdc26415707
+  Exit:  -1
+  Stderr:
+execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+Test [226/378] networkaccess: Test networkaccess enabled
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpmjntsztu --quiet testdata/cwl-v1.2/tests/networkaccess.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_456bae62-614c-4277-8bd0-bb936cb28dd0 failed [TASK_FAILED]
+  Error: step 'step1' task failed with exit code -1
+  Step:  step1
+  Task:  task_d45ae9d6-878e-41af-874d-85e044a72860
+  Exit:  -1
+  Stderr:
+execute: command failed: signal: killed
+Error: submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'step1' task failed with exit code -1
+Test [227/378] networkaccess_disabled: Test networkaccess is disabled by default
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpar_1_541 --quiet testdata/cwl-v1.2/tests/networkaccess2.cwl testdata/cwl-v1.2/tests/empty.json
+Test [228/378] initial_work_dir_for_null_and_arrays: Test null and array input in InitialWorkDirRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9utw263e --quiet testdata/cwl-v1.2/tests/stage-array.cwl testdata/cwl-v1.2/tests/stage-array-job.json
+Test [229/378] initial_work_dir_for_array_dirs: Test array of directories InitialWorkDirRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpz_mzq39a --quiet testdata/cwl-v1.2/tests/stage-array-dirs.cwl testdata/cwl-v1.2/tests/stage-array-dirs-job.yml
+Submission sub_7c384321-9f1d-4d66-a0e0-03e59e006236 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_fec4cd55-9dd7-4d3f-9b9d-29de2de353ca
+  Exit:  -1
+  Stderr:
+execute: apptainer command failed (exit 1): INFO:    Using cached SIF image
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.14/urllib/request.py", line 1321, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+              encode_chunked=req.has_header('Transfer-encoding'))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/http/client.py", line 1358, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/http/client.py", line 1404, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.14/http/client.py", line 1353, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~...(truncated)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [230/378] cwl_requirements_addition: Test requirements in input document via EnvVarRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp8r3cb2su --quiet testdata/cwl-v1.2/tests/env-tool3.cwl testdata/cwl-v1.2/tests/env-job3.yaml
+Test [231/378] cwl_requirements_override_expression: Test conflicting requirements in input document via EnvVarRequirement and expression
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp5pgdvb8_ --quiet testdata/cwl-v1.2/tests/env-tool4.cwl testdata/cwl-v1.2/tests/env-job3.yaml
+Test [232/378] cwl_requirements_override_static: Test conflicting requirements in input document via EnvVarRequirement
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpss00wns7 --quiet testdata/cwl-v1.2/tests/env-tool3.cwl testdata/cwl-v1.2/tests/env-job4.yaml
+Test [233/378] initial_workdir_output_glob: Test full path glob output of InitialWorkDir
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpf7rbitbe --quiet testdata/cwl-v1.2/tests/initialworkdir-glob-fullpath.cwl testdata/cwl-v1.2/tests/initialworkdirrequirement-docker-out-job.json
+Test [234/378] glob_outside_outputs_fails: Test fail trying to glob outside output directory
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_wlx7pkb --quiet testdata/cwl-v1.2/tests/glob-path-error.cwl testdata/cwl-v1.2/tests/empty.json
+Test [235/378] illegal_symlink: symlink to file outside of working directory should NOT be retrieved
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpirujz9u2 --quiet testdata/cwl-v1.2/tests/symlink-illegal.cwl testdata/cwl-v1.2/tests/empty.json
+Test [236/378] legal_symlink: symlink to file inside of working directory should be retrieved
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp__q8tth6 --quiet testdata/cwl-v1.2/tests/symlink-legal.cwl testdata/cwl-v1.2/tests/empty.json
+Test [237/378] modify_file_content: inplace update has side effect on file content
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprssn8jru --quiet testdata/cwl-v1.2/tests/inp_update_wf.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_3e5b7b19-22e6-4654-b60a-ae85f21da312 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_a8fed3f1-278a-4d90-9c35-9f39c665c12b
+  Exit:  -1
+  Stderr:
+execute: collect outputs: output output_file: output glob "symlink.txt" matched symlink "/tmp/gowe-test-worker-8097/workdir/w2/task_a8fed3f1-278a-4d90-9c35-9f39c665c12b/symlink.txt" pointing to "/tmp/original.txt" which is outside the output directory
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [238/378] modify_directory_content: inplace update has side effect on directory content
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcifoe5qu --quiet testdata/cwl-v1.2/tests/inpdir_update_wf.cwl testdata/cwl-v1.2/tests/empty.json
+Test [239/378] outputbinding_glob_directory: Test that OutputBinding.glob accepts Directories
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqwkktrd8 --quiet testdata/cwl-v1.2/tests/glob_directory.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_ea5a3797-61ab-447e-95ab-aaa86085ed25 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_e0eba177-0077-4a41-86db-65727f6682cb
+  Exit:  -1
+  Stderr:
+execute: collect outputs: output OUTPUT: output glob "/etc/passwd" matched path "/etc/passwd" which is outside the output directory
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [240/378] stage_file_array: Test that array of input files can be staged to directory with entryname
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpyhqvkqpw --quiet testdata/cwl-v1.2/tests/stage_file_array.cwl testdata/cwl-v1.2/tests/stage_file_array.job.json
+Submission sub_3fba877d-948a-4eb6-b90a-a3c6cabe1a4c failed [UNSUPPORTED_REQUIREMENT]
+  Error: InplaceUpdateRequirement is not supported in server execution mode
+  Step:  step2
+Error: InplaceUpdateRequirement is not supported in server execution mode
+InplaceUpdateRequirement is not supported in server execution mode
+Test [241/378] stage_file_array_basename: Test that array of input files can be staged to directory with basename
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgmhqlrlt --quiet testdata/cwl-v1.2/tests/stage_file_array_basename.cwl testdata/cwl-v1.2/tests/stage_file_array.job.json
+Submission sub_95936acc-5d03-467a-824d-218e8812850e failed [UNSUPPORTED_REQUIREMENT]
+  Error: InplaceUpdateRequirement is not supported in server execution mode
+  Step:  step2
+Error: InplaceUpdateRequirement is not supported in server execution mode
+InplaceUpdateRequirement is not supported in server execution mode
+Test [242/378] stage_file_array_entryname_overrides: Test that if array of input files are staged to directory with basename and entryname, entryname overrides
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9x4uvsm_ --quiet testdata/cwl-v1.2/tests/stage_file_array_basename_and_entryname.cwl testdata/cwl-v1.2/tests/stage_file_array.job.json
+Test [243/378] tmpdir_is_not_outdir: Test that runtime.tmpdir is not runtime.outdir
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplg4zldc5 --quiet testdata/cwl-v1.2/tests/runtime-paths-distinct.cwl testdata/cwl-v1.2/tests/empty.json
+Test [244/378] listing_default_none: Test that default behavior is 'no_listing' if not specified
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpefv7hgqr --quiet testdata/cwl-v1.2/tests/listing_none1.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [245/378] listing_requirement_none: Test that 'listing' is not present when LoadListingRequirement is 'no_listing'
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpza_ejd_e --quiet testdata/cwl-v1.2/tests/listing_none2.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [246/378] listing_loadListing_none: Test that 'listing' is not present when loadListing on input parameter is 'no_listing'
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1jn27p1j --quiet testdata/cwl-v1.2/tests/listing_none3.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [247/378] listing_requirement_shallow: Test that 'listing' is present in top directory object but not subdirectory object when LoadListingRequirement is 'shallow_listing'
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpr5t0f1zc --quiet testdata/cwl-v1.2/tests/listing_shallow1.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [248/378] listing_loadListing_shallow: Test that 'listing' is present in top directory object but not subdirectory object when loadListing on input parameter loadListing is 'shallow_listing'
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpzurri9nb --quiet testdata/cwl-v1.2/tests/listing_shallow2.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [249/378] listing_outputBinding_loadListing: Test that loadListing works when used on outputBinding.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpfwyuzu0i --quiet testdata/cwl-v1.2/tests/listing_shallow3.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [250/378] listing_requirement_deep: Test that 'listing' is present in top directory object and in subdirectory objects when LoadListingRequirement is 'deep_listing'
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpkkv1q570 --quiet testdata/cwl-v1.2/tests/listing_deep1.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [251/378] listing_loadListing_deep: Test that 'listing' is present in top directory object and in subdirectory objects when input parameter loadListing is 'deep_listing'
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp80iv2pn4 --quiet testdata/cwl-v1.2/tests/listing_deep2.cwl testdata/cwl-v1.2/tests/listing-job.yml
+Test [252/378] inputBinding_position_expr: Test for expression in the InputBinding.position field; also test using emoji in CWL document and tool output
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpr21c5i65 --quiet testdata/cwl-v1.2/tests/echo-position-expr.cwl testdata/cwl-v1.2/tests/echo-position-expr-job.yml
+Test [253/378] outputEval_exitCode: Can access exit code in outputEval
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpoj133plq --quiet testdata/cwl-v1.2/tests/exitcode.cwl testdata/cwl-v1.2/tests/empty.json
+Test [254/378] any_input_param_graph_no_default: Test use of $graph without specifying which process to run
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpeak7hjet --quiet testdata/cwl-v1.2/tests/echo-tool-packed.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [255/378] any_input_param_graph_no_default_hashmain: Test use of $graph without specifying which process to run, hash-prefixed "main"
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcbephpoq --quiet testdata/cwl-v1.2/tests/echo-tool-packed2.cwl testdata/cwl-v1.2/tests/env-job.json
+Test [256/378] optional_numerical_output_returns_0_not_null: Test that optional number output is returned as 0, not null
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptvur7tzf --quiet testdata/cwl-v1.2/tests/optional-numerical-output-0.cwl testdata/cwl-v1.2/tests/empty.json
+Test [257/378] cores_float: Test float value for coresMin(Max) is rounded up in runtime.cores
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptpfrwm8j --quiet testdata/cwl-v1.2/tests/cores_float.cwl testdata/cwl-v1.2/tests/empty.json
+Test [258/378] storage_float: Test float value for ram/tmpdir/outdir Min(Max) is rounded up
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp1hd4nu41 --quiet testdata/cwl-v1.2/tests/storage_float.cwl testdata/cwl-v1.2/tests/empty.json
+Test [259/378] cat_synthetic_file: Test the generation of a synthetic file with inline contents.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmps43o6me0 --quiet testdata/cwl-v1.2/tests/synth-file.cwl testdata/cwl-v1.2/tests/synth-file-job.yml
+Test [260/378] continuation: Line continuations in bash scripts should behave correctly
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9fom2pop --quiet testdata/cwl-v1.2/tests/string-interpolation/bash-line-continuation.cwl
+Test [261/378] continuation_expression: Line continuations in bash scripts should always behave correctly
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppe9jrdk8 --quiet testdata/cwl-v1.2/tests/string-interpolation/bash-line-continuation-with-expression.cwl
+Test [262/378] quoting_multiple_backslashes: Test quoting multiple backslashes
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpof7vz5qi --quiet testdata/cwl-v1.2/tests/string-interpolation/bash-dollar-quote.cwl
+Test [263/378] escaping_expression_no_extra_quotes: Strings returned from JS expressions should not have extra quotes around them
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpekta175j --quiet testdata/cwl-v1.2/tests/string-interpolation/js-quote.cwl
+Test [264/378] direct_optional_null_result: Simplest conditional pattern (False)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpuzr377ce --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-001.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [265/378] direct_optional_nonnull_result: Simplest conditional pattern (True)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpf8tpv_17 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-001.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Test [266/378] direct_required: Conditional using intermediate WorkflowStep.in input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpju4lkn81 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-002.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [267/378] pass_through_required_false_when: Pass through pattern with pickValue: first_non_null; 'when' is false
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpa3i0614m --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [268/378] pass_through_required_true_when: pass through pattern with pickvalue: first_non_null; 'when' is true
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqax6qg75 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Test [269/378] first_non_null_first_non_null: pickValue: first_non_null first item is non null
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppq3l6791 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.1.cwl testdata/cwl-v1.2/tests/conditionals/val.0.job.yaml
+Test [270/378] first_non_null_all_null: pickValue: first_non_null needs at least one non null
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplfeic5rq --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.1.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [271/378] first_non_null_second_non_null: pickValue: first_non_null second item is non null
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpgsrh2k1z --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.1.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Test [272/378] pass_through_required_the_only_non_null: pickvalue: the_only_non_null will pass, only for false condition
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0tnmfdzn --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-004.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [273/378] pass_through_required_fail: pickValue: the_only_non_null will fail due to multiple non nulls
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpee6txty2 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-004.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Submission sub_82792089-8a9d-4d73-9a6f-455d082df542 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue first_non_null: all sources are null
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+Test [274/378] all_non_null_multi_with_non_array_output: pickValue: all_non_null will fail validation
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvx5r69tp --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-005.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Error: create workflow: VALIDATION_ERROR: CWL validation failed
+create workflow: VALIDATION_ERROR: CWL validation failed
+Test [275/378] the_only_non_null_single_true: pickValue: the_only_non_null will pass for only one active node
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpcikfcnfp --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-006.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [276/378] the_only_non_null_multi_true: pickValue: the_only_non_null will fail with two active nodes
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwm6y3kws --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-006.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Test [277/378] all_non_null_all_null: pickValue: all_non_null will produce a list, even if empty
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpn_l0wot2 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-007.cwl testdata/cwl-v1.2/tests/conditionals/val.0.job.yaml
+Submission sub_a65523e1-f729-4e78-b472-b6b179458338 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [278/378] all_non_null_one_non_null: pickValue: all_non_null will produce a list; even if single item list
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpo8dic3sj --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-007.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Submission sub_6888b5c1-ea50-426e-932b-955146ec8d69 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [279/378] all_non_null_multi_non_null: pickValue: all_non_null will produce a list
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp433o0r8i --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-007.cwl testdata/cwl-v1.2/tests/conditionals/val.3.job.yaml
+Test [280/378] condifional_scatter_on_nonscattered_false: Simple scatter: conditional on a non scattered variable (False)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp8hdaz32y --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-009.cwl testdata/cwl-v1.2/tests/conditionals/cond15.job.yaml
+Test [281/378] condifional_scatter_on_nonscattered_true: Simple scatter: conditional on a non scattered variable (True)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppoza8j4b --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-009.cwl testdata/cwl-v1.2/tests/conditionals/cond16.job.yaml
+Test [282/378] scatter_on_scattered_conditional: Simple scatter: Add conditional variable to scatter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9_ekzwc8 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-010.cwl testdata/cwl-v1.2/tests/conditionals/val.6.list.job.yaml
+Test [283/378] conditionals_nested_cross_scatter: nested cross product scatter with condition on one dimension
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpqil1s__l --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-011.cwl testdata/cwl-v1.2/tests/conditionals/cond18.job.yaml
+Test [284/378] conditionals_non_boolean_fail: Non-boolean values from "when" should fail
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpc3gsz35s --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-012.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Submission sub_67906c4a-87e5-447e-9dc7-686e655ace91 failed [STEP_FAILED]
+  Error: step 'step1' failed
+  Step:  step1
+Error: submission failed: [STEP_FAILED] step 'step1' failed
+submission failed: [STEP_FAILED] step 'step1' failed
+Test [285/378] conditionals_multi_scatter: Scatter two steps, flatten result + pickValue
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwis6__vy --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-013.cwl testdata/cwl-v1.2/tests/conditionals/cond20.job.yaml
+Test [286/378] direct_optional_null_result_nojs: simplest conditional pattern (true), no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0ojagf_9 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-001_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-true.yml
+Test [287/378] direct_optional_nonnull_result_nojs: simplest conditional pattern (false), no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpnzodbfmu --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-001_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-false.yml
+Test [288/378] direct_required_nojs: Conditional using intermediate WorkflowStep.in input; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpghg2edy7 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-002_nojs.cwl testdata/cwl-v1.2/tests/conditionals/val.1.job.yaml
+Test [289/378] pass_through_required_false_when_nojs: Pass through pattern with pickValue: first_non_null; 'when' is false'; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpg124sgux --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-false.yml
+Test [290/378] pass_through_required_true_when_nojs: pass through pattern with pickvalue: first_non_null; 'when' is true'; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprpglmb4x --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-true.yml
+Test [291/378] first_non_null_first_non_null_nojs: pickValue: first_non_null first item is non null; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp23onridv --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.1_nojs.cwl testdata/cwl-v1.2/tests/conditionals/first-true.yml
+Test [292/378] first_non_null_all_null_nojs: pickValue: first_non_null needs at least one non null; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpba5q7169 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.1_nojs.cwl testdata/cwl-v1.2/tests/conditionals/both-false.yml
+Test [293/378] first_non_null_second_non_null_nojs: pickValue: first_non_null second item is non null; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwcisp7ze --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-003.1_nojs.cwl testdata/cwl-v1.2/tests/conditionals/second-true.yml
+Test [294/378] pass_through_required_the_only_non_null_nojs: pickvalue: the_only_non_null will pass, only for false condition; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6_4x_tqp --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-004_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-false.yml
+Test [295/378] pass_through_required_fail_nojs: pickValue: the_only_non_null will fail due to multiple non nulls; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplwiil25v --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-004_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-true.yml
+Submission sub_5d2b189b-b31e-474c-acb8-9cd582bf2098 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue first_non_null: all sources are null
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue first_non_null: all sources are null
+Test [296/378] all_non_null_multi_with_non_array_output_nojs: pickValue: all_non_null will fail validation; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe8wmqwde --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-005_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-true.yml
+Error: create workflow: VALIDATION_ERROR: CWL validation failed
+create workflow: VALIDATION_ERROR: CWL validation failed
+Test [297/378] the_only_non_null_single_true_nojs: pickValue: the_only_non_null will pass for only one active node; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpuf4bozdd --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-006_nojs.cwl testdata/cwl-v1.2/tests/conditionals/second-true.yml
+Test [298/378] the_only_non_null_multi_true_nojs: pickValue: the_only_non_null will fail with two active nodes; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvyrs_yr_ --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-006_nojs.cwl testdata/cwl-v1.2/tests/conditionals/both-true.yml
+Test [299/378] all_non_null_all_null_nojs: pickValue: all_non_null will produce a list, even if empty; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpv3_pxbpy --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-007_nojs.cwl testdata/cwl-v1.2/tests/conditionals/both-false.yml
+Submission sub_2699486d-0626-4917-a65d-4af435681c15 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [300/378] all_non_null_one_non_null_nojs: pickValue: all_non_null will produce a list; even if single item list; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpn1f6eaol --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-007_nojs.cwl testdata/cwl-v1.2/tests/conditionals/second-true.yml
+Test [301/378] all_non_null_multi_non_null_nojs: pickValue: all_non_null will produce a list; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpedurzyap --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-007_nojs.cwl testdata/cwl-v1.2/tests/conditionals/both-true.yml
+Submission sub_ca7b7fab-4ef7-4526-a106-329e85b6f1c0 failed [OUTPUT_COLLECTION_FAILED]
+  Error: output out1: pickValue the_only_non_null: multiple non-null values (2)
+Error: submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+submission failed: [OUTPUT_COLLECTION_FAILED] output out1: pickValue the_only_non_null: multiple non-null values (2)
+Test [302/378] condifional_scatter_on_nonscattered_false_nojs: Simple scatter: conditional on a non scattered variable (False); no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpc161fcph --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-009_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-false.yml
+Test [303/378] condifional_scatter_on_nonscattered_true_nojs: Simple scatter: conditional on a non scattered variable (True); no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpt4ntxocu --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-009_nojs.cwl testdata/cwl-v1.2/tests/conditionals/test-true.yml
+Test [304/378] scatter_on_scattered_conditional_nojs: Simple scatter: Add conditional variable to scatter; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6gu4zh5i --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-010_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Test [305/378] conditionals_nested_cross_scatter_nojs: nested cross product scatter with condition on one dimension; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpw7lk14uf --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-011_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Test [306/378] conditionals_non_boolean_fail_nojs: Non-boolean values from "when" should fail; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpbs6lcqnp --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-012_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Test [307/378] conditionals_multi_scatter_nojs: Scatter two steps, flatten result + pickValue; no javascript
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7w6qj0t2 --quiet testdata/cwl-v1.2/tests/conditionals/cond-wf-013_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_9ca56bb9-c7c3-40f8-85d7-e4cf583d2276 failed [STEP_FAILED]
+  Error: step 'step1' failed
+  Step:  step1
+Error: submission failed: [STEP_FAILED] step 'step1' failed
+submission failed: [STEP_FAILED] step 'step1' failed
+Test [308/378] cond-with-defaults-1: Default inputs, choose step to run based on what was provided, first case
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmph53_gukm --quiet testdata/cwl-v1.2/tests/conditionals/cond-with-defaults.cwl testdata/cwl-v1.2/tests/conditionals/cond-job.yaml
+Test [309/378] cond-with-defaults-2: Default inputs, choose step to run based on what was provided, second case
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpc41p9sid --quiet testdata/cwl-v1.2/tests/conditionals/cond-with-defaults.cwl testdata/cwl-v1.2/tests/conditionals/cond-job2.yaml
+Test [310/378] command_input_file_expression: Confirm CommandInputParameter expression can receive a File object
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp5ni3f381 --quiet testdata/cwl-v1.2/tests/secondaryfiles/rename-inputs.cwl testdata/cwl-v1.2/tests/secondaryfiles/rename-inputs.yml
+Test [311/378] command_output_file_expression: Confirm CommandOutputParameter expression can receive a File object
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpq730q88d --quiet testdata/cwl-v1.2/tests/secondaryfiles/rename-outputs.cwl
+Test [312/378] mixed_version_v10_wf: test v1.0 workflow document that runs other versions
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpperh76y6 --quiet testdata/cwl-v1.2/tests/mixed-versions/wf-v10.cwl
+Test [313/378] mixed_version_v11_wf: test v1.1 workflow document that runs other versions
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxaalrfzm --quiet testdata/cwl-v1.2/tests/mixed-versions/wf-v11.cwl
+Test [314/378] mixed_version_v12_wf: test v1.2 workflow document that runs other versions
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpeyra2d_h --quiet testdata/cwl-v1.2/tests/mixed-versions/wf-v12.cwl
+Test [315/378] invalid_syntax_v10_uses_v12_tool: test tool with v1.2 syntax marked as v1.0 (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_7fw2gcp --quiet testdata/cwl-v1.2/tests/mixed-versions/invalid-tool-v10.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+Test [316/378] invalid_syntax_v11_uses_v12_tool: test tool with v1.2 syntax marked as v1.1 (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpw0obnwpw --quiet testdata/cwl-v1.2/tests/mixed-versions/invalid-tool-v11.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): ResourceRequirement coresMin: non-integer values require cwlVersion v1.2 or later (document is v1.1)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): ResourceRequirement coresMin: non-integer values require cwlVersion v1.2 or later (document is v1.1)
+Test [317/378] invalid_syntax_v10_uses_v12_workflow: test wf with v1.2 syntax marked as v1.0 (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe6o73eb0 --quiet testdata/cwl-v1.2/tests/mixed-versions/invalid-wf-v10.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.0)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.0)
+Test [318/378] invalid_syntax_v11_uses_v12_workflow: test wf with v1.2 syntax marked as v1.1 (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpddrps1v6 --quiet testdata/cwl-v1.2/tests/mixed-versions/invalid-wf-v11.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.1)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[3] (Workflow): step "toolv12": 'when' clause requires cwlVersion v1.2 or later (document is v1.1)
+Test [319/378] invalid_syntax_mixed_v12_workflow: test 1.2 wf that includes tools that are marked as v1.0 and v1.1 that contain v1.2 features (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp96hupy0d --quiet testdata/cwl-v1.2/tests/mixed-versions/invalid-wf-v12.cwl
+Error: create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+create workflow: VALIDATION_ERROR: CWL parse error: $graph[0] (CommandLineTool): input "inp1": secondaryFiles 'required' field requires cwlVersion v1.1 or later (document is v1.0)
+Test [320/378] cwloutput_nolimit: Test that loading from cwl.output.json isn't limited to 64k
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpm2svm57c --quiet testdata/cwl-v1.2/tests/loadContents/cwloutput-nolimit.cwl
+Test [321/378] loadcontents_limit: Test that loadContents on a file larger than 64k fails
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpk_cosxhq --quiet testdata/cwl-v1.2/tests/loadContents/loadContents-limit.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [322/378] iwd-nolimit: Test that InitialWorkDir contents can be bigger than 64k
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpq_11vs3d --quiet testdata/cwl-v1.2/tests/iwd/iwd-nolimit.cwl
+Test [323/378] iwd-jsondump1: Test dump object to JSON in InitialWorkDir file contents, no trailing newline
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpfshpvact --quiet testdata/cwl-v1.2/tests/iwd/iwd-jsondump1.cwl
+Submission sub_0f6d760b-c027-4257-bce6-8a5a67be5e76 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_c5074ecf-1edc-4909-9e65-03954414e1fe
+  Exit:  -1
+  Stderr:
+execute: process inputs: input "filelist": loadContents: file "/tmp/gowe-test-worker-8097/uploads/20260404-031752/inp-filelist.txt" is 268866 bytes, exceeds 64KB limit
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [324/378] iwd-jsondump1-nl: Test dump object to JSON in InitialWorkDir file contents, with trailing newline
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvo33vpi2 --quiet testdata/cwl-v1.2/tests/iwd/iwd-jsondump1-nl.cwl
+Test [325/378] iwd-jsondump2: Test array to JSON in InitialWorkDir file contents, no trailing newline
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp04rh9xbk --quiet testdata/cwl-v1.2/tests/iwd/iwd-jsondump2.cwl
+Test [326/378] iwd-jsondump2-nl: Test array to JSON in InitialWorkDir file contents, with trailing newline
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp3ylcsfku --quiet testdata/cwl-v1.2/tests/iwd/iwd-jsondump2-nl.cwl
+Test [327/378] iwd-jsondump3: Test number to JSON in InitialWorkDir file contents, no trailing newline
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpiguv7lny --quiet testdata/cwl-v1.2/tests/iwd/iwd-jsondump3.cwl
+Test [328/378] iwd-jsondump3-nl: Test number to JSON in InitialWorkDir file contents, with trailing newline
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpe4smaxsi --quiet testdata/cwl-v1.2/tests/iwd/iwd-jsondump3-nl.cwl
+Test [329/378] iwd-passthrough1: Test InitialWorkDir file passthrough
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp16n0z75x --quiet testdata/cwl-v1.2/tests/iwd/iwd-passthrough1.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [330/378] iwd-passthrough2: Test InitialWorkDir file object is serialized to json
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6q411z0n --quiet testdata/cwl-v1.2/tests/iwd/iwd-passthrough2.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [331/378] iwd-passthrough3: Test InitialWorkDir file object is passed through
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpft5v9wuz --quiet testdata/cwl-v1.2/tests/iwd/iwd-passthrough3.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [332/378] iwd-passthrough4: Test InitialWorkDir file object is passed through
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpc7fakplo --quiet testdata/cwl-v1.2/tests/iwd/iwd-passthrough4.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [333/378] iwd-fileobjs1: Test File and Directory object in listing
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpno4fucah --quiet testdata/cwl-v1.2/tests/iwd/iwd-fileobjs1.cwl
+Test [334/378] iwd-fileobjs2: Test File and Directory object in listing
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmph7z0bgtd --quiet testdata/cwl-v1.2/tests/iwd/iwd-fileobjs2.cwl
+Test [335/378] iwd-container-entryname1: Test input mount locations when container required
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0_0bq1d5 --quiet testdata/cwl-v1.2/tests/iwd/iwd-container-entryname1.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [336/378] iwd-container-entryname2: Test input mount locations when no container (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp6m8s7rku --quiet testdata/cwl-v1.2/tests/iwd/iwd-container-entryname2.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [337/378] iwd-container-entryname3: Test input mount locations when container is a hint (should fail)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpb_6y9f5r --quiet testdata/cwl-v1.2/tests/iwd/iwd-container-entryname3.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Test [338/378] iwd-container-entryname4: Must fail if entryname starts with ../
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp8rbr08wy --quiet testdata/cwl-v1.2/tests/iwd/iwd-container-entryname4.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Submission sub_ee45fdaf-1324-4b6e-81e0-3f685cefa7bd failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_85676434-5536-410e-a7e6-d9ea7c89070e
+  Exit:  -1
+  Stderr:
+execute: stage InitialWorkDirRequirement: absolute entryname "/tmp2j3y7rpb/input/stuff.txt" requires DockerRequirement in requirements (not hints)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [339/378] iwdr_dir_literal_real_file: Test directory literal containing a real file
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpu8zas3ey --quiet testdata/cwl-v1.2/tests/iwd/iwdr_dir_literal_real_file.cwl testdata/cwl-v1.2/tests/loadContents/input.yml
+Submission sub_80896525-2338-40ad-a80e-f477a284f701 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_fa3ccabc-86e6-4d4a-8e61-a367eec8d7a1
+  Exit:  -1
+  Stderr:
+execute: stage InitialWorkDirRequirement: entryname "../input/stuff.txt" is invalid: must not reference parent directory
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [340/378] iwd-subdir: Test emitting a subdirectory from initial workdir
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpy8nkfn4d --quiet testdata/cwl-v1.2/tests/iwd/iwd-subdir-wf.cwl testdata/cwl-v1.2/tests/iwd/iwd-subdir-job.yml
+Test [341/378] simple_simple_scatter: Two level nested scatter
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7vhxd54w --quiet testdata/cwl-v1.2/tests/scatter/simple-simple-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter-job.yml
+Submission sub_76e853f4-74a5-4534-9377-880fbd5c8735 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_b6361578-e1d4-4506-afc0-e23ec4804131
+  Exit:  -1
+  Stderr:
+execute: stage InitialWorkDirRequirement: absolute entryname "/tmp2j3y7rpb/input/stuff.txt" requires DockerRequirement in requirements (not hints)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [342/378] dotproduct_simple_scatter: Two level nested scatter: external dotproduct and internal simple
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp9994k8pu --quiet testdata/cwl-v1.2/tests/scatter/dotproduct-simple-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter2-job.yml
+Test [343/378] simple_dotproduct_scatter: Two level nested scatter: external simple and internal dotproduct
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp69qmjdbi --quiet testdata/cwl-v1.2/tests/scatter/simple-dotproduct-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter3-job.yml
+Test [344/378] dotproduct_dotproduct_scatter: Two level nested scatter: external dotproduct and internal dotproduct
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptzgqv35i --quiet testdata/cwl-v1.2/tests/scatter/dotproduct-dotproduct-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter4-job.yml
+Test [345/378] flat_crossproduct_simple_scatter: Two level nested scatter: external flat_crossproduct and internal simple
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwkn07re3 --quiet testdata/cwl-v1.2/tests/scatter/flat-crossproduct-simple-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter2-job.yml
+Test [346/378] simple_flat_crossproduct_scatter: Two level nested scatter: external simple and internal flat_crossproduct
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7hmw83m1 --quiet testdata/cwl-v1.2/tests/scatter/simple-flat-crossproduct-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter3-job.yml
+Test [347/378] flat_crossproduct_flat_crossproduct_scatter: Two level nested scatter: external flat_crossproduct and internal flat_crossproduct
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp2nyoqq2t --quiet testdata/cwl-v1.2/tests/scatter/flat-crossproduct-flat-crossproduct-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter4-job.yml
+Test [348/378] nested_crossproduct_simple_scatter: Two level nested scatter: external nested_crossproduct and internal simple
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp_agqtxz_ --quiet testdata/cwl-v1.2/tests/scatter/nested-crossproduct-simple-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter2-job.yml
+Test [349/378] simple_nested_crossproduct_scatter: Two level nested scatter: external simple and internal nested_crossproduct
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp7p9yanyy --quiet testdata/cwl-v1.2/tests/scatter/simple-nested-crossproduct-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter3-job.yml
+Test [350/378] nested_crossproduct_nested_crossproduct_scatter: Two level nested scatter: external nested_crossproduct and internal nested_crossproduct
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprzeq9bna --quiet testdata/cwl-v1.2/tests/scatter/nested-crossproduct-nested-crossproduct-scatter.cwl testdata/cwl-v1.2/tests/scatter/scatter4-job.yml
+Test [351/378] params_broken_null: Test parameter reference that refers to null.something
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpj7_ljlno --quiet testdata/cwl-v1.2/tests/params_broken_null.cwl testdata/cwl-v1.2/tests/empty.json
+Test [352/378] length_for_non_array: Test parameter reference that refers to length of non-array input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpa695ojul --quiet testdata/cwl-v1.2/tests/params_broken_length_of_non_list.cwl testdata/cwl-v1.2/tests/empty.json
+Test [353/378] user_defined_length_in_parameter_reference: Test 'length' in parameter reference where it does not refer to length of an array input
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmppang4wyc --quiet testdata/cwl-v1.2/tests/params_input_length_non_array.cwl testdata/cwl-v1.2/tests/length_non_array_input.yml
+Test [354/378] directory_literal_with_literal_file_in_subdir_nostdin: Test non-stdin reference to literal File via a nested Directory literal
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpie8uromk --quiet testdata/cwl-v1.2/tests/cat4-from-dir.cwl testdata/cwl-v1.2/tests/cat-from-dir-with-literal-file-in-subdir.yaml
+Submission sub_e5cbc1ae-80b2-4670-baf8-f82d39d3ed21 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_8a48f4fa-2656-4862-b4c1-57e5af84059f
+  Exit:  -1
+  Stderr:
+execute: collect outputs: output output1: expression error in $(null.something): TypeError: Cannot read property 'something' of undefined at <eval>:1:6(1)
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [355/378] colon_in_paths: Confirm that colons are tolerated in input paths, string values, stdout shortcut, and output file & directory names
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp47wv3_oe --quiet testdata/cwl-v1.2/tests/colon:test.cwl testdata/cwl-v1.2/tests/colon:test:job.yaml
+Submission sub_d5f67dad-da61-4bf6-a22d-0cf510ee8ac6 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_9ce7a0e1-0f16-4cc6-9f09-0b4d71110202
+  Exit:  -1
+  Stderr:
+execute: collect outputs: output output1: cannot access .length on non-array value of type int64 in expression: inputs.bar.length
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [356/378] colon_in_output_path: Confirm that colons are tolerated in output directory names
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0zr1dj6a --quiet testdata/cwl-v1.2/tests/colon_test_output.cwl testdata/cwl-v1.2/tests/colon_test_output_job.yaml
+Test [357/378] record_with_default: Confirm that records with defaults are accepted
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp19_n1tgf --quiet testdata/cwl-v1.2/tests/paramref_arguments_roundtrip.cwl
+Test [358/378] record_outputeval: Use of outputEval on a record itself, not the fields of the record
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp913qupks --quiet testdata/cwl-v1.2/tests/record_outputeval.cwl
+Test [359/378] record_outputeval_nojs: Use of outputEval on a record itself, not the fields of the record (without javascript)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpjnvz60kt --quiet testdata/cwl-v1.2/tests/record_outputeval_nojs.cwl
+Test [360/378] staging-basename: Use of expression tool to change basename of file, then correctly staging the file using the new name.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp0txc9ntf --quiet testdata/cwl-v1.2/tests/staging-basename/wf_ren.cwl
+Test [361/378] runtime-outdir: Use of $(runtime.outdir) for outputBinding glob.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpw587zfjr --quiet testdata/cwl-v1.2/tests/runtime-outdir.cwl
+Test [362/378] record_order_with_input_bindings: Test sorting arguments at each level (inputBinding for all levels)
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpxu35sp7t --quiet testdata/cwl-v1.2/tests/record-order.cwl testdata/cwl-v1.2/tests/record-order-job.json
+Test [363/378] output_reference_workflow_input: Direct use of Workflow level input fields in the outputs.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmprmrc4_ev --quiet testdata/cwl-v1.2/tests/output_reference_workflow_input.cwl
+Test [364/378] stdout_chained_commands: Test that chaining two echo calls causes the workflow tool to emit the output to stdout. This is to confirm that the workflow tool will **not** create an expression such as `echo a && echo b > out.txt`, but instead will produce the correct `echo a && echo b`, and capture the output correctly.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp5m0gye2c --quiet testdata/cwl-v1.2/tests/stdout_chained_commands.cwl
+Test [365/378] multiple-input-feature-requirement: MultipleInputFeatureRequirement on workflow outputs.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpvcv2840a --quiet testdata/cwl-v1.2/tests/multiple_input_feature_requirement.cwl
+Test [366/378] js-input-record: A test case for JS with an input record.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp107ifhqy --quiet testdata/cwl-v1.2/tests/js-input-record.cwl testdata/cwl-v1.2/tests/js-input-record.json
+Test [367/378] schemadef_types_with_import: Test SchemaDefRequirement with a workflow, with the `$import` under types. It is similar to schemadef-wf, but the `$import` is different.
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmptyh42ch4 --quiet testdata/cwl-v1.2/tests/schemadef_types_with_import-wf.cwl testdata/cwl-v1.2/tests/schemadef_types_with_import-job.json
+Test [368/378] filename_with_hash_mark: Test for correct handling of URL-quoting in filename to refer to filename containing a hash mark
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpl465fe6e --quiet testdata/cwl-v1.2/tests/cat-tool.cwl testdata/cwl-v1.2/tests/octo.yml
+Test [369/378] capture_files: Test that a type error is raised if directories are returned by glob evaluation when type is File
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpomjbeck1 --quiet testdata/cwl-v1.2/tests/capture-files.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [370/378] capture_dirs: Test that a type error is raised if files are returned by glob evaluation when type is Directory
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp37zxkl9k --quiet testdata/cwl-v1.2/tests/capture-dirs.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [371/378] capture_files_and_dirs: Test that both files and directories are captured by glob evaluation when type is [Directory, File]
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpylre2qis --quiet testdata/cwl-v1.2/tests/capture-files-and-dirs.cwl testdata/cwl-v1.2/tests/dir-job.yml
+Test [372/378] very_big_and_very_floats: Confirm that very big and very small numbers are represented using decimals, not scientific notation
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpwonaiyek --quiet testdata/cwl-v1.2/tests/floats_small_and_large.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_03f58f65-2a20-44d1-8933-27590850fe2f failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_6b7f976b-07cc-4daa-82da-153ad4da236d
+  Exit:  -1
+  Stderr:
+execute: collect outputs: output result: type error: output type is File but glob matched directory "/tmp/gowe-test-worker-8097/workdir/w1/task_6b7f976b-07cc-4daa-82da-153ad4da236d/testdir/c"
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [373/378] very_big_and_very_floats_nojs: Confirm that very big and very small numbers are represented using decimals, not scientific notation
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmp79nicx6v --quiet testdata/cwl-v1.2/tests/floats_small_and_large_nojs.cwl testdata/cwl-v1.2/tests/empty.json
+Submission sub_070974e7-becb-4b2a-8dd1-99eeb8eda865 failed [TASK_FAILED]
+  Error: step 'run_tool' task failed with exit code -1
+  Step:  run_tool
+  Task:  task_86182ab4-ca8a-44a6-81dd-859fd753465d
+  Exit:  -1
+  Stderr:
+execute: collect outputs: output result: type error: output type is Directory but glob matched file "/tmp/gowe-test-worker-8097/workdir/w1/task_86182ab4-ca8a-44a6-81dd-859fd753465d/testdir/a"
+Error: submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+submission failed: [TASK_FAILED] step 'run_tool' task failed with exit code -1
+Test [374/378] default_with_falsey_value: Confirms that "false"-like (but not 'null') values override any default
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpj99o7fa3 --quiet testdata/cwl-v1.2/tests/default_with_falsey_value.cwl testdata/cwl-v1.2/tests/empty.json
+Test [375/378] nested_types: demonstrate usage of nested types
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpehvjpf04 --quiet testdata/cwl-v1.2/tests/nested_types.cwl testdata/cwl-v1.2/tests/nested_types.yaml
+Test [376/378] paramref_arguments_runtime: confirm that $runtime is available to parameter references in arguments
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpjghuwkmw --quiet testdata/cwl-v1.2/tests/paramref_arguments_runtime.cwl testdata/cwl-v1.2/tests/empty.json
+Test [377/378] paramref_arguments_self: confirm that $self is available and set to null in arguments
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmplmcb8qos --quiet testdata/cwl-v1.2/tests/paramref_arguments_self.cwl testdata/cwl-v1.2/tests/empty.json
+Test [378/378] paramref_arguments_inputs: confirm that $inputs is available to parameter references in arguments
+
+Running: /tmp/gowe-test-worker-8097/wrapper.sh --outdir=/tmp/tmpmnqjhgjv --quiet testdata/cwl-v1.2/tests/paramref_arguments_inputs.cwl testdata/cwl-v1.2/tests/empty.json
+376 tests passed, 2 unsupported features

@@ -1,0 +1,532 @@
+Test [1/84] cl_basic_generation: General test of command line generation
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpcvr4a15d --quiet tests/bwa-mem-tool.cwl tests/bwa-mem-job.json
+Test [2/84] nested_prefixes_arrays: Test nested prefixes with arrays
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp5z73i4j8 --quiet tests/binding-test.cwl tests/bwa-mem-job.json
+Test [3/84] cl_optional_inputs_missing: Test command line with optional input (missing)
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp_zn4ke9j --quiet tests/cat1-testcli.cwl tests/cat-job.json
+Test [4/84] cl_optional_bindings_provided: Test command line with optional input (provided)
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmplycfnc8s --quiet tests/cat1-testcli.cwl tests/cat-n-job.json
+Test [5/84] stdinout_redirect_docker: Test command execution in Docker with stdin and stdout redirection
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpj_3an0in --quiet tests/cat4-tool.cwl tests/cat-job.json
+Test [6/84] any_outputSource_compatibility: Testing Any type compatibility in outputSource
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpgfjjf7wv --quiet tests/any-type-compat.cwl tests/any-type-job.json
+Test [7/84] stdinout_redirect: Test command execution in with stdin and stdout redirection
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpwq0uqmn4 --quiet tests/cat-tool.cwl tests/cat-job.json
+Test [8/84] wf_default_tool_default: Test that workflow defaults override tool defaults
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpyf78erce --quiet tests/echo-wf-default.cwl tests/empty.json
+Test [9/84] any_input_param: Test Any type input parameter
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp38vp1iyi --quiet tests/echo-tool.cwl tests/env-job.json
+Test [10/84] wf_simple: Test simple workflow
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpptg5yt3b --quiet tests/revsort.cwl tests/revsort-job.json
+Test [11/84] hints_unknown_ignored: Test unknown hints are ignored.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpoczwkglt --quiet tests/cat5-tool.cwl tests/cat-job.json
+Test [12/84] param_evaluation_noexpr: Test parameter evaluation, no support for JS expressions
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpt6mv3gg1 --quiet tests/params.cwl tests/empty.json
+Test [13/84] metadata: Test metadata
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpce7wgima --quiet tests/metadata.cwl tests/cat-job.json
+Test [14/84] format_checking: Test simple format checking.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpkn4akit7 --quiet tests/formattest.cwl tests/formattest-job.json
+Test [15/84] format_checking_subclass: Test format checking against ontology using subclassOf.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp3xuvc73v --quiet tests/formattest2.cwl tests/formattest2-job.json
+Test [16/84] format_checking_equivalentclass: Test format checking against ontology using equivalentClass.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpg4esehzt --quiet tests/formattest3.cwl tests/formattest2-job.json
+Test [17/84] json_output_path_relative: Test support for reading cwl.output.json where 'path' is relative path in output dir.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpyk5qub80 --quiet tests/test-cwl-out3.cwl tests/empty.json
+Test [18/84] json_output_location_relative: Test support for reading cwl.output.json where 'location' is relative reference to output dir.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpl1o43y32 --quiet tests/test-cwl-out4.cwl tests/empty.json
+Test [19/84] multiple_glob_expr_list: Test support for returning multiple glob patterns from expression
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpb45cj_mb --quiet tests/glob-expr-list.cwl tests/abc.json
+Test [20/84] wf_two_inputfiles_namecollision: Test workflow two input files with same name.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp6v4jacgx --quiet tests/conflict-wf.cwl#collision tests/conflict-job.json
+Test [21/84] directory_output: Test directory output
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp3rnndp2r --quiet tests/dir3.cwl tests/dir3-job.yml
+Test [22/84] input_file_literal: Test file literal as input
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpgonw2fwz --quiet tests/cat3-tool.cwl tests/file-literal.yml
+Test [23/84] nameroot_nameext_stdout_expr: Test nameroot/nameext expression in arguments, stdout
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmph3ht96p_ --quiet tests/nameroot.cwl tests/wc-job.json
+Test [24/84] cl_gen_arrayofarrays: Test command line generation of array-of-arrays
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpjuh4s3i3 --quiet tests/nested-array.cwl tests/nested-array-job.yml
+Test [25/84] hints_import: Test hints with $import
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp9b3mpyp_ --quiet tests/imported-hint.cwl tests/empty.json
+Test [26/84] default_path_notfound_warning: Test warning instead of error when default path is not found
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpnwyiyilm --quiet tests/default_path.cwl tests/default_path_job.yml
+Test [27/84] wf_compound_doc: Test compound workflow document
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp0uy0xdgg --quiet tests/revsort-packed.cwl#main tests/revsort-job.json
+Test [28/84] shelldir_notinterpreted: Test that shell directives are not interpreted.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp5wsbkh3h --quiet tests/shellchar.cwl tests/empty.json
+Test [29/84] fileliteral_input_docker: Test file literal as input without Docker
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp8gx5zyr4 --quiet tests/cat3-nodocker.cwl tests/file-literal.yml
+Test [30/84] outputbinding_glob_sorted: Test that OutputBinding.glob is sorted as specified by POSIX
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpw67bdrro --quiet tests/glob_test.cwl tests/empty.json
+Test [31/84] booleanflags_cl_noinputbinding: Test that boolean flags do not appear on command line if inputBinding is empty and not null
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmptakvyc2d --quiet tests/bool-empty-inputbinding.cwl tests/bool-empty-inputbinding-job.json
+Test [32/84] expr_reference_self_noinput: Test that expression engine does not fail to evaluate reference to self with unprovided input
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmphf69uc9p --quiet tests/stage-unprovided-file.cwl tests/empty.json
+Test [33/84] success_codes: Test successCodes
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpjllxbqd1 --quiet tests/exit-success.cwl tests/empty.json
+Test [34/84] cl_empty_array_input: Test that empty array input does not add anything to command line
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp82jmoo6r --quiet tests/empty-array-input.cwl tests/empty-array-job.json
+Test [35/84] valuefrom_constant_overrides_inputs: Test valueFrom with constant value overriding provided array inputs
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpja_e3j6m --quiet tests/valueFrom-constant.cwl tests/array-of-strings-job.yml
+Test [36/84] wf_step_connect_undeclared_param: Test that it is not an error to connect a parameter to a workflow step, even if the parameter doesn't appear in the `run` process inputs.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpnfjb7dbo --quiet tests/pass-unconnected.cwl tests/empty.json
+Test [37/84] wf_step_access_undeclared_param: Test that parameters that don't appear in the `run` process inputs are not present in the input object used to run the tool.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp6nzu6kwz --quiet tests/fail-unconnected.cwl tests/empty.json
+Error: step step1: build command: argument[2]: expression $(inputs.in2) returned undefined (invalid property access)
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [38/84] any_without_defaults_unspecified_fails: Test Any without defaults, unspecified, should fail.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp6o3w6z6n --quiet tests/echo-tool.cwl tests/null-expression-echo-job.json
+Error: null is not valid for non-optional input: in (type: Any)
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [39/84] any_without_defaults_specified_fails: Test Any without defaults, specified, should fail.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmponz3lqzp --quiet tests/echo-tool.cwl tests/null-expression1-job.json
+Error: null is not valid for non-optional input: in (type: Any)
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [40/84] step_input_default_value_noexp: Test default value on step input parameter, no ExpressionTool
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpt1x0nahl --quiet tests/count-lines9-wf-noET.cwl tests/empty.json
+Test [41/84] step_input_default_value_overriden_noexp: Test default value on step input parameter overridden by provided source, no ExpressionTool
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmplueh5p62 --quiet tests/count-lines11-wf-noET.cwl tests/cat-job.json
+Test [42/84] step_input_default_value_overriden_2nd_step_noexp: Test default value on step input parameter overridden by provided source. With passthrough first step and no ExpressionTool
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpytn0mege --quiet tests/count-lines11-extra-step-wf-noET.cwl tests/cat-job.json
+Test [43/84] step_input_default_value_overriden_2nd_step_null_noexp: Test default value on step input parameter overridden by provided source. With null producing first step and no ExpressionTool
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp38g8mfd8 --quiet tests/count-lines11-null-step-wf-noET.cwl tests/empty.json
+Test [44/84] stdin_from_directory_literal_with_local_file: Pipe to stdin from user provided local File via a Directory literal
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpllx1hugk --quiet tests/cat-from-dir.cwl tests/cat-from-dir-job.yaml
+Test [45/84] stdin_from_directory_literal_with_literal_file: Pipe to stdin from literal File via a Directory literal
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp_yy3alt5 --quiet tests/cat-from-dir.cwl tests/cat-from-dir-with-literal-file.yaml
+Test [46/84] directory_literal_with_literal_file_nostdin: Test non-stdin reference to literal File via a Directory literal
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp86_kkzg1 --quiet tests/cat3-from-dir.cwl tests/cat-from-dir-with-literal-file.yaml
+Test [47/84] no_inputs_commandlinetool: Test CommandLineTool without inputs
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp9sl4f14z --quiet tests/no-inputs-tool.cwl
+Test [48/84] no_outputs_commandlinetool: Test CommandLineTool without outputs
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpwqc23rkp --quiet tests/no-outputs-tool.cwl tests/cat-job.json
+Test [49/84] no_inputs_workflow: Test Workflow without inputs
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpkb92od_0 --quiet tests/no-inputs-wf.cwl
+Test [50/84] no_outputs_workflow: Test Workflow without outputs
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpp5tddbuk --quiet tests/no-outputs-wf.cwl tests/cat-job.json
+Test [51/84] anonymous_enum_in_array: Test an anonymous enum inside an array inside a record
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpgsjqlyo6 --quiet tests/anon_enum_inside_array.cwl tests/anon_enum_inside_array.yml
+Test [52/84] secondary_files_in_unnamed_records: Test secondaryFiles on anonymous record fields
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpusqqzoms --quiet tests/record-in-secondaryFiles.cwl tests/record-secondaryFiles-job.yml
+Test [53/84] secondary_files_in_output_records: Test secondaryFiles on output record fields
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmph3c9jxro --quiet tests/record-out-secondaryFiles.cwl tests/empty.json
+Test [54/84] secondary_files_workflow_propagation: Test secondaryFiles propagation through workflow
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmph9d17y9p --quiet tests/record-in-secondaryFiles-wf.cwl tests/record-secondaryFiles-job.yml
+Test [55/84] secondary_files_missing: Test checking when secondaryFiles are missing
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpyk1zbexy --quiet tests/record-in-secondaryFiles-missing-wf.cwl tests/record-secondaryFiles-job.yml
+Error: step step1: process inputs: input "record_input.f2[0]": missing required secondary file "B.s3" (pattern: .s3)
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [56/84] input_records_file_entry_with_format: Test format on anonymous record fields
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp56vx0k3b --quiet tests/record-in-format.cwl tests/record-format-job.yml
+Test [57/84] outputbinding_glob_directory: Test that OutputBinding.glob accepts Directories
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpe4ng1yqv --quiet tests/glob_directory.cwl tests/empty.json
+Test [58/84] inputBinding_position_expr: Test for expression in the InputBinding.position field; also test using emoji in CWL document and tool output
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmphnmf40im --quiet tests/echo-position-expr.cwl tests/echo-position-expr-job.yml
+Test [59/84] outputEval_exitCode: Can access exit code in outputEval
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpkn60sfa8 --quiet tests/exitcode.cwl tests/empty.json
+Test [60/84] any_input_param_graph_no_default: Test use of $graph without specifying which process to run
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpfb4ipn4s --quiet tests/echo-tool-packed.cwl tests/env-job.json
+Test [61/84] any_input_param_graph_no_default_hashmain: Test use of $graph without specifying which process to run, hash-prefixed "main"
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpnyjciv1t --quiet tests/echo-tool-packed2.cwl tests/env-job.json
+Test [62/84] cat_synthetic_file: Test the generation of a synthetic file with inline contents.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp1ms065vh --quiet tests/synth-file.cwl tests/synth-file-job.yml
+Test [63/84] cwloutput_nolimit: Test that loading from cwl.output.json isn't limited to 64k
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp845ya906 --quiet tests/loadContents/cwloutput-nolimit.cwl
+Test [64/84] loadcontents_limit: Test that loadContents on a file larger than 64k fails
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpgmc_q83l --quiet tests/loadContents/loadContents-limit.cwl tests/loadContents/input.yml
+Error: process inputs: input "filelist": loadContents: file "/scout/Experiments/GoWe/testdata/cwl-v1.2/tests/loadContents/inp-filelist.txt" is 268866 bytes, exceeds 64KB limit
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [65/84] params_broken_null: Test parameter reference that refers to null.something
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpoj1e3dmw --quiet tests/params_broken_null.cwl tests/empty.json
+Error: collect outputs: output output1: expression error in $(null.something): TypeError: Cannot read property 'something' of undefined at <eval>:1:6(1)
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [66/84] length_for_non_array: Test parameter reference that refers to length of non-array input
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpnak66o4b --quiet tests/params_broken_length_of_non_list.cwl tests/empty.json
+Error: collect outputs: output output1: cannot access .length on non-array value of type int64 in expression: inputs.bar.length
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [67/84] user_defined_length_in_parameter_reference: Test 'length' in parameter reference where it does not refer to length of an array input
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpb7xsr9gg --quiet tests/params_input_length_non_array.cwl tests/length_non_array_input.yml
+Test [68/84] directory_literal_with_literal_file_in_subdir_nostdin: Test non-stdin reference to literal File via a nested Directory literal
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpyaho36zg --quiet tests/cat4-from-dir.cwl tests/cat-from-dir-with-literal-file-in-subdir.yaml
+Test [69/84] colon_in_paths: Confirm that colons are tolerated in input paths, string values, stdout shortcut, and output file & directory names
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpo7drfvau --quiet tests/colon:test.cwl tests/colon:test:job.yaml
+Test [70/84] colon_in_output_path: Confirm that colons are tolerated in output directory names
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp10cu_uva --quiet tests/colon_test_output.cwl tests/colon_test_output_job.yaml
+Test [71/84] record_with_default: Confirm that records with defaults are accepted
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmprrkzmc7s --quiet tests/paramref_arguments_roundtrip.cwl
+Test [72/84] record_outputeval_nojs: Use of outputEval on a record itself, not the fields of the record (without javascript)
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpheef23w2 --quiet tests/record_outputeval_nojs.cwl
+Test [73/84] runtime-outdir: Use of $(runtime.outdir) for outputBinding glob.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp0cdg4hys --quiet tests/runtime-outdir.cwl
+Test [74/84] record_order_with_input_bindings: Test sorting arguments at each level (inputBinding for all levels)
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp7zoxojgo --quiet tests/record-order.cwl tests/record-order-job.json
+Test [75/84] output_reference_workflow_input: Direct use of Workflow level input fields in the outputs.
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpzuyp2iuv --quiet tests/output_reference_workflow_input.cwl
+Test [76/84] filename_with_hash_mark: Test for correct handling of URL-quoting in filename to refer to filename containing a hash mark
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpej6ttw19 --quiet tests/cat-tool.cwl tests/octo.yml
+Test [77/84] capture_files: Test that a type error is raised if directories are returned by glob evaluation when type is File
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpvturhylc --quiet tests/capture-files.cwl tests/dir-job.yml
+Error: collect outputs: output result: type error: output type is File but glob matched directory "/tmp/tmpvturhylc/work_1/testdir/c"
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [78/84] capture_dirs: Test that a type error is raised if files are returned by glob evaluation when type is Directory
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp5puk_l_4 --quiet tests/capture-dirs.cwl tests/dir-job.yml
+Error: collect outputs: output result: type error: output type is Directory but glob matched file "/tmp/tmp5puk_l_4/work_1/testdir/a"
+Usage:
+  cwl-runner [flags] <cwl-file> [job-file]
+  cwl-runner [command]
+
+Available Commands:
+  completion    Generate the autocompletion script for the specified shell
+  dag           Print the workflow DAG as JSON
+  help          Help about any command
+  print-command Print the command line without executing
+  validate      Validate a CWL document
+
+Flags:
+      --apptainer              Force Apptainer execution (alias for --runtime apptainer)
+      --docker                 Force Docker execution (alias for --runtime docker)
+  -h, --help                   help for cwl-runner
+      --image-dir string       Base directory for resolving relative .sif image paths in DockerRequirement
+  -j, --jobs int               Maximum concurrent jobs (default: number of CPUs)
+      --metrics                Collect and display execution metrics (duration, memory usage)
+      --no-container           Disable container execution
+      --no-fail-fast           Continue execution after errors (default: fail fast)
+      --outdir string          Output directory (default "./cwl-output")
+      --output-format string   Output format (json|yaml) (default "json")
+      --parallel               Enable parallel execution of independent steps and scatter iterations
+  -q, --quiet                  Suppress informational output
+      --runtime string         Container runtime: docker, apptainer, or none (default: auto-detect from PATH)
+  -v, --verbose                Enable verbose output
+      --version                version for cwl-runner
+
+Use "cwl-runner [command] --help" for more information about a command.
+
+Test [79/84] capture_files_and_dirs: Test that both files and directories are captured by glob evaluation when type is [Directory, File]
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpahgaecnv --quiet tests/capture-files-and-dirs.cwl tests/dir-job.yml
+Test [80/84] very_big_and_very_floats_nojs: Confirm that very big and very small numbers are represented using decimals, not scientific notation
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpdjitwh3f --quiet tests/floats_small_and_large_nojs.cwl tests/empty.json
+Test [81/84] nested_types: demonstrate usage of nested types
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp8riisq61 --quiet tests/nested_types.cwl tests/nested_types.yaml
+Test [82/84] paramref_arguments_runtime: confirm that $runtime is available to parameter references in arguments
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpz9_5asjv --quiet tests/paramref_arguments_runtime.cwl tests/empty.json
+Test [83/84] paramref_arguments_self: confirm that $self is available and set to null in arguments
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmp0sue5i3v --quiet tests/paramref_arguments_self.cwl tests/empty.json
+Test [84/84] paramref_arguments_inputs: confirm that $inputs is available to parameter references in arguments
+
+Running: /scout/Experiments/GoWe/bin/cwl-runner --outdir=/tmp/tmpoo73os0z --quiet tests/paramref_arguments_inputs.cwl tests/empty.json
+All tests passed
