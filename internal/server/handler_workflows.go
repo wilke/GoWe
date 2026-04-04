@@ -36,6 +36,15 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve gowe:// references to registered tools before parsing.
+	resolvedCWL, err := resolveGoweRefs(r.Context(), s.store, req.CWL)
+	if err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("gowe:// reference resolution error: "+err.Error()))
+		return
+	}
+	req.CWL = resolvedCWL
+
 	// Parse the packed CWL.
 	graph, err := s.parser.ParseGraph([]byte(req.CWL))
 	if err != nil {
@@ -154,16 +163,17 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
-	id := chi.URLParam(r, "id")
+	idOrName := chi.URLParam(r, "id")
 
-	wf, err := s.store.GetWorkflow(r.Context(), id)
+	// Try by ID first, then fall back to name lookup.
+	wf, err := s.resolveWorkflow(r.Context(), idOrName)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 		return
 	}
 	if wf == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", idOrName))
 		return
 	}
 	respondOK(w, reqID, wf)
@@ -199,6 +209,15 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	// If CWL is updated, re-parse and re-validate.
 	if req.CWL != "" {
+		// Resolve gowe:// references before parsing.
+		resolvedCWL, err := resolveGoweRefs(r.Context(), s.store, req.CWL)
+		if err != nil {
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError("gowe:// reference resolution error: "+err.Error()))
+			return
+		}
+		req.CWL = resolvedCWL
+
 		graph, err := s.parser.ParseGraph([]byte(req.CWL))
 		if err != nil {
 			respondError(w, reqID, http.StatusBadRequest,

@@ -56,24 +56,41 @@ The token is stored in `~/.gowe/credentials.json` with secure permissions (0600)
 
 ### submit
 
-Submit a CWL workflow for execution.
+Submit a CWL workflow for execution. You can provide a local CWL file (which will be bundled and registered) or reference an already-registered workflow by ID or name.
 
 ```bash
 gowe submit <workflow.cwl> [flags]
+gowe submit --workflow <id-or-name> [flags]
 ```
 
 **Flags:**
 - `-i, --inputs` - Input values file (YAML or JSON)
+- `--workflow` - Submit using an already-registered workflow (by ID or name)
+- `--output-destination` - Target URI for uploading outputs (e.g., `ws:///user@bvbrc/home/results/`)
+- `--group` - Target worker group for task scheduling
+- `--no-upload` - Disable file upload; assume files are accessible on workers
 - `--dry-run` - Validate without executing
 
 **Examples:**
 
 ```bash
-# Submit a workflow with no inputs
+# Submit a local CWL file (bundles and registers automatically)
 gowe submit my-workflow.cwl
 
 # Submit with input values
 gowe submit pipeline.cwl -i inputs.yaml
+
+# Submit an already-registered workflow by name
+gowe submit --workflow protein-structure-prediction -i inputs.yaml
+
+# Submit by workflow ID
+gowe submit --workflow wf_f8975ed7-0ea8-48a9-bbcb-f6ebad1305b9 -i inputs.yaml
+
+# Upload outputs to BV-BRC Workspace after completion
+gowe submit pipeline.cwl -i inputs.yaml --output-destination "ws:///user@bvbrc/home/results/"
+
+# Target a specific worker group
+gowe submit pipeline.cwl -i inputs.yaml --group gpu-workers
 
 # Validate without running
 gowe submit pipeline.cwl -i inputs.yaml --dry-run

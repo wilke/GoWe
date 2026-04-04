@@ -144,6 +144,11 @@ func (s *WorkspaceStager) StageOut(ctx context.Context, srcPath string, taskID s
 		}
 	}
 
+	// Ensure destination directory exists in the workspace.
+	if err := s.ensureDir(ctx, destDir, token); err != nil {
+		return "", fmt.Errorf("workspace stager: ensure dir: %w", err)
+	}
+
 	filename := filepath.Base(srcPath)
 	destPath := strings.TrimRight(destDir, "/") + "/" + filename
 
@@ -250,6 +255,48 @@ func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, content str
 	_, err := wsClient.WorkspaceUpload(ctx, wsPath, content, bvbrc.WorkspaceTypeUnspecified)
 	if err != nil {
 		return fmt.Errorf("upload to %s: %w", wsPath, err)
+	}
+
+	return nil
+}
+
+// ensureDir creates the destination directory (and any missing ancestors) in the workspace.
+// It walks from the user's home directory down to destDir, creating any missing folders.
+// Already-existing directories are silently skipped (create returns an error that we ignore).
+func (s *WorkspaceStager) ensureDir(ctx context.Context, destDir string, token string) error {
+	destDir = strings.TrimRight(destDir, "/")
+	if destDir == "" {
+		return nil
+	}
+
+	bvbrcCfg := bvbrc.Config{
+		WorkspaceURL: s.config.WorkspaceURL,
+		Token:        token,
+		Timeout:      s.config.Timeout,
+	}
+	wsClient := bvbrc.NewClient(bvbrcCfg, s.logger)
+
+	// Split path into components: /user@bvbrc/home/Reports/1
+	// The first two components (/user@bvbrc/home) always exist, so start from the third.
+	parts := strings.Split(destDir, "/")
+	// parts[0] = "", parts[1] = "user@bvbrc", parts[2] = "home", parts[3..] = subdirs
+	if len(parts) <= 3 {
+		return nil // /user@bvbrc/home always exists
+	}
+
+	for i := 3; i < len(parts); i++ {
+		dir := strings.Join(parts[:i+1], "/")
+		_, err := wsClient.WorkspaceCreateFolder(ctx, dir)
+		if err != nil {
+			// Ignore "already exists" errors — the API returns an error if the folder exists.
+			if strings.Contains(err.Error(), "already exists") ||
+				strings.Contains(err.Error(), "Object already exists") {
+				continue
+			}
+			return fmt.Errorf("create folder %s: %w", dir, err)
+		} else {
+			s.logger.Info("workspace mkdir created", "path", dir)
+		}
 	}
 
 	return nil

@@ -743,21 +743,28 @@ var templates = map[string]string{
         </div>
     </div>
     <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const steps = {{toJSON .Workflow.Steps}};
-        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
-            const app = Vue.createApp({
-                components: { DagEditor },
-                data() {
-                    return {
-                        steps: steps
-                    };
-                },
-                template: '<DagEditor :steps="steps" :readonly="true" />'
-            });
-            app.mount('#dag-container');
+    (function() {
+        function mountDag() {
+            var el = document.getElementById('dag-container');
+            if (!el || el.__vue_app__) return;
+            var steps = {{toJSON .Workflow.Steps}};
+            if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
+                var app = Vue.createApp({
+                    components: { DagEditor: DagEditor },
+                    data: function() {
+                        return { steps: steps };
+                    },
+                    template: '<DagEditor :steps="steps" :readonly="true" />'
+                });
+                app.mount(el);
+            }
         }
-    });
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', mountDag);
+        } else {
+            mountDag();
+        }
+    })();
     </script>
     {{end}}
 
@@ -1476,23 +1483,30 @@ var templates = map[string]string{
         </div>
     </div>
     <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const steps = {{toJSON .Workflow.Steps}};
-        const tasks = {{toJSON .Submission.Tasks}};
-        if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
-            const app = Vue.createApp({
-                components: { DagEditor },
-                data() {
-                    return {
-                        steps: steps,
-                        tasks: tasks
-                    };
-                },
-                template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
-            });
-            app.mount('#submission-dag-container');
+    (function() {
+        function mountDag() {
+            var el = document.getElementById('submission-dag-container');
+            if (!el || el.__vue_app__) return;
+            var steps = {{toJSON .Workflow.Steps}};
+            var tasks = {{toJSON .Submission.Tasks}};
+            if (typeof Vue !== 'undefined' && typeof DagEditor !== 'undefined') {
+                var app = Vue.createApp({
+                    components: { DagEditor: DagEditor },
+                    data: function() {
+                        return { steps: steps, tasks: tasks };
+                    },
+                    template: '<DagEditor :steps="steps" :tasks="tasks" :readonly="true" />'
+                });
+                app.mount(el);
+            }
         }
-    });
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', mountDag);
+        } else {
+            mountDag();
+        }
+        document.body.addEventListener('htmx:afterSettle', mountDag);
+    })();
     </script>
     {{end}}
 </div>

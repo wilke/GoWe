@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
@@ -111,12 +112,18 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 			continue // No destination or already processed.
 		}
 		if sub.UserToken == "" {
-			l.logger.Warn("post-stage skipped: no user token",
+			l.logger.Warn("post-stage failed: no user token",
 				"submission_id", sub.ID)
+			l.failOutputStaging(ctx, sub, "no authentication token for workspace upload")
+			affected[sub.ID] = true
 			continue
 		}
 		if !strings.HasPrefix(sub.OutputDestination, "ws://") {
-			continue // Only handle ws:// destinations.
+			l.logger.Warn("post-stage failed: unsupported destination scheme",
+				"submission_id", sub.ID, "destination", sub.OutputDestination)
+			l.failOutputStaging(ctx, sub, "unsupported output destination scheme: "+sub.OutputDestination)
+			affected[sub.ID] = true
+			continue
 		}
 
 		// Mark as uploading.
@@ -163,23 +170,39 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 
 		if allOK {
 			sub.OutputState = "delivered"
+			if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+				l.logger.Error("update submission after post-stage",
+					"submission_id", sub.ID, "error", err)
+			} else {
+				l.logger.Info("post-staged workspace outputs",
+					"submission_id", sub.ID,
+					"state", sub.OutputState,
+				)
+			}
 		} else {
-			sub.OutputState = "upload_failed"
-		}
-
-		if err := l.store.UpdateSubmission(ctx, sub); err != nil {
-			l.logger.Error("update submission after post-stage",
-				"submission_id", sub.ID, "error", err)
-		} else {
-			l.logger.Info("post-staged workspace outputs",
-				"submission_id", sub.ID,
-				"state", sub.OutputState,
-			)
+			l.failOutputStaging(ctx, sub, "workspace output upload failed")
 		}
 		affected[sub.ID] = true
 	}
 
 	return nil
+}
+
+// failOutputStaging marks a submission as FAILED due to output staging issues.
+func (l *Loop) failOutputStaging(ctx context.Context, sub *model.Submission, reason string) {
+	sub.OutputState = "upload_failed"
+	sub.State = model.SubmissionStateFailed
+	now := time.Now().UTC()
+	sub.CompletedAt = &now
+	sub.Error = &model.SubmissionError{
+		Code:    "OUTPUT_STAGING_FAILED",
+		Message: reason,
+	}
+	if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+		l.logger.Error("mark output staging failed", "submission_id", sub.ID, "error", err)
+	} else {
+		l.logger.Info("submission failed: output staging", "submission_id", sub.ID, "reason", reason)
+	}
 }
 
 // wsLocation describes a ws:// file/directory reference found in inputs.

@@ -17,25 +17,80 @@ func newSubmitCmd() *cobra.Command {
 	var noUpload bool
 	var workerGroup string
 	var outputDest string
+	var workflowRef string
 
 	cmd := &cobra.Command{
-		Use:   "submit <workflow.cwl>",
+		Use:   "submit [<workflow.cwl>]",
 		Short: "Submit a CWL workflow for execution",
-		Long:  "Bundle a CWL workflow and its tool references, then submit to the GoWe server.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Bundle a CWL workflow and its tool references, then submit to the GoWe server.
+
+Alternatively, use --workflow to reference an already-registered workflow by ID or name:
+  gowe submit --workflow wf_c3a3f50c-... -i job.json
+  gowe submit --workflow protein-structure-prediction -i job.json`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			workflowPath := args[0]
-
-			// 1. Bundle CWL files
-			logger.Info("bundling workflow", "path", workflowPath)
-			result, err := bundle.Bundle(workflowPath)
-			if err != nil {
-				return fmt.Errorf("bundle: %w", err)
+			if len(args) == 0 && workflowRef == "" {
+				return fmt.Errorf("either a CWL file path or --workflow is required")
 			}
-			logger.Debug("packed CWL document", "size", len(result.Packed), "name", result.Name)
-			logger.Debug("packed content", "cwl", string(result.Packed))
+			if len(args) > 0 && workflowRef != "" {
+				return fmt.Errorf("specify either a CWL file path or --workflow, not both")
+			}
 
-			// 2. Read inputs if provided
+			var workflowID string
+
+			if workflowRef != "" {
+				// Look up existing workflow by ID or name.
+				path := "/api/v1/workflows/" + workflowRef
+				resp, err := client.Get(path)
+				if err != nil {
+					return fmt.Errorf("lookup workflow %q: %w", workflowRef, err)
+				}
+				var wfData map[string]any
+				if err := json.Unmarshal(resp.Data, &wfData); err != nil {
+					return fmt.Errorf("parse workflow response: %w", err)
+				}
+				id, ok := wfData["id"].(string)
+				if !ok {
+					return fmt.Errorf("workflow response missing 'id' field")
+				}
+				workflowID = id
+				name, _ := wfData["name"].(string)
+				fmt.Printf("Using workflow: %s (%s)\n", name, workflowID)
+			} else {
+				workflowPath := args[0]
+
+				// 1. Bundle CWL files
+				logger.Info("bundling workflow", "path", workflowPath)
+				result, err := bundle.Bundle(workflowPath)
+				if err != nil {
+					return fmt.Errorf("bundle: %w", err)
+				}
+				logger.Debug("packed CWL document", "size", len(result.Packed), "name", result.Name)
+				logger.Debug("packed content", "cwl", string(result.Packed))
+
+				// 2. POST /api/v1/workflows
+				wfReq := map[string]any{
+					"name": result.Name,
+					"cwl":  string(result.Packed),
+				}
+				wfResp, err := client.Post("/api/v1/workflows/", wfReq)
+				if err != nil {
+					return fmt.Errorf("create workflow: %w", err)
+				}
+
+				var wfData map[string]any
+				if err := json.Unmarshal(wfResp.Data, &wfData); err != nil {
+					return fmt.Errorf("parse workflow response: %w", err)
+				}
+				id, ok := wfData["id"].(string)
+				if !ok {
+					return fmt.Errorf("workflow response missing 'id' field")
+				}
+				workflowID = id
+				fmt.Printf("Workflow registered: %s\n", workflowID)
+			}
+
+			// Read inputs if provided.
 			var inputs map[string]any
 			if inputsFile != "" {
 				data, err := os.ReadFile(inputsFile)
@@ -65,26 +120,6 @@ func newSubmitCmd() *cobra.Command {
 					inputs = uploaded
 				}
 			}
-
-			// 3. POST /api/v1/workflows
-			wfReq := map[string]any{
-				"name": result.Name,
-				"cwl":  string(result.Packed),
-			}
-			wfResp, err := client.Post("/api/v1/workflows/", wfReq)
-			if err != nil {
-				return fmt.Errorf("create workflow: %w", err)
-			}
-
-			var wfData map[string]any
-			if err := json.Unmarshal(wfResp.Data, &wfData); err != nil {
-				return fmt.Errorf("parse workflow response: %w", err)
-			}
-			workflowID, ok := wfData["id"].(string)
-			if !ok {
-				return fmt.Errorf("workflow response missing 'id' field")
-			}
-			fmt.Printf("Workflow registered: %s\n", workflowID)
 
 			// 4. POST /api/v1/submissions
 			labels := map[string]string{}
@@ -134,6 +169,7 @@ func newSubmitCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noUpload, "no-upload", false, "Disable file upload; assume files are accessible on workers")
 	cmd.Flags().StringVar(&workerGroup, "group", "", "Target worker group for task scheduling")
 	cmd.Flags().StringVar(&outputDest, "output-destination", "", "Target URI for uploading outputs (e.g., ws:///user@bvbrc/home/results/)")
+	cmd.Flags().StringVar(&workflowRef, "workflow", "", "Submit using an already-registered workflow (by ID or name)")
 	return cmd
 }
 

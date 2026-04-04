@@ -162,6 +162,22 @@ For remote files (requires upload backend):
 }
 ```
 
+### Submit using the CLI with an already-registered workflow
+
+Use `--workflow` to skip CWL bundling and reference a workflow by ID or name:
+
+```bash
+# By name
+bin/gowe submit --workflow protein-structure-prediction -i inputs.yaml
+
+# By ID
+bin/gowe submit --workflow wf_f8975ed7-0ea8-48a9-bbcb-f6ebad1305b9 -i inputs.yaml
+
+# With workspace output staging
+bin/gowe submit --workflow protein-structure-prediction -i inputs.yaml \
+  --output-destination "ws:///user@bvbrc/home/results/"
+```
+
 ### Re-run a workflow with different inputs
 
 Just submit again with new inputs — same workflow, new submission:
@@ -618,6 +634,7 @@ bin/gowe-worker \
 Submit with an output destination to get results uploaded back to the workspace:
 
 ```bash
+# Via API
 curl -X POST http://localhost:8080/api/v1/submissions \
   -H "Authorization: $(cat ~/.bvbrc_token)" \
   -d '{
@@ -627,11 +644,24 @@ curl -X POST http://localhost:8080/api/v1/submissions \
     },
     "output_destination": "ws:///awilke@bvbrc/home/results/"
   }'
+
+# Via CLI (uses token from ~/.gowe/credentials.json)
+bin/gowe submit --workflow protein-structure-prediction -i inputs.yaml \
+  --output-destination "ws:///awilke@bvbrc/home/results/"
 ```
+
+Missing workspace directories are created automatically during output upload.
+
+**Important:** The destination path must match the authenticated user. If your token authenticates as `awilke@bvbrc`, the destination must be under `/awilke@bvbrc/home/...`. Mismatched paths will fail with a permission error.
 
 Check output delivery status:
 
 ```bash
-curl http://localhost:8080/api/v1/submissions/sub_... | jq '.data.output_state'
-# → "delivered"
+curl http://localhost:8080/api/v1/submissions/sub_... | jq '.data | {state, output_state}'
 ```
+
+**Output states:**
+- `""` (empty) — not yet processed
+- `"uploading"` — upload in progress
+- `"delivered"` — all outputs uploaded successfully
+- `"upload_failed"` — upload failed; submission transitions to FAILED with error code `OUTPUT_STAGING_FAILED`
