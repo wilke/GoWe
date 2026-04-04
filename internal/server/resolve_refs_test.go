@@ -70,6 +70,9 @@ func (m *mockStore) GetTask(context.Context, string) (*model.Task, error)    { r
 func (m *mockStore) ListTasksBySubmission(context.Context, string) ([]*model.Task, error) {
 	return nil, nil
 }
+func (m *mockStore) ListTasksBySubmissionPaged(context.Context, string, model.ListOptions) ([]*model.Task, int, error) {
+	return nil, 0, nil
+}
 func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.Task, error) {
 	return nil, nil
 }

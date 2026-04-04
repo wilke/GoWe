@@ -3,12 +3,13 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/me/gowe/pkg/model"
 )
 
-// handleListUsers returns all registered users.
+// handleListUsers returns registered users with optional filtering and pagination.
 // GET /api/v1/admin/users
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
@@ -20,7 +21,37 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondOK(w, reqID, users)
+	opts := parseListOptions(r)
+
+	// In-memory filtering.
+	searchLower := strings.ToLower(opts.Search)
+	filtered := users[:0:0]
+	for _, u := range users {
+		if searchLower != "" {
+			if !strings.Contains(strings.ToLower(u.Username), searchLower) {
+				continue
+			}
+		}
+		filtered = append(filtered, u)
+	}
+
+	total := len(filtered)
+	start := opts.Offset
+	if start > total {
+		start = total
+	}
+	end := start + opts.Limit
+	if end > total {
+		end = total
+	}
+	page := filtered[start:end]
+
+	respondList(w, reqID, page, &model.Pagination{
+		Total:   total,
+		Limit:   opts.Limit,
+		Offset:  opts.Offset,
+		HasMore: end < total,
+	})
 }
 
 // handleSetUserRole updates a user's role.

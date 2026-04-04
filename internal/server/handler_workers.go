@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -320,7 +321,7 @@ func (s *Server) handleDeregisterWorker(w http.ResponseWriter, r *http.Request) 
 	respondOK(w, reqID, map[string]any{"id": id, "deleted": true})
 }
 
-// handleListWorkers returns all registered workers.
+// handleListWorkers returns registered workers with optional filtering and pagination.
 // GET /api/v1/workers
 func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
@@ -332,5 +333,39 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondOK(w, reqID, workers)
+	opts := parseListOptions(r)
+
+	// In-memory filtering.
+	searchLower := strings.ToLower(opts.Search)
+	filtered := workers[:0:0]
+	for _, w := range workers {
+		if opts.State != "" && !strings.EqualFold(string(w.State), opts.State) {
+			continue
+		}
+		if searchLower != "" {
+			if !strings.Contains(strings.ToLower(w.Name), searchLower) &&
+				!strings.Contains(strings.ToLower(w.Hostname), searchLower) {
+				continue
+			}
+		}
+		filtered = append(filtered, w)
+	}
+
+	total := len(filtered)
+	start := opts.Offset
+	if start > total {
+		start = total
+	}
+	end := start + opts.Limit
+	if end > total {
+		end = total
+	}
+	page := filtered[start:end]
+
+	respondList(w, reqID, page, &model.Pagination{
+		Total:   total,
+		Limit:   opts.Limit,
+		Offset:  opts.Offset,
+		HasMore: end < total,
+	})
 }
