@@ -187,10 +187,7 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
 
-	// Workflow-specific filters.
-	if s := strings.TrimSpace(r.URL.Query().Get("search")); s != "" {
-		opts.Search = s
-	}
+	// Workflow-specific filter (search is already parsed by parseListOptions).
 	opts.Class = r.URL.Query().Get("class")
 
 	workflows, total, err := ui.store.ListWorkflows(r.Context(), opts)
@@ -1476,7 +1473,7 @@ func (ui *UI) parseListOptions(r *http.Request) model.ListOptions {
 }
 
 // filterQuery builds a URL query suffix (&key=val&...) from non-empty key-value pairs.
-// Keys are added in the order given; empty values are skipped.
+// Empty values are skipped. Keys are sorted lexicographically by url.Values.Encode().
 // Returns template.URL so html/template won't double-encode in href attributes.
 func filterQuery(pairs ...string) template.URL {
 	v := url.Values{}
