@@ -25,7 +25,9 @@ func respondCreated(w http.ResponseWriter, reqID string, data any) {
 }
 
 // respondList writes a success response with pagination.
+// Sets X-Max-Limit header so clients know the maximum page size.
 func respondList(w http.ResponseWriter, reqID string, data any, pg *model.Pagination) {
+	w.Header().Set("X-Max-Limit", "100")
 	respondJSON(w, http.StatusOK, reqID, data, pg, nil)
 }
 

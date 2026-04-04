@@ -19,7 +19,7 @@ func parseListOptions(r *http.Request) model.ListOptions {
 	q := r.URL.Query()
 
 	if limit := q.Get("limit"); limit != "" {
-		if n, err := strconv.Atoi(limit); err == nil && n > 0 && n <= 100 {
+		if n, err := strconv.Atoi(limit); err == nil && n > 0 {
 			opts.Limit = n
 		}
 	}

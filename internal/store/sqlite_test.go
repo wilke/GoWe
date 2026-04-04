@@ -459,6 +459,109 @@ func TestListTasksBySubmission(t *testing.T) {
 	}
 }
 
+func TestListTasksBySubmissionPaged(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+	sub := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, sub)
+
+	// Create three tasks with different states and times.
+	task1 := sampleTask(sub.ID)
+	task1.State = model.TaskStatePending
+	st.CreateTask(ctx, task1)
+
+	task2 := sampleTask(sub.ID)
+	task2.ID = "task_test-2"
+	task2.StepID = "annotate"
+	task2.State = model.TaskStateSuccess
+	task2.CreatedAt = task1.CreatedAt.Add(time.Second)
+	st.CreateTask(ctx, task2)
+
+	task3 := sampleTask(sub.ID)
+	task3.ID = "task_test-3"
+	task3.StepID = "report"
+	task3.State = model.TaskStatePending
+	task3.CreatedAt = task1.CreatedAt.Add(2 * time.Second)
+	st.CreateTask(ctx, task3)
+
+	t.Run("all tasks", func(t *testing.T) {
+		tasks, total, err := st.ListTasksBySubmissionPaged(ctx, sub.ID, model.DefaultListOptions())
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if total != 3 {
+			t.Errorf("total = %d, want 3", total)
+		}
+		if len(tasks) != 3 {
+			t.Errorf("len = %d, want 3", len(tasks))
+		}
+	})
+
+	t.Run("state filter", func(t *testing.T) {
+		opts := model.DefaultListOptions()
+		opts.State = string(model.TaskStatePending)
+		tasks, total, err := st.ListTasksBySubmissionPaged(ctx, sub.ID, opts)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if total != 2 {
+			t.Errorf("total = %d, want 2", total)
+		}
+		if len(tasks) != 2 {
+			t.Errorf("len = %d, want 2", len(tasks))
+		}
+	})
+
+	t.Run("pagination", func(t *testing.T) {
+		opts := model.ListOptions{Limit: 2, Offset: 0}
+		tasks, total, err := st.ListTasksBySubmissionPaged(ctx, sub.ID, opts)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if total != 3 {
+			t.Errorf("total = %d, want 3", total)
+		}
+		if len(tasks) != 2 {
+			t.Errorf("page len = %d, want 2", len(tasks))
+		}
+
+		// Second page.
+		opts.Offset = 2
+		tasks, total, err = st.ListTasksBySubmissionPaged(ctx, sub.ID, opts)
+		if err != nil {
+			t.Fatalf("list page 2: %v", err)
+		}
+		if total != 3 {
+			t.Errorf("total = %d, want 3", total)
+		}
+		if len(tasks) != 1 {
+			t.Errorf("page 2 len = %d, want 1", len(tasks))
+		}
+	})
+
+	t.Run("sort by step_id asc", func(t *testing.T) {
+		opts := model.DefaultListOptions()
+		opts.SortBy = "step_id"
+		opts.SortDir = "asc"
+		tasks, _, err := st.ListTasksBySubmissionPaged(ctx, sub.ID, opts)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(tasks) != 3 {
+			t.Fatalf("len = %d, want 3", len(tasks))
+		}
+		if tasks[0].StepID != "annotate" {
+			t.Errorf("first step = %q, want annotate", tasks[0].StepID)
+		}
+		if tasks[2].StepID != "report" {
+			t.Errorf("last step = %q, want report", tasks[2].StepID)
+		}
+	})
+}
+
 func TestUpdateTask(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
