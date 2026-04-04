@@ -11,7 +11,8 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	subID := chi.URLParam(r, "id")
 
-	tasks, err := s.store.ListTasksBySubmission(r.Context(), subID)
+	opts := parseListOptions(r)
+	tasks, total, err := s.store.ListTasksBySubmissionPaged(r.Context(), subID, opts)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
@@ -19,10 +20,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondList(w, reqID, tasks, &model.Pagination{
-		Total:   len(tasks),
-		Limit:   20,
-		Offset:  0,
-		HasMore: false,
+		Total:   total,
+		Limit:   opts.Limit,
+		Offset:  opts.Offset,
+		HasMore: opts.Offset+opts.Limit < total,
 	})
 }
 

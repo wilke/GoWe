@@ -38,6 +38,7 @@ type Store interface {
 	CreateTask(ctx context.Context, task *model.Task) error
 	GetTask(ctx context.Context, id string) (*model.Task, error)
 	ListTasksBySubmission(ctx context.Context, submissionID string) ([]*model.Task, error)
+	ListTasksBySubmissionPaged(ctx context.Context, submissionID string, opts model.ListOptions) ([]*model.Task, int, error)
 	ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error)
 	UpdateTask(ctx context.Context, task *model.Task) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)

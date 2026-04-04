@@ -879,6 +879,55 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 	return s.scanTasks(rows)
 }
 
+func (s *SQLiteStore) ListTasksBySubmissionPaged(ctx context.Context, submissionID string, opts model.ListOptions) ([]*model.Task, int, error) {
+	s.logger.Debug("sql", "op", "list_paged", "table", "tasks", "submission_id", submissionID, "limit", opts.Limit, "offset", opts.Offset)
+	opts.Clamp()
+
+	var where []string
+	var args []any
+
+	where = append(where, "submission_id = ?")
+	args = append(args, submissionID)
+
+	if opts.State != "" {
+		where = append(where, "state = ?")
+		args = append(args, opts.State)
+	}
+
+	whereSQL := " WHERE " + strings.Join(where, " AND ")
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	orderSQL := validatedOrderBy(opts.SortBy, opts.SortDir, map[string]string{
+		"created_at": "created_at",
+		"state":      "state",
+		"step_id":    "step_id",
+	}, "created_at ASC")
+
+	queryArgs := append(args, opts.Limit, opts.Offset)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints, scatter_index
+		 FROM tasks`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
+		queryArgs...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	tasks, err := s.scanTasks(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return tasks, total, nil
+}
+
 func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "step_instance_id", stepInstanceID)
 

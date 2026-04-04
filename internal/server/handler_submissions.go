@@ -153,9 +153,12 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
-	opts := model.DefaultListOptions()
-	if state := r.URL.Query().Get("state"); state != "" {
-		opts.State = state
+	opts := parseListOptions(r)
+	if dateStart := r.URL.Query().Get("date_start"); dateStart != "" {
+		opts.DateStart = dateStart
+	}
+	if dateEnd := r.URL.Query().Get("date_end"); dateEnd != "" {
+		opts.DateEnd = dateEnd
 	}
 	if wfFilter := r.URL.Query().Get("workflow_id"); wfFilter != "" {
 		// Resolve workflow name to ID: try by ID first, fall back to name.
