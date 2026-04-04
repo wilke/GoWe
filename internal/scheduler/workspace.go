@@ -89,6 +89,7 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 			l.logger.Error("update submission inputs after pre-stage",
 				"submission_id", sub.ID, "error", err)
 		} else {
+			l.cache.invalidateSubmission(sub.ID)
 			l.logger.Info("pre-staged workspace inputs",
 				"submission_id", sub.ID, "count", len(wsLocations))
 		}
@@ -128,7 +129,7 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 
 		// Mark as uploading.
 		sub.OutputState = "uploading"
-		if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+		if err := l.updateSubmission(ctx, sub); err != nil {
 			l.logger.Error("mark uploading", "submission_id", sub.ID, "error", err)
 			continue
 		}
@@ -170,7 +171,7 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 
 		if allOK {
 			sub.OutputState = "delivered"
-			if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+			if err := l.updateSubmission(ctx, sub); err != nil {
 				l.logger.Error("update submission after post-stage",
 					"submission_id", sub.ID, "error", err)
 			} else {
@@ -198,7 +199,7 @@ func (l *Loop) failOutputStaging(ctx context.Context, sub *model.Submission, rea
 		Code:    "OUTPUT_STAGING_FAILED",
 		Message: reason,
 	}
-	if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+	if err := l.updateSubmission(ctx, sub); err != nil {
 		l.logger.Error("mark output staging failed", "submission_id", sub.ID, "error", err)
 	} else {
 		l.logger.Info("submission failed: output staging", "submission_id", sub.ID, "reason", reason)

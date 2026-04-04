@@ -106,6 +106,7 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 			return nil, fmt.Errorf("store child step instance: %w", err)
 		}
 	}
+	l.cache.invalidateSteps(childSub.ID)
 
 	l.logger.Info("child submission created",
 		"child_sub_id", childSub.ID,
@@ -121,7 +122,7 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 // via the standard submitStep flow.
 func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submission) error {
 	// Load the child workflow for step definitions and topological order.
-	childWf, err := l.store.GetWorkflow(ctx, childSub.WorkflowID)
+	childWf, err := l.cache.getWorkflow(ctx, l.store, childSub.WorkflowID)
 	if err != nil {
 		return fmt.Errorf("get child workflow: %w", err)
 	}
@@ -141,7 +142,7 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 	// Process each step instance in topological order.
 	for _, stepID := range order {
 		// Load all step instances for this submission.
-		allSteps, err := l.store.ListStepsBySubmission(ctx, childSub.ID)
+		allSteps, err := l.cache.listStepsBySubmission(ctx, l.store, childSub.ID)
 		if err != nil {
 			return fmt.Errorf("list child step instances: %w", err)
 		}
@@ -184,7 +185,7 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 			now := time.Now().UTC()
 			si.State = model.StepStateSkipped
 			si.CompletedAt = &now
-			if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+			if err := l.updateStepInstance(ctx, si); err != nil {
 				return fmt.Errorf("skip child step %s: %w", si.ID, err)
 			}
 			l.logger.Info("child step skipped (dependency blocked)",
@@ -194,7 +195,7 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 
 		// Dispatch this step: transition WAITING → READY → dispatch.
 		si.State = model.StepStateReady
-		if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+		if err := l.updateStepInstance(ctx, si); err != nil {
 			return fmt.Errorf("ready child step %s: %w", si.ID, err)
 		}
 
@@ -227,7 +228,7 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 	}
 
 	// Finalize the child submission.
-	allSteps, err := l.store.ListStepsBySubmission(ctx, childSub.ID)
+	allSteps, err := l.cache.listStepsBySubmission(ctx, l.store, childSub.ID)
 	if err != nil {
 		return fmt.Errorf("reload child steps: %w", err)
 	}
@@ -286,7 +287,7 @@ func (l *Loop) executeChildSubmission(ctx context.Context, childSub *model.Submi
 	}
 	sub.CompletedAt = &now
 
-	if err := l.store.UpdateSubmission(ctx, sub); err != nil {
+	if err := l.updateSubmission(ctx, sub); err != nil {
 		return fmt.Errorf("finalize child submission: %w", err)
 	}
 
@@ -417,7 +418,7 @@ func (l *Loop) waitForStepCompletion(ctx context.Context, si *model.StepInstance
 				}
 			}
 			si.CompletedAt = &now
-			if err := l.store.UpdateStepInstance(ctx, si); err != nil {
+			if err := l.updateStepInstance(ctx, si); err != nil {
 				return fmt.Errorf("complete child step %s: %w", si.ID, err)
 			}
 			l.logger.Info("child step completed (poll)",

@@ -55,10 +55,5 @@ var ValidStepTransitions = map[StepInstanceState][]StepInstanceState{
 
 // CanTransitionTo returns true if moving from the current state to next is valid.
 func (s StepInstanceState) CanTransitionTo(next StepInstanceState) bool {
-	for _, allowed := range ValidStepTransitions[s] {
-		if allowed == next {
-			return true
-		}
-	}
-	return false
+	return canTransition(ValidStepTransitions, s, next)
 }

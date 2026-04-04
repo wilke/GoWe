@@ -117,9 +117,6 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
 	opts := parseListOptions(r)
-	if class := r.URL.Query().Get("class"); class != "" {
-		opts.Class = class
-	}
 	workflows, total, err := s.store.ListWorkflows(r.Context(), opts)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,

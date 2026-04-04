@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,7 +29,7 @@ func respondCreated(w http.ResponseWriter, reqID string, data any) {
 // respondList writes a success response with pagination.
 // Sets X-Max-Limit header so clients know the maximum page size.
 func respondList(w http.ResponseWriter, reqID string, data any, pg *model.Pagination) {
-	w.Header().Set("X-Max-Limit", "100")
+	w.Header().Set("X-Max-Limit", strconv.Itoa(model.MaxListLimit))
 	respondJSON(w, http.StatusOK, reqID, data, pg, nil)
 }
 
@@ -52,5 +54,7 @@ func respondJSON(w http.ResponseWriter, status int, reqID string, data any, pg *
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("failed to encode response", "error", err)
+	}
 }

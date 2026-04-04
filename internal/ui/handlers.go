@@ -140,7 +140,9 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 // HandleLogout clears the session and redirects to login.
 func (ui *UI) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess, _ := ui.sessions.GetSessionFromRequest(r); sess != nil {
-		_ = ui.sessions.DeleteSession(r.Context(), sess.ID)
+		if err := ui.sessions.DeleteSession(r.Context(), sess.ID); err != nil {
+			slog.Error("logout: failed to delete session", "session_id", sess.ID, "error", err)
+		}
 		ui.logger.Info("user logged out", "username", sess.Username, "session", sess.ID)
 	}
 	ClearSessionCookie(w)
@@ -152,17 +154,29 @@ func (ui *UI) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
 	// Get workflow count and recent workflows.
-	workflows, workflowCount, _ := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 5})
+	workflows, workflowCount, err := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 5})
+	if err != nil {
+		slog.Error("dashboard: failed to list workflows", "error", err)
+	}
 
 	// Get recent submissions.
-	submissions, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 5})
+	submissions, _, err := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 5})
+	if err != nil {
+		slog.Error("dashboard: failed to list submissions", "error", err)
+	}
 
 	// Count submissions by state for the last 24 hours.
 	since24h := time.Now().UTC().Add(-24 * time.Hour)
-	stats24h, _ := ui.store.CountSubmissionsByState(r.Context(), since24h)
+	stats24h, err := ui.store.CountSubmissionsByState(r.Context(), since24h)
+	if err != nil {
+		slog.Error("dashboard: failed to count submissions by state (24h)", "error", err)
+	}
 
 	// Count currently running (all time — running is a live state).
-	allStats, _ := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+	if err != nil {
+		slog.Error("dashboard: failed to count submissions by state (all-time)", "error", err)
+	}
 
 	data := map[string]any{
 		"Title":             "Dashboard - GoWe",
@@ -311,7 +325,10 @@ func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 
 	// Get task summaries and tasks for each submission.
 	for _, sub := range submissions {
-		tasks, _ := ui.store.ListTasksBySubmission(r.Context(), sub.ID)
+		tasks, err := ui.store.ListTasksBySubmission(r.Context(), sub.ID)
+		if err != nil {
+			slog.Error("submission list: failed to list tasks", "submission_id", sub.ID, "error", err)
+		}
 		taskList := make([]model.Task, len(tasks))
 		for i, t := range tasks {
 			taskList[i] = *t
@@ -383,10 +400,13 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Calculate queue position if pending
 	if sub.State == model.SubmissionStatePending {
-		pendingSubs, _, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{
+		pendingSubs, _, err := ui.store.ListSubmissions(r.Context(), model.ListOptions{
 			State: "PENDING",
 			Limit: 1000,
 		})
+		if err != nil {
+			slog.Error("submission detail: failed to list pending submissions for queue position", "error", err)
+		}
 		for i, ps := range pendingSubs {
 			if ps.ID == sub.ID {
 				sub.QueuePosition = i + 1
@@ -398,7 +418,10 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 	// Load workflow for DAG visualization
 	var workflow *model.Workflow
 	if sub.WorkflowID != "" {
-		workflow, _ = ui.store.GetWorkflow(r.Context(), sub.WorkflowID)
+		workflow, err = ui.store.GetWorkflow(r.Context(), sub.WorkflowID)
+		if err != nil {
+			slog.Error("submission detail: failed to load workflow for DAG", "workflow_id", sub.WorkflowID, "error", err)
+		}
 	}
 
 	data := map[string]any{
@@ -415,13 +438,19 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
 	// Load available workflows.
-	workflows, _, _ := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 100})
+	workflows, _, err := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 100})
+	if err != nil {
+		slog.Error("submission create: failed to list workflows", "error", err)
+	}
 
 	// Pre-select workflow if ID provided.
 	workflowID := r.URL.Query().Get("workflow_id")
 	var selectedWorkflow *model.Workflow
 	if workflowID != "" {
-		selectedWorkflow, _ = ui.store.GetWorkflow(r.Context(), workflowID)
+		selectedWorkflow, err = ui.store.GetWorkflow(r.Context(), workflowID)
+		if err != nil {
+			slog.Error("submission create: failed to get selected workflow", "workflow_id", workflowID, "error", err)
+		}
 	}
 
 	// Build workspace path for file picker.
@@ -522,18 +551,19 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Create StepInstances for each workflow step (3-level state architecture).
+	stepInstances := make([]*model.StepInstance, 0, len(wf.Steps))
 	for _, step := range wf.Steps {
-		si := &model.StepInstance{
+		stepInstances = append(stepInstances, &model.StepInstance{
 			ID:           "si_" + uuid.New().String(),
 			SubmissionID: sub.ID,
 			StepID:       step.ID,
 			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
 			CreatedAt:    now,
-		}
-		if err := ui.store.CreateStepInstance(r.Context(), si); err != nil {
-			ui.logger.Error("create step instance failed", "step", step.ID, "error", err)
-		}
+		})
+	}
+	if err := ui.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {
+		ui.logger.Error("batch create step instances failed", "error", err)
 	}
 
 	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)
@@ -618,7 +648,10 @@ func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
 
 	// Write data rows
 	for _, sub := range submissions {
-		tasks, _ := ui.store.ListTasksBySubmission(r.Context(), sub.ID)
+		tasks, err := ui.store.ListTasksBySubmission(r.Context(), sub.ID)
+		if err != nil {
+			slog.Error("submission export: failed to list tasks", "submission_id", sub.ID, "error", err)
+		}
 		taskList := make([]model.Task, len(tasks))
 		for i, t := range tasks {
 			taskList[i] = *t
@@ -805,7 +838,10 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set submission back to RUNNING if it was terminal.
-	sub, _ := ui.store.GetSubmission(r.Context(), subID)
+	sub, err := ui.store.GetSubmission(r.Context(), subID)
+	if err != nil {
+		slog.Error("task recompute: failed to get submission", "submission_id", subID, "error", err)
+	}
 	if sub != nil && sub.State.IsTerminal() {
 		sub.State = model.SubmissionStateRunning
 		sub.CompletedAt = nil
@@ -929,11 +965,20 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
 	// Get counts.
-	_, workflowCount, _ := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 1})
-	_, submissionCount, _ := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 1})
+	_, workflowCount, err := ui.store.ListWorkflows(r.Context(), model.ListOptions{Limit: 1})
+	if err != nil {
+		slog.Error("admin stats: failed to count workflows", "error", err)
+	}
+	_, submissionCount, err := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 1})
+	if err != nil {
+		slog.Error("admin stats: failed to count submissions", "error", err)
+	}
 
 	// All-time stats (for Running/Pending which are live states).
-	allStats, _ := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+	if err != nil {
+		slog.Error("admin stats: failed to count submissions by state", "error", err)
+	}
 
 	// Time-period breakdowns.
 	now := time.Now().UTC()
@@ -960,7 +1005,10 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 
 	var breakdown []periodStats
 	for _, p := range periods {
-		counts, _ := ui.store.CountSubmissionsByState(r.Context(), p.Since)
+		counts, err := ui.store.CountSubmissionsByState(r.Context(), p.Since)
+		if err != nil {
+			slog.Error("admin stats: failed to count submissions by state for period", "period", p.Label, "error", err)
+		}
 		total := 0
 		for _, c := range counts {
 			total += c
@@ -1099,8 +1147,14 @@ func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 		if len(item) < 2 {
 			continue
 		}
-		itemPath, _ := item[0].(string)
-		itemType, _ := item[1].(string)
+		itemPath, ok := item[0].(string)
+		if !ok {
+			continue
+		}
+		itemType, ok := item[1].(string)
+		if !ok {
+			continue
+		}
 		var itemSize int64
 		if len(item) > 6 {
 			if size, ok := item[6].(float64); ok {
@@ -1254,8 +1308,8 @@ func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		shockNodeID, _ := createResp[0][0][10].(string)
-		if shockNodeID == "" {
+		shockNodeID, ok := createResp[0][0][10].(string)
+		if !ok || shockNodeID == "" {
 			http.Error(w, `{"error": "No Shock node ID in response"}`, http.StatusInternalServerError)
 			return
 		}
