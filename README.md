@@ -1,46 +1,88 @@
 # GoWe
 
-A CWL v1.2 workflow engine for [BV-BRC](https://www.bv-brc.org/) bioinformatics pipelines. GoWe parses Common Workflow Language definitions, schedules task execution across local, container, and BV-BRC backends, and exposes a REST API for workflow management.
+A CWL v1.2 workflow engine written in Go. GoWe parses Common Workflow Language definitions, schedules task execution across local, container, and remote backends, and exposes a REST API with a web UI for workflow management.
 
 ## Features
 
-- **CWL v1.2 support** — parse, validate, and execute packed or modular CWL workflows
-- **Multiple executor backends** — local processes, Docker containers, distributed workers, and BV-BRC remote jobs
-- **Multi-provider authentication** — BV-BRC and MG-RAST tokens with per-task delegation
-- **Distributed execution** — worker pools with group-based scheduling and shared secrets
-- **Async scheduling** — tick-based scheduler with dependency resolution, retry logic, and state machine transitions
-- **SQLite persistence** — lightweight embedded database with automatic migrations
-- **REST API** — JSON endpoints for workflow CRUD, submission management, task monitoring, and BV-BRC app/workspace proxying
-- **CLI client** — `gowe` command for login, submit, status, logs, and more
+- **CWL v1.2 compliance** — 378/378 conformance tests passing
+- **Multiple executor backends** — local processes, Docker/Apptainer containers, distributed workers, BV-BRC remote jobs
+- **Distributed execution** — pull-based worker pools with group routing, dataset affinity, and GPU scheduling
+- **Async scheduler** — tick-based with dependency resolution, scatter/gather, retry logic, and three-level state machines
+- **Web UI** — dashboard, submission management, real-time SSE updates, workflow browsing
+- **REST API** — JSON endpoints for workflows, submissions, tasks, workers, and file management
+- **CLI client** — `gowe` command for login, submit, status, logs, cancel, and more
+- **Multi-provider auth** — BV-BRC and MG-RAST tokens with per-task delegation; anonymous mode for development
+- **SQLite persistence** — embedded database, zero external dependencies, automatic migrations
+- **Container runtimes** — Docker and Apptainer/Singularity with SIF image support and GPU passthrough
 
 ## Requirements
 
-- Go 1.24+
-- Docker or Apptainer (optional, for container executor — auto-detected from PATH)
-- BV-BRC account (optional, for remote job submission)
+- **Go 1.24+** (for building from source)
+- **Docker** (for container execution and docker-compose deployment)
+- **Apptainer** (optional, alternative container runtime for HPC)
+- **BV-BRC account** (optional, for remote BV-BRC job submission)
 
 ## Installation
 
-```bash
-go install github.com/me/gowe/cmd/server@latest
-go install github.com/me/gowe/cmd/cli@latest
-```
-
-Or build from source:
+### From Source
 
 ```bash
 git clone https://github.com/wilke/GoWe.git
 cd GoWe
-mkdir -p bin
-go build -o bin/gowe-server ./cmd/server
-go build -o bin/gowe ./cmd/cli
+make build
 ```
 
-### Docker
+This builds all binaries into `./bin/`:
+
+| Binary | Description |
+|--------|-------------|
+| `gowe-server` | REST API server with scheduler, web UI, and executors |
+| `gowe` | CLI client |
+| `gowe-worker` | Distributed worker |
+| `cwl-runner` | Standalone CWL runner (cwltest-compatible) |
+
+To install to `$GOPATH/bin`:
 
 ```bash
-docker build -t gowe .
-docker run -p 8080:8080 gowe
+make install
+```
+
+Or build individual binaries:
+
+```bash
+go build -o bin/gowe-server ./cmd/server
+go build -o bin/gowe ./cmd/cli
+go build -ldflags "-X main.Version=$(git rev-parse HEAD)" -o bin/gowe-worker ./cmd/worker
+go build -o bin/cwl-runner ./cmd/cwl-runner
+```
+
+### Docker Images
+
+Build all three images:
+
+```bash
+make docker
+```
+
+Or individually:
+
+```bash
+docker build -t gowe-server -f Dockerfile .
+docker build -t gowe-worker -f Dockerfile.worker .
+docker build -t gowe-cwl-runner -f Dockerfile.cwl-runner .
+```
+
+Run the server standalone:
+
+```bash
+docker run -p 8080:8080 gowe-server --allow-anonymous --debug
+```
+
+With a persistent database:
+
+```bash
+docker run -p 8080:8080 -v gowe-data:/data gowe-server \
+  --db /data/gowe.db --allow-anonymous
 ```
 
 ## Quick Start
@@ -52,60 +94,200 @@ docker run -p 8080:8080 gowe
 > - [CWL Hints Reference](docs/cwl-hints.md) — gowe:Execution, gowe:ResourceData, DockerRequirement
 > - [Full Tutorial](docs/tutorial.md) — writing CWL, multi-step pipelines, monitoring
 
-**1. Start the server**
+### 1. Start the server
 
 ```bash
 gowe-server
 ```
 
-The server listens on `:8080` by default with a SQLite database at `~/.gowe/gowe.db`.
+Listens on `:8080` with a SQLite database at `~/.gowe/gowe.db`.
 
-```
-gowe-server --addr :9090 --debug --db /tmp/gowe.db
+```bash
+gowe-server --addr :9090 --debug --db /tmp/gowe.db --allow-anonymous
 ```
 
-**2. Register a workflow**
+### 2. Register a workflow
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/workflows \
   -H "Content-Type: application/json" \
-  -d @testdata/packed/pipeline-packed.cwl
+  -d @workflow.cwl.json
 ```
 
-**3. Submit a run**
+Or via the CLI:
+
+```bash
+gowe submit workflow.cwl -i job.json
+```
+
+### 3. Submit a run
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/submissions \
   -H "Content-Type: application/json" \
   -d '{
-    "workflow_id": "wf_...",
+    "workflow_id": "my-workflow-name",
     "inputs": {
-      "reads_r1": "/path/to/reads_R1.fastq",
-      "reads_r2": "/path/to/reads_R2.fastq",
-      "scientific_name": "Escherichia coli",
-      "taxonomy_id": 562
+      "message": "hello world"
     }
   }'
 ```
 
-`workflow_id` accepts either a workflow ID (`wf_...`) or a workflow name (e.g. `"boltz-test"`):
+`workflow_id` accepts either a workflow ID (`wf_...`) or a workflow name.
 
-```bash
-curl -X POST http://localhost:8080/api/v1/submissions \
-  -H "Content-Type: application/json" \
-  -d '{"workflow_id": "boltz-test", "inputs": {...}}'
-```
-
-**4. Check status**
+### 4. Check status
 
 ```bash
 gowe status sub_...
 ```
 
+Or open the web UI at `http://localhost:8080/`.
+
+## Running with Docker Compose
+
+Docker Compose provides a complete distributed setup with a server and multiple workers sharing a volume for inputs and outputs.
+
+### Start the Stack
+
+```bash
+docker compose up -d --build
+```
+
+This starts:
+- **gowe-server** — API server on port `8090` (maps to internal `8080`) with `--default-executor=worker`
+- **worker-1, worker-2** — Host-execution workers (`--runtime=none`) for non-container tasks
+- **worker-docker** — Docker-enabled worker (`--runtime=docker`) with access to the Docker socket
+
+All services share a named volume (`gowe-workdir`) for working directories and outputs.
+
+### Submit a Workflow
+
+```bash
+# Register and submit via the CLI
+./bin/gowe submit --server http://localhost:8090 workflow.cwl -i job.json
+
+# Or register via API
+curl -X POST http://localhost:8090/api/v1/workflows \
+  -H "Content-Type: application/json" \
+  -d @workflow.cwl.json
+
+# Submit
+curl -X POST http://localhost:8090/api/v1/submissions \
+  -H "Content-Type: application/json" \
+  -d '{"workflow_id": "my-workflow", "inputs": {...}}'
+```
+
+The web UI is available at `http://localhost:8090/`.
+
+### Check Worker Status
+
+```bash
+curl -s http://localhost:8090/api/v1/workers | jq '.data'
+```
+
+### View Logs
+
+```bash
+docker compose logs -f gowe-server     # Server logs
+docker compose logs -f worker-docker   # Docker worker logs
+```
+
+### Stop the Stack
+
+```bash
+docker compose down -v
+```
+
+### Customization
+
+Create a `docker-compose.override.yml` to customize for your environment:
+
+```yaml
+services:
+  gowe-server:
+    command:
+      - "-addr"
+      - ":8080"
+      - "-db"
+      - "/data/gowe.db"
+      - "-default-executor"
+      - "worker"
+      - "-allow-anonymous"
+      - "-scheduler-poll"
+      - "2s"
+    ports:
+      - "8080:8080"
+
+  worker-docker:
+    environment:
+      - DOCKER_VOLUME=gowe-workdir
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gowe-workdir:/workdir
+      - /path/to/your/data:/data:ro
+```
+
+Key environment variables for the Docker worker:
+- `DOCKER_VOLUME=gowe-workdir` — named volume shared between the worker and tool containers (no host path translation needed)
+
+### Production Considerations
+
+The default `docker-compose.yml` uses fast poll intervals (`500ms`) for testing. For production:
+
+- Increase `--scheduler-poll` to `2s` or higher
+- Increase worker `--poll` to `5s` or higher
+- Remove `--debug` flags
+- Set `--worker-keys` for worker authentication
+- Configure `--upload-backend` for file management (`s3` or `shock`)
+
+## Architecture
+
+### Data Flow
+
+```
+CWL file → parser → model.Workflow (DAG of Steps)
+                          ↓
+            Submit with inputs → model.Submission
+                          ↓
+         scheduler tick loop (6 phases per tick)
+                          ↓
+     StepInstance (per step per submission, handles scatter)
+                          ↓
+              Task (concrete work unit)
+                          ↓
+        executor registry dispatches to backend
+                          ↓
+    local | docker | apptainer | worker | bvbrc
+```
+
+### Three-Level State Hierarchy
+
+```
+Submission  (PENDING → RUNNING → COMPLETED / FAILED / CANCELLED)
+  └─ StepInstance  (WAITING → READY → DISPATCHED → RUNNING → COMPLETED / FAILED / SKIPPED)
+       └─ Task  (PENDING → SCHEDULED → QUEUED → RUNNING → SUCCESS / FAILED)
+```
+
+Scatter steps produce N StepInstances, each with its own Tasks. The scheduler advances these through 6 phases each tick: (1) advance WAITING→READY when deps met, (2) dispatch READY→create Tasks, (3) retry FAILED tasks, (4) poll in-flight async tasks, (5) advance step instances, (6) finalize submissions.
+
+### Executor Selection
+
+| Priority | Condition | Executor |
+|----------|-----------|----------|
+| 1 | `--default-executor` server flag | As configured |
+| 2 | `gowe:Execution.executor` CWL hint | `worker`, `bvbrc`, or `local` |
+| 3 | `DockerRequirement` present + workers online | `worker` (auto-promoted) |
+| 4 | `DockerRequirement` present, no workers | `local` (with container) |
+| 5 | Default | `local` |
+
+### Worker Pull Model
+
+Workers poll the server for tasks (no push). Checkout matches on: container runtime capability, worker group, and dataset affinity (`prestage` = require, `cache` = prefer). Workers execute via `toolexec`, stage outputs, and report results.
+
 ## CLI
 
 ```
-gowe — CWL workflow engine for BV-BRC
+gowe — CWL workflow engine CLI
 
 Commands:
   login     Authenticate with BV-BRC
@@ -126,46 +308,19 @@ Flags:
 
 ### cwltest-Compatible Runner
 
-The `gowe run` command provides a cwl-runner compatible interface:
-
 ```bash
-gowe run workflow.cwl job.yml
+# Standalone (no server needed)
+cwl-runner workflow.cwl job.json
+
+# Via server
+gowe run --server http://localhost:8080 workflow.cwl job.json
 ```
 
-This bundles the CWL, submits to the server, waits for completion, and outputs CWL-formatted JSON to stdout.
-
-**Flags:**
-- `--outdir` — Output directory (default: temporary directory)
-- `--no-upload` — Disable file upload; use `GOWE_PATH_MAP` for shared-filesystem mode
-- `--timeout` — Execution timeout (default: 5m)
-- `-q, --quiet` — Suppress progress messages
+Flags: `--outdir`, `--no-upload`, `--timeout` (default 5m), `-q/--quiet`.
 
 ## API
 
-All endpoints are prefixed with `/api/v1`.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | API discovery |
-| `GET` | `/health` | Health check |
-| `GET` | `/workflows` | List workflows |
-| `POST` | `/workflows` | Create workflow |
-| `GET` | `/workflows/{id}` | Get workflow |
-| `PUT` | `/workflows/{id}` | Update workflow |
-| `DELETE` | `/workflows/{id}` | Delete workflow |
-| `POST` | `/workflows/{id}/validate` | Validate workflow |
-| `GET` | `/submissions` | List submissions (`?workflow_id=...&state=...`) |
-| `POST` | `/submissions` | Create submission (`workflow_id` accepts ID or name) |
-| `GET` | `/submissions/{id}` | Get submission |
-| `PUT` | `/submissions/{id}/cancel` | Cancel submission |
-| `GET` | `/submissions/{id}/tasks` | List tasks |
-| `GET` | `/submissions/{id}/tasks/{tid}` | Get task |
-| `GET` | `/submissions/{id}/tasks/{tid}/logs` | Task logs |
-| `GET` | `/apps` | List BV-BRC apps |
-| `GET` | `/apps/{appID}` | Get app details |
-| `GET` | `/workspace` | List workspace |
-
-All responses use a standard envelope:
+All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 
 ```json
 {
@@ -176,121 +331,66 @@ All responses use a standard envelope:
 }
 ```
 
-## Executors
+### Endpoints
 
-GoWe supports three executor backends that control *where* tasks run, plus container support that controls *how* they run:
-
-| Executor | Routing | Description |
-|----------|---------|-------------|
-| `local` | Default (no hints) | Runs commands as local OS processes |
-| `worker` | `gowe:Execution.executor: worker` or `--default-executor=worker` | Delegates to remote workers for distributed execution |
-| `bvbrc` | `gowe:Execution.executor: bvbrc` | Submits jobs to BV-BRC via JSON-RPC 1.1 |
-
-`DockerRequirement` or `gowe:Execution.docker_image` controls the container runtime (Docker/Apptainer), not the executor. Steps with a container image are auto-promoted to `worker` when workers are online, otherwise run locally.
-
-### Authentication
-
-GoWe supports multi-provider authentication for API requests:
-
-| Provider | Header | Token Format |
-|----------|--------|--------------|
-| BV-BRC | `Authorization` | `un=user@bvbrc\|tokenid=...\|expiry=...\|sig=...` |
-| MG-RAST | `X-MG-RAST-Token` | Similar pipe-delimited format |
-| Anonymous | (none) | Requires `--allow-anonymous` flag |
-
-User tokens are delegated per-task to executors and workers, enabling jobs to run under the submitting user's identity.
-
-**Server-side BV-BRC token** (for `/apps` and `/workspace` endpoints):
-
-1. `BVBRC_TOKEN` environment variable
-2. `~/.gowe/credentials.json` (via `gowe login`)
-3. `~/.bvbrc_token`
-4. `~/.patric_token`
-5. `~/.p3_token`
-
-If no server token is found, BV-BRC proxy endpoints are disabled.
-
-### CWL Hints Example
-
-```yaml
-$namespaces:
-  gowe: https://github.com/wilke/GoWe#
-
-steps:
-  annotate:
-    run: tools/bvbrc-annotation.cwl
-    hints:
-      gowe:Execution:
-        executor: bvbrc
-        bvbrc_app_id: GenomeAnnotation
-    in:
-      contigs: assemble/contigs
-    out: [annotated_genome]
-
-  local_step:
-    run: tools/echo.cwl
-    hints:
-      DockerRequirement:
-        dockerPull: ubuntu:22.04
-    in:
-      message: input_msg
-    out: [output]
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | API discovery |
+| `GET` | `/health` | Health check |
+| **Workflows** | | |
+| `GET` | `/workflows` | List workflows |
+| `POST` | `/workflows` | Create workflow |
+| `GET` | `/workflows/{id}` | Get workflow |
+| `PUT` | `/workflows/{id}` | Update workflow |
+| `DELETE` | `/workflows/{id}` | Delete workflow |
+| `POST` | `/workflows/{id}/validate` | Validate workflow |
+| **Submissions** | | |
+| `GET` | `/submissions` | List submissions (`?workflow_id=&state=&search=&sort=&limit=&offset=`) |
+| `POST` | `/submissions` | Create submission (`workflow_id` accepts ID or name; `?dry_run=true` for validation) |
+| `GET` | `/submissions/{id}` | Get submission |
+| `PUT` | `/submissions/{id}/cancel` | Cancel submission |
+| `GET` | `/submissions/{id}/tasks` | List tasks |
+| `GET` | `/submissions/{id}/tasks/{tid}` | Get task |
+| `GET` | `/submissions/{id}/tasks/{tid}/logs` | Task logs |
+| `GET` | `/sse/submissions/{id}` | SSE stream for real-time updates |
+| **Workers** | | |
+| `GET` | `/workers` | List workers |
+| `POST` | `/workers` | Register worker |
+| `PUT` | `/workers/{id}/heartbeat` | Worker heartbeat |
+| `GET` | `/workers/{id}/work` | Checkout task |
+| `DELETE` | `/workers/{id}` | Deregister worker |
+| **Apps & Workspace** | | |
+| `GET` | `/apps` | List BV-BRC apps |
+| `GET` | `/apps/{appID}` | Get app details |
+| `GET` | `/apps/{appID}/cwl-tool` | Generate CWL tool from app |
+| `GET` | `/workspace` | List BV-BRC workspace |
+| **Files** | | |
+| `POST` | `/files` | Upload file |
+| `GET` | `/files/download` | Download file |
+| **Admin** | | |
+| `GET` | `/admin/users` | List users |
+| `PUT` | `/admin/users/{username}/role` | Set user role |
 
 ## Configuration
-
-### Quick Setup
-
-For development and testing, use the setup script to initialize your environment:
-
-```bash
-# Initialize environment (creates .env with auto-detected paths)
-./scripts/setup-env.sh
-
-# Setup and build binaries
-./scripts/setup-env.sh -b
-
-# Source environment before running
-source .env
-```
-
-### Configuration Files
-
-```
-~/.gowe/                      # User configuration directory
-├── gowe.db                   # SQLite database
-└── worker-keys.json          # Worker authentication keys
-
-$PROJECT/
-├── .env                      # Local environment (gitignored)
-├── .env.example              # Environment template
-└── configs/                  # Configuration templates (reference only)
-    ├── server.example.yaml
-    ├── worker.example.yaml
-    └── credentials.example.yaml
-```
-
-> **Note:** YAML config file loading (`--config` for full server/worker configuration) is not yet implemented.
-> The example YAML files in `configs/` are design references. See [docs/planned-config.md](docs/planned-config.md) for the planned configuration system.
 
 ### Server Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr` | `:8080` | Listen address |
-| `--log-level` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
-| `--log-format` | `text` | Log format (`text` or `json`) |
-| `--db` | `~/.gowe/gowe.db` | SQLite database path |
-| `--default-executor` | `""` | Default executor: `local`, `docker`, `worker` |
+| `--db` | `~/.gowe/gowe.db` | SQLite database path (`:memory:` for testing) |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format` | `text` | `text` or `json` |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
+| `--default-executor` | `""` | `local`, `docker`, `worker` |
+| `--scheduler-poll` | `2s` | Scheduler tick interval |
 | `--allow-anonymous` | `false` | Allow unauthenticated requests |
-| `--anonymous-executors` | `local,docker,worker` | Executors for anonymous users |
-| `--worker-keys` | `""` | Path to worker keys JSON file |
-| `--config` | `""` | Path to admin config file (JSON admin list only) |
-| `--scheduler-poll` | `2s` | Scheduler poll interval |
-| `--upload-backend` | `""` | File upload backend: `shock`, `s3`, `local` |
+| `--anonymous-executors` | `local,docker,worker` | Executors allowed for anonymous users |
+| `--worker-keys` | `""` | Path to worker keys JSON |
+| `--image-dir` | `""` | Base directory for `.sif` image resolution |
+| `--upload-backend` | `""` | `shock`, `s3`, or `local` |
 | `--upload-local-dir` | `""` | Local directory for file uploads |
-| `--upload-download-dirs` | `""` | Directories allowed for file download |
+| `--upload-download-dirs` | `""` | Directories allowed for downloads |
 
 ### Worker Flags
 
@@ -298,186 +398,93 @@ $PROJECT/
 |------|---------|-------------|
 | `--server` | `http://localhost:8080` | Server URL |
 | `--name` | hostname | Worker name |
-| `--group` | `default` | Worker group |
-| `--worker-key` | `""` | Shared secret for authentication |
-| `--runtime` | `none` | Runtime: `docker`, `apptainer`, `none` |
+| `--group` | `default` | Worker group for task routing |
+| `--worker-key` | `""` | Shared secret for server authentication |
+| `--runtime` | `none` | `docker`, `apptainer`, `none` |
 | `--workdir` | `$TMPDIR/gowe-worker` | Working directory |
 | `--stage-out` | `local` | Output staging: `local`, `file://`, `s3://`, `shock://` |
 | `--poll` | `5s` | Poll interval |
-| `--stage-mode` | `copy` | File staging mode (`copy`, `symlink`, `reference`) |
-| `--docker-host-path-map` | `""` | Path mapping for DinD (or `DOCKER_HOST_PATH_MAP` env) |
-| `--docker-volume` | `""` | Named Docker volume shared with tool containers (or `DOCKER_VOLUME` env) |
-| `--input-path-map` | `""` | Input path mapping (or `INPUT_PATH_MAP` env) |
-| `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths |
-| `--pre-stage-dir` | `""` | Directory with pre-staged datasets (auto-scanned, bind-mounted) |
-| `--extra-bind` | `""` | Extra bind mount path (repeatable, also comma-separated) |
-| `--dataset` | `""` | Dataset alias `id=path` (repeatable, also comma-separated) |
-| `--gpu` | `false` | Enable GPU support (`--nv` for Apptainer, `--gpus` for Docker) |
-| `--gpu-id` | `""` | Specific GPU device ID (e.g., `0`, `1`, `0,1`) |
-| `--max-mem` | `0` | Maximum memory in MiB for containers (0 = auto-detect) |
-| `--max-cpus` | `0` | Maximum CPUs for containers (0 = auto-detect) |
+| `--image-dir` | `""` | Base directory for `.sif` images |
+| `--pre-stage-dir` | `""` | Auto-scan datasets directory (bind-mounted into containers) |
+| `--dataset` | `""` | Dataset alias `id=path` (repeatable) |
+| `--extra-bind` | `""` | Extra bind mount (repeatable) |
+| `--gpu` | `false` | Enable GPU passthrough |
+| `--gpu-id` | `""` | Specific GPU device IDs |
+| `--secret` | `""` | Secret env var `NAME=value` (repeatable, never sent to server) |
+| `--secret-file` | `""` | Load secrets from file |
 
 ### Environment Variables
-
-These environment variables are actually read by the application code (not just test scripts):
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
 | `GOWE_ADMINS` | Server | Comma-separated admin usernames |
-| `BVBRC_TOKEN` | Server | BV-BRC authentication token (also checks `~/.bvbrc_token` etc.) |
-| `AWS_ACCESS_KEY_ID` | Server, Worker | S3 access key (fallback when flag is empty) |
-| `AWS_SECRET_ACCESS_KEY` | Server, Worker | S3 secret key (fallback when flag is empty) |
-| `DOCKER_HOST_PATH_MAP` | Worker | Path mapping for DinD — legacy approach, prefer `DOCKER_VOLUME` |
+| `BVBRC_TOKEN` | Server | BV-BRC authentication token |
+| `AWS_ACCESS_KEY_ID` | Server/Worker | S3 access key |
+| `AWS_SECRET_ACCESS_KEY` | Server/Worker | S3 secret key |
 | `DOCKER_VOLUME` | Worker | Named Docker volume for tool containers (preferred for DinD) |
-| `INPUT_PATH_MAP` | Worker | Input path translation (fallback when flag is empty) |
-| `SHOCK_TOKEN` | Worker | Shock authentication token (fallback when flag is empty) |
-| `GOWE_PATH_MAP` | CLI (run) | Path mapping for shared-filesystem distributed mode |
-| `GOWE_OUTPUT_PATH_MAP` | CLI (run) | Output path translation for distributed mode |
+| `DOCKER_HOST_PATH_MAP` | Worker | Path mapping for DinD (legacy, prefer `DOCKER_VOLUME`) |
+| `INPUT_PATH_MAP` | Worker | Input path translation |
+| `GOWE_PATH_MAP` | CLI | Path mapping for shared-filesystem mode |
 
-Test script environment variables (set in `.env` via `setup-env.sh`):
+### Authentication
 
-| Variable | Description |
-|----------|-------------|
-| `GOWE_PROJECT_ROOT` | Project root directory |
-| `GOWE_TESTDATA` | Test data directory |
-| `GOWE_CONFORMANCE_DIR` | CWL conformance tests directory |
+| Provider | Header | Token Format |
+|----------|--------|--------------|
+| BV-BRC | `Authorization` | `un=user@bvbrc\|tokenid=...\|sig=...` |
+| MG-RAST | `X-MG-RAST-Token` | Similar pipe-delimited format |
+| Anonymous | (none) | Requires `--allow-anonymous` server flag |
 
-### Admin Configuration
+User tokens are delegated per-task to executors, enabling jobs to run under the submitting user's identity.
 
-Admins can be designated via (checked in order):
-1. **Database** — `gowe-server grant-admin alice@bvbrc`
-2. **Environment** — `GOWE_ADMINS=alice@bvbrc,bob@mgrast`
-3. **Config file** — admin list in JSON file passed via `--config`
+## CWL Extensions
 
-## Tools
+GoWe defines namespaced CWL hints that are safely ignored by other CWL engines:
 
-GoWe includes several command-line tools in `cmd/`:
+```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
 
-| Tool | Description | Documentation |
-|------|-------------|---------------|
-| `server` | Main API server with scheduler and executors | [docs/tools/server.md](docs/tools/server.md) |
-| `cli` | CLI client for workflow submission and monitoring | [docs/tools/cli.md](docs/tools/cli.md) |
-| `worker` | Remote worker for distributed task execution | [docs/tools/worker.md](docs/tools/worker.md) |
-| `gen-cwl-tools` | Generates CWL tools from BV-BRC app definitions | [docs/tools/gen-cwl-tools.md](docs/tools/gen-cwl-tools.md) |
-| `smoke-test` | End-to-end API integration test | [docs/tools/smoke-test.md](docs/tools/smoke-test.md) |
-| `verify-bvbrc` | BV-BRC API connectivity verification | [docs/tools/verify-bvbrc.md](docs/tools/verify-bvbrc.md) |
-| `scheduler` | Standalone scheduler (placeholder) | — |
+hints:
+  # Executor routing
+  gowe:Execution:
+    executor: worker           # local, worker, bvbrc
+    worker_group: gpu-workers  # Target worker group
+    bvbrc_app_id: GenomeAnnotation
+    docker_image: override.sif # Override DockerRequirement
 
-Build all tools:
-
-```bash
-go build -o bin/ ./cmd/...
+  # Dataset affinity scheduling
+  gowe:ResourceData:
+    datasets:
+      - id: boltz
+        path: /local_databases/boltz
+        size: 50GB
+        mode: prestage         # "prestage" (require) or "cache" (prefer)
 ```
 
-## Project Structure
-
-```
-cmd/
-  cli/          CLI client entrypoint
-  gen-cwl-tools/ CWL tool generator for BV-BRC apps
-  scheduler/    Standalone scheduler (placeholder)
-  server/       API server entrypoint
-  smoke-test/   End-to-end API smoke test
-  verify-bvbrc/ BV-BRC API verification tool
-  worker/       Remote worker for distributed execution
-internal/
-  bvbrc/        BV-BRC auth + JSON-RPC 1.1 client
-  bundle/       CWL file bundler
-  config/       Server configuration
-  executor/     Executor backends (local, docker, bvbrc)
-  logging/      slog setup
-  parser/       CWL parser + validator + DAG builder
-  scheduler/    Tick-based scheduler loop
-  server/       HTTP handlers + routing
-  store/        SQLite persistence
-  cli/          CLI command implementations
-pkg/
-  cwl/          CWL type definitions
-  model/        Domain model (Workflow, Task, Submission, state machines)
-testdata/       CWL workflow examples
-docs/           Implementation plan + API reference
-```
-
-## Distributed Execution
-
-GoWe supports distributed task execution across multiple worker nodes using Docker Compose:
-
-```bash
-# Start server and workers
-docker-compose up -d --build
-
-# Run a workflow against the distributed setup
-./bin/gowe run --server http://localhost:8090 workflow.cwl job.yml
-
-# Run the distributed test scripts
-./scripts/test-distributed.sh           # Basic tests
-./scripts/test-distributed-pipeline.sh  # 3-step pipeline with shared volume
-
-# Stop the cluster
-docker-compose down -v
-```
-
-The `docker-compose.yml` starts:
-- 1 server with `--default-executor=worker`, `--allow-anonymous`, and `--upload-backend=local`
-- 2 workers with `--runtime=none` (host execution)
-- 1 worker with `--runtime=docker` (container execution, `DOCKER_VOLUME=gowe-workdir`)
-
-All services share a named Docker volume (`gowe-workdir`) for working directories and outputs.
+## Distributed Workers
 
 ### Worker Groups
 
 Workers can be organized into groups for targeted scheduling:
 
 ```bash
-# Start a worker in a specific group
 gowe-worker --server http://localhost:8080 --group gpu-workers --worker-key $SECRET
+```
 
-# Configure worker keys in server (maps keys to allowed groups)
-cat > ~/.gowe/worker-keys.json << 'EOF'
+Configure allowed groups per key:
+
+```json
 {
   "keys": {
     "secret-key-1": {"groups": ["default", "gpu-workers"]},
     "secret-key-2": {"groups": ["cpu-workers"]}
   }
 }
-EOF
 ```
-
-Tasks can target specific worker groups via `RuntimeHints.WorkerGroup`.
-
-### Shared Volume
-
-All services share a named Docker volume (`gowe-workdir`) mounted at `/workdir`. Output files are accessible at:
-
-```
-Volume:     gowe-workdir:/workdir/outputs/task_<id>/
-Container:  /workdir/outputs/task_<id>/
-```
-
-The Docker worker uses `DOCKER_VOLUME=gowe-workdir` so that tool containers mount the same named volume — no host path translation is needed.
-
-See [docs/tools/worker.md](docs/tools/worker.md) for worker configuration details.
-
-### Apptainer / SIF Image Support
-
-GoWe supports Apptainer as a container runtime alongside Docker. Workers resolve `.sif` images via `--image-dir`:
-
-```bash
-# Worker with Apptainer runtime and local SIF images
-gowe-worker --runtime apptainer --image-dir /scout/containers/ --server http://localhost:8080
-
-# cwl-runner with local SIF images
-bin/cwl-runner --runtime apptainer --image-dir /scout/containers/ tool.cwl job.json
-```
-
-**Image resolution** for `DockerRequirement.dockerPull`:
-- Absolute paths (`/scout/containers/boltz.sif`) — used as-is
-- Relative `.sif` names (`boltz.sif`) — resolved against `--image-dir`
-- Non-`.sif` names (`dxkb/boltz:latest`) — prefixed with `docker://` for registry pull
 
 ### Reference Data Pre-staging
 
-Large reference datasets (model weights, sequence databases) are too large to transfer per-job. Workers declare available datasets; the scheduler routes tasks to workers that have the required data.
+Large datasets (model weights, sequence databases) are declared by workers and matched by the scheduler:
 
 ```bash
 gowe-worker \
@@ -490,68 +497,67 @@ gowe-worker \
   --gpu --gpu-id 3
 ```
 
-- **`--pre-stage-dir`** — Scans subdirectories at startup, auto-registers each as a dataset (dirname = dataset ID), bind-mounts the directory into every container
-- **`--dataset`** — Adds explicit dataset aliases (additive with auto-discovered), useful when CWL hint IDs don't match directory names
-- **`--extra-bind`** — Generic bind mounts into every container (not reported to server, not used for scheduling)
+- `--pre-stage-dir` — auto-scans subdirectories as datasets, bind-mounts into containers
+- `--dataset` — explicit dataset aliases (additive with auto-discovered)
+- `--extra-bind` — generic bind mounts (not used for scheduling)
 
-CWL tools declare dataset requirements via the `gowe:ResourceData` hint:
+### Secret Environment Variables
 
-```yaml
-$namespaces:
-  gowe: https://github.com/wilke/GoWe#
+Workers inject secrets into containers without exposing them to the server or API:
 
-hints:
-  gowe:ResourceData:
-    datasets:
-      - id: boltz
-        path: /local_databases/boltz
-        size: 50GB
-        mode: cache    # "prestage" (require) or "cache" (prefer)
+```bash
+gowe-worker --secret HF_TOKEN=hf_abc123 --secret-file /path/to/secrets.env
 ```
 
-The scheduler enforces `prestage` requirements (task only dispatched to workers that have the dataset) and prefers `cache` datasets (workers with the data score higher, but others can still execute).
+### Apptainer / SIF Images
 
-See [docs/tools/worker.md](docs/tools/worker.md) for detailed reference data documentation.
+```bash
+gowe-worker --runtime apptainer --image-dir /path/to/sif/
+```
+
+Image resolution for `DockerRequirement.dockerPull`:
+- `boltz.sif` — resolved against `--image-dir`
+- `/absolute/path/boltz.sif` — used as-is
+- `dxkb/boltz:latest` — prefixed with `docker://` for registry pull
+
+## Apptainer HPC Deployment
+
+For HPC clusters without Docker, see `deploy/apptainer/`:
+
+```bash
+# Build SIF images
+deploy/apptainer/build-sif.sh
+
+# Start services (MongoDB + Shock + GoWe server as Apptainer instances)
+deploy/apptainer/start-services.sh
+
+# Launch workers on compute nodes
+deploy/apptainer/start-worker.sh
+
+# SLURM job arrays
+sbatch deploy/apptainer/slurm/array-workers.sbatch
+```
 
 ## Testing
 
-### Quick Start
-
-```bash
-# Setup test environment
-./scripts/setup-env.sh -b
-source .env
-
-# Run all conformance tests (378 tests per mode)
-./scripts/run-all-tests.sh
-
-# Run required tests only (84 tests, faster for CI)
-./scripts/run-all-tests.sh --required
-```
-
-### Test Commands
-
 ```bash
 # Unit tests
-go test ./...
+make test
 
-# Tier 1 only (CI fast path)
-./scripts/run-all-tests.sh -t 1
+# CWL conformance (84 required tests)
+make test-conformance
 
-# Single mode
-./scripts/run-all-tests.sh -m cwl-runner
+# Full suite (all tiers, all modes)
+make test-all
 
-# Skip Docker tests
-./scripts/run-all-tests.sh --no-docker
+# Tier 1 only (CI fast path: unit + cwl-runner)
+make test-tier1
 
-# Staging backend tests
-./scripts/run-staging-tests.sh
+# Distributed mode via docker-compose
+make test-distributed
 
-# With Docker integration tests
-go test ./internal/executor/ -tags=integration
-
-# With BV-BRC integration tests (requires valid token)
-BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
+# Verbose
+make test-all V=1
 ```
 
 ### Test Tiers
@@ -562,22 +568,54 @@ BVBRC_TOKEN=... go test ./internal/executor/ -tags=integration
 | 2 | `server-local`, `distributed-*` | Server modes |
 | 3 | `staging-file`, `staging-s3`, `staging-shock` | Staging backends |
 
-### CWL Conformance
-
-GoWe passes 100% of CWL v1.2 conformance tests (378/378) in cwl-runner mode with Docker, and 377/378 with Apptainer. The container runtime is auto-detected from PATH when `DockerRequirement` is present.
+### CWL Conformance Results
 
 | Mode | Result | Notes |
 |------|--------|-------|
-| cwl-runner (Docker) | 378/378 | |
-| cwl-runner (Apptainer) | 377/378 | 1 known limitation¹ |
-| cwl-runner-parallel | 378/378 | |
-| distributed-none | 376/378 | |
-| distributed-docker | 376/378 | |
+| cwl-runner (Docker) | 378/378 | Full compliance |
+| cwl-runner (Apptainer) | 377/378 | 1 known limitation (network isolation requires root) |
+| server-local | 376/378 | 2 unsupported (InplaceUpdate) |
+| server-worker | 376/378 | 2 unsupported (InplaceUpdate) |
 
-¹ Test 227 (`networkaccess_disabled`): Apptainer shares the host network by default. Network isolation (`--net --network none`) requires root or admin config, which is unavailable on most HPC systems. See [docs/Execution-Modes.md](docs/Execution-Modes.md) for details.
+## Project Structure
 
-See [scripts/README.md](scripts/README.md) for detailed test documentation.
+```
+cmd/
+  cli/            CLI client (→ gowe)
+  server/         API server (→ gowe-server)
+  worker/         Distributed worker (→ gowe-worker)
+  cwl-runner/     Standalone CWL runner
+  gen-cwl-tools/  BV-BRC CWL tool generator
+  smoke-test/     End-to-end integration test
+  verify-bvbrc/   BV-BRC API verification
+internal/
+  parser/         CWL v1.2 parsing, validation, DAG construction
+  scheduler/      Tick-based scheduler with dependency resolution
+  executor/       Executor backends (local, docker, apptainer, bvbrc, worker)
+  server/         HTTP handlers, routing (go-chi), middleware, auth
+  store/          SQLite persistence with migrations
+  worker/         Remote worker loop: poll, execute, stage, heartbeat
+  cwltool/        Full CWL CommandLineTool executor
+  toolexec/       Shared execution: command building, mounts, GPU, secrets
+  cwlrunner/      Standalone runner (no server)
+  cwlexpr/        CWL expression evaluation (goja JS engine)
+  bvbrc/          BV-BRC auth and JSON-RPC 1.1 client
+  bundle/         CWL file bundler
+  ui/             Web UI handlers and templates
+pkg/
+  cwl/            CWL v1.2 type definitions
+  model/          Domain models with state machines
+  staging/        File staging: copy, symlink, reference modes
+ui/
+  assets/         Static assets (CSS, JS)
+  templates/      HTML templates
+deploy/
+  apptainer/      Apptainer/HPC deployment scripts and SLURM jobs
+docs/             Guides, tutorials, API reference
+scripts/          Test runners, setup, conformance
+testdata/         CWL workflow examples and conformance tests
+```
 
 ## License
 
-TBD
+MIT
