@@ -764,8 +764,16 @@ export GOWE_SERVER="http://localhost:8080"
 # Run a CWL tool (upload mode — CLI handles file transfer)
 ./bin/gowe run my-tool.cwl my-job.yml
 
-# Submit a workflow
+# Submit a workflow (bundles CWL and registers automatically)
 ./bin/gowe submit my-workflow.cwl -i my-inputs.yml
+
+# Submit using an already-registered workflow by name or ID
+./bin/gowe submit --workflow my-workflow -i my-inputs.yml
+./bin/gowe submit --workflow wf_abc123 -i my-inputs.yml
+
+# Submit with workspace output staging
+./bin/gowe submit my-workflow.cwl -i my-inputs.yml \
+  --output-destination "ws:///user@bvbrc/home/results/"
 
 # Check status
 ./bin/gowe list
@@ -892,7 +900,7 @@ PENDING ─── dependencies met ──→ SCHEDULED ──→ QUEUED ──�
 | Create workflow | `POST /api/v1/workflows/` | `gowe submit file.cwl --dry-run` |
 | List workflows | `GET /api/v1/workflows/` | — |
 | Validate | `POST /api/v1/workflows/{id}/validate` | — |
-| Submit run | `POST /api/v1/submissions/` | `gowe submit file.cwl` |
+| Submit run | `POST /api/v1/submissions/` | `gowe submit file.cwl` or `gowe submit --workflow name` |
 | List submissions | `GET /api/v1/submissions/?workflow_id=...&state=...` | — |
 | Check status | `GET /api/v1/submissions/{id}/` | `gowe status {id}` |
 | List tasks | `GET /api/v1/submissions/{id}/tasks/` | — |

@@ -27,7 +27,7 @@ type Submission struct {
 	// (e.g., "ws:///user@bvbrc/home/results/").
 	OutputDestination string `json:"output_destination,omitempty"`
 
-	// OutputState tracks the output upload lifecycle: "" | "uploading" | "delivered" | "upload_failed".
+	// OutputState tracks the output upload lifecycle: "" | "uploading" | "delivered" | "upload_failed" | "skipped".
 	OutputState string `json:"output_state,omitempty"`
 
 	// Authentication token fields (not serialized to JSON responses).
