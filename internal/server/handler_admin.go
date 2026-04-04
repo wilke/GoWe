@@ -24,11 +24,11 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	opts := parseListOptions(r)
 
 	// In-memory filtering.
+	searchLower := strings.ToLower(opts.Search)
 	filtered := users[:0:0]
 	for _, u := range users {
-		if opts.Search != "" {
-			q := strings.ToLower(opts.Search)
-			if !strings.Contains(strings.ToLower(u.Username), q) {
+		if searchLower != "" {
+			if !strings.Contains(strings.ToLower(u.Username), searchLower) {
 				continue
 			}
 		}

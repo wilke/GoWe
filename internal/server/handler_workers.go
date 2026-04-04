@@ -336,15 +336,15 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 	opts := parseListOptions(r)
 
 	// In-memory filtering.
+	searchLower := strings.ToLower(opts.Search)
 	filtered := workers[:0:0]
 	for _, w := range workers {
 		if opts.State != "" && !strings.EqualFold(string(w.State), opts.State) {
 			continue
 		}
-		if opts.Search != "" {
-			q := strings.ToLower(opts.Search)
-			if !strings.Contains(strings.ToLower(w.Name), q) &&
-				!strings.Contains(strings.ToLower(w.Hostname), q) {
+		if searchLower != "" {
+			if !strings.Contains(strings.ToLower(w.Name), searchLower) &&
+				!strings.Contains(strings.ToLower(w.Hostname), searchLower) {
 				continue
 			}
 		}
