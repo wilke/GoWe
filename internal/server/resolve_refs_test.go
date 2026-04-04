@@ -393,4 +393,15 @@ steps:
 	if len(graph) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(graph))
 	}
+
+	// Verify deterministic output: run 20 times and compare.
+	for i := 0; i < 20; i++ {
+		again, err := resolveGoweRefs(context.Background(), st, workflowCWL)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if again != result {
+			t.Fatalf("iteration %d: non-deterministic output", i)
+		}
+	}
 }

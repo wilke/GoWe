@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/me/gowe/internal/store"
@@ -33,7 +34,8 @@ func resolveGoweRefs(ctx context.Context, st store.Store, rawCWL string) (string
 		return "", fmt.Errorf("parse CWL for reference resolution: %w", err)
 	}
 
-	// If already a $graph document, scan graph entries for run: references.
+	// Pre-packed $graph documents are not supported for gowe:// reference
+	// resolution; callers must provide a bare Workflow document instead.
 	if _, hasGraph := doc["$graph"]; hasGraph {
 		return "", fmt.Errorf("gowe:// references in pre-packed $graph documents are not supported; use a bare Workflow document")
 	}
@@ -66,8 +68,14 @@ func resolveGoweRefs(ctx context.Context, st store.Store, rawCWL string) (string
 		return rawCWL, nil
 	}
 
+	// Sort refs for deterministic graph entry order and ID assignment.
+	sortedRefs := make([]string, 0, len(refs))
+	for ref := range refs {
+		sortedRefs = append(sortedRefs, ref)
+	}
+	sort.Strings(sortedRefs)
+
 	// Resolve each reference and collect tool graphs.
-	// toolGraphs maps the gowe:// URI to the tool's graph entries and assigned ID.
 	type resolvedTool struct {
 		id         string // assigned graph ID for this tool
 		graphItems []any  // items to add to the $graph
@@ -76,7 +84,7 @@ func resolveGoweRefs(ctx context.Context, st store.Store, rawCWL string) (string
 	resolved := map[string]*resolvedTool{}
 	seen := map[string]bool{} // track IDs to avoid collisions
 
-	for ref := range refs {
+	for _, ref := range sortedRefs {
 		name := strings.TrimPrefix(ref, goweURIScheme)
 		if name == "" {
 			return "", fmt.Errorf("empty gowe:// reference")
@@ -159,8 +167,9 @@ func resolveGoweRefs(ctx context.Context, st store.Store, rawCWL string) (string
 		}
 	}
 
-	// Add resolved tool items to graph and merge namespaces.
-	for _, rt := range resolved {
+	// Add resolved tool items to graph in stable order and merge namespaces.
+	for _, ref := range sortedRefs {
+		rt := resolved[ref]
 		graph = append(graph, rt.graphItems...)
 		for k, v := range rt.namespaces {
 			allNamespaces[k] = v

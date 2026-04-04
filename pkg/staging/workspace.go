@@ -293,8 +293,7 @@ func (s *WorkspaceStager) ensureDir(ctx context.Context, destDir string, token s
 				strings.Contains(err.Error(), "Object already exists") {
 				continue
 			}
-			s.logger.Warn("workspace mkdir", "path", dir, "error", err)
-			// Try to continue — the directory might exist despite the error.
+			return fmt.Errorf("create folder %s: %w", dir, err)
 		} else {
 			s.logger.Info("workspace mkdir created", "path", dir)
 		}
