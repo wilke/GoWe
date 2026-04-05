@@ -102,6 +102,10 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 	if err != nil {
 		return fmt.Errorf("marshal steps: %w", err)
 	}
+	labelsJSON, err := json.Marshal(wf.Labels)
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
 
 	// Default class to "Workflow" if not set.
 	class := wf.Class
@@ -110,10 +114,10 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		wf.ID, wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
-		string(inputsJSON), string(outputsJSON), string(stepsJSON),
+		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
 		wf.CreatedAt.Format(time.RFC3339Nano), wf.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	return err
@@ -123,14 +127,14 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 	s.logger.Debug("sql", "op", "select", "table", "workflows", "id", id)
 
 	var wf model.Workflow
-	var inputsJSON, outputsJSON, stepsJSON string
+	var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
 		 FROM workflows WHERE id = ?`, id,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -146,6 +150,9 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 		return nil, err
 	}
 	if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(labelsJSON, &wf.Labels, "labels"); err != nil {
 		return nil, err
 	}
 	if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
@@ -162,14 +169,14 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 	s.logger.Debug("sql", "op", "select_by_hash", "table", "workflows", "hash", hash)
 
 	var wf model.Workflow
-	var inputsJSON, outputsJSON, stepsJSON string
+	var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
 		 FROM workflows WHERE content_hash = ?`, hash,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -185,6 +192,9 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 		return nil, err
 	}
 	if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(labelsJSON, &wf.Labels, "labels"); err != nil {
 		return nil, err
 	}
 	if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
@@ -201,14 +211,14 @@ func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*mode
 	s.logger.Debug("sql", "op", "select_by_name", "table", "workflows", "name", name)
 
 	var wf model.Workflow
-	var inputsJSON, outputsJSON, stepsJSON string
+	var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
 		 FROM workflows WHERE name = ? ORDER BY created_at DESC LIMIT 1`, name,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -224,6 +234,9 @@ func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*mode
 		return nil, err
 	}
 	if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(labelsJSON, &wf.Labels, "labels"); err != nil {
 		return nil, err
 	}
 	if wf.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
@@ -257,6 +270,15 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 		pat := "%" + opts.Search + "%"
 		args = append(args, pat, pat, pat)
 	}
+	for _, lbl := range opts.Labels {
+		if k, v, ok := strings.Cut(lbl, ":"); ok {
+			where = append(where, `json_extract(labels, '$.'||?) = ?`)
+			args = append(args, k, v)
+		} else {
+			where = append(where, `EXISTS (SELECT 1 FROM json_each(labels) WHERE json_each.value = ?)`)
+			args = append(args, lbl)
+		}
+	}
 
 	whereSQL := ""
 	if len(where) > 0 {
@@ -276,7 +298,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
 		 FROM workflows`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
 		queryArgs...,
 	)
@@ -288,11 +310,11 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 	var workflows []*model.Workflow
 	for rows.Next() {
 		var wf model.Workflow
-		var inputsJSON, outputsJSON, stepsJSON string
+		var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 		var createdAt, updatedAt string
 
 		if err := rows.Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-			&inputsJSON, &outputsJSON, &stepsJSON, &createdAt, &updatedAt); err != nil {
+			&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt); err != nil {
 			return nil, 0, err
 		}
 		if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
@@ -304,6 +326,10 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 			continue
 		}
 		if err := unmarshalJSON(stepsJSON, &wf.Steps, "steps"); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
+		if err := unmarshalJSON(labelsJSON, &wf.Labels, "labels"); err != nil {
 			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
 			continue
 		}
@@ -336,6 +362,10 @@ func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) er
 	if err != nil {
 		return fmt.Errorf("marshal steps: %w", err)
 	}
+	labelsJSON, err := json.Marshal(wf.Labels)
+	if err != nil {
+		return fmt.Errorf("marshal labels: %w", err)
+	}
 
 	// Default class to "Workflow" if not set.
 	class := wf.Class
@@ -345,9 +375,9 @@ func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) er
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workflows SET name=?, description=?, class=?, cwl_version=?, content_hash=?, raw_cwl=?,
-		 inputs=?, outputs=?, steps=?, updated_at=? WHERE id=?`,
+		 inputs=?, outputs=?, steps=?, labels=?, updated_at=? WHERE id=?`,
 		wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
-		string(inputsJSON), string(outputsJSON), string(stepsJSON),
+		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
 		wf.UpdatedAt.Format(time.RFC3339Nano), wf.ID,
 	)
 	if err != nil {
@@ -2109,6 +2139,59 @@ func sanitizeFloats(v any) {
 			}
 		}
 	}
+}
+
+// --- Label Vocabulary CRUD ---
+
+func (s *SQLiteStore) CreateLabelVocabulary(ctx context.Context, lv *model.LabelVocabulary) error {
+	s.logger.Debug("sql", "op", "insert", "table", "label_vocabulary", "id", lv.ID)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO label_vocabulary (id, key, value, description, color, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		lv.ID, lv.Key, lv.Value, lv.Description, lv.Color,
+		lv.CreatedAt.Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (s *SQLiteStore) ListLabelVocabulary(ctx context.Context) ([]*model.LabelVocabulary, error) {
+	s.logger.Debug("sql", "op", "list", "table", "label_vocabulary")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, key, value, description, color, created_at FROM label_vocabulary ORDER BY key, value`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*model.LabelVocabulary
+	for rows.Next() {
+		var lv model.LabelVocabulary
+		var createdAt string
+		if err := rows.Scan(&lv.ID, &lv.Key, &lv.Value, &lv.Description, &lv.Color, &createdAt); err != nil {
+			return nil, err
+		}
+		if lv.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+			return nil, err
+		}
+		result = append(result, &lv)
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteLabelVocabulary(ctx context.Context, id string) error {
+	s.logger.Debug("sql", "op", "delete", "table", "label_vocabulary", "id", id)
+
+	result, err := s.db.ExecContext(ctx, `DELETE FROM label_vocabulary WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("label vocabulary entry %s not found", id)
+	}
+	return nil
 }
 
 // validatedOrderBy returns a safe ORDER BY clause using a whitelist of allowed columns.

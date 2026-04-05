@@ -275,12 +275,20 @@ func (s *Server) routes() {
 				r.Get("/submissions/{id}", s.handleSSESubmission)
 			})
 
+			// Label vocabulary (read-only for authenticated users)
+			r.Get("/labels", s.handleListLabelVocabulary)
+
 			// Admin endpoints (require admin role)
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(requireAdmin(s.logger))
 				r.Get("/users", s.handleListUsers)
 				r.Route("/users/{username}", func(r chi.Router) {
 					r.Put("/role", s.handleSetUserRole)
+				})
+				r.Route("/labels", func(r chi.Router) {
+					r.Get("/", s.handleListLabelVocabulary)
+					r.Post("/", s.handleCreateLabelVocabulary)
+					r.Delete("/{id}", s.handleDeleteLabelVocabulary)
 				})
 			})
 		})

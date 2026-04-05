@@ -52,6 +52,10 @@ func parseListOptions(r *http.Request) model.ListOptions {
 	opts.DateEnd = q.Get("date_end")
 	opts.WorkflowID = q.Get("workflow_id")
 
+	if labels := q["label"]; len(labels) > 0 {
+		opts.Labels = labels
+	}
+
 	opts.Clamp()
 	return opts
 }

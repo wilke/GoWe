@@ -4,18 +4,19 @@ import "time"
 
 // Workflow is a parsed, validated CWL workflow definition stored in GoWe.
 type Workflow struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Class       string           `json:"class"` // "CommandLineTool", "Workflow", or "ExpressionTool"
-	CWLVersion  string           `json:"cwl_version"`
-	ContentHash string           `json:"content_hash,omitempty"` // SHA-256 of RawCWL for deduplication
-	RawCWL      string           `json:"-"`                      // Original CWL document (not exposed in API list views)
-	Inputs      []WorkflowInput  `json:"inputs"`
-	Outputs     []WorkflowOutput `json:"outputs"`
-	Steps       []Step           `json:"steps"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Class       string            `json:"class"` // "CommandLineTool", "Workflow", or "ExpressionTool"
+	CWLVersion  string            `json:"cwl_version"`
+	ContentHash string            `json:"content_hash,omitempty"` // SHA-256 of RawCWL for deduplication
+	Labels      map[string]string `json:"labels,omitempty"`
+	RawCWL      string            `json:"-"` // Original CWL document (not exposed in API list views)
+	Inputs      []WorkflowInput   `json:"inputs"`
+	Outputs     []WorkflowOutput  `json:"outputs"`
+	Steps       []Step            `json:"steps"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // IsTool returns true if this workflow was originally a CommandLineTool or ExpressionTool.

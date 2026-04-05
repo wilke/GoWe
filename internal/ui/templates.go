@@ -226,6 +226,58 @@ var templateFuncs = template.FuncMap{
 		}
 		return "bg-indigo-100 text-indigo-800"
 	},
+	"labelColor": func(color string) string {
+		switch color {
+		case "blue":
+			return "bg-blue-100 text-blue-800"
+		case "green":
+			return "bg-green-100 text-green-800"
+		case "purple":
+			return "bg-purple-100 text-purple-800"
+		case "red":
+			return "bg-red-100 text-red-800"
+		case "yellow":
+			return "bg-yellow-100 text-yellow-800"
+		case "pink":
+			return "bg-pink-100 text-pink-800"
+		case "indigo":
+			return "bg-indigo-100 text-indigo-800"
+		case "orange":
+			return "bg-orange-100 text-orange-800"
+		case "teal":
+			return "bg-teal-100 text-teal-800"
+		case "cyan":
+			return "bg-cyan-100 text-cyan-800"
+		default:
+			return "bg-gray-100 text-gray-800"
+		}
+	},
+	"labelBorderColor": func(color string) string {
+		switch color {
+		case "blue":
+			return "border-blue-300"
+		case "green":
+			return "border-green-300"
+		case "purple":
+			return "border-purple-300"
+		case "red":
+			return "border-red-300"
+		case "yellow":
+			return "border-yellow-300"
+		case "pink":
+			return "border-pink-300"
+		case "indigo":
+			return "border-indigo-300"
+		case "orange":
+			return "border-orange-300"
+		case "teal":
+			return "border-teal-300"
+		case "cyan":
+			return "border-cyan-300"
+		default:
+			return "border-gray-300"
+		}
+	},
 }
 
 // renderTemplate renders a template with the given data.
@@ -666,13 +718,25 @@ var templates = map[string]string{
                     class="inline-flex items-center px-4 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                 Search
             </button>
-            {{if or .SearchQuery .ClassFilter}}
+            {{if or .SearchQuery .ClassFilter .LabelFilters}}
             <a href="/workflows"
                class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                 Clear
             </a>
             {{end}}
         </form>
+        {{if .LabelVocab}}
+        <div class="mt-3 flex flex-wrap gap-2">
+            <span class="text-xs font-medium text-gray-500 self-center">Labels:</span>
+            {{range .LabelVocab}}
+            {{$lbl := printf "%s:%s" .Key .Value}}
+            <a href="/workflows?label={{urlquery $lbl}}{{with $.SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with $.ClassFilter}}&amp;class={{.}}{{end}}"
+               class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border {{if index $.ActiveLabels $lbl}}ring-2 ring-indigo-500 {{labelColor .Color}} {{labelBorderColor .Color}}{{else}}{{labelColor .Color}} {{labelBorderColor .Color}} hover:ring-1 hover:ring-gray-400{{end}}">
+                {{.Key}}: {{.Value}}
+            </a>
+            {{end}}
+        </div>
+        {{end}}
     </div>
 
     <!-- Top Pagination -->
@@ -691,6 +755,13 @@ var templates = map[string]string{
                                     {{classBadge .Class}}
                                 </span>
                             </div>
+                            {{if .Labels}}
+                            <div class="mt-1 flex flex-wrap gap-1">
+                                {{range $k, $v := .Labels}}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">{{$k}}: {{$v}}</span>
+                                {{end}}
+                            </div>
+                            {{end}}
                             <p class="mt-1 text-sm text-gray-500">{{.Description}}</p>
                         </a>
                         <div class="ml-4 flex items-center space-x-2">
@@ -783,6 +854,20 @@ var templates = map[string]string{
                 <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
                     <dt class="text-sm font-medium text-gray-500">Content Hash</dt>
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">{{.Workflow.ContentHash}}</dd>
+                </div>
+                {{end}}
+                {{if .Workflow.Labels}}
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Labels</dt>
+                    <dd class="mt-1 text-sm sm:mt-0 sm:col-span-2">
+                        <div class="flex flex-wrap gap-2">
+                            {{range $k, $v := .Workflow.Labels}}
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 border border-gray-300">
+                                {{$k}}: {{$v}}
+                            </span>
+                            {{end}}
+                        </div>
+                    </dd>
                 </div>
                 {{end}}
                 <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
@@ -1678,6 +1763,11 @@ var templates = map[string]string{
 
 	"admin/stats": `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
+    <div class="mb-4 flex space-x-4 border-b border-gray-200">
+        <a href="/admin/stats" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Stats</a>
+        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+    </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Statistics</h1>
         <p class="mt-1 text-sm text-gray-500">Overview of GoWe system status</p>
@@ -1837,6 +1927,11 @@ var templates = map[string]string{
 
 	"admin/health": `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
+    <div class="mb-4 flex space-x-4 border-b border-gray-200">
+        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
+        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+    </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Health</h1>
         <p class="mt-1 text-sm text-gray-500">GoWe server health status</p>
@@ -2166,6 +2261,110 @@ var templates = map[string]string{
         {{end}}
     </div>
     {{end}}
+</div>
+{{end}}`,
+
+	"admin/labels": `{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-4 flex space-x-4 border-b border-gray-200">
+        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/labels" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Labels</a>
+    </div>
+    <div class="mb-8">
+        <h1 class="text-2xl font-semibold text-gray-900">Label Vocabulary</h1>
+        <p class="mt-1 text-sm text-gray-500">Manage controlled vocabulary labels for workflows</p>
+    </div>
+
+    <!-- Add new label form -->
+    <div class="bg-white shadow sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Add Label</h3>
+            <form method="POST" action="/admin/labels" class="flex flex-wrap items-end gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Key</label>
+                    <input type="text" name="key" required placeholder="e.g. domain"
+                           class="block w-40 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-1.5 border">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Value</label>
+                    <input type="text" name="value" required placeholder="e.g. genomics"
+                           class="block w-40 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-1.5 border">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Description</label>
+                    <input type="text" name="description" placeholder="Optional"
+                           class="block w-48 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-1.5 border">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-500 mb-1">Color</label>
+                    <select name="color" class="block w-32 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-1.5 border">
+                        <option value="">Default</option>
+                        <option value="blue">Blue</option>
+                        <option value="green">Green</option>
+                        <option value="purple">Purple</option>
+                        <option value="red">Red</option>
+                        <option value="yellow">Yellow</option>
+                        <option value="pink">Pink</option>
+                        <option value="indigo">Indigo</option>
+                        <option value="orange">Orange</option>
+                        <option value="teal">Teal</option>
+                        <option value="cyan">Cyan</option>
+                    </select>
+                </div>
+                <button type="submit"
+                        class="inline-flex items-center px-4 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                    Add
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Existing labels table -->
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Key</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Value</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Preview</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {{range .Entries}}
+                <tr id="label-{{.ID}}">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.Key}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{.Value}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{labelColor .Color}}">
+                            {{.Key}}: {{.Value}}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-500">{{.Description}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .CreatedAt}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right">
+                        <button hx-delete="/admin/labels/{{.ID}}"
+                                hx-target="#label-{{.ID}}"
+                                hx-swap="outerHTML"
+                                hx-confirm="Delete label {{.Key}}:{{.Value}}?"
+                                class="text-red-600 hover:text-red-900 text-sm font-medium">
+                            Delete
+                        </button>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
+                        No label vocabulary entries. Add one above to get started.
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
 </div>
 {{end}}`,
 }

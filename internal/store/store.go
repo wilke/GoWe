@@ -70,6 +70,11 @@ type Store interface {
 	ListUsers(ctx context.Context) ([]*model.User, error)
 	LinkProvider(ctx context.Context, userID string, provider model.AuthProvider, username string) error
 
+	// Label Vocabulary
+	CreateLabelVocabulary(ctx context.Context, lv *model.LabelVocabulary) error
+	ListLabelVocabulary(ctx context.Context) ([]*model.LabelVocabulary, error)
+	DeleteLabelVocabulary(ctx context.Context, id string) error
+
 	// Lifecycle
 	Close() error
 	Migrate(ctx context.Context) error

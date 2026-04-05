@@ -269,6 +269,12 @@ var alterStatements = []struct {
 		column:   "output_state",
 		alterSQL: "ALTER TABLE submissions ADD COLUMN output_state TEXT NOT NULL DEFAULT ''",
 	},
+	// Workflow labels (key-value JSON)
+	{
+		table:    "workflows",
+		column:   "labels",
+		alterSQL: "ALTER TABLE workflows ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
@@ -288,6 +294,24 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			if _, err := db.ExecContext(ctx, alter.indexSQL); err != nil {
 				return err
 			}
+		}
+	}
+
+	// Label vocabulary table.
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS label_vocabulary (
+			id          TEXT PRIMARY KEY,
+			key         TEXT NOT NULL,
+			value       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			color       TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL,
+			UNIQUE(key, value)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_label_vocab_key ON label_vocabulary(key)`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
 		}
 	}
 
