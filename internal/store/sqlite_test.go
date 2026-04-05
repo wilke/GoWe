@@ -258,6 +258,218 @@ func TestDeleteWorkflow_NotFound(t *testing.T) {
 	}
 }
 
+// --- Workflow Labels tests ---
+
+func TestWorkflowLabels_CreateAndGet(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	wf.Labels = map[string]string{"domain": "genomics", "org": "bvbrc"}
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := st.GetWorkflow(ctx, wf.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.Labels) != 2 {
+		t.Fatalf("labels count = %d, want 2", len(got.Labels))
+	}
+	if got.Labels["domain"] != "genomics" {
+		t.Errorf("labels[domain] = %q, want genomics", got.Labels["domain"])
+	}
+	if got.Labels["org"] != "bvbrc" {
+		t.Errorf("labels[org] = %q, want bvbrc", got.Labels["org"])
+	}
+}
+
+func TestWorkflowLabels_Filter(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	// Create workflows with different labels.
+	wf1 := sampleWorkflow()
+	wf1.ID = "wf_labeled-1"
+	wf1.Labels = map[string]string{"domain": "genomics"}
+	st.CreateWorkflow(ctx, wf1)
+
+	wf2 := sampleWorkflow()
+	wf2.ID = "wf_labeled-2"
+	wf2.Name = "wf2"
+	wf2.Labels = map[string]string{"domain": "proteomics"}
+	st.CreateWorkflow(ctx, wf2)
+
+	wf3 := sampleWorkflow()
+	wf3.ID = "wf_labeled-3"
+	wf3.Name = "wf3"
+	wf3.Labels = map[string]string{"domain": "genomics", "org": "bvbrc"}
+	st.CreateWorkflow(ctx, wf3)
+
+	// Filter by key:value
+	opts := model.DefaultListOptions()
+	opts.Labels = []string{"domain:genomics"}
+	results, total, err := st.ListWorkflows(ctx, opts)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if len(results) != 2 {
+		t.Errorf("results = %d, want 2", len(results))
+	}
+
+	// Filter by value only (any key)
+	opts.Labels = []string{"bvbrc"}
+	results, total, err = st.ListWorkflows(ctx, opts)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+
+	// Multi-label AND filter
+	opts.Labels = []string{"domain:genomics", "org:bvbrc"}
+	results, total, err = st.ListWorkflows(ctx, opts)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1 (AND filter)", total)
+	}
+	if len(results) != 1 || results[0].ID != "wf_labeled-3" {
+		t.Errorf("expected wf_labeled-3, got %v", results)
+	}
+}
+
+func TestWorkflowLabels_UpdatePreservesLabels(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	wf.Labels = map[string]string{"domain": "genomics"}
+	st.CreateWorkflow(ctx, wf)
+
+	// Update labels
+	wf.Labels = map[string]string{"domain": "proteomics", "status": "active"}
+	wf.UpdatedAt = time.Now().UTC()
+	if err := st.UpdateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, _ := st.GetWorkflow(ctx, wf.ID)
+	if got.Labels["domain"] != "proteomics" {
+		t.Errorf("labels[domain] = %q, want proteomics", got.Labels["domain"])
+	}
+	if got.Labels["status"] != "active" {
+		t.Errorf("labels[status] = %q, want active", got.Labels["status"])
+	}
+}
+
+func TestWorkflowLabels_EmptyLabels(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	// No labels set (nil)
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := st.GetWorkflow(ctx, wf.ID)
+	if got.Labels == nil {
+		// nil is acceptable; empty map is also OK
+	} else if len(got.Labels) != 0 {
+		t.Errorf("expected empty or nil labels, got %v", got.Labels)
+	}
+}
+
+// --- Label Vocabulary tests ---
+
+func TestLabelVocabulary_CRUD(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	lv := &model.LabelVocabulary{
+		ID:          "lv_test-1",
+		Key:         "domain",
+		Value:       "genomics",
+		Description: "Genomics workflows",
+		Color:       "blue",
+		CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+	}
+
+	if err := st.CreateLabelVocabulary(ctx, lv); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Create a second entry.
+	lv2 := &model.LabelVocabulary{
+		ID:        "lv_test-2",
+		Key:       "domain",
+		Value:     "proteomics",
+		Color:     "green",
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if err := st.CreateLabelVocabulary(ctx, lv2); err != nil {
+		t.Fatalf("create 2: %v", err)
+	}
+
+	// List all.
+	entries, err := st.ListLabelVocabulary(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("list count = %d, want 2", len(entries))
+	}
+	if entries[0].Value != "genomics" || entries[1].Value != "proteomics" {
+		t.Errorf("unexpected order: %v, %v", entries[0].Value, entries[1].Value)
+	}
+
+	// Delete one.
+	if err := st.DeleteLabelVocabulary(ctx, "lv_test-1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	entries, _ = st.ListLabelVocabulary(ctx)
+	if len(entries) != 1 {
+		t.Errorf("list after delete = %d, want 1", len(entries))
+	}
+
+	// Delete nonexistent.
+	if err := st.DeleteLabelVocabulary(ctx, "lv_nonexistent"); err == nil {
+		t.Error("expected error for nonexistent delete")
+	}
+}
+
+func TestLabelVocabulary_UniqueConstraint(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	lv := &model.LabelVocabulary{
+		ID:        "lv_dup-1",
+		Key:       "domain",
+		Value:     "genomics",
+		CreatedAt: time.Now().UTC(),
+	}
+	st.CreateLabelVocabulary(ctx, lv)
+
+	// Duplicate key:value should fail.
+	lv2 := &model.LabelVocabulary{
+		ID:        "lv_dup-2",
+		Key:       "domain",
+		Value:     "genomics",
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateLabelVocabulary(ctx, lv2); err == nil {
+		t.Error("expected error for duplicate key:value")
+	}
+}
+
 // --- Submission CRUD tests ---
 
 func TestCreateAndGetSubmission(t *testing.T) {

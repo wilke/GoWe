@@ -17,9 +17,10 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		CWL         string `json:"cwl"`
+		Name        string            `json:"name"`
+		Description string            `json:"description"`
+		CWL         string            `json:"cwl"`
+		Labels      map[string]string `json:"labels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -33,6 +34,16 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		respondError(w, reqID, http.StatusBadRequest,
 			model.NewValidationError("missing required field",
 				model.FieldError{Field: "cwl", Message: "cwl field is required"}))
+		return
+	}
+
+	// Validate labels against controlled vocabulary.
+	if apiErr := s.validateLabelsAgainstCV(r.Context(), req.Labels); apiErr != nil {
+		status := http.StatusBadRequest
+		if apiErr.Code == model.ErrInternal {
+			status = http.StatusInternalServerError
+		}
+		respondError(w, reqID, status, apiErr)
 		return
 	}
 
@@ -82,6 +93,11 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		mw.Description = req.Description
 	}
 
+	// Assign labels from request.
+	if req.Labels != nil {
+		mw.Labels = req.Labels
+	}
+
 	// Compute content hash for deduplication.
 	mw.RawCWL = req.CWL
 	hash := sha256.Sum256([]byte(req.CWL))
@@ -126,14 +142,15 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 
 	// Build summary list (omit RawCWL and step details).
 	type workflowSummary struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		Description string    `json:"description,omitempty"`
-		Class       string    `json:"class"`
-		CWLVersion  string    `json:"cwl_version"`
-		ContentHash string    `json:"content_hash,omitempty"`
-		StepCount   int       `json:"step_count"`
-		CreatedAt   time.Time `json:"created_at"`
+		ID          string            `json:"id"`
+		Name        string            `json:"name"`
+		Description string            `json:"description,omitempty"`
+		Class       string            `json:"class"`
+		CWLVersion  string            `json:"cwl_version"`
+		ContentHash string            `json:"content_hash,omitempty"`
+		Labels      map[string]string `json:"labels,omitempty"`
+		StepCount   int               `json:"step_count"`
+		CreatedAt   time.Time         `json:"created_at"`
 	}
 	summaries := make([]workflowSummary, len(workflows))
 	for i, wf := range workflows {
@@ -148,6 +165,7 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 			Class:       class,
 			CWLVersion:  wf.CWLVersion,
 			ContentHash: wf.ContentHash,
+			Labels:      wf.Labels,
 			StepCount:   len(wf.Steps),
 			CreatedAt:   wf.CreatedAt,
 		}
@@ -195,15 +213,26 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		CWL         string `json:"cwl"`
+		Name        string            `json:"name"`
+		Description string            `json:"description"`
+		CWL         string            `json:"cwl"`
+		Labels      map[string]string `json:"labels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
 			Code:    model.ErrValidation,
 			Message: "Invalid JSON body: " + err.Error(),
 		})
+		return
+	}
+
+	// Validate labels against controlled vocabulary.
+	if apiErr := s.validateLabelsAgainstCV(r.Context(), req.Labels); apiErr != nil {
+		status := http.StatusBadRequest
+		if apiErr.Code == model.ErrInternal {
+			status = http.StatusInternalServerError
+		}
+		respondError(w, reqID, status, apiErr)
 		return
 	}
 
@@ -251,6 +280,11 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		if req.Description != "" {
 			updated.Description = req.Description
 		}
+		if req.Labels != nil {
+			updated.Labels = req.Labels
+		} else {
+			updated.Labels = existing.Labels
+		}
 
 		if err := s.store.UpdateWorkflow(r.Context(), updated); err != nil {
 			respondError(w, reqID, http.StatusInternalServerError,
@@ -261,12 +295,15 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only metadata update (name/description).
+	// Only metadata update (name/description/labels).
 	if req.Name != "" {
 		existing.Name = req.Name
 	}
 	if req.Description != "" {
 		existing.Description = req.Description
+	}
+	if req.Labels != nil {
+		existing.Labels = req.Labels
 	}
 	existing.UpdatedAt = time.Now().UTC()
 

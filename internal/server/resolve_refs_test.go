@@ -119,8 +119,16 @@ func (m *mockStore) LinkProvider(context.Context, string, model.AuthProvider, st
 	return nil
 }
 
-func (m *mockStore) Close() error                      { return nil }
-func (m *mockStore) Migrate(context.Context) error     { return nil }
+func (m *mockStore) CreateLabelVocabulary(context.Context, *model.LabelVocabulary) error {
+	return nil
+}
+func (m *mockStore) ListLabelVocabulary(context.Context) ([]*model.LabelVocabulary, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteLabelVocabulary(context.Context, string) error { return nil }
+
+func (m *mockStore) Close() error                  { return nil }
+func (m *mockStore) Migrate(context.Context) error { return nil }
 
 func TestResolveGoweRefs_NoRefs(t *testing.T) {
 	st := &mockStore{}

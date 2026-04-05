@@ -201,8 +201,11 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
 
-	// Workflow-specific filter (search is already parsed by parseListOptions).
+	// Workflow-specific filters (search is already parsed by parseListOptions).
 	opts.Class = r.URL.Query().Get("class")
+	if labels := r.URL.Query()["label"]; len(labels) > 0 {
+		opts.Labels = labels
+	}
 
 	workflows, total, err := ui.store.ListWorkflows(r.Context(), opts)
 	if err != nil {
@@ -210,11 +213,23 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch CV for label filter pills.
+	vocab, _ := ui.store.ListLabelVocabulary(r.Context())
+
+	// Build active label filter set for highlighting.
+	activeLabelSet := make(map[string]bool)
+	for _, l := range opts.Labels {
+		activeLabelSet[l] = true
+	}
+
 	// Base filter params (without sort) for column header links.
 	filterBase := filterQuery(
 		"search", opts.Search,
 		"class", opts.Class,
 	)
+	for _, l := range opts.Labels {
+		filterBase += filterQuery("label", l)
+	}
 	// Full filter params (with sort) for pagination links.
 	filterParams := filterBase + filterQuery(
 		"sort", opts.SortBy,
@@ -222,15 +237,18 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	)
 
 	data := map[string]any{
-		"Title":       "Workflows - GoWe",
-		"Session":     sess,
-		"Workflows":   workflows,
-		"Pagination":  ui.buildPagination(opts, total, len(workflows), filterParams, []int{10, 20, 50, 100}),
-		"SearchQuery": opts.Search,
-		"ClassFilter": opts.Class,
-		"SortBy":      opts.SortBy,
-		"SortDir":     opts.SortDir,
-		"FilterBase":  filterBase,
+		"Title":          "Workflows - GoWe",
+		"Session":        sess,
+		"Workflows":      workflows,
+		"Pagination":     ui.buildPagination(opts, total, len(workflows), filterParams, []int{10, 20, 50, 100}),
+		"SearchQuery":    opts.Search,
+		"ClassFilter":    opts.Class,
+		"LabelFilters":   opts.Labels,
+		"ActiveLabels":   activeLabelSet,
+		"LabelVocab":     vocab,
+		"SortBy":         opts.SortBy,
+		"SortDir":        opts.SortDir,
+		"FilterBase":     filterBase,
 	}
 	ui.render(w, "workflows/list", data)
 }
@@ -1055,6 +1073,74 @@ func (ui *UI) HandleAdminHealth(w http.ResponseWriter, r *http.Request) {
 		"HasBVBRC":  ui.bvbrcCaller != nil,
 	}
 	ui.render(w, "admin/health", data)
+}
+
+// --- Admin Label Vocabulary Handlers ---
+
+// HandleAdminLabels renders the label vocabulary management page.
+func (ui *UI) HandleAdminLabels(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+
+	entries, err := ui.store.ListLabelVocabulary(r.Context())
+	if err != nil {
+		ui.renderError(w, "Failed to load label vocabulary", err)
+		return
+	}
+
+	data := map[string]any{
+		"Title":   "Label Vocabulary - GoWe",
+		"Session": sess,
+		"Entries": entries,
+	}
+	ui.render(w, "admin/labels", data)
+}
+
+// HandleAdminLabelCreate creates a new CV entry (form POST).
+func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	key := strings.TrimSpace(r.FormValue("key"))
+	value := strings.TrimSpace(r.FormValue("value"))
+	if key == "" || value == "" {
+		http.Redirect(w, r, "/admin/labels?error=Key+and+value+are+required", http.StatusSeeOther)
+		return
+	}
+
+	lv := &model.LabelVocabulary{
+		ID:          "lv_" + uuid.New().String(),
+		Key:         key,
+		Value:       value,
+		Description: strings.TrimSpace(r.FormValue("description")),
+		Color:       r.FormValue("color"),
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	if err := ui.store.CreateLabelVocabulary(r.Context(), lv); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			http.Redirect(w, r, "/admin/labels?error=Entry+already+exists+for+"+key+":"+value, http.StatusSeeOther)
+			return
+		}
+		ui.renderError(w, "Failed to create label", err)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/labels", http.StatusSeeOther)
+}
+
+// HandleAdminLabelDelete deletes a CV entry (HTMX DELETE).
+func (ui *UI) HandleAdminLabelDelete(w http.ResponseWriter, r *http.Request) {
+	id := ui.pathParam(r, "id")
+
+	if err := ui.store.DeleteLabelVocabulary(r.Context(), id); err != nil {
+		w.Header().Set("HX-Reswap", "none")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // --- Workspace Handlers ---

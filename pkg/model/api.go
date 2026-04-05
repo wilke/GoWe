@@ -27,14 +27,15 @@ const MaxListLimit = 100
 type ListOptions struct {
 	Limit      int
 	Offset     int
-	State      string // Optional state filter
-	WorkflowID string // Optional workflow ID filter
-	DateStart  string // Optional start date filter (YYYY-MM-DD)
-	DateEnd    string // Optional end date filter (YYYY-MM-DD)
-	Search     string // Optional search term (name, ID)
-	Class      string // Optional class filter: Workflow, CommandLineTool, ExpressionTool, or Tool (matches both CommandLineTool and ExpressionTool)
-	SortBy     string // Optional column to sort by (validated per-query)
-	SortDir    string // Sort direction: "asc" or "desc" (default: "desc")
+	State      string   // Optional state filter
+	WorkflowID string   // Optional workflow ID filter
+	DateStart  string   // Optional start date filter (YYYY-MM-DD)
+	DateEnd    string   // Optional end date filter (YYYY-MM-DD)
+	Search     string   // Optional search term (name, ID)
+	Class      string   // Optional class filter: Workflow, CommandLineTool, ExpressionTool, or Tool (matches both CommandLineTool and ExpressionTool)
+	Labels     []string // Optional label filters: "key:value" (exact) or "value" (any key match)
+	SortBy     string   // Optional column to sort by (validated per-query)
+	SortDir    string   // Sort direction: "asc" or "desc" (default: "desc")
 }
 
 // DefaultListOptions returns sensible defaults.

@@ -71,6 +71,9 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Get("/", ui.HandleAdminStats)
 			r.Get("/stats", ui.HandleAdminStats)
 			r.Get("/health", ui.HandleAdminHealth)
+			r.Get("/labels", ui.HandleAdminLabels)
+			r.Post("/labels", ui.HandleAdminLabelCreate)
+			r.Delete("/labels/{id}", ui.HandleAdminLabelDelete)
 		})
 	})
 }
