@@ -214,7 +214,10 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch CV for label filter pills.
-	vocab, _ := ui.store.ListLabelVocabulary(r.Context())
+	vocab, err := ui.store.ListLabelVocabulary(r.Context())
+	if err != nil {
+		slog.Error("failed to load label vocabulary", "error", err)
+	}
 
 	// Build active label filter set for highlighting.
 	activeLabelSet := make(map[string]bool)
@@ -1120,7 +1123,9 @@ func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
 
 	if err := ui.store.CreateLabelVocabulary(r.Context(), lv); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			http.Redirect(w, r, "/admin/labels?error=Entry+already+exists+for+"+key+":"+value, http.StatusSeeOther)
+			qv := url.Values{}
+			qv.Set("error", fmt.Sprintf("Entry already exists for %s:%s", key, value))
+			http.Redirect(w, r, "/admin/labels?"+qv.Encode(), http.StatusSeeOther)
 			return
 		}
 		ui.renderError(w, "Failed to create label", err)

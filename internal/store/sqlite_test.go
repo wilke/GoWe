@@ -293,19 +293,25 @@ func TestWorkflowLabels_Filter(t *testing.T) {
 	wf1 := sampleWorkflow()
 	wf1.ID = "wf_labeled-1"
 	wf1.Labels = map[string]string{"domain": "genomics"}
-	st.CreateWorkflow(ctx, wf1)
+	if err := st.CreateWorkflow(ctx, wf1); err != nil {
+		t.Fatalf("create %s: %v", wf1.ID, err)
+	}
 
 	wf2 := sampleWorkflow()
 	wf2.ID = "wf_labeled-2"
 	wf2.Name = "wf2"
 	wf2.Labels = map[string]string{"domain": "proteomics"}
-	st.CreateWorkflow(ctx, wf2)
+	if err := st.CreateWorkflow(ctx, wf2); err != nil {
+		t.Fatalf("create %s: %v", wf2.ID, err)
+	}
 
 	wf3 := sampleWorkflow()
 	wf3.ID = "wf_labeled-3"
 	wf3.Name = "wf3"
 	wf3.Labels = map[string]string{"domain": "genomics", "org": "bvbrc"}
-	st.CreateWorkflow(ctx, wf3)
+	if err := st.CreateWorkflow(ctx, wf3); err != nil {
+		t.Fatalf("create %s: %v", wf3.ID, err)
+	}
 
 	// Filter by key:value
 	opts := model.DefaultListOptions()
@@ -351,7 +357,9 @@ func TestWorkflowLabels_UpdatePreservesLabels(t *testing.T) {
 
 	wf := sampleWorkflow()
 	wf.Labels = map[string]string{"domain": "genomics"}
-	st.CreateWorkflow(ctx, wf)
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create: %v", err)
+	}
 
 	// Update labels
 	wf.Labels = map[string]string{"domain": "proteomics", "status": "active"}
@@ -456,7 +464,9 @@ func TestLabelVocabulary_UniqueConstraint(t *testing.T) {
 		Value:     "genomics",
 		CreatedAt: time.Now().UTC(),
 	}
-	st.CreateLabelVocabulary(ctx, lv)
+	if err := st.CreateLabelVocabulary(ctx, lv); err != nil {
+		t.Fatalf("create initial: %v", err)
+	}
 
 	// Duplicate key:value should fail.
 	lv2 := &model.LabelVocabulary{

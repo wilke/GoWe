@@ -275,8 +275,8 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 			where = append(where, `json_extract(labels, '$.'||?) = ?`)
 			args = append(args, k, v)
 		} else {
-			where = append(where, `labels LIKE ?`)
-			args = append(args, `%"`+lbl+`"%`)
+			where = append(where, `EXISTS (SELECT 1 FROM json_each(labels) WHERE json_each.value = ?)`)
+			args = append(args, lbl)
 		}
 	}
 

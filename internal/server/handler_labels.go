@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/me/gowe/pkg/model"
 )
+
+// validLabelKey matches alphanumeric keys with hyphens and underscores.
+var validLabelKey = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // handleListLabelVocabulary returns all controlled vocabulary entries.
 // GET /api/v1/labels (authenticated) or GET /api/v1/admin/labels
@@ -117,6 +121,15 @@ func (s *Server) validateLabelsAgainstCV(ctx context.Context, labels map[string]
 
 	var details []model.FieldError
 	for k, v := range labels {
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !validLabelKey.MatchString(k) {
+			details = append(details, model.FieldError{
+				Field:   "labels." + k,
+				Message: "label key must match [a-zA-Z0-9_-]+",
+			})
+			continue
+		}
 		if vals, ok := allowed[k]; ok {
 			if !vals[v] {
 				details = append(details, model.FieldError{
