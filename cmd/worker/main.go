@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -148,6 +150,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+
+	// Validate declared runtimes are actually installed.
+	cfg.Runtime = validateInstalledRuntimes(cfg.Runtime, logger)
 
 	// Parse Docker host path map from flag or environment variable.
 	if dockerHostPathMapStr == "" {
@@ -407,6 +412,37 @@ func parseSecretFile(path string) (map[string]string, error) {
 		}
 	}
 	return secrets, nil
+}
+
+// validateInstalledRuntimes checks that each declared runtime binary actually
+// exists on the system. Runtimes that aren't found are dropped with a warning.
+// Returns "none" if no declared runtimes are available.
+func validateInstalledRuntimes(declared string, logger *slog.Logger) string {
+	var valid []string
+	for _, rt := range strings.Split(declared, ",") {
+		rt = strings.TrimSpace(rt)
+		switch rt {
+		case "docker", "apptainer":
+			if _, err := exec.LookPath(rt); err != nil {
+				// Also check for "singularity" as apptainer alias.
+				if rt == "apptainer" {
+					if _, err2 := exec.LookPath("singularity"); err2 == nil {
+						valid = append(valid, rt)
+						continue
+					}
+				}
+				logger.Warn("declared runtime not found, skipping", "runtime", rt)
+				continue
+			}
+			valid = append(valid, rt)
+		case "none":
+			valid = append(valid, rt)
+		}
+	}
+	if len(valid) == 0 {
+		return "none"
+	}
+	return strings.Join(valid, ",")
 }
 
 // parseStageMode parses a stage mode string.

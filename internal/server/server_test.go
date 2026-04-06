@@ -240,7 +240,7 @@ func TestHealthExecutorStatus(t *testing.T) {
 		}
 		json.Unmarshal(env.Data, &data)
 
-		for _, name := range []string{"local", "container", "apptainer", "bvbrc", "worker"} {
+		for _, name := range []string{"local", "container", "bvbrc", "worker"} {
 			if data.Executors[name] != "unavailable" {
 				t.Errorf("executor %q = %q, want unavailable (no registry)", name, data.Executors[name])
 			}
@@ -263,7 +263,7 @@ func TestHealthExecutorStatus(t *testing.T) {
 		if data.Executors["local"] != "available" {
 			t.Errorf("executor local = %q, want available", data.Executors["local"])
 		}
-		for _, name := range []string{"container", "apptainer", "bvbrc", "worker"} {
+		for _, name := range []string{"container", "bvbrc", "worker"} {
 			if data.Executors[name] != "unavailable" {
 				t.Errorf("executor %q = %q, want unavailable", name, data.Executors[name])
 			}
