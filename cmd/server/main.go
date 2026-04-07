@@ -14,6 +14,7 @@ import (
 
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
+	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/logging"
 	"github.com/me/gowe/internal/scheduler"
@@ -119,12 +120,22 @@ func main() {
 		localExec.SetImageDir(*imageDir)
 	}
 	reg.Register(localExec)
-	reg.Register(executor.NewDockerExecutor("", logger))
-	apptainerExec := executor.NewApptainerExecutor("", logger)
-	if *imageDir != "" {
-		apptainerExec.SetImageDir(*imageDir)
+	// Detect container runtime and register the appropriate executor.
+	containerRuntime := cwltool.DetectContainerRuntime()
+	switch containerRuntime {
+	case "docker":
+		reg.Register(executor.NewDockerExecutor("", logger))
+		logger.Info("container executor registered", "runtime", "docker")
+	case "apptainer":
+		apptainerExec := executor.NewApptainerExecutor("", logger)
+		if *imageDir != "" {
+			apptainerExec.SetImageDir(*imageDir)
+		}
+		reg.Register(apptainerExec)
+		logger.Info("container executor registered", "runtime", "apptainer")
+	default:
+		logger.Info("no container runtime detected (docker, apptainer); container executor not registered")
 	}
-	reg.Register(apptainerExec)
 	reg.Register(executor.NewWorkerExecutor(st, logger))
 
 	// Register BVBRCExecutor and create RPC callers if a token is available.

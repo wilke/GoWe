@@ -420,14 +420,17 @@ func PopulateDirListing(dirObj map[string]any, depth string) {
 }
 
 // DetectContainerRuntime probes the system for available container runtimes.
-// Returns "docker" if docker is found, "apptainer" if apptainer is found,
-// or "" if neither is available (falls through to local execution).
+// Returns "docker" if docker is found, "apptainer" if apptainer or singularity
+// is found, or "" if neither is available (falls through to local execution).
 func DetectContainerRuntime() string {
 	if _, err := exec.LookPath("docker"); err == nil {
 		return "docker"
 	}
 	if _, err := exec.LookPath("apptainer"); err == nil {
 		return "apptainer"
+	}
+	if _, err := exec.LookPath("singularity"); err == nil {
+		return "apptainer" // singularity is the legacy name
 	}
 	return ""
 }
