@@ -32,8 +32,20 @@ def api(method: str, path: str, body: dict | None = None, params: dict | None = 
         with urllib.request.urlopen(req) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        err = json.loads(e.read())
-        print(f"HTTP {e.code}: {err.get('error', {}).get('message', e.reason)}", file=sys.stderr)
+        message = e.reason
+        raw = e.read()
+        if raw:
+            text = raw.decode("utf-8", errors="replace").strip()
+            try:
+                err = json.loads(text)
+                if isinstance(err, dict):
+                    message = err.get("error", {}).get("message", text)
+            except (json.JSONDecodeError, TypeError):
+                message = text
+        print(f"HTTP {e.code}: {message}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Request failed: unable to reach {url}: {e.reason}", file=sys.stderr)
         sys.exit(1)
 
 

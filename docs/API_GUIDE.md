@@ -45,6 +45,8 @@ On error:
 
 List endpoints include `pagination`. Single-resource endpoints omit it.
 
+> **Note:** Response examples below show the `data` payload only, without the surrounding envelope, for brevity. All responses are wrapped in the `{status, request_id, timestamp, data, ...}` structure shown above.
+
 ---
 
 ## Authentication
@@ -61,9 +63,10 @@ The token is a pipe-delimited string obtained from [BV-BRC](https://www.bv-brc.o
 
 Token sources (checked in order by the BV-BRC client library):
 1. `BVBRC_TOKEN` environment variable
-2. `~/.bvbrc_token` file
-3. `~/.patric_token` file
-4. `~/.p3_token` file
+2. `~/.gowe/credentials.json` (created by `gowe login`)
+3. `~/.bvbrc_token` file
+4. `~/.patric_token` file
+5. `~/.p3_token` file
 
 ### Anonymous Access
 

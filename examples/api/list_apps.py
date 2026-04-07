@@ -7,12 +7,13 @@ Usage:
     GOWE_URL=http://myhost:9090 python list_apps.py
 """
 
-import sys
+import argparse
 from common import api
 
-search = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else None
-if len(sys.argv) > 2 and sys.argv[1] == "--search":
-    search = sys.argv[2]
+parser = argparse.ArgumentParser(description="List available BV-BRC applications.")
+parser.add_argument("--search", help="Filter apps by ID or label")
+args = parser.parse_args()
+search = args.search
 
 resp = api("GET", "/apps")
 apps = resp["data"]
