@@ -203,6 +203,67 @@ Query parameters:
 }
 ```
 
+### Register a Tool
+
+Tools (CWL CommandLineTools) and Workflows are both registered through the same endpoint:
+
+```
+POST /api/v1/workflows
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "grep-count",
+  "description": "Count lines matching a pattern",
+  "cwl": "cwlVersion: v1.2\nclass: CommandLineTool\nbaseCommand: grep\n..."
+}
+```
+
+The `cwl` field accepts raw CWL YAML. Both `CommandLineTool` and `Workflow` class documents can be registered. The server parses, validates, and stores the CWL.
+
+### Compose a Workflow from Registered Tools
+
+Use `gowe://` references in step `run` fields to reference tools already registered in the server:
+
+```yaml
+cwlVersion: v1.2
+class: Workflow
+
+inputs:
+  input_file:
+    type: File
+  pattern:
+    type: string
+
+outputs:
+  grep_result:
+    type: File
+    outputSource: grep_step/count
+
+steps:
+  grep_step:
+    run: gowe://grep-count         # references the tool registered above
+    in:
+      pattern: pattern
+      file: input_file
+    out: [count]
+
+  wc_step:
+    run: gowe://word-count         # another registered tool (by name)
+    in:
+      file: input_file
+    out: [count]
+```
+
+Reference formats:
+- `gowe://tool-name` — lookup by name (most recent version)
+- `gowe://wf_abc123` — lookup by exact ID
+
+The server resolves `gowe://` references at registration time by inlining the referenced tool CWL into a packed `$graph` document. The workflow input must be a bare `Workflow` (not a pre-packed `$graph`).
+
+See `examples/api/register_workflow.py` for a complete working example.
+
 ---
 
 ## 4. Get Workflow Input Definitions

@@ -44,6 +44,14 @@ Validate a submission without running it. Checks inputs, DAG structure, and exec
 python dry_run.py protein-structure-prediction inputs.json
 ```
 
+### register_workflow.py
+
+Register tools and compose a workflow from them using `gowe://` references. Demonstrates the full flow: register two CommandLineTools, create a Workflow that references them by name, inspect inputs, and dry-run validate.
+
+```bash
+python register_workflow.py
+```
+
 ### submit_and_poll.py
 
 Submit a job and poll until it reaches a terminal state. Prints task progress and final outputs (or failure logs).
