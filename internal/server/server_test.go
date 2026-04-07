@@ -271,6 +271,72 @@ func TestHealthExecutorStatus(t *testing.T) {
 	})
 }
 
+func TestHealthWorkerSummary(t *testing.T) {
+	t.Run("no workers", func(t *testing.T) {
+		srv := testServer()
+		env := doGet(t, srv, "/api/v1/health")
+
+		var data struct {
+			Workers *struct {
+				Online   int      `json:"online"`
+				Offline  int      `json:"offline"`
+				Runtimes []string `json:"runtimes"`
+				Groups   []string `json:"groups"`
+			} `json:"workers"`
+		}
+		json.Unmarshal(env.Data, &data)
+
+		if data.Workers == nil {
+			t.Fatal("workers field is nil, want empty summary")
+		}
+		if data.Workers.Online != 0 || data.Workers.Offline != 0 {
+			t.Errorf("online=%d offline=%d, want 0/0", data.Workers.Online, data.Workers.Offline)
+		}
+		if data.Workers.Runtimes == nil {
+			t.Error("runtimes is nil, want empty slice")
+		}
+		if data.Workers.Groups == nil {
+			t.Error("groups is nil, want empty slice")
+		}
+	})
+
+	t.Run("with workers", func(t *testing.T) {
+		srv := testServer()
+
+		// Register two workers with different runtimes and groups.
+		w1 := `{"name":"w1","hostname":"h1","runtime":"docker","group":"gpu"}`
+		doPost(t, srv, "/api/v1/workers/", w1)
+
+		w2 := `{"name":"w2","hostname":"h2","runtime":"apptainer","group":"default"}`
+		doPost(t, srv, "/api/v1/workers/", w2)
+
+		env := doGet(t, srv, "/api/v1/health")
+
+		var data struct {
+			Workers *struct {
+				Online   int      `json:"online"`
+				Offline  int      `json:"offline"`
+				Runtimes []string `json:"runtimes"`
+				Groups   []string `json:"groups"`
+			} `json:"workers"`
+		}
+		json.Unmarshal(env.Data, &data)
+
+		if data.Workers == nil {
+			t.Fatal("workers is nil")
+		}
+		if data.Workers.Online != 2 {
+			t.Errorf("online = %d, want 2", data.Workers.Online)
+		}
+		if len(data.Workers.Runtimes) != 2 {
+			t.Errorf("runtimes = %v, want 2 entries", data.Workers.Runtimes)
+		}
+		if len(data.Workers.Groups) != 2 {
+			t.Errorf("groups = %v, want 2 entries", data.Workers.Groups)
+		}
+	})
+}
+
 // --- Workflow CRUD (real parsing + SQLite) ---
 
 func TestCreateWorkflow(t *testing.T) {

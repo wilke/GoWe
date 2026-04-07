@@ -49,12 +49,15 @@ func (s *Server) executorStatus() map[string]string {
 	return status
 }
 
-func (s *Server) workerSummary() *workerSummary {
-	workers, err := s.store.ListWorkers(context.Background())
+func (s *Server) workerSummary(ctx context.Context) *workerSummary {
+	workers, err := s.store.ListWorkers(ctx)
 	if err != nil {
 		return nil
 	}
-	ws := &workerSummary{}
+	ws := &workerSummary{
+		Runtimes: []string{},
+		Groups:   []string{},
+	}
 	runtimes := make(map[string]bool)
 	groups := make(map[string]bool)
 	for _, w := range workers {
@@ -96,6 +99,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Scheduler: "not_started",
 		Store:     "skeleton",
 		Executors: s.executorStatus(),
-		Workers:   s.workerSummary(),
+		Workers:   s.workerSummary(r.Context()),
 	})
 }
