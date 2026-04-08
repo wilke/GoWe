@@ -230,6 +230,8 @@ func (s *Server) routes() {
 				r.Post("/", s.handleCreateWorkflow)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", s.handleGetWorkflow)
+					r.Get("/inputs", s.handleGetWorkflowInputs)
+					r.Get("/outputs", s.handleGetWorkflowOutputs)
 					r.Put("/", s.handleUpdateWorkflow)
 					r.Delete("/", s.handleDeleteWorkflow)
 					r.Post("/validate", s.handleValidateWorkflow)
