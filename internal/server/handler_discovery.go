@@ -28,6 +28,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 			{"/api/v1/submissions", []string{"GET", "POST"}, "Submission (run) management. POST accepts ?dry_run=true for validation without execution"},
 			{"/api/v1/submissions/{id}", []string{"GET"}, "Single Submission detail with Tasks"},
 			{"/api/v1/submissions/{id}/cancel", []string{"PUT"}, "Cancel a running Submission"},
+			{"/api/v1/submissions/{id}/retry", []string{"PUT"}, "Retry a failed Submission (resets failed steps and tasks)"},
 			{"/api/v1/submissions/{sid}/tasks", []string{"GET"}, "List Tasks in a Submission"},
 			{"/api/v1/submissions/{sid}/tasks/{tid}", []string{"GET"}, "Single Task detail"},
 			{"/api/v1/submissions/{sid}/tasks/{tid}/logs", []string{"GET"}, "Task stdout/stderr logs"},

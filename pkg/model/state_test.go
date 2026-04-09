@@ -38,6 +38,7 @@ func TestTaskState_CanTransitionTo(t *testing.T) {
 		{TaskStateRunning, TaskStateFailed, true},
 		{TaskStateRunning, TaskStateSkipped, true},
 		{TaskStateFailed, TaskStateRetrying, true},
+		{TaskStateFailed, TaskStatePending, true},
 		{TaskStateRetrying, TaskStateQueued, true},
 
 		// Invalid transitions
@@ -87,10 +88,12 @@ func TestSubmissionState_CanTransitionTo(t *testing.T) {
 		{SubmissionStateRunning, SubmissionStateFailed, true},
 		{SubmissionStateRunning, SubmissionStateCancelled, true},
 
+		// Retry transition
+		{SubmissionStateFailed, SubmissionStateRunning, true},
+
 		// Invalid transitions
 		{SubmissionStatePending, SubmissionStateCompleted, false},
 		{SubmissionStateCompleted, SubmissionStatePending, false},
-		{SubmissionStateFailed, SubmissionStateRunning, false},
 		{SubmissionStateCancelled, SubmissionStateRunning, false},
 	}
 	for _, tt := range tests {

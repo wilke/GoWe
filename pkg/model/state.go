@@ -51,7 +51,7 @@ var ValidTaskTransitions = map[TaskState][]TaskState{
 	TaskStateScheduled: {TaskStateQueued},
 	TaskStateQueued:    {TaskStateRunning, TaskStateSuccess, TaskStateFailed},
 	TaskStateRunning:   {TaskStateSuccess, TaskStateFailed, TaskStateSkipped},
-	TaskStateFailed:    {TaskStateRetrying},
+	TaskStateFailed:    {TaskStateRetrying, TaskStatePending},
 	TaskStateRetrying:  {TaskStateQueued},
 }
 
@@ -89,6 +89,7 @@ func (s SubmissionState) IsTerminal() bool {
 var ValidSubmissionTransitions = map[SubmissionState][]SubmissionState{
 	SubmissionStatePending: {SubmissionStateRunning, SubmissionStateCancelled},
 	SubmissionStateRunning: {SubmissionStateCompleted, SubmissionStateFailed, SubmissionStateCancelled},
+	SubmissionStateFailed:  {SubmissionStateRunning},
 }
 
 // CanTransitionTo returns true if moving from the current state to next is valid.

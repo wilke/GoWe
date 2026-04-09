@@ -51,6 +51,7 @@ var ValidStepTransitions = map[StepInstanceState][]StepInstanceState{
 	StepStateReady:      {StepStateDispatched, StepStateFailed, StepStateSkipped},
 	StepStateDispatched: {StepStateRunning, StepStateCompleted, StepStateFailed},
 	StepStateRunning:    {StepStateCompleted, StepStateFailed},
+	StepStateFailed:     {StepStateWaiting},
 }
 
 // CanTransitionTo returns true if moving from the current state to next is valid.

@@ -1073,7 +1073,7 @@ func TestDetectStuckTasks_FailAction(t *testing.T) {
 	if updated.State != model.TaskStateFailed {
 		t.Errorf("expected task to be FAILED, got %s", updated.State)
 	}
-	if !strings.Contains(updated.Stderr, "stuck task failed") {
+	if !strings.Contains(updated.Stderr, "Task stuck: no capable worker") {
 		t.Errorf("expected stuck task reason in stderr, got: %s", updated.Stderr)
 	}
 }

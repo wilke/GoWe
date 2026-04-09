@@ -243,6 +243,98 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := s.store.GetSubmission(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if sub == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+		return
+	}
+
+	if sub.State != model.SubmissionStateFailed {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "cannot retry submission in state " + string(sub.State) + "; only FAILED submissions can be retried",
+		})
+		return
+	}
+
+	// Reset the submission to RUNNING so the scheduler picks it up.
+	sub.State = model.SubmissionStateRunning
+	sub.Error = nil
+	sub.CompletedAt = nil
+	sub.OutputState = ""
+
+	if err := s.store.UpdateSubmission(r.Context(), sub); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	// Reset FAILED step instances back to WAITING so the scheduler re-evaluates dependencies.
+	stepsReset := 0
+	steps, err := s.store.ListStepsBySubmission(r.Context(), sub.ID)
+	if err != nil {
+		s.logger.Error("retry: list step instances", "submission_id", sub.ID, "error", err)
+	} else {
+		for _, si := range steps {
+			if si.State != model.StepStateFailed {
+				continue
+			}
+			si.State = model.StepStateWaiting
+			si.CompletedAt = nil
+			if err := s.store.UpdateStepInstance(r.Context(), si); err != nil {
+				s.logger.Error("retry: reset step instance", "step_id", si.ID, "error", err)
+				continue
+			}
+			stepsReset++
+		}
+	}
+
+	// Reset FAILED tasks back to PENDING with cleared retry budget and error state.
+	tasksReset := 0
+	tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
+	if err != nil {
+		s.logger.Error("retry: list tasks", "submission_id", sub.ID, "error", err)
+	} else {
+		for _, task := range tasks {
+			if task.State != model.TaskStateFailed {
+				continue
+			}
+			task.State = model.TaskStatePending
+			task.RetryCount = 0
+			task.CompletedAt = nil
+			task.Stderr = ""
+			task.ExitCode = nil
+			if err := s.store.UpdateTask(r.Context(), task); err != nil {
+				s.logger.Error("retry: reset task", "task_id", task.ID, "error", err)
+				continue
+			}
+			tasksReset++
+		}
+	}
+
+	s.logger.Info("submission retried",
+		"id", sub.ID,
+		"steps_reset", stepsReset,
+		"tasks_reset", tasksReset,
+	)
+
+	respondOK(w, reqID, map[string]any{
+		"id":          sub.ID,
+		"state":       sub.State,
+		"steps_reset": stepsReset,
+		"tasks_reset": tasksReset,
+	})
+}
+
 // buildDryRunReport validates a workflow and inputs without creating a submission.
 func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) map[string]any {
 	var errors []map[string]string
