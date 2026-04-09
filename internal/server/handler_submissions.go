@@ -164,12 +164,29 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute task summaries for each submission.
+	for _, sub := range subs {
+		tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
+		if err == nil {
+			sub.TaskSummary = model.ComputeTaskSummary(tasksToValue(tasks))
+		}
+	}
+
 	respondList(w, reqID, subs, &model.Pagination{
 		Total:   total,
 		Limit:   opts.Limit,
 		Offset:  opts.Offset,
 		HasMore: opts.Offset+opts.Limit < total,
 	})
+}
+
+// tasksToValue converts a slice of task pointers to values for ComputeTaskSummary.
+func tasksToValue(tasks []*model.Task) []model.Task {
+	result := make([]model.Task, len(tasks))
+	for i, t := range tasks {
+		result[i] = *t
+	}
+	return result
 }
 
 func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +203,13 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
 		return
 	}
+
+	// Compute task summary (not stored, derived from tasks).
+	tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
+	if err == nil {
+		sub.TaskSummary = model.ComputeTaskSummary(tasksToValue(tasks))
+	}
+
 	respondOK(w, reqID, sub)
 }
 
