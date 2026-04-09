@@ -1560,7 +1560,6 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 	var b strings.Builder
 	b.WriteString("Task stuck: no capable worker available\n")
 
-	// Required section.
 	b.WriteString("Required:")
 	if key.WorkerGroup != "" {
 		fmt.Fprintf(&b, " worker_group=%s", key.WorkerGroup)
@@ -1573,11 +1572,9 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 	}
 	b.WriteString("\n")
 
-	// Available workers section.
 	if caps.OnlineCount == 0 {
 		b.WriteString("Available workers: 0 online\n")
 	} else {
-		// Collect unique groups and runtimes.
 		groupSet := make(map[string]bool)
 		runtimeSet := make(map[string]bool)
 		datasetSet := make(map[string]bool)

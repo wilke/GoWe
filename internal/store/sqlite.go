@@ -1263,6 +1263,89 @@ func (s *SQLiteStore) CancelNonTerminalTasks(ctx context.Context, submissionID s
 	return int(n), nil
 }
 
+func (s *SQLiteStore) GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error) {
+	if len(submissionIDs) == 0 {
+		return nil, nil
+	}
+	s.logger.Debug("sql", "op", "get_task_summaries", "count", len(submissionIDs))
+
+	placeholders := make([]string, len(submissionIDs))
+	args := make([]any, len(submissionIDs))
+	for i, id := range submissionIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `SELECT submission_id, state, COUNT(*) FROM tasks
+		WHERE submission_id IN (` + strings.Join(placeholders, ",") + `)
+		GROUP BY submission_id, state`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get task summaries: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]model.TaskSummary)
+	for rows.Next() {
+		var subID, state string
+		var count int
+		if err := rows.Scan(&subID, &state, &count); err != nil {
+			return nil, fmt.Errorf("scan task summary: %w", err)
+		}
+		ts := result[subID]
+		ts.Total += count
+		switch model.TaskState(state) {
+		case model.TaskStatePending:
+			ts.Pending = count
+		case model.TaskStateScheduled:
+			ts.Scheduled = count
+		case model.TaskStateQueued:
+			ts.Queued = count
+		case model.TaskStateRunning:
+			ts.Running = count
+		case model.TaskStateSuccess:
+			ts.Success = count
+		case model.TaskStateFailed:
+			ts.Failed = count
+		case model.TaskStateSkipped:
+			ts.Skipped = count
+		}
+		result[subID] = ts
+	}
+	return result, rows.Err()
+}
+
+func (s *SQLiteStore) ResetFailedTasks(ctx context.Context, submissionID string) (int, error) {
+	s.logger.Debug("sql", "op", "reset_failed_tasks", "submission_id", submissionID)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks
+		 SET state = ?, retry_count = 0, completed_at = NULL, stderr = '', exit_code = NULL
+		 WHERE submission_id = ? AND state = ?`,
+		string(model.TaskStatePending), submissionID, string(model.TaskStateFailed))
+	if err != nil {
+		return 0, fmt.Errorf("reset failed tasks: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
+func (s *SQLiteStore) ResetFailedSteps(ctx context.Context, submissionID string) (int, error) {
+	s.logger.Debug("sql", "op", "reset_failed_steps", "submission_id", submissionID)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE step_instances
+		 SET state = ?, completed_at = NULL
+		 WHERE submission_id = ? AND state = ?`,
+		string(model.StepStateWaiting), submissionID, string(model.StepStateFailed))
+	if err != nil {
+		return 0, fmt.Errorf("reset failed steps: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
 // --- scan helpers ---
 
 type scanner interface {

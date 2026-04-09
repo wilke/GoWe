@@ -164,11 +164,18 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute task summaries for each submission.
-	for _, sub := range subs {
-		tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
-		if err == nil {
-			sub.TaskSummary = model.ComputeTaskSummary(tasksToValue(tasks))
+	// Compute task summaries in a single batch query.
+	if len(subs) > 0 {
+		ids := make([]string, len(subs))
+		for i, sub := range subs {
+			ids[i] = sub.ID
+		}
+		if summaries, err := s.store.GetTaskSummaries(r.Context(), ids); err == nil {
+			for _, sub := range subs {
+				if ts, ok := summaries[sub.ID]; ok {
+					sub.TaskSummary = ts
+				}
+			}
 		}
 	}
 
@@ -178,15 +185,6 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		Offset:  opts.Offset,
 		HasMore: opts.Offset+opts.Limit < total,
 	})
-}
-
-// tasksToValue converts a slice of task pointers to values for ComputeTaskSummary.
-func tasksToValue(tasks []*model.Task) []model.Task {
-	result := make([]model.Task, len(tasks))
-	for i, t := range tasks {
-		result[i] = *t
-	}
-	return result
 }
 
 func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
@@ -204,10 +202,11 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute task summary (not stored, derived from tasks).
-	tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
-	if err == nil {
-		sub.TaskSummary = model.ComputeTaskSummary(tasksToValue(tasks))
+	// Compute task summary via aggregate query.
+	if summaries, err := s.store.GetTaskSummaries(r.Context(), []string{sub.ID}); err == nil {
+		if ts, ok := summaries[sub.ID]; ok {
+			sub.TaskSummary = ts
+		}
 	}
 
 	respondOK(w, reqID, sub)
@@ -302,47 +301,14 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset FAILED step instances back to WAITING so the scheduler re-evaluates dependencies.
-	stepsReset := 0
-	steps, err := s.store.ListStepsBySubmission(r.Context(), sub.ID)
+	// Batch-reset FAILED steps and tasks.
+	stepsReset, err := s.store.ResetFailedSteps(r.Context(), sub.ID)
 	if err != nil {
-		s.logger.Error("retry: list step instances", "submission_id", sub.ID, "error", err)
-	} else {
-		for _, si := range steps {
-			if si.State != model.StepStateFailed {
-				continue
-			}
-			si.State = model.StepStateWaiting
-			si.CompletedAt = nil
-			if err := s.store.UpdateStepInstance(r.Context(), si); err != nil {
-				s.logger.Error("retry: reset step instance", "step_id", si.ID, "error", err)
-				continue
-			}
-			stepsReset++
-		}
+		s.logger.Error("retry: reset failed steps", "submission_id", sub.ID, "error", err)
 	}
-
-	// Reset FAILED tasks back to PENDING with cleared retry budget and error state.
-	tasksReset := 0
-	tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
+	tasksReset, err := s.store.ResetFailedTasks(r.Context(), sub.ID)
 	if err != nil {
-		s.logger.Error("retry: list tasks", "submission_id", sub.ID, "error", err)
-	} else {
-		for _, task := range tasks {
-			if task.State != model.TaskStateFailed {
-				continue
-			}
-			task.State = model.TaskStatePending
-			task.RetryCount = 0
-			task.CompletedAt = nil
-			task.Stderr = ""
-			task.ExitCode = nil
-			if err := s.store.UpdateTask(r.Context(), task); err != nil {
-				s.logger.Error("retry: reset task", "task_id", task.ID, "error", err)
-				continue
-			}
-			tasksReset++
-		}
+		s.logger.Error("retry: reset failed tasks", "submission_id", sub.ID, "error", err)
 	}
 
 	s.logger.Info("submission retried",
