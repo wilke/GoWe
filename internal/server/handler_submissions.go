@@ -164,6 +164,21 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute task summaries in a single batch query.
+	if len(subs) > 0 {
+		ids := make([]string, len(subs))
+		for i, sub := range subs {
+			ids[i] = sub.ID
+		}
+		if summaries, err := s.store.GetTaskSummaries(r.Context(), ids); err == nil {
+			for _, sub := range subs {
+				if ts, ok := summaries[sub.ID]; ok {
+					sub.TaskSummary = ts
+				}
+			}
+		}
+	}
+
 	respondList(w, reqID, subs, &model.Pagination{
 		Total:   total,
 		Limit:   opts.Limit,
@@ -186,6 +201,14 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
 		return
 	}
+
+	// Compute task summary via aggregate query.
+	if summaries, err := s.store.GetTaskSummaries(r.Context(), []string{sub.ID}); err == nil {
+		if ts, ok := summaries[sub.ID]; ok {
+			sub.TaskSummary = ts
+		}
+	}
+
 	respondOK(w, reqID, sub)
 }
 
@@ -240,6 +263,65 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 		"steps_cancelled":         stepsCancelled,
 		"tasks_cancelled":         tasksCancelled,
 		"tasks_already_completed": max(0, len(sub.Tasks)-tasksCancelled),
+	})
+}
+
+func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := s.store.GetSubmission(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if sub == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+		return
+	}
+
+	if sub.State != model.SubmissionStateFailed {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "cannot retry submission in state " + string(sub.State) + "; only FAILED submissions can be retried",
+		})
+		return
+	}
+
+	// Reset the submission to RUNNING so the scheduler picks it up.
+	sub.State = model.SubmissionStateRunning
+	sub.Error = nil
+	sub.CompletedAt = nil
+	sub.OutputState = ""
+
+	if err := s.store.UpdateSubmission(r.Context(), sub); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	// Batch-reset FAILED steps and tasks.
+	stepsReset, err := s.store.ResetFailedSteps(r.Context(), sub.ID)
+	if err != nil {
+		s.logger.Error("retry: reset failed steps", "submission_id", sub.ID, "error", err)
+	}
+	tasksReset, err := s.store.ResetFailedTasks(r.Context(), sub.ID)
+	if err != nil {
+		s.logger.Error("retry: reset failed tasks", "submission_id", sub.ID, "error", err)
+	}
+
+	s.logger.Info("submission retried",
+		"id", sub.ID,
+		"steps_reset", stepsReset,
+		"tasks_reset", tasksReset,
+	)
+
+	respondOK(w, reqID, map[string]any{
+		"id":          sub.ID,
+		"state":       sub.State,
+		"steps_reset": stepsReset,
+		"tasks_reset": tasksReset,
 	})
 }
 

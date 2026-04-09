@@ -1160,8 +1160,11 @@ func (l *Loop) hasOnlineWorkers() bool {
 }
 
 // addUserToken adds user authentication token to task runtime hints.
+// When server-side workspace staging is enabled (wsStager != nil), the server
+// handles all ws:// operations and workers don't need the token — skip embedding
+// it in task data to avoid storing credentials in the database unnecessarily.
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
-	if sub.UserToken != "" {
+	if sub.UserToken != "" && l.wsStager == nil {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
 		}
@@ -1445,13 +1448,23 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 		}
 		l.stuck.lastCounts[key] = count
 
-		if l.stuck.staleTicks[key] < l.config.StuckTaskThreshold {
-			continue
-		}
-
 		// Build a synthetic RuntimeHints for canMatchTask from the key.
 		hints := hintsFromRequirementKey(key)
 		canMatch, reason := canMatchTask(caps, hints)
+
+		// Emit an early warning at half the stuck threshold when no worker can match.
+		if l.stuck.staleTicks[key] == l.config.StuckTaskThreshold/2 && !canMatch {
+			l.logger.Warn("tasks approaching stuck threshold: no capable worker",
+				"count", count, "reason", reason,
+				"group", key.WorkerGroup,
+				"prestage", key.PrestageIDs,
+				"stale_ticks", l.stuck.staleTicks[key],
+				"threshold", l.config.StuckTaskThreshold)
+		}
+
+		if l.stuck.staleTicks[key] < l.config.StuckTaskThreshold {
+			continue
+		}
 
 		if !canMatch {
 			l.logger.Error("stuck tasks: no capable worker",
@@ -1475,18 +1488,22 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 					oldest = t
 				}
 			}
-			// Only fail if retries remain, so recovery is possible.
-			if oldest.RetryCount < oldest.MaxRetries {
-				now := time.Now().UTC()
-				oldest.State = model.TaskStateFailed
-				oldest.Stderr = fmt.Sprintf("stuck task failed by scheduler: %s", reason)
-				oldest.CompletedAt = &now
-				if err := l.store.UpdateTask(ctx, oldest); err != nil {
-					l.logger.Error("fail stuck task", "task_id", oldest.ID, "error", err)
-				} else {
-					l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)
-					affected[oldest.SubmissionID] = true
-				}
+
+			// Build a rich error message with task requirements and worker summary.
+			stderrMsg := buildStuckTaskError(key, reason, caps, l.stuck.staleTicks[key])
+
+			now := time.Now().UTC()
+			oldest.State = model.TaskStateFailed
+			oldest.Stderr = stderrMsg
+			oldest.CompletedAt = &now
+			// No capable worker exists — retrying won't help. Exhaust retries
+			// so markRetries does not re-queue this task.
+			oldest.MaxRetries = oldest.RetryCount
+			if err := l.store.UpdateTask(ctx, oldest); err != nil {
+				l.logger.Error("fail stuck task", "task_id", oldest.ID, "error", err)
+			} else {
+				l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)
+				affected[oldest.SubmissionID] = true
 			}
 		}
 	}
@@ -1535,6 +1552,68 @@ func hintsFromRequirementKey(key taskRequirementKey) *model.RuntimeHints {
 		}
 	}
 	return hints
+}
+
+// buildStuckTaskError constructs a detailed error message for a stuck task,
+// including what the task required and what workers are currently available.
+func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapabilities, staleTicks int) string {
+	var b strings.Builder
+	b.WriteString("Task stuck: no capable worker available\n")
+
+	b.WriteString("Required:")
+	if key.WorkerGroup != "" {
+		fmt.Fprintf(&b, " worker_group=%s", key.WorkerGroup)
+	}
+	if key.PrestageIDs != "" {
+		fmt.Fprintf(&b, " prestage=[%s]", key.PrestageIDs)
+	}
+	if key.WorkerGroup == "" && key.PrestageIDs == "" {
+		b.WriteString(" (no specific constraints)")
+	}
+	b.WriteString("\n")
+
+	if caps.OnlineCount == 0 {
+		b.WriteString("Available workers: 0 online\n")
+	} else {
+		groupSet := make(map[string]bool)
+		runtimeSet := make(map[string]bool)
+		datasetSet := make(map[string]bool)
+		for _, w := range caps.Workers {
+			g := w.Group
+			if g == "" {
+				g = "default"
+			}
+			groupSet[g] = true
+			runtimeSet[string(w.Runtime)] = true
+			for dsID := range w.Datasets {
+				datasetSet[dsID] = true
+			}
+		}
+		groups := sortedKeys(groupSet)
+		runtimes := sortedKeys(runtimeSet)
+		datasets := sortedKeys(datasetSet)
+
+		fmt.Fprintf(&b, "Available workers: %d online (groups: [%s], runtimes: [%s]",
+			caps.OnlineCount, strings.Join(groups, ", "), strings.Join(runtimes, ", "))
+		if len(datasets) > 0 {
+			fmt.Fprintf(&b, ", datasets: [%s]", strings.Join(datasets, ", "))
+		}
+		b.WriteString(")\n")
+	}
+
+	fmt.Fprintf(&b, "Reason: %s\n", reason)
+	fmt.Fprintf(&b, "Stale ticks: %d", staleTicks)
+	return b.String()
+}
+
+// sortedKeys returns the keys of a map[string]bool in sorted order.
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // advanceSteps checks DISPATCHED/RUNNING StepInstances and completes them

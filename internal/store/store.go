@@ -44,7 +44,10 @@ type Store interface {
 	ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error)
 	UpdateTask(ctx context.Context, task *model.Task) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
+	GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error)
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
+	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
+	ResetFailedSteps(ctx context.Context, submissionID string) (int, error)
 
 	// Session operations
 	CreateSession(ctx context.Context, sess *model.Session) error
