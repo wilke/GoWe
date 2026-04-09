@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 type wsStagerInterface interface {
 	StageIn(ctx context.Context, location string, destPath string, opts staging.StageOptions) error
 	StageOut(ctx context.Context, srcPath string, taskID string, opts staging.StageOptions) (string, error)
+	UploadContent(ctx context.Context, destPath string, content string, opts staging.StageOptions) (string, error)
 	WithToken(token string) *staging.WorkspaceStager
 }
 
@@ -170,6 +172,12 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 		})
 
 		if allOK {
+			// Upload output manifest with ws:// locations.
+			if err := l.uploadOutputManifest(ctx, stager, sub, baseDest); err != nil {
+				l.logger.Warn("upload output manifest failed (non-fatal)",
+					"submission_id", sub.ID, "error", err)
+			}
+
 			sub.OutputState = "delivered"
 			if err := l.updateSubmission(ctx, sub); err != nil {
 				l.logger.Error("update submission after post-stage",
@@ -186,6 +194,39 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 		affected[sub.ID] = true
 	}
 
+	return nil
+}
+
+// uploadOutputManifest writes the submission outputs as a JSON manifest file
+// to the workspace destination. This gives users a machine-readable record of
+// what each output file represents (workflow output IDs, types, ws:// locations).
+func (l *Loop) uploadOutputManifest(ctx context.Context, stager *staging.WorkspaceStager, sub *model.Submission, baseDest string) error {
+	manifest := map[string]any{
+		"submission_id": sub.ID,
+		"workflow_id":   sub.WorkflowID,
+		"workflow_name": sub.WorkflowName,
+		"state":         string(sub.State),
+		"outputs":       sub.Outputs,
+	}
+	if sub.CompletedAt != nil {
+		manifest["completed_at"] = sub.CompletedAt.Format(time.RFC3339)
+	}
+
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal manifest: %w", err)
+	}
+
+	destPath := strings.TrimRight(baseDest, "/") + "/_gowe_outputs.json"
+	_, err = stager.UploadContent(ctx, destPath, string(data), staging.StageOptions{})
+	if err != nil {
+		return fmt.Errorf("upload manifest: %w", err)
+	}
+
+	l.logger.Info("uploaded output manifest",
+		"submission_id", sub.ID,
+		"path", destPath,
+	)
 	return nil
 }
 

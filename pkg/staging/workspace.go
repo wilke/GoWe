@@ -243,6 +243,44 @@ func (s *WorkspaceStager) download(ctx context.Context, wsPath string, destPath 
 	return nil
 }
 
+// UploadContent uploads string content directly to a workspace path (no local file needed).
+// Returns the ws:// URI of the created object.
+func (s *WorkspaceStager) UploadContent(ctx context.Context, destPath string, content string, opts StageOptions) (string, error) {
+	token := s.resolveToken(opts)
+	if token == "" {
+		return "", fmt.Errorf("workspace stager: no authentication token available")
+	}
+
+	// Ensure parent directory exists.
+	dir := destPath[:strings.LastIndex(destPath, "/")]
+	if dir != "" {
+		if err := s.ensureDir(ctx, dir, token); err != nil {
+			return "", fmt.Errorf("workspace stager: ensure dir: %w", err)
+		}
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < s.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+
+		err := s.upload(ctx, destPath, content, token)
+		if err == nil {
+			return "ws://" + destPath, nil
+		}
+		lastErr = err
+		s.logger.Warn("workspace upload content attempt failed",
+			"path", destPath, "attempt", attempt+1, "error", err)
+	}
+
+	return "", fmt.Errorf("workspace stager: upload content failed after %d attempts: %w", s.config.MaxRetries, lastErr)
+}
+
 // upload creates/overwrites a file in the workspace.
 func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, content string, token string) error {
 	bvbrcCfg := bvbrc.Config{

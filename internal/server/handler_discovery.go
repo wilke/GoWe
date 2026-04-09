@@ -24,6 +24,8 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		Endpoints: []endpointInfo{
 			{"/api/v1/workflows", []string{"GET", "POST"}, "Workflow definition management"},
 			{"/api/v1/workflows/{id}", []string{"GET", "PUT", "DELETE"}, "Single Workflow operations"},
+			{"/api/v1/workflows/{id}/inputs", []string{"GET"}, "Get Workflow input definitions"},
+			{"/api/v1/workflows/{id}/outputs", []string{"GET"}, "Get Workflow output definitions"},
 			{"/api/v1/workflows/{id}/validate", []string{"POST"}, "Validate a Workflow without persisting"},
 			{"/api/v1/submissions", []string{"GET", "POST"}, "Submission (run) management. POST accepts ?dry_run=true for validation without execution"},
 			{"/api/v1/submissions/{id}", []string{"GET"}, "Single Submission detail with Tasks"},

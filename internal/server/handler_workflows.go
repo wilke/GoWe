@@ -197,6 +197,40 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, reqID, wf)
 }
 
+func (s *Server) handleGetWorkflowInputs(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	idOrName := chi.URLParam(r, "id")
+
+	wf, err := s.resolveWorkflow(r.Context(), idOrName)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if wf == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", idOrName))
+		return
+	}
+	respondOK(w, reqID, wf.Inputs)
+}
+
+func (s *Server) handleGetWorkflowOutputs(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	idOrName := chi.URLParam(r, "id")
+
+	wf, err := s.resolveWorkflow(r.Context(), idOrName)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if wf == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", idOrName))
+		return
+	}
+	respondOK(w, reqID, wf.Outputs)
+}
+
 func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
