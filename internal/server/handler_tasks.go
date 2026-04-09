@@ -19,6 +19,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for _, t := range tasks {
+		sanitizeTaskCredentials(t)
+	}
+
 	respondList(w, reqID, tasks, &model.Pagination{
 		Total:   total,
 		Limit:   opts.Limit,
@@ -41,7 +45,17 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
 		return
 	}
+	sanitizeTaskCredentials(task)
 	respondOK(w, reqID, task)
+}
+
+// sanitizeTaskCredentials strips sensitive credentials from task data before
+// returning it in API responses. Workers receive credentials through the
+// checkout endpoint; they must not leak through the public task API.
+func sanitizeTaskCredentials(t *model.Task) {
+	if t.RuntimeHints != nil && t.RuntimeHints.StagerOverrides != nil {
+		t.RuntimeHints.StagerOverrides.HTTPCredential = nil
+	}
 }
 
 func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
