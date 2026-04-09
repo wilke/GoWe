@@ -1160,8 +1160,11 @@ func (l *Loop) hasOnlineWorkers() bool {
 }
 
 // addUserToken adds user authentication token to task runtime hints.
+// When server-side workspace staging is enabled (wsStager != nil), the server
+// handles all ws:// operations and workers don't need the token — skip embedding
+// it in task data to avoid storing credentials in the database unnecessarily.
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
-	if sub.UserToken != "" {
+	if sub.UserToken != "" && l.wsStager == nil {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
 		}
