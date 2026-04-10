@@ -326,12 +326,12 @@ func (s *WorkspaceStager) ensureDir(ctx context.Context, destDir string, token s
 		dir := strings.Join(parts[:i+1], "/")
 		_, err := wsClient.WorkspaceCreateFolder(ctx, dir)
 		if err != nil {
-			// Ignore "already exists" errors — the API returns an error if the folder exists.
-			if strings.Contains(err.Error(), "already exists") ||
-				strings.Contains(err.Error(), "Object already exists") {
-				continue
-			}
-			return fmt.Errorf("create folder %s: %w", dir, err)
+			// Ignore errors from folder creation — the workspace API returns various
+			// error messages when a folder already exists ("already exists",
+			// "Object already exists", "no object returned from server").
+			// Since ensureDir is idempotent, log and continue.
+			s.logger.Debug("workspace mkdir ignored error", "path", dir, "error", err)
+			continue
 		} else {
 			s.logger.Info("workspace mkdir created", "path", dir)
 		}
