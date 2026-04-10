@@ -1640,6 +1640,11 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 			anyFailed := false
 			anyRunning := false
 			for _, t := range tasks {
+				if t.State == model.TaskStateFailed && t.RetryCount < t.MaxRetries {
+					// Task will be retried — treat as non-terminal.
+					allTerminal = false
+					continue
+				}
 				if !t.State.IsTerminal() {
 					allTerminal = false
 					if t.State == model.TaskStateRunning {
