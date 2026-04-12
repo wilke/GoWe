@@ -116,6 +116,12 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set ownership from authenticated user.
+	userCtx := UserFromContext(r.Context())
+	if userCtx != nil {
+		mw.CreatedBy = userCtx.User.Username
+	}
+
 	// Assign ID and persist.
 	mw.ID = "wf_" + uuid.New().String()
 
@@ -246,6 +252,15 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership check: non-admin users can only modify workflows they created.
+	userCtx := UserFromContext(r.Context())
+	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
+		})
+		return
+	}
+
 	var req struct {
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
@@ -352,6 +367,27 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
+
+	// Fetch the workflow first for ownership check.
+	existing, err := s.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if existing == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
+		return
+	}
+
+	// Ownership check: non-admin users can only delete workflows they created.
+	userCtx := UserFromContext(r.Context())
+	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
+		})
+		return
+	}
 
 	if err := s.store.DeleteWorkflow(r.Context(), id); err != nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))

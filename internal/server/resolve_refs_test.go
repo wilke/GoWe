@@ -49,7 +49,7 @@ func (m *mockStore) UpdateSubmissionInputs(context.Context, string, map[string]a
 func (m *mockStore) GetChildSubmissions(context.Context, string) ([]*model.Submission, error) {
 	return nil, nil
 }
-func (m *mockStore) CountSubmissionsByState(_ context.Context, _ time.Time) (map[string]int, error) {
+func (m *mockStore) CountSubmissionsByState(_ context.Context, _ time.Time, _ string) (map[string]int, error) {
 	return nil, nil
 }
 

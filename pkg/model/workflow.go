@@ -11,6 +11,7 @@ type Workflow struct {
 	CWLVersion  string            `json:"cwl_version"`
 	ContentHash string            `json:"content_hash,omitempty"` // SHA-256 of RawCWL for deduplication
 	Labels      map[string]string `json:"labels,omitempty"`
+	CreatedBy   string            `json:"created_by,omitempty"`
 	RawCWL      string            `json:"-"` // Original CWL document (not exposed in API list views)
 	Inputs      []WorkflowInput   `json:"inputs"`
 	Outputs     []WorkflowOutput  `json:"outputs"`

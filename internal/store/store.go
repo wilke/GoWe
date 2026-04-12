@@ -25,7 +25,7 @@ type Store interface {
 	UpdateSubmission(ctx context.Context, sub *model.Submission) error
 	UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error
 	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)
-	CountSubmissionsByState(ctx context.Context, since time.Time) (map[string]int, error)
+	CountSubmissionsByState(ctx context.Context, since time.Time, submittedBy string) (map[string]int, error)
 
 	// StepInstance operations
 	CreateStepInstance(ctx context.Context, si *model.StepInstance) error

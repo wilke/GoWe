@@ -11,6 +11,18 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	subID := chi.URLParam(r, "id")
 
+	// Ownership check: verify the caller can access the parent submission.
+	sub, err := s.store.GetSubmission(r.Context(), subID)
+	if err == nil && sub != nil {
+		userCtx := UserFromContext(r.Context())
+		if !requireSubmissionAccess(sub, userCtx) {
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code: model.ErrForbidden, Message: "access denied",
+			})
+			return
+		}
+	}
+
 	opts := parseListOptions(r)
 	tasks, total, err := s.store.ListTasksBySubmissionPaged(r.Context(), subID, opts)
 	if err != nil {
@@ -33,7 +45,20 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+	subID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
+
+	// Ownership check: verify the caller can access the parent submission.
+	sub, err := s.store.GetSubmission(r.Context(), subID)
+	if err == nil && sub != nil {
+		userCtx := UserFromContext(r.Context())
+		if !requireSubmissionAccess(sub, userCtx) {
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code: model.ErrForbidden, Message: "access denied",
+			})
+			return
+		}
+	}
 
 	task, err := s.store.GetTask(r.Context(), tid)
 	if err != nil {
@@ -60,7 +85,20 @@ func sanitizeTaskCredentials(t *model.Task) {
 
 func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+	subID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
+
+	// Ownership check: verify the caller can access the parent submission.
+	sub, err := s.store.GetSubmission(r.Context(), subID)
+	if err == nil && sub != nil {
+		userCtx := UserFromContext(r.Context())
+		if !requireSubmissionAccess(sub, userCtx) {
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code: model.ErrForbidden, Message: "access denied",
+			})
+			return
+		}
+	}
 
 	task, err := s.store.GetTask(r.Context(), tid)
 	if err != nil {

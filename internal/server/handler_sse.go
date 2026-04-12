@@ -27,6 +27,15 @@ func (s *Server) handleSSESubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership check: non-admin users can only stream their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if !requireSubmissionAccess(sub, userCtx) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
+		return
+	}
+
 	// Set headers for SSE.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

@@ -167,13 +167,13 @@ func (ui *UI) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Count submissions by state for the last 24 hours.
 	since24h := time.Now().UTC().Add(-24 * time.Hour)
-	stats24h, err := ui.store.CountSubmissionsByState(r.Context(), since24h)
+	stats24h, err := ui.store.CountSubmissionsByState(r.Context(), since24h, "")
 	if err != nil {
 		slog.Error("dashboard: failed to count submissions by state (24h)", "error", err)
 	}
 
 	// Count currently running (all time — running is a live state).
-	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{}, "")
 	if err != nil {
 		slog.Error("dashboard: failed to count submissions by state (all-time)", "error", err)
 	}
@@ -310,7 +310,13 @@ func (ui *UI) HandleWorkflowDelete(w http.ResponseWriter, r *http.Request) {
 // HandleSubmissionList renders the submission list page.
 func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
+
+	// Non-admin users only see their own submissions.
 	opts := ui.parseListOptions(r)
+	if sess != nil && !sess.IsAdmin() {
+		opts.SubmittedBy = sess.Username
+	}
+
 	// View mode: "cards" (default) or "table".
 	viewMode := r.URL.Query().Get("view")
 	if viewMode != "table" {
@@ -413,6 +419,12 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if sub == nil {
 		ui.renderNotFound(w, "Submission not found")
+		return
+	}
+
+	// Ownership check: non-admin users can only view their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -596,11 +608,18 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 
 // HandleSubmissionCancel cancels a running submission (HTMX).
 func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
 	id := ui.pathParam(r, "id")
 
 	sub, err := ui.store.GetSubmission(r.Context(), id)
 	if err != nil || sub == nil {
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Ownership check: non-admin users can only cancel their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -629,6 +648,15 @@ func (ui *UI) HandleTaskLogs(w http.ResponseWriter, r *http.Request) {
 	subID := ui.pathParam(r, "id")
 	taskID := ui.pathParam(r, "tid")
 
+	// Ownership check: verify the caller can access the parent submission.
+	sub, subErr := ui.store.GetSubmission(r.Context(), subID)
+	if subErr == nil && sub != nil {
+		if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
 	task, err := ui.store.GetTask(r.Context(), taskID)
 	if err != nil || task == nil || task.SubmissionID != subID {
 		ui.renderNotFound(w, "Task not found")
@@ -646,8 +674,14 @@ func (ui *UI) HandleTaskLogs(w http.ResponseWriter, r *http.Request) {
 
 // HandleSubmissionExport exports submissions as CSV.
 func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
 	opts.Limit = 10000 // Export up to 10k records
+
+	// Non-admin users only export their own submissions.
+	if sess != nil && !sess.IsAdmin() {
+		opts.SubmittedBy = sess.Username
+	}
 
 	// Parse date filters
 	if dateStart := r.URL.Query().Get("date_start"); dateStart != "" {
@@ -704,11 +738,18 @@ func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
 
 // HandleSubmissionResume resumes a failed submission.
 func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
 	id := ui.pathParam(r, "id")
 
 	sub, err := ui.store.GetSubmission(r.Context(), id)
 	if err != nil || sub == nil {
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Ownership check: non-admin users can only resume their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -999,7 +1040,7 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// All-time stats (for Running/Pending which are live states).
-	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{})
+	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{}, "")
 	if err != nil {
 		slog.Error("admin stats: failed to count submissions by state", "error", err)
 	}
@@ -1029,7 +1070,7 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 
 	var breakdown []periodStats
 	for _, p := range periods {
-		counts, err := ui.store.CountSubmissionsByState(r.Context(), p.Since)
+		counts, err := ui.store.CountSubmissionsByState(r.Context(), p.Since, "")
 		if err != nil {
 			slog.Error("admin stats: failed to count submissions by state for period", "period", p.Label, "error", err)
 		}
