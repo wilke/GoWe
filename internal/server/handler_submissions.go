@@ -14,6 +14,16 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// requireSubmissionAccess checks whether the given user context has permission
+// to access the submission. Admins and unauthenticated contexts (nil) are always
+// allowed; regular users may only access their own submissions.
+func requireSubmissionAccess(sub *model.Submission, userCtx *UserContext) bool {
+	if userCtx == nil || userCtx.User.IsAdmin() {
+		return true
+	}
+	return sub.SubmittedBy == userCtx.User.Username
+}
+
 func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
@@ -150,6 +160,13 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
 	opts := parseListOptions(r)
+
+	// Non-admin users only see their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if userCtx != nil && !userCtx.User.IsAdmin() {
+		opts.SubmittedBy = userCtx.User.Username
+	}
+
 	if opts.WorkflowID != "" {
 		// Resolve workflow name to ID: try by ID first, fall back to name.
 		if wf, err := s.resolveWorkflow(r.Context(), opts.WorkflowID); err == nil && wf != nil {
@@ -202,6 +219,15 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership check: non-admin users can only view their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if !requireSubmissionAccess(sub, userCtx) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
+		return
+	}
+
 	// Compute task summary via aggregate query.
 	if summaries, err := s.store.GetTaskSummaries(r.Context(), []string{sub.ID}); err == nil {
 		if ts, ok := summaries[sub.ID]; ok {
@@ -224,6 +250,15 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	}
 	if sub == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+		return
+	}
+
+	// Ownership check: non-admin users can only cancel their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if !requireSubmissionAccess(sub, userCtx) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
 		return
 	}
 
@@ -278,6 +313,15 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	if sub == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+		return
+	}
+
+	// Ownership check: non-admin users can only retry their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if !requireSubmissionAccess(sub, userCtx) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
 		return
 	}
 

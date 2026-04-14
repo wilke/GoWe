@@ -114,10 +114,11 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		wf.ID, wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
+		wf.CreatedBy,
 		wf.CreatedAt.Format(time.RFC3339Nano), wf.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	return err
@@ -131,10 +132,10 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
 		 FROM workflows WHERE id = ?`, id,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -173,10 +174,10 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
 		 FROM workflows WHERE content_hash = ?`, hash,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -215,10 +216,10 @@ func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*mode
 	var createdAt, updatedAt string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
 		 FROM workflows WHERE name = ? ORDER BY created_at DESC LIMIT 1`, name,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -298,7 +299,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
 		 FROM workflows`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
 		queryArgs...,
 	)
@@ -314,7 +315,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 		var createdAt, updatedAt string
 
 		if err := rows.Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-			&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &createdAt, &updatedAt); err != nil {
+			&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt); err != nil {
 			return nil, 0, err
 		}
 		if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
@@ -543,6 +544,10 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		pat := "%" + opts.Search + "%"
 		countArgs = append(countArgs, pat, pat)
 	}
+	if opts.SubmittedBy != "" {
+		whereClauses = append(whereClauses, "submitted_by = ?")
+		countArgs = append(countArgs, opts.SubmittedBy)
+	}
 
 	whereSQL := ""
 	if len(whereClauses) > 0 {
@@ -623,14 +628,22 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	return subs, total, rows.Err()
 }
 
-func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Time) (map[string]int, error) {
+func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Time, submittedBy string) (map[string]int, error) {
 	s.logger.Debug("sql", "op", "count_by_state", "table", "submissions", "since", since)
 
 	query := `SELECT state, COUNT(*) FROM submissions`
+	var where []string
 	var args []any
 	if !since.IsZero() {
-		query += ` WHERE created_at >= ?`
+		where = append(where, `created_at >= ?`)
 		args = append(args, since.Format(time.RFC3339Nano))
+	}
+	if submittedBy != "" {
+		where = append(where, `submitted_by = ?`)
+		args = append(args, submittedBy)
+	}
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, " AND ")
 	}
 	query += ` GROUP BY state`
 

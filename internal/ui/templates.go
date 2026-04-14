@@ -441,8 +441,9 @@ var templates = map[string]string{
                     </div>
                 </div>
                 <div class="flex items-center">
-                    <span class="text-sm text-gray-500 mr-4">{{.Session.Username}}</span>
-                    <a href="/logout" class="text-sm text-gray-500 hover:text-gray-700">Logout</a>
+                    <span class="text-sm text-gray-500 mr-2">{{.Session.Username}}</span>
+                    {{if .Session.IsAdmin}}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">admin</span>{{else}}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">user</span>{{end}}
+                    <a href="/logout" class="ml-3 text-sm text-gray-500 hover:text-gray-700">Logout</a>
                 </div>
             </div>
         </div>
@@ -784,6 +785,10 @@ var templates = map[string]string{
                         <span>{{len .Steps}} steps</span>
                         <span class="mx-2">•</span>
                         <span>Created {{formatTime .CreatedAt}}</span>
+                        {{if .CreatedBy}}
+                        <span class="mx-2">•</span>
+                        <span title="Created by">{{.CreatedBy}}</span>
+                        {{end}}
                         {{if .ContentHash}}
                         <span class="mx-2">•</span>
                         <span class="font-mono" title="{{.ContentHash}}">{{prefix .ContentHash 12}}</span>
@@ -872,7 +877,7 @@ var templates = map[string]string{
                 {{end}}
                 <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
                     <dt class="text-sm font-medium text-gray-500">Created</dt>
-                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Workflow.CreatedAt}}</dd>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTime .Workflow.CreatedAt}}{{if .Workflow.CreatedBy}} by {{.Workflow.CreatedBy}}{{end}}</dd>
                 </div>
             </dl>
         </div>
@@ -1162,6 +1167,7 @@ var templates = map[string]string{
                             {{if eq .SortBy "workflow_name"}}<span class="ml-1">{{if eq .SortDir "asc"}}&#9650;{{else}}&#9660;{{end}}</span>{{end}}
                         </a>
                     </th>
+                    {{if and $.Session $.Session.IsAdmin}}<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>{{end}}
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Progress</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         <a href="?sort=created_at&amp;dir={{if and (eq .SortBy "created_at") (eq .SortDir "desc")}}asc{{else}}desc{{end}}&amp;limit={{.Pagination.Limit}}{{.FilterBase}}"
@@ -1187,6 +1193,7 @@ var templates = map[string]string{
                         <p class="text-sm font-medium text-indigo-600 truncate max-w-xs">{{.WorkflowName}}</p>
                         <p class="text-xs text-gray-400 font-mono truncate max-w-xs">{{.ID}}</p>
                     </td>
+                    {{if and $.Session $.Session.IsAdmin}}<td class="px-4 py-3 whitespace-nowrap text-xs text-gray-500">{{.SubmittedBy}}</td>{{end}}
                     <!-- Progress: dots + bar + tasks -->
                     <td class="px-4 py-3">
                         {{if gt .TaskSummary.Total 0}}
