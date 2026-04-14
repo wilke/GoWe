@@ -101,6 +101,7 @@ for i in $(seq 1 "$NUM_WORKERS"); do
         --gpu --gpu-id "$i" \
         --image-dir "$IMAGE_DIR" \
         --pre-stage-dir "$PRE_STAGE_DIR" \
+        --extra-bind /scout/data \
         --workspace-stager \
         > "$LOG_DIR/worker-${i}.log" 2>&1 &
     echo $! > "$PID_DIR/worker-${i}.pid"
