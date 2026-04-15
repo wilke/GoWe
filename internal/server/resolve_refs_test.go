@@ -89,6 +89,7 @@ func (m *mockStore) GetTasksByState(context.Context, model.TaskState) ([]*model.
 func (m *mockStore) CancelNonTerminalTasks(context.Context, string, time.Time) (int, error) {
 	return 0, nil
 }
+func (m *mockStore) GetActiveTasks(context.Context) ([]*model.Task, error) { return nil, nil }
 func (m *mockStore) GetTaskSummaries(context.Context, []string) (map[string]model.TaskSummary, error) {
 	return nil, nil
 }

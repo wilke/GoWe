@@ -157,15 +157,11 @@ func (s *Server) handleSetTaskPriority(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListActiveTasks(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
-	var active []*model.Task
-	for _, state := range []model.TaskState{model.TaskStateQueued, model.TaskStateRunning, model.TaskStatePending, model.TaskStateScheduled} {
-		tasks, err := s.store.GetTasksByState(r.Context(), state)
-		if err != nil {
-			respondError(w, reqID, http.StatusInternalServerError,
-				model.NewInternalError(err.Error()))
-			return
-		}
-		active = append(active, tasks...)
+	active, err := s.store.GetActiveTasks(r.Context())
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			model.NewInternalError(err.Error()))
+		return
 	}
 
 	for _, t := range active {

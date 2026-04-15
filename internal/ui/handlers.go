@@ -1123,14 +1123,9 @@ func (ui *UI) HandleAdminHealth(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleAdminActiveTasks(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	var active []*model.Task
-	for _, state := range []model.TaskState{model.TaskStateRunning, model.TaskStateQueued, model.TaskStatePending, model.TaskStateScheduled} {
-		tasks, err := ui.store.GetTasksByState(r.Context(), state)
-		if err != nil {
-			slog.Error("admin tasks: failed to get tasks", "state", state, "error", err)
-			continue
-		}
-		active = append(active, tasks...)
+	active, err := ui.store.GetActiveTasks(r.Context())
+	if err != nil {
+		slog.Error("admin tasks: failed to get active tasks", "error", err)
 	}
 
 	// Load submission info for each task.

@@ -364,26 +364,35 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, reqID, existing)
 }
 
-func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Request) {
-	reqID := RequestIDFromContext(r.Context())
-	id := chi.URLParam(r, "id")
-
+// getOwnedWorkflow fetches a workflow by ID and checks ownership.
+// Returns the workflow or writes an error response and returns nil.
+func (s *Server) getOwnedWorkflow(w http.ResponseWriter, r *http.Request, reqID, id string) *model.Workflow {
 	existing, err := s.store.GetWorkflow(r.Context(), id)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
+		return nil
 	}
 	if existing == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
-		return
+		return nil
 	}
-
 	userCtx := UserFromContext(r.Context())
 	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
 		respondError(w, reqID, http.StatusForbidden, &model.APIError{
 			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
 		})
+		return nil
+	}
+	return existing
+}
+
+func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	existing := s.getOwnedWorkflow(w, r, reqID, id)
+	if existing == nil {
 		return
 	}
 
@@ -429,24 +438,8 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Fetch the workflow first for ownership check.
-	existing, err := s.store.GetWorkflow(r.Context(), id)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
-	}
+	existing := s.getOwnedWorkflow(w, r, reqID, id)
 	if existing == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
-		return
-	}
-
-	// Ownership check: non-admin users can only delete workflows they created.
-	userCtx := UserFromContext(r.Context())
-	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
-		respondError(w, reqID, http.StatusForbidden, &model.APIError{
-			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
-		})
 		return
 	}
 

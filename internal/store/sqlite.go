@@ -1255,6 +1255,26 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	return s.scanTasks(rows)
 }
 
+func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {
+	s.logger.Debug("sql", "op", "get_active_tasks")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints, scatter_index
+		 FROM tasks WHERE state IN (?, ?, ?, ?)
+		 ORDER BY priority DESC, created_at`,
+		string(model.TaskStatePending), string(model.TaskStateScheduled),
+		string(model.TaskStateQueued), string(model.TaskStateRunning))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanTasks(rows)
+}
+
 func (s *SQLiteStore) CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error) {
 	s.logger.Debug("sql", "op", "cancel_non_terminal_tasks", "submission_id", submissionID)
 

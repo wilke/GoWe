@@ -280,6 +280,7 @@ var alterStatements = []struct {
 		table:    "tasks",
 		column:   "priority",
 		alterSQL: "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(state, executor_type, priority DESC, created_at)",
 	},
 }
 
