@@ -14,12 +14,6 @@ hints:
 baseCommand: [MSA]
 
 inputs:
-  input_status:
-    type: string?
-    doc: "Input status [enum: unaligned, aligned] [bvbrc:enum]"
-  input_type:
-    type: string?
-    doc: "Input type [enum: input_group, input_fasta, input_sequence, input_genomegroup, input_featurelist, input_genomelist] [bvbrc:enum]"
   fasta_files:
     type:
       - "null"
@@ -30,45 +24,25 @@ inputs:
           fields:
             - name: file
               type: File
-              doc: "FASTA sequence file [bvbrc:wstype]"
+              doc: "FASTA sequence file"
             - name: type
               type: string?
-              doc: "File type [enum: feature_dna_fasta, feature_protein_fasta] [bvbrc:enum]"
+              doc: "File type (feature_dna_fasta or feature_protein_fasta)"
     doc: " [bvbrc:group]"
-  select_genomegroup:
-    type: File[]?
-    doc: "Genome groups [bvbrc:wstype]"
   feature_groups:
-    type: File[]?
+    type: File?
     doc: "Feature groups [bvbrc:wstype]"
-  feature_list:
-    type: string[]?
-    doc: "Feature list [bvbrc:list]"
-  genome_list:
-    type: string[]?
-    doc: "Genome list [bvbrc:list]"
   aligner:
     type: string?
-    doc: "Tool used for aligning multiple sequences to each other [enum: Muscle, Mafft, progressiveMauve] [bvbrc:enum]"
+    doc: "Tool used for aligning multiple sequences to each other. [enum: Muscle] [bvbrc:enum]"
     default: "Muscle"
   alphabet:
     type: string
-    doc: "Determines which sequence alphabet is present [enum: dna, protein] [bvbrc:enum]"
+    doc: "Determines which sequence alphabet is present. [enum: dna, protein] [bvbrc:enum]"
     default: "dna"
   fasta_keyboard_input:
     type: string?
-    doc: "Text input for a fasta file"
-  ref_type:
-    type: string?
-    doc: "Reference type [enum: none, string, feature_id, genome_id, first] [bvbrc:enum]"
-    default: "none"
-  strategy:
-    type: string?
-    doc: "Mafft strategy [enum: auto, fftns1, fftns2, fftnsi, einsi, linsi, ginsi] [bvbrc:enum]"
-    default: "auto"
-  ref_string:
-    type: string?
-    doc: "Reference sequence identity"
+    doc: "Text input for a fasta file."
   output_path:
     type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
@@ -77,7 +51,28 @@ inputs:
     doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
-  result:
-    type: File[]
+  alignment:
+    type: File
+    doc: "Multiple sequence alignment (FASTA format)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "$(inputs.output_file).afa"
+  consensus:
+    type: File
+    doc: "Consensus sequence (FASTA)"
+    outputBinding:
+      glob: "$(inputs.output_file).consensus.fasta"
+  snp_table:
+    type: File?
+    doc: "SNP analysis table (TSV)"
+    outputBinding:
+      glob: "$(inputs.output_file).snp.tsv"
+  gene_tree:
+    type: File?
+    doc: "Gene tree (Newick format)"
+    outputBinding:
+      glob: "$(inputs.output_file)_fasttree.nwk"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

@@ -38,12 +38,6 @@ inputs:
             - name: read_orientation_outward
               type: boolean
               default: false
-            - name: insert_size_mean
-              type: int?
-              doc: "Insert size mean"
-            - name: insert_size_stdev
-              type: float?
-              doc: "Insert size standard deviation"
     doc: " [bvbrc:group]"
   single_end_libs:
     type:
@@ -62,8 +56,8 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string[]?
-    doc: "Sequence Read Archive (SRA) Run IDs"
+    type: string?
+    doc: "Sequence Read Archive (SRA) Run ID"
   reference_assembly:
     type: File?
     doc: "Reference set of assembled DNA contigs [bvbrc:wstype]"
