@@ -285,6 +285,7 @@ func (s *Server) routes() {
 			// Admin endpoints (require admin role)
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(requireAdmin(s.logger))
+				r.Get("/tasks/active", s.handleListActiveTasks)
 				r.Get("/users", s.handleListUsers)
 				r.Route("/users/{username}", func(r chi.Router) {
 					r.Put("/role", s.handleSetUserRole)

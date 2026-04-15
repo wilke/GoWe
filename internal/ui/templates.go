@@ -1786,6 +1786,7 @@ var templates = map[string]string{
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Statistics</h1>
@@ -1950,6 +1951,7 @@ var templates = map[string]string{
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Health</h1>
@@ -2384,6 +2386,72 @@ var templates = map[string]string{
             </tbody>
         </table>
     </div>
+</div>
+{{end}}`,
+
+	"admin/tasks": `{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-4 flex space-x-4 border-b border-gray-200">
+        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Tasks</a>
+    </div>
+    <div class="mb-4">
+        <h1 class="text-2xl font-semibold text-gray-900">Active Tasks</h1>
+        <p class="mt-1 text-sm text-gray-500">{{.Total}} tasks currently queued or running across all submissions</p>
+    </div>
+
+    {{if .Tasks}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-md">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Task</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Step</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Submission</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Executor</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Status</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {{range .Tasks}}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-3 text-xs font-mono text-gray-500 truncate" style="max-width: 180px;" title="{{.ID}}">{{.ID}}</td>
+                    <td class="px-4 py-3 text-sm text-gray-900">{{.StepID}}</td>
+                    <td class="px-4 py-3">
+                        {{with index $.Submissions .SubmissionID}}
+                        <a href="/submissions/{{.ID}}" class="text-sm text-indigo-600 hover:text-indigo-800 truncate" style="max-width: 200px;" title="{{.WorkflowName}}">{{.WorkflowName}}</a>
+                        {{else}}
+                        <span class="text-xs font-mono text-gray-400">{{.SubmissionID}}</span>
+                        {{end}}
+                    </td>
+                    <td class="px-4 py-3 text-sm text-gray-500">
+                        {{with index $.Submissions .SubmissionID}}{{.SubmittedBy}}{{end}}
+                    </td>
+                    <td class="px-4 py-3 text-xs text-gray-500">{{.ExecutorType}}</td>
+                    <td class="px-4 py-3 text-xs text-gray-500">{{formatTime .CreatedAt}}</td>
+                    <td class="px-4 py-3 text-right">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                            {{if eq (stateColor .State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
+                            {{if eq (stateColor .State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
+                            {{if eq (stateColor .State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
+                        ">
+                            {{.State}}
+                        </span>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="text-center py-12">
+        <p class="text-sm text-gray-500">No active tasks</p>
+    </div>
+    {{end}}
 </div>
 {{end}}`,
 }

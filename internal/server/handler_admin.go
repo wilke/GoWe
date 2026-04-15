@@ -109,3 +109,29 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 		"role":     role,
 	})
 }
+
+// handleListActiveTasks returns all QUEUED and RUNNING tasks across all submissions.
+// GET /api/v1/admin/tasks/active
+func (s *Server) handleListActiveTasks(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+
+	var active []*model.Task
+	for _, state := range []model.TaskState{model.TaskStateQueued, model.TaskStateRunning, model.TaskStatePending, model.TaskStateScheduled} {
+		tasks, err := s.store.GetTasksByState(r.Context(), state)
+		if err != nil {
+			respondError(w, reqID, http.StatusInternalServerError,
+				model.NewInternalError(err.Error()))
+			return
+		}
+		active = append(active, tasks...)
+	}
+
+	for _, t := range active {
+		sanitizeTaskCredentials(t)
+	}
+
+	respondOK(w, reqID, map[string]any{
+		"total": len(active),
+		"tasks": active,
+	})
+}
