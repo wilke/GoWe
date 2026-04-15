@@ -226,6 +226,14 @@ var templateFuncs = template.FuncMap{
 		}
 		return "bg-indigo-100 text-indigo-800"
 	},
+	"hasLabel": func(labels []string, target string) bool {
+		for _, l := range labels {
+			if l == target {
+				return true
+			}
+		}
+		return false
+	},
 	"labelColor": func(color string) string {
 		switch color {
 		case "blue":
@@ -710,6 +718,10 @@ var templates = map[string]string{
                     <a href="/workflows?class=Tool&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .ClassFilter "Tool"}}bg-purple-100 text-purple-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Tools
+                    </a>
+                    <a href="/workflows?label=executor:bvbrc&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if hasLabel .LabelFilters "executor:bvbrc"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        BV-BRC
                     </a>
                 </div>
             </div>

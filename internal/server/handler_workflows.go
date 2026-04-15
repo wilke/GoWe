@@ -364,6 +364,67 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, reqID, existing)
 }
 
+func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	existing, err := s.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if existing == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
+		return
+	}
+
+	userCtx := UserFromContext(r.Context())
+	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
+		})
+		return
+	}
+
+	var req struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("invalid JSON: " + err.Error()))
+		return
+	}
+
+	if req.Labels == nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("labels field is required"))
+		return
+	}
+
+	if apiErr := s.validateLabelsAgainstCV(r.Context(), req.Labels); apiErr != nil {
+		respondError(w, reqID, http.StatusUnprocessableEntity, apiErr)
+		return
+	}
+
+	// Merge: new labels are added/overwritten, existing labels preserved.
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	for k, v := range req.Labels {
+		existing.Labels[k] = v
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	if err := s.store.UpdateWorkflow(r.Context(), existing); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	respondOK(w, reqID, existing)
+}
+
 func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")

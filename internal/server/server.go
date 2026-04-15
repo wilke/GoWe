@@ -233,6 +233,7 @@ func (s *Server) routes() {
 					r.Get("/inputs", s.handleGetWorkflowInputs)
 					r.Get("/outputs", s.handleGetWorkflowOutputs)
 					r.Put("/", s.handleUpdateWorkflow)
+					r.Patch("/labels", s.handlePatchWorkflowLabels)
 					r.Delete("/", s.handleDeleteWorkflow)
 					r.Post("/validate", s.handleValidateWorkflow)
 				})
