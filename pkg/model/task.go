@@ -43,6 +43,7 @@ type Task struct {
 	// DependsOn is retained for backward compatibility with existing DB rows.
 	// New code should use StepInstance-level dependency tracking instead.
 	DependsOn   []string   `json:"depends_on,omitempty"`
+	Priority    int        `json:"priority"`
 	RetryCount  int        `json:"retry_count"`
 	MaxRetries  int        `json:"max_retries"`
 	Stdout      string     `json:"-"`

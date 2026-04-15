@@ -1071,14 +1071,14 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
-		task.RetryCount, task.MaxRetries,
+		task.Priority, task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
@@ -1091,7 +1091,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, erro
 	s.logger.Debug("sql", "op", "select", "table", "tasks", "id", id)
 	return s.scanTask(s.db.QueryRowContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE id = ?`, id))
@@ -1102,7 +1102,7 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
@@ -1145,7 +1145,7 @@ func (s *SQLiteStore) ListTasksBySubmissionPaged(ctx context.Context, submission
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
@@ -1168,7 +1168,7 @@ func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceI
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE step_instance_id = ? ORDER BY scatter_index, created_at`, stepInstanceID)
@@ -1217,11 +1217,11 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
-		 outputs=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
+		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
 		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
 		 step_instance_id=?, scatter_index=? WHERE id=?`,
 		string(task.State), string(task.ExecutorType), task.ExternalID,
-		string(outputsJSON), task.RetryCount, task.MaxRetries,
+		string(outputsJSON), task.Priority, task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
@@ -1243,7 +1243,7 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
@@ -1376,7 +1376,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
 		&executorType, &task.ExternalID, &task.BVBRCAppID,
 		&inputsJSON, &outputsJSON, &dependsOnJSON,
-		&task.RetryCount, &task.MaxRetries,
+		&task.Priority, &task.RetryCount, &task.MaxRetries,
 		&task.Stdout, &task.Stderr, &task.ExitCode,
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
@@ -1443,7 +1443,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
 			&executorType, &task.ExternalID, &task.BVBRCAppID,
 			&inputsJSON, &outputsJSON, &dependsOnJSON,
-			&task.RetryCount, &task.MaxRetries,
+			&task.Priority, &task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
@@ -1772,11 +1772,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
-		 ORDER BY created_at LIMIT 10`)
+		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
 		return nil, err
 	}
@@ -1793,7 +1793,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
 			&executorType, &task.ExternalID, &task.BVBRCAppID,
 			&inputsJSON, &outputsJSON, &dependsOnJSON,
-			&task.RetryCount, &task.MaxRetries,
+			&task.Priority, &task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,

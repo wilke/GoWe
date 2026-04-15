@@ -286,6 +286,7 @@ func (s *Server) routes() {
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(requireAdmin(s.logger))
 				r.Get("/tasks/active", s.handleListActiveTasks)
+				r.Put("/tasks/{tid}/priority", s.handleSetTaskPriority)
 				r.Get("/users", s.handleListUsers)
 				r.Route("/users/{username}", func(r chi.Router) {
 					r.Put("/role", s.handleSetUserRole)

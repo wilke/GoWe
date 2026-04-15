@@ -275,6 +275,12 @@ var alterStatements = []struct {
 		column:   "labels",
 		alterSQL: "ALTER TABLE workflows ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'",
 	},
+	// Task priority for queue ordering (higher = sooner)
+	{
+		table:    "tasks",
+		column:   "priority",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

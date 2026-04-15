@@ -110,6 +110,48 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSetTaskPriority updates a task's queue priority.
+// PUT /api/v1/admin/tasks/{tid}/priority
+func (s *Server) handleSetTaskPriority(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	tid := chi.URLParam(r, "tid")
+
+	task, err := s.store.GetTask(r.Context(), tid)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			model.NewInternalError(err.Error()))
+		return
+	}
+	if task == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
+		return
+	}
+
+	var req struct {
+		Priority int `json:"priority"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "invalid JSON body: " + err.Error(),
+		})
+		return
+	}
+
+	task.Priority = req.Priority
+	if err := s.store.UpdateTask(r.Context(), task); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			model.NewInternalError(err.Error()))
+		return
+	}
+
+	s.logger.Info("task priority updated", "task_id", tid, "priority", req.Priority)
+	respondOK(w, reqID, map[string]any{
+		"task_id":  tid,
+		"priority": req.Priority,
+	})
+}
+
 // handleListActiveTasks returns all QUEUED and RUNNING tasks across all submissions.
 // GET /api/v1/admin/tasks/active
 func (s *Server) handleListActiveTasks(w http.ResponseWriter, r *http.Request) {
