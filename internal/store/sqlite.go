@@ -1879,12 +1879,13 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		return nil, err
 	}
 
-	// Look up the worker's datasets for affinity matching.
+	// Look up the worker's datasets and GPU capability for affinity matching.
 	var workerDatasetsJSON string
 	var workerDatasets map[string]string
-	if err := tx.QueryRowContext(ctx, `SELECT datasets FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON); err != nil {
+	var workerGPUEnabled bool
+	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON, &workerGPUEnabled); err != nil {
 		if err != sql.ErrNoRows {
-			s.logger.Warn("sql", "op", "checkout_task_load_worker_datasets", "worker_id", workerID, "error", err)
+			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
 		}
 		workerDatasets = map[string]string{}
 	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
@@ -1910,6 +1911,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			taskNeedsContainer = true
 		}
 		if taskNeedsContainer && !canRunContainers {
+			continue
+		}
+
+		// Check GPU requirement.
+		if task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU && !workerGPUEnabled {
 			continue
 		}
 
