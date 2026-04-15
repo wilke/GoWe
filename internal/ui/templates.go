@@ -30,11 +30,14 @@ var templateFuncs = template.FuncMap{
 		}
 		return t.Format("2006-01-02")
 	},
-	"formatDuration": func(t time.Time) string {
-		if t.IsZero() {
+	"formatDuration": func(start *time.Time, end ...*time.Time) string {
+		if start == nil || start.IsZero() {
 			return "-"
 		}
-		return time.Since(t).Round(time.Second).String()
+		if len(end) > 0 && end[0] != nil {
+			return end[0].Sub(*start).Round(time.Second).String()
+		}
+		return time.Since(*start).Round(time.Second).String()
 	},
 	"stateColor": func(state string) string {
 		switch strings.ToUpper(state) {
@@ -1485,9 +1488,9 @@ var templates = map[string]string{
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             {{if .StartedAt}}
                                 {{if .CompletedAt}}
-                                    {{formatDuration .StartedAt}}
+                                    {{formatDuration .StartedAt .CompletedAt}}
                                 {{else}}
-                                    <span class="text-blue-600">Running...</span>
+                                    <span class="text-blue-600">{{formatDuration .StartedAt}}</span>
                                 {{end}}
                             {{else}}
                                 -
