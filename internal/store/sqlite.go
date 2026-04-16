@@ -1896,13 +1896,16 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// Filter by runtime capability, worker group, and dataset affinity.
 	canRunContainers := model.HasContainerRuntime(runtime)
 
-	var selected *model.Task
-	bestCacheScore := -1
+	// Filter candidates into eligible tasks, scoring by affinity.
+	type scored struct {
+		task       *model.Task
+		cacheScore int
+		gpuMatch   bool // true if task wants GPU and worker has GPU
+	}
+	var eligible []scored
+
 	for _, task := range candidates {
 		// Check container runtime capability.
-		// If a task has a DockerImage (from DockerRequirement), the worker must
-		// have a container runtime (docker or apptainer) to execute it.
-		// Workers with only runtime=none cannot run containerized tasks.
 		taskNeedsContainer := false
 		if task.RuntimeHints != nil && task.RuntimeHints.DockerImage != "" {
 			taskNeedsContainer = true
@@ -1914,34 +1917,31 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			continue
 		}
 
-		// Check GPU requirement.
-		if task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU && !workerGPUEnabled {
+		// Check GPU requirement: CPU-only workers skip GPU tasks.
+		taskWantsGPU := task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU
+		if taskWantsGPU && !workerGPUEnabled {
 			continue
 		}
 
 		// Check worker group matching.
-		// A non-default worker only picks up tasks that target its group.
-		// A default worker picks up tasks with no group or group "default".
 		taskGroup := ""
 		if task.RuntimeHints != nil {
 			taskGroup = task.RuntimeHints.WorkerGroup
 		}
 		if workerGroup != "default" && workerGroup != "" {
-			// Non-default worker: only pick up tasks targeting this group.
 			if taskGroup != workerGroup {
 				continue
 			}
 		} else {
-			// Default worker: skip tasks targeting a specific non-default group.
 			if taskGroup != "" && taskGroup != "default" {
 				continue
 			}
 		}
 
 		// Check dataset affinity.
+		cacheScore := 0
 		if task.RuntimeHints != nil && len(task.RuntimeHints.RequiredDatasets) > 0 {
 			missingPrestage := false
-			cacheScore := 0
 			for _, req := range task.RuntimeHints.RequiredDatasets {
 				if req.Mode == "prestage" {
 					if _, ok := workerDatasets[req.ID]; !ok {
@@ -1955,19 +1955,32 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 				}
 			}
 			if missingPrestage {
-				continue // Worker missing required prestage dataset
-			}
-			// For cache-mode datasets, prefer workers that have more matching datasets.
-			if cacheScore > bestCacheScore {
-				bestCacheScore = cacheScore
-				selected = task
 				continue
 			}
 		}
 
-		if selected == nil {
-			selected = task
+		eligible = append(eligible, scored{
+			task:       task,
+			cacheScore: cacheScore,
+			gpuMatch:   taskWantsGPU && workerGPUEnabled,
+		})
+	}
+
+	// Select best task: GPU workers prefer GPU tasks, then best cache score, then first.
+	var selected *model.Task
+	bestScore := -1
+	for _, e := range eligible {
+		score := e.cacheScore
+		if workerGPUEnabled && e.gpuMatch {
+			score += 100 // Strongly prefer GPU tasks on GPU workers
 		}
+		if score > bestScore {
+			bestScore = score
+			selected = e.task
+		}
+	}
+	if selected == nil && len(eligible) > 0 {
+		selected = eligible[0].task
 	}
 
 	if selected == nil {
