@@ -575,6 +575,16 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 	if sess != nil {
 		sub.SubmittedBy = sess.Username
+		sub.UserToken = sess.Token
+		if !sess.TokenExp.IsZero() {
+			sub.TokenExpiry = sess.TokenExp
+		}
+		sub.AuthProvider = "bvbrc"
+	}
+
+	// Output destination from form (optional).
+	if dest := r.FormValue("output_destination"); dest != "" {
+		sub.OutputDestination = dest
 	}
 
 	if err := ui.store.CreateSubmission(r.Context(), sub); err != nil {
