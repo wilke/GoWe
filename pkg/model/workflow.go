@@ -79,6 +79,7 @@ type StepHints struct {
 	ExecutorType     ExecutorType          `json:"executor,omitempty"`
 	DockerImage      string               `json:"docker_image,omitempty"`
 	WorkerGroup      string               `json:"worker_group,omitempty"`
+	RequiresGPU      bool                 `json:"requires_gpu,omitempty"`
 	RequiredDatasets []DatasetRequirement  `json:"required_datasets,omitempty"`
 }
 

@@ -1941,6 +1941,9 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 		}
 		h.DockerImage = stringField(goweMap, "docker_image")
 		h.WorkerGroup = stringField(goweMap, "worker_group")
+		if gpu, ok := goweMap["gpu"].(bool); ok && gpu {
+			h.RequiresGPU = true
+		}
 	}
 
 	// CWL standard DockerRequirement — check hints first, then requirements.

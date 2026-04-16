@@ -17,26 +17,44 @@ inputs:
   paired_end_libs:
     type:
       - "null"
-      - type: record
-        name: paired_end_lib
-        fields:
-          - name: read1
-            type: File
-            doc: "Forward reads"
-          - name: read2
-            type: File?
-            doc: "Reverse reads"
-    doc: "Paired-end reads (singular)"
+      - type: array
+        items:
+          type: record
+          name: paired_end_lib
+          fields:
+            - name: read1
+              type: File
+              doc: "Forward reads"
+            - name: read2
+              type: File?
+              doc: "Reverse reads"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
+            - name: interleaved
+              type: boolean
+              default: false
+            - name: read_orientation_outward
+              type: boolean
+              default: false
+    doc: " [bvbrc:group]"
   single_end_libs:
     type:
       - "null"
-      - type: record
-        name: single_end_lib
-        fields:
-          - name: read
-            type: File
-            doc: "Read file"
-    doc: "Single-end reads (singular)"
+      - type: array
+        items:
+          type: record
+          name: single_end_lib
+          fields:
+            - name: read
+              type: File
+              doc: "Read file"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
+    doc: " [bvbrc:group]"
   srr_ids:
     type: string?
     doc: "Sequence Read Archive (SRA) Run ID"
@@ -103,7 +121,38 @@ inputs:
     default: 4
 
 outputs:
-  result:
-    type: File[]
+  contigs:
+    type: File
+    doc: "Assembled contigs (FASTA)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "contigs.fasta"
+  bins_json:
+    type: File
+    doc: "Binning results metadata (JSON)"
+    outputBinding:
+      glob: "bins.json"
+  binning_report:
+    type: File
+    doc: "Binning quality report (HTML)"
+    outputBinding:
+      glob: "BinningReport.html"
+  unbinned:
+    type: File?
+    doc: "Contigs not assigned to bins (FASTA)"
+    outputBinding:
+      glob: "unbinned.fasta"
+  coverage_stats:
+    type: File?
+    doc: "Contig coverage statistics"
+    outputBinding:
+      glob: "coverage.stats.txt"
+  bins_stats:
+    type: File?
+    doc: "Per-bin quality metrics"
+    outputBinding:
+      glob: "bins.stats.txt"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

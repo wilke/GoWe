@@ -983,6 +983,13 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 				task.RuntimeHints.WorkerGroup = step.Hints.WorkerGroup
 			}
 		}
+		// Propagate GPU requirement from step hints.
+		if step.Hints.RequiresGPU {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			task.RuntimeHints.RequiresGPU = true
+		}
 		// Propagate dataset requirements from step hints to task runtime hints.
 		if len(step.Hints.RequiredDatasets) > 0 {
 			if task.RuntimeHints == nil {
@@ -1104,12 +1111,18 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 		}
 	}
 
+	wantGPU := hints != nil && hints.RequiresGPU
+
 	// Fast path: no constraints beyond "any worker".
-	if wantGroup == "" && len(prestageIDs) == 0 {
+	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU {
 		return true, ""
 	}
 
 	for _, w := range caps.Workers {
+		// Check GPU requirement.
+		if wantGPU && !w.GPUEnabled {
+			continue
+		}
 		// Check worker group.
 		if wantGroup != "" {
 			wGroup := w.Group
@@ -1146,6 +1159,18 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	for _, dsID := range prestageIDs {
 		if caps.Datasets[dsID] == 0 {
 			reasons = append(reasons, fmt.Sprintf("no workers with prestage dataset %q", dsID))
+		}
+	}
+	if wantGPU {
+		hasGPU := false
+		for _, w := range caps.Workers {
+			if w.GPUEnabled {
+				hasGPU = true
+				break
+			}
+		}
+		if !hasGPU {
+			reasons = append(reasons, "no GPU-enabled workers")
 		}
 	}
 	if len(reasons) == 0 {

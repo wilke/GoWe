@@ -43,6 +43,7 @@ type Task struct {
 	// DependsOn is retained for backward compatibility with existing DB rows.
 	// New code should use StepInstance-level dependency tracking instead.
 	DependsOn   []string   `json:"depends_on,omitempty"`
+	Priority    int        `json:"priority"`
 	RetryCount  int        `json:"retry_count"`
 	MaxRetries  int        `json:"max_retries"`
 	Stdout      string     `json:"-"`
@@ -89,6 +90,9 @@ type RuntimeHints struct {
 
 	// CWLDir is the directory containing the CWL file, used for resolving relative paths.
 	CWLDir string `json:"cwl_dir,omitempty"`
+
+	// RequiresGPU indicates the task needs a GPU-enabled worker.
+	RequiresGPU bool `json:"requires_gpu,omitempty"`
 
 	// RequiredDatasets lists reference datasets needed by this task.
 	// Parsed from the gowe:ResourceData CWL hint.

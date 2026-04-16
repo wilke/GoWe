@@ -364,28 +364,82 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, reqID, existing)
 }
 
-func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
-	reqID := RequestIDFromContext(r.Context())
-	id := chi.URLParam(r, "id")
-
-	// Fetch the workflow first for ownership check.
+// getOwnedWorkflow fetches a workflow by ID and checks ownership.
+// Returns the workflow or writes an error response and returns nil.
+func (s *Server) getOwnedWorkflow(w http.ResponseWriter, r *http.Request, reqID, id string) *model.Workflow {
 	existing, err := s.store.GetWorkflow(r.Context(), id)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
+		return nil
 	}
 	if existing == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
-		return
+		return nil
 	}
-
-	// Ownership check: non-admin users can only delete workflows they created.
 	userCtx := UserFromContext(r.Context())
 	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
 		respondError(w, reqID, http.StatusForbidden, &model.APIError{
 			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
 		})
+		return nil
+	}
+	return existing
+}
+
+func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	existing := s.getOwnedWorkflow(w, r, reqID, id)
+	if existing == nil {
+		return
+	}
+
+	var req struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("invalid JSON: " + err.Error()))
+		return
+	}
+
+	if req.Labels == nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("labels field is required"))
+		return
+	}
+
+	if apiErr := s.validateLabelsAgainstCV(r.Context(), req.Labels); apiErr != nil {
+		respondError(w, reqID, http.StatusUnprocessableEntity, apiErr)
+		return
+	}
+
+	// Merge: new labels are added/overwritten, existing labels preserved.
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	for k, v := range req.Labels {
+		existing.Labels[k] = v
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	if err := s.store.UpdateWorkflow(r.Context(), existing); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	respondOK(w, reqID, existing)
+}
+
+func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	existing := s.getOwnedWorkflow(w, r, reqID, id)
+	if existing == nil {
 		return
 	}
 

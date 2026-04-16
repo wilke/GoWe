@@ -56,8 +56,8 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string[]?
-    doc: "Sequence Read Archive (SRA) Run IDs"
+    type: string?
+    doc: "Sequence Read Archive (SRA) Run ID"
   output_path:
     type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"

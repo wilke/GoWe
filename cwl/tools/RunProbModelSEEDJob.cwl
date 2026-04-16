@@ -20,5 +20,15 @@ inputs:
   arguments:
     type: string
     doc: "ProbModelSEED arguments"
+  output_path:
+    type: Directory?
+    doc: "Workspace folder for results (framework parameter) [bvbrc:folder]"
+  output_file:
+    type: string?
+    doc: "Prefix for output file names (framework parameter)"
 
-outputs: []
+outputs:
+  result:
+    type: File[]
+    outputBinding:
+      glob: $(inputs.output_path.location)/$(inputs.output_file)*

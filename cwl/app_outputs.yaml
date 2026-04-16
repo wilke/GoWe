@@ -1,0 +1,223 @@
+# BV-BRC App Output Catalog
+#
+# Defines output file patterns for BV-BRC apps. Used by gen-cwl-tools to
+# generate typed CWL output declarations.
+#
+# Convention:
+#   {base} = value of output_file parameter (job basename)
+#   primary = always present on success
+#   secondary = optional/conditional (generated as File? in CWL)
+#
+# Source: BV-BRC app Perl scripts in github.com/BV-BRC/ repos
+
+GenomeAssembly2:
+  primary:
+    - id: contigs
+      pattern: "{base}_contigs.fasta"
+      type: File
+      doc: "Assembled contigs (FASTA)"
+    - id: report
+      pattern: "{base}_AssemblyReport.html"
+      type: File
+      doc: "Assembly quality report (HTML)"
+  secondary:
+    - id: run_details
+      pattern: "{base}_run_details.json"
+      type: File
+      doc: "Assembly run parameters and quality metrics (JSON)"
+    - id: quast_report
+      pattern: "{base}_quast_report.txt"
+      type: File
+      doc: "QUAST assembly quality assessment"
+    - id: assembly_graph
+      pattern: "{base}_assembly_graph.gfa"
+      type: File
+      doc: "Assembly graph (GFA format)"
+
+GenomeAnnotation:
+  primary:
+    - id: genome
+      pattern: "{base}.genome"
+      type: File
+      doc: "Annotated Genome Typed Object (GTO, JSON)"
+    - id: genbank
+      pattern: "{base}.gb"
+      type: File
+      doc: "Genome in GenBank format"
+    - id: gff
+      pattern: "{base}.gff"
+      type: File
+      doc: "Features in GFF3 format"
+    - id: protein_fasta
+      pattern: "{base}.feature_protein.fasta"
+      type: File
+      doc: "Protein sequences (FASTA)"
+  secondary:
+    - id: dna_fasta
+      pattern: "{base}.feature_dna.fasta"
+      type: File
+      doc: "Feature DNA sequences (FASTA)"
+    - id: contigs
+      pattern: "{base}.contigs.fasta"
+      type: File
+      doc: "Contig sequences (FASTA)"
+    - id: features
+      pattern: "{base}.features.txt"
+      type: File
+      doc: "Feature table (TSV)"
+    - id: embl
+      pattern: "{base}.embl"
+      type: File
+      doc: "Genome in EMBL format"
+    - id: spreadsheet
+      pattern: "{base}.xls"
+      type: File
+      doc: "Annotation spreadsheet (XLS)"
+    - id: quality
+      pattern: "quality.json"
+      type: File
+      doc: "Genome quality metrics (JSON)"
+
+ComprehensiveGenomeAnalysis:
+  primary:
+    - id: full_report
+      pattern: "FullGenomeReport.html"
+      type: File
+      doc: "Integrated genome report with assembly, annotation, and phylogeny"
+    - id: annotated_genome
+      pattern: "annotated.genome"
+      type: File
+      doc: "Annotated genome object with assembly and annotation metadata"
+  secondary:
+    - id: circos_svg
+      pattern: "circos.svg"
+      type: File
+      doc: "Circular genome visualization (SVG)"
+    - id: circos_png
+      pattern: "circos.png"
+      type: File
+      doc: "Circular genome visualization (PNG)"
+    - id: codon_tree_svg
+      pattern: "codonTree.svg"
+      type: File
+      doc: "Phylogenetic tree visualization (SVG)"
+
+Variation:
+  primary:
+    - id: vcf
+      pattern: "*.var.vcf"
+      type: File
+      doc: "Variant calls (VCF format)"
+    - id: annotated_tsv
+      pattern: "*.var.annotated.tsv"
+      type: File
+      doc: "Annotated variant table (TSV)"
+  secondary:
+    - id: bam
+      pattern: "*.aln.bam"
+      type: File
+      doc: "Read alignment (BAM)"
+    - id: consensus
+      pattern: "*.consensus.fa"
+      type: File
+      doc: "Consensus sequence (FASTA)"
+    - id: vcf_gz
+      pattern: "*.var.vcf.gz"
+      type: File
+      doc: "Compressed variant calls (VCF.GZ)"
+    - id: bigwig
+      pattern: "*.bigwig"
+      type: File
+      doc: "Coverage track (BigWig)"
+
+RNASeq:
+  primary:
+    - id: gene_exp_matrix
+      pattern: "gene_exp.gmx"
+      type: File
+      doc: "Gene expression matrix (GenePattern format)"
+    - id: diffexp
+      pattern: "{base}_diffexp"
+      type: File
+      doc: "Differential expression results"
+  secondary:
+    - id: bam
+      pattern: "**/*.bam"
+      type: File
+      doc: "Aligned reads per condition/replicate (BAM)"
+
+MSA:
+  primary:
+    - id: alignment
+      pattern: "{base}.afa"
+      type: File
+      doc: "Multiple sequence alignment (FASTA format)"
+    - id: consensus
+      pattern: "{base}.consensus.fasta"
+      type: File
+      doc: "Consensus sequence (FASTA)"
+  secondary:
+    - id: snp_table
+      pattern: "{base}.snp.tsv"
+      type: File
+      doc: "SNP analysis table (TSV)"
+    - id: gene_tree
+      pattern: "{base}_fasttree.nwk"
+      type: File
+      doc: "Gene tree (Newick format)"
+
+CodonTree:
+  primary:
+    - id: newick_tree
+      pattern: "{base}.nwk"
+      type: File
+      doc: "Phylogenetic tree (Newick format)"
+    - id: phyloxml_tree
+      pattern: "{base}.phyloxml"
+      type: File
+      doc: "Phylogenetic tree (PhyloXML format)"
+  secondary:
+    - id: tree_svg
+      pattern: "{base}.svg"
+      type: File
+      doc: "Tree visualization (SVG)"
+    - id: tree_png
+      pattern: "{base}.png"
+      type: File
+      doc: "Tree visualization (PNG)"
+    - id: alignment
+      pattern: "{base}.fasta"
+      type: File
+      doc: "Aligned sequences (FASTA)"
+    - id: tree_html
+      pattern: "{base}.html"
+      type: File
+      doc: "Interactive tree visualization (HTML)"
+
+MetagenomeBinning:
+  primary:
+    - id: contigs
+      pattern: "contigs.fasta"
+      type: File
+      doc: "Assembled contigs (FASTA)"
+    - id: bins_json
+      pattern: "bins.json"
+      type: File
+      doc: "Binning results metadata (JSON)"
+    - id: binning_report
+      pattern: "BinningReport.html"
+      type: File
+      doc: "Binning quality report (HTML)"
+  secondary:
+    - id: unbinned
+      pattern: "unbinned.fasta"
+      type: File
+      doc: "Contigs not assigned to bins (FASTA)"
+    - id: coverage_stats
+      pattern: "coverage.stats.txt"
+      type: File
+      doc: "Contig coverage statistics"
+    - id: bins_stats
+      pattern: "bins.stats.txt"
+      type: File
+      doc: "Per-bin quality metrics"

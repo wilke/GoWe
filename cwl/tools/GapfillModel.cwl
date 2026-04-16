@@ -43,17 +43,17 @@ inputs:
     type: string?
     doc: "Type of thermodynamic constraints [enum: None, Simple] [bvbrc:enum]"
   media_supplement:
-    type: string[]?
-    doc: "Additional compounds to supplement media in FBA simulation"
+    type: string?
+    doc: "Additional compounds to supplement media in FBA simulaton"
   geneko:
-    type: string[]?
-    doc: "Gene knockouts to simulate in FBA"
+    type: string?
+    doc: "List of gene knockouts to simulation in FBA."
   rxnko:
-    type: string[]?
-    doc: "Reaction knockouts to simulate in FBA"
+    type: string?
+    doc: "List of reaction knockouts to simulation in FBA."
   target_reactions:
-    type: string[]?
-    doc: "Target reactions for gapfilling"
+    type: string?
+    doc: "List of reactions that should be targets for gapfilling"
   objective_fraction:
     type: float?
     doc: "Objective fraction for follow up analysis (e.g. FVA, essentiality prediction)"
@@ -70,59 +70,14 @@ inputs:
     type: string?
     doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
   uptake_limit:
-    type:
-      - "null"
-      - type: array
-        items:
-          type: record
-          name: uptake_limit_rec
-          fields:
-            - name: atom
-              type: string
-              doc: "Atom type [enum: C, N, O, P, S]"
-            - name: maxuptake
-              type: float
-              doc: "Maximum uptake"
-    doc: "Uptake limits"
+    type: string?
+    doc: " [bvbrc:group]"
   custom_bounds:
-    type:
-      - "null"
-      - type: array
-        items:
-          type: record
-          name: custom_bound
-          fields:
-            - name: vartype
-              type: string
-              doc: "Variable type [enum: flux, biomassflux, drainflux]"
-            - name: variable
-              type: string
-              doc: "Variable name"
-            - name: upperbound
-              type: float
-              doc: "Upper bound"
-            - name: lowerbound
-              type: float
-              doc: "Lower bound"
-    doc: "Custom bounds"
+    type: string?
+    doc: " [bvbrc:group]"
   objective:
-    type:
-      - "null"
-      - type: array
-        items:
-          type: record
-          name: objective_rec
-          fields:
-            - name: vartype
-              type: string
-              doc: "Variable type [enum: flux, biomassflux, drainflux]"
-            - name: variable
-              type: string
-              doc: "Variable name"
-            - name: coefficient
-              type: float
-              doc: "Coefficient"
-    doc: "Objective function"
+    type: string?
+    doc: " [bvbrc:group]"
   output_path:
     type: Directory?
     doc: "Workspace folder for results (framework parameter) [bvbrc:folder]"

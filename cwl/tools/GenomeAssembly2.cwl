@@ -56,11 +56,11 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string[]?
-    doc: "Sequence Read Archive (SRA) Run IDs"
+    type: string?
+    doc: "Sequence Read Archive (SRA) Run ID"
   recipe:
     type: string?
-    doc: "Recipe used for assembly [enum: auto, unicycler, flye, meta-flye, canu, spades, meta-spades, plasmid-spades, single-cell, megahit] [bvbrc:enum]"
+    doc: "Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell] [bvbrc:enum]"
     default: "auto"
   racon_iter:
     type: int?
@@ -74,22 +74,6 @@ inputs:
     type: boolean?
     doc: "Trim reads before assembly"
     default: false
-  normalize:
-    type: boolean?
-    doc: "Normalize reads (BBNorm)"
-    default: false
-  filtlong:
-    type: boolean?
-    doc: "Filter long reads"
-    default: false
-  target_depth:
-    type: int?
-    doc: "Target depth"
-    default: 200
-  max_bases:
-    type: int?
-    doc: "Max bases triggering downsampling"
-    default: 10000000000
   min_contig_len:
     type: int?
     doc: "Filter out short contigs in final assembly"
@@ -99,9 +83,9 @@ inputs:
     doc: "Filter out contigs with low read depth in final assembly"
     default: 5
   genome_size:
-    type: int?
+    type: string?
     doc: "Estimated genome size (for canu)"
-    default: 5000000
+    default: "5M"
   output_path:
     type: Directory
     doc: "Path to which the output will be written. Defaults to the directory containing the input data.  [bvbrc:folder]"
@@ -114,7 +98,33 @@ inputs:
     default: 0
 
 outputs:
-  result:
-    type: File[]
+  contigs:
+    type: File
+    doc: "Assembled contigs (FASTA)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "$(inputs.output_file)_contigs.fasta"
+  report:
+    type: File
+    doc: "Assembly quality report (HTML)"
+    outputBinding:
+      glob: "$(inputs.output_file)_AssemblyReport.html"
+  run_details:
+    type: File?
+    doc: "Assembly run parameters and quality metrics (JSON)"
+    outputBinding:
+      glob: "$(inputs.output_file)_run_details.json"
+  quast_report:
+    type: File?
+    doc: "QUAST assembly quality assessment"
+    outputBinding:
+      glob: "$(inputs.output_file)_quast_report.txt"
+  assembly_graph:
+    type: File?
+    doc: "Assembly graph (GFA format)"
+    outputBinding:
+      glob: "$(inputs.output_file)_assembly_graph.gfa"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

@@ -31,15 +31,16 @@ inputs:
             - name: read2
               type: File?
               doc: "Reverse reads"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
             - name: interleaved
               type: boolean
               default: false
-            - name: insert_size_mean
-              type: int?
-              doc: "Insert size mean"
-            - name: insert_size_stdev
-              type: float?
-              doc: "Insert size standard deviation"
+            - name: read_orientation_outward
+              type: boolean
+              default: false
     doc: " [bvbrc:group]"
   single_end_libs:
     type:
@@ -52,17 +53,21 @@ inputs:
             - name: read
               type: File
               doc: "Read file"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string[]?
-    doc: "Sequence Read Archive (SRA) Run IDs"
+    type: string?
+    doc: "Sequence Read Archive (SRA) Run ID"
   mapper:
     type: string?
-    doc: "Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST, minimap2, Snippy] [bvbrc:enum]"
+    doc: "Tool used for mapping short reads against the reference genome [enum: BWA-mem, BWA-mem-strict, Bowtie2, MOSAIK, LAST] [bvbrc:enum]"
     default: "BWA-mem"
   caller:
     type: string?
-    doc: "Tool used for calling variations based on short read mapping [enum: FreeBayes, BCFtools, Snippy] [bvbrc:enum]"
+    doc: "Tool used for calling variations based on short read mapping [enum: FreeBayes, SAMtools] [bvbrc:enum]"
     default: "FreeBayes"
   output_path:
     type: Directory
@@ -72,7 +77,38 @@ inputs:
     doc: "Basename for the generated output files. Defaults to the basename of the input data. [bvbrc:wsid]"
 
 outputs:
-  result:
-    type: File[]
+  vcf:
+    type: File
+    doc: "Variant calls (VCF format)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "*.var.vcf"
+  annotated_tsv:
+    type: File
+    doc: "Annotated variant table (TSV)"
+    outputBinding:
+      glob: "*.var.annotated.tsv"
+  bam:
+    type: File?
+    doc: "Read alignment (BAM)"
+    outputBinding:
+      glob: "*.aln.bam"
+  consensus:
+    type: File?
+    doc: "Consensus sequence (FASTA)"
+    outputBinding:
+      glob: "*.consensus.fa"
+  vcf_gz:
+    type: File?
+    doc: "Compressed variant calls (VCF.GZ)"
+    outputBinding:
+      glob: "*.var.vcf.gz"
+  bigwig:
+    type: File?
+    doc: "Coverage track (BigWig)"
+    outputBinding:
+      glob: "*.bigwig"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."
