@@ -89,7 +89,10 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
 	}
 
-	// Add secret environment variables from worker config.
+	// Add environment variables from worker config.
+	for name, value := range opts.EnvVars {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
 	for name, value := range opts.SecretEnvVars {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
@@ -397,7 +400,10 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
 
-	// Add secret environment variables from worker config.
+	// Add environment variables from worker config.
+	for name, value := range opts.EnvVars {
+		dockerArgs = append(dockerArgs, "-e", name+"="+value)
+	}
 	for name, value := range opts.SecretEnvVars {
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
@@ -614,7 +620,10 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
 
-	// Add secret environment variables from worker config.
+	// Add environment variables from worker config.
+	for name, value := range opts.EnvVars {
+		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
+	}
 	for name, value := range opts.SecretEnvVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}

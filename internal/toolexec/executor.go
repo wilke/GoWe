@@ -118,6 +118,9 @@ type Options struct {
 	// SecretEnvVars are environment variables injected into containers.
 	// These are set by the worker admin and never stored in task data.
 	SecretEnvVars map[string]string
+
+	// EnvVars are non-secret environment variables injected into containers.
+	EnvVars map[string]string
 }
 
 // Executor executes CWL CommandLineTools.
