@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -107,15 +109,22 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", err
 	}
 
-	// Build params: copy task inputs, stripping reserved keys and
-	// resolving File/Directory CWL objects to workspace path strings.
+	// Build params: copy task inputs, stripping reserved keys and null values,
+	// and resolving File/Directory CWL objects to workspace path strings.
 	// BV-BRC Perl apps expect plain workspace paths, not CWL objects.
 	params := make(map[string]any, len(task.Inputs))
 	for k, v := range task.Inputs {
 		if reservedKeys[k] {
 			continue
 		}
-		params[k] = resolveBVBRCInput(v)
+		if v == nil {
+			continue
+		}
+		resolved := resolveBVBRCInput(v)
+		if resolved == nil {
+			continue
+		}
+		params[k] = resolved
 	}
 
 	// Determine workspace path from params or default.
@@ -355,26 +364,64 @@ func (e *BVBRCExecutor) Logs(ctx context.Context, task *model.Task) (string, str
 		return task.Stdout, task.Stderr, nil
 	}
 
-	// Get caller for this task.
-	caller, _, err := e.getTaskCaller(task)
+	caller, token, err := e.getTaskCaller(task)
 	if err != nil {
-		e.logger.Debug("no caller for logs, using stored logs", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil
 	}
 
-	result, err := caller.Call(ctx, "AppService.query_app_log", []any{task.ExternalID})
+	// Get stderr/stdout URLs from task details.
+	result, err := caller.Call(ctx, "AppService.query_task_details", []any{task.ExternalID})
 	if err != nil {
-		e.logger.Debug("query_app_log failed, using stored logs", "task_id", task.ID, "error", err)
+		e.logger.Debug("query_task_details failed", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil
 	}
 
-	var logText string
-	if err := json.Unmarshal(result, &logText); err != nil {
-		// Try as raw string.
-		logText = string(result)
+	var details []struct {
+		StderrURL string `json:"stderr_url"`
+		StdoutURL string `json:"stdout_url"`
+	}
+	if err := json.Unmarshal(result, &details); err != nil || len(details) == 0 {
+		return task.Stdout, task.Stderr, nil
 	}
 
-	return logText, "", nil
+	// Fetch logs via HTTP with OAuth auth.
+	var stdout, stderr string
+	if details[0].StdoutURL != "" {
+		stdout = e.fetchLog(ctx, details[0].StdoutURL, token)
+	}
+	if details[0].StderrURL != "" {
+		stderr = e.fetchLog(ctx, details[0].StderrURL, token)
+	}
+
+	if stdout == "" && stderr == "" {
+		return task.Stdout, task.Stderr, nil
+	}
+	return stdout, stderr, nil
+}
+
+// fetchLog downloads a log file from BV-BRC using OAuth authentication.
+func (e *BVBRCExecutor) fetchLog(ctx context.Context, url, token string) string {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "OAuth "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
 
 // resolveBVBRCInput converts CWL File/Directory objects to workspace path strings.

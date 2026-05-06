@@ -393,21 +393,29 @@ func TestBVBRCExecutor_CancelNoExternalID(t *testing.T) {
 }
 
 func TestBVBRCExecutor_Logs(t *testing.T) {
+	// query_task_details returns URLs but HTTP fetch will fail in tests,
+	// so we fall back to stored logs.
 	mock := &mockRPCCaller{
-		result: json.RawMessage(`"log output here"`),
+		result: json.RawMessage(`[{"stderr_url":"http://localhost:0/stderr","stdout_url":"http://localhost:0/stdout"}]`),
 	}
 	e := newTestBVBRCExecutor(mock)
-	task := &model.Task{ID: "task_1", ExternalID: "job-1"}
+	task := &model.Task{
+		ID:         "task_1",
+		ExternalID: "job-1",
+		Stdout:     "stored stdout",
+		Stderr:     "stored stderr",
+	}
 
 	stdout, stderr, err := e.Logs(context.Background(), task)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if stdout != "log output here" {
-		t.Errorf("stdout = %q, want %q", stdout, "log output here")
+	// Falls back to stored logs since HTTP fetch fails.
+	if stdout != "stored stdout" {
+		t.Errorf("stdout = %q, want %q", stdout, "stored stdout")
 	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, want empty", stderr)
+	if stderr != "stored stderr" {
+		t.Errorf("stderr = %q, want %q", stderr, "stored stderr")
 	}
 }
 
