@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 
 	"github.com/me/gowe/internal/bvbrc"
@@ -232,7 +231,7 @@ func TestBVBRCExecutor_SubmitDirectoryShockScheme(t *testing.T) {
 	}
 }
 
-func TestBVBRCExecutor_SubmitDirectoryUnsupportedScheme(t *testing.T) {
+func TestBVBRCExecutor_SubmitFileAndDirectoryResolved(t *testing.T) {
 	mock := &mockRPCCaller{
 		result: json.RawMessage(`[{"id":"j1","status":"queued"}]`),
 	}
@@ -244,17 +243,45 @@ func TestBVBRCExecutor_SubmitDirectoryUnsupportedScheme(t *testing.T) {
 		Inputs: map[string]any{
 			"output_path": map[string]any{
 				"class":    "Directory",
-				"location": "file:///local/path",
+				"location": "ws:///user@bvbrc/home/output",
 			},
+			"input_file": map[string]any{
+				"class":    "File",
+				"location": "ws:///user@bvbrc/home/data/seq.fasta",
+			},
+			"local_file": map[string]any{
+				"class":    "File",
+				"location": "file:///tmp/staged/seq.fasta",
+			},
+			"plain_param": "hello",
 		},
 	}
 
 	_, err := e.Submit(context.Background(), task)
-	if err == nil {
-		t.Fatal("expected error for file:// scheme on BV-BRC executor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "unsupported scheme") {
-		t.Errorf("error = %q, want it to mention unsupported scheme", err.Error())
+
+	// Verify params were resolved to path strings.
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 RPC call, got %d", len(mock.calls))
+	}
+	// start_app params: [appID, params, workspacePath]
+	params, ok := mock.calls[0].Params[1].(map[string]any)
+	if !ok {
+		t.Fatal("params is not a map")
+	}
+	if got := params["output_path"]; got != "/user@bvbrc/home/output" {
+		t.Errorf("output_path = %q, want /user@bvbrc/home/output", got)
+	}
+	if got := params["input_file"]; got != "/user@bvbrc/home/data/seq.fasta" {
+		t.Errorf("input_file = %q, want /user@bvbrc/home/data/seq.fasta", got)
+	}
+	if got := params["local_file"]; got != "/tmp/staged/seq.fasta" {
+		t.Errorf("local_file = %q, want /tmp/staged/seq.fasta", got)
+	}
+	if got := params["plain_param"]; got != "hello" {
+		t.Errorf("plain_param = %q, want hello", got)
 	}
 }
 

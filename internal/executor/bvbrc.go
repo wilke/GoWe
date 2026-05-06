@@ -108,26 +108,14 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 	}
 
 	// Build params: copy task inputs, stripping reserved keys and
-	// extracting Directory locations for BV-BRC.
+	// resolving File/Directory CWL objects to workspace path strings.
+	// BV-BRC Perl apps expect plain workspace paths, not CWL objects.
 	params := make(map[string]any, len(task.Inputs))
 	for k, v := range task.Inputs {
 		if reservedKeys[k] {
 			continue
 		}
-		if dir, ok := v.(map[string]any); ok && dir["class"] == "Directory" {
-			loc, _ := dir["location"].(string)
-			scheme, path := cwl.ParseLocationScheme(loc)
-			switch scheme {
-			case cwl.SchemeWorkspace, "":
-				params[k] = path
-			case cwl.SchemeShock:
-				params[k] = loc
-			default:
-				return "", fmt.Errorf("task %s: unsupported scheme %q for Directory input %q", task.ID, scheme, k)
-			}
-		} else {
-			params[k] = v
-		}
+		params[k] = resolveBVBRCInput(v)
 	}
 
 	// Determine workspace path from params or default.
@@ -387,6 +375,52 @@ func (e *BVBRCExecutor) Logs(ctx context.Context, task *model.Task) (string, str
 	}
 
 	return logText, "", nil
+}
+
+// resolveBVBRCInput converts CWL File/Directory objects to workspace path strings.
+// Arrays are resolved recursively. Non-CWL values pass through unchanged.
+func resolveBVBRCInput(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			return resolveLocation(val)
+		}
+		return val
+	case []any:
+		resolved := make([]any, len(val))
+		for i, item := range val {
+			resolved[i] = resolveBVBRCInput(item)
+		}
+		return resolved
+	default:
+		return v
+	}
+}
+
+// resolveLocation extracts a path from a CWL File/Directory object.
+// For ws:// and file:// URIs, returns the path component.
+// For shock://, returns the full URI. Falls back to path, then basename.
+func resolveLocation(obj map[string]any) string {
+	loc, _ := obj["location"].(string)
+	if loc != "" {
+		scheme, path := cwl.ParseLocationScheme(loc)
+		switch scheme {
+		case cwl.SchemeWorkspace, cwl.SchemeFile, "":
+			return path
+		case cwl.SchemeShock:
+			return loc
+		default:
+			return path
+		}
+	}
+	if p, ok := obj["path"].(string); ok && p != "" {
+		return p
+	}
+	if b, ok := obj["basename"].(string); ok && b != "" {
+		return b
+	}
+	return ""
 }
 
 // mapBVBRCState converts a BV-BRC job status string to a GoWe TaskState.
