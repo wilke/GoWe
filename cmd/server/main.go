@@ -31,7 +31,8 @@ func main() {
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log format (text, json)")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "Database path (default ~/.gowe/gowe.db)")
-	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor type: local, docker, worker (empty for hint-based)")
+	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor when no CWL hint is set: local, docker, worker (empty for auto)")
+	forceExecutor := flag.String("force-executor", "", "Force all tasks to this executor, ignoring CWL hints (testing only)")
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 
@@ -276,6 +277,8 @@ func main() {
 	schedCfg := scheduler.DefaultConfig()
 	schedCfg.PollInterval = *schedulerPoll
 	schedCfg.DefaultExecutor = cfg.DefaultExecutor
+	cfg.ForceExecutor = *forceExecutor
+	schedCfg.ForceExecutor = cfg.ForceExecutor
 	schedCfg.WorkspaceStaging = *workspaceStaging
 	schedCfg.PreflightDeferralTicks = *preflightDeferral
 	schedCfg.StuckTaskThreshold = *stuckTaskThreshold

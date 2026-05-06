@@ -30,7 +30,8 @@ import (
 type Config struct {
 	PollInterval     time.Duration
 	MaxRetries       int    // Default max retries for tasks (0 = no retries).
-	DefaultExecutor  string // Server-wide default executor (overrides CWL hints). Empty = hint-based.
+	DefaultExecutor  string // Server-wide default executor (fallback when no CWL hint). Empty = auto.
+	ForceExecutor    string // Force all tasks to this executor, ignoring CWL hints. Empty = respect hints.
 	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 
 	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
@@ -1017,17 +1018,17 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 }
 
 // determineExecutorType determines the executor type for a step.
-// The server's DefaultExecutor (WHERE to run) takes precedence over CWL hints.
-// CWL DockerRequirement (HOW to run) is orthogonal — it's passed to the worker
-// via runtime hints so the worker can choose bare vs container execution.
 //
-// When no executor is explicitly set and the step uses a container (DockerRequirement),
-// prefer dispatching to a worker if any online workers are registered. This avoids
-// running container tasks on the server when workers are available.
+// Priority order:
+//  1. ForceExecutor (server flag) — overrides everything, ignores all hints
+//  2. CWL hint (gowe:Execution.executor) — explicit per-step routing
+//  3. Auto-promote: DockerRequirement + online workers → worker executor
+//  4. DefaultExecutor (server flag) — fallback when no hint is set
+//  5. local
 func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) model.ExecutorType {
-	// Server-wide default executor overrides CWL hints.
-	if l.config.DefaultExecutor != "" {
-		return model.ExecutorType(l.config.DefaultExecutor)
+	// Force executor overrides everything.
+	if l.config.ForceExecutor != "" {
+		return model.ExecutorType(l.config.ForceExecutor)
 	}
 	// Explicit step hint from CWL (gowe:Execution.executor) — but not "container",
 	// which describes HOW to run (use container runtime), not WHERE to run.
@@ -1035,12 +1036,15 @@ func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) mo
 		return step.Hints.ExecutorType
 	}
 	// Auto-promote container tasks to worker when workers are available.
-	// This covers DockerRequirement steps that don't have an explicit gowe:Execution hint.
 	if step.Hints != nil && step.Hints.DockerImage != "" {
 		caps := l.workerCapabilities()
 		if caps.OnlineCount > 0 {
 			return model.ExecutorTypeWorker
 		}
+	}
+	// Server-wide default executor as fallback.
+	if l.config.DefaultExecutor != "" {
+		return model.ExecutorType(l.config.DefaultExecutor)
 	}
 	return model.ExecutorTypeLocal
 }
