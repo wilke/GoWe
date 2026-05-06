@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
+	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/bundle"
+	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +19,7 @@ func newSubmitCmd() *cobra.Command {
 	var inputsFile string
 	var dryRun bool
 	var noUpload bool
+	var workspaceUpload bool
 	var workerGroup string
 	var outputDest string
 	var workflowRef string
@@ -111,13 +116,23 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 					inputs = resolved
 				}
 
-				// Upload File/Directory inputs to the server unless --no-upload.
+				// Upload File/Directory inputs unless --no-upload.
 				if !noUpload {
-					uploaded, err := uploadInputFiles(inputs, false)
-					if err != nil {
-						return fmt.Errorf("upload inputs: %w", err)
+					if workspaceUpload {
+						// Upload to BV-BRC workspace.
+						uploaded, err := uploadInputsToWorkspace(inputs, client.Token)
+						if err != nil {
+							return fmt.Errorf("workspace upload: %w", err)
+						}
+						inputs = uploaded
+					} else {
+						// Upload to server file storage.
+						uploaded, err := uploadInputFiles(inputs, false)
+						if err != nil {
+							return fmt.Errorf("upload inputs: %w", err)
+						}
+						inputs = uploaded
 					}
-					inputs = uploaded
 				}
 			}
 
@@ -167,10 +182,119 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 	cmd.Flags().StringVarP(&inputsFile, "inputs", "i", "", "Input values file (YAML/JSON)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate without executing")
 	cmd.Flags().BoolVar(&noUpload, "no-upload", false, "Disable file upload; assume files are accessible on workers")
+	cmd.Flags().BoolVar(&workspaceUpload, "workspace-upload", false, "Upload input files to BV-BRC workspace instead of server (for bvbrc executor)")
 	cmd.Flags().StringVar(&workerGroup, "group", "", "Target worker group for task scheduling")
 	cmd.Flags().StringVar(&outputDest, "output-destination", "", "Target URI for uploading outputs (e.g., ws:///user@bvbrc/home/results/)")
 	cmd.Flags().StringVar(&workflowRef, "workflow", "", "Submit using an already-registered workflow (by ID or name)")
 	return cmd
+}
+
+// uploadInputsToWorkspace uploads local File inputs to the BV-BRC workspace.
+// Files are uploaded to /user/home/.gowe-inputs/<basename> and the input
+// locations are rewritten to ws:// URIs.
+func uploadInputsToWorkspace(inputs map[string]any, token string) (map[string]any, error) {
+	if token == "" {
+		return nil, fmt.Errorf("BV-BRC token required for workspace upload (run 'gowe login')")
+	}
+
+	tokenInfo := bvbrc.ParseToken(token)
+	if tokenInfo.Username == "" {
+		return nil, fmt.Errorf("cannot parse username from token")
+	}
+
+	wsLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	wsClient := bvbrcpkg.NewClient(bvbrcpkg.Config{
+		WorkspaceURL: bvbrcpkg.DefaultWorkspaceURL,
+		Token:        token,
+	}, wsLogger)
+
+	destFolder := "/" + tokenInfo.Username + "/home/.gowe-inputs"
+	ctx := context.Background()
+
+	// Ensure destination folder exists.
+	wsClient.WorkspaceCreateFolder(ctx, destFolder)
+
+	result := make(map[string]any)
+	for k, v := range inputs {
+		uploaded, err := uploadWorkspaceValue(ctx, wsClient, v, destFolder)
+		if err != nil {
+			return nil, fmt.Errorf("input %q: %w", k, err)
+		}
+		result[k] = uploaded
+	}
+	return result, nil
+}
+
+func uploadWorkspaceValue(ctx context.Context, ws *bvbrcpkg.Client, val any, destFolder string) (any, error) {
+	switch v := val.(type) {
+	case map[string]any:
+		class, _ := v["class"].(string)
+		if class == "File" {
+			return uploadFileToWorkspace(ctx, ws, v, destFolder)
+		}
+		// Recurse into nested maps.
+		result := make(map[string]any)
+		for k, inner := range v {
+			uploaded, err := uploadWorkspaceValue(ctx, ws, inner, destFolder)
+			if err != nil {
+				return nil, err
+			}
+			result[k] = uploaded
+		}
+		return result, nil
+	case []any:
+		result := make([]any, len(v))
+		for i, item := range v {
+			uploaded, err := uploadWorkspaceValue(ctx, ws, item, destFolder)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = uploaded
+		}
+		return result, nil
+	default:
+		return val, nil
+	}
+}
+
+func uploadFileToWorkspace(ctx context.Context, ws *bvbrcpkg.Client, fileObj map[string]any, destFolder string) (map[string]any, error) {
+	localPath := fileLocationToPath(fileObj)
+	if localPath == "" {
+		return fileObj, nil
+	}
+
+	// Skip if already a ws:// path.
+	if loc, _ := fileObj["location"].(string); len(loc) > 5 && loc[:5] == "ws://" {
+		return fileObj, nil
+	}
+
+	// Check file exists locally.
+	if _, err := os.Stat(localPath); err != nil {
+		return fileObj, nil
+	}
+
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", localPath, err)
+	}
+
+	basename := filepath.Base(localPath)
+	wsPath := destFolder + "/" + basename
+	fmt.Fprintf(os.Stderr, "  Uploading %s → ws://%s\n", basename, wsPath)
+
+	_, err = ws.WorkspaceUpload(ctx, wsPath, string(data), bvbrcpkg.WorkspaceTypeUnspecified)
+	if err != nil {
+		return nil, fmt.Errorf("workspace upload %s: %w", basename, err)
+	}
+
+	result := make(map[string]any)
+	for k, v := range fileObj {
+		result[k] = v
+	}
+	result["location"] = "ws://" + wsPath
+	result["path"] = wsPath
+	result["basename"] = basename
+	return result, nil
 }
 
 func printDryRunReport(data map[string]any) error {
