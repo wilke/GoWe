@@ -221,3 +221,99 @@ MetagenomeBinning:
       pattern: "bins.stats.txt"
       type: File
       doc: "Per-bin quality metrics"
+
+PhylogeneticTree:
+  primary:
+    - id: tree_nwk
+      pattern: "{base}_tree.nwk"
+      type: File
+      doc: "Phylogenetic tree (Newick format, RAxML)"
+    - id: tree_phyloxml
+      pattern: "{base}_tree.phyloxml"
+      type: File
+      doc: "Phylogenetic tree (PhyloXML with genome metadata)"
+    - id: report
+      pattern: "{base}_report.html"
+      type: File
+      doc: "HTML report with tree visualization and statistics"
+  secondary:
+    - id: tree_svg
+      pattern: "{base}.svg"
+      type: File
+      doc: "Tree visualization (SVG)"
+    - id: alignment
+      pattern: "{base}.afa"
+      type: File
+      doc: "Concatenated protein+codon alignment (FASTA)"
+    - id: alignment_stats
+      pattern: "{base}.homologAlignmentStats.txt"
+      type: File
+      doc: "Per-PGFam alignment statistics"
+    - id: analysis_stats
+      pattern: "{base}.analysisStats"
+      type: File
+      doc: "Summary statistics (genomes, alignments, positions, runtime)"
+
+CoreGenomeMLST:
+  primary:
+    - id: report
+      pattern: "cgMLST_Report.html"
+      type: File
+      doc: "Interactive HTML report with tree and allele call summary"
+    - id: allele_results
+      pattern: "result_alleles.tsv"
+      type: File
+      doc: "Allele call results for all genomes"
+    - id: mstree_nwk
+      pattern: "*_MSTreeV2.tre"
+      type: File
+      doc: "MSTreeV2 minimum spanning tree (Newick)"
+  secondary:
+    - id: mstree_phyloxml
+      pattern: "*_MSTreeV2.tre.phyloxml"
+      type: File
+      doc: "MSTreeV2 tree (PhyloXML with genome metadata)"
+    - id: mstree_svg
+      pattern: "*_MSTreeV2.tre.svg"
+      type: File
+      doc: "MSTreeV2 tree visualization (SVG)"
+    - id: distance_matrix
+      pattern: "*_distance.phylip"
+      type: File
+      doc: "Pairwise allelic distance matrix (PHYLIP)"
+    - id: cluster_result
+      pattern: "*_cluster_result_cgMLSTv1.HierCC"
+      type: File
+      doc: "Hierarchical clustering result (pHierCC)"
+
+WholeGenomeSNPAnalysis:
+  primary:
+    - id: report
+      pattern: "WholeGenomeSNP_Report.html"
+      type: File
+      doc: "Interactive HTML report with heatmaps and tree visualizations"
+    - id: core_snps
+      pattern: "core_SNPs.tsv"
+      type: File
+      doc: "Core SNP calls (present in all genomes)"
+    - id: all_snps
+      pattern: "SNPs_all.tsv"
+      type: File
+      doc: "All SNP calls"
+  secondary:
+    - id: core_dist_matrix
+      pattern: "core_kSNPdist.matrix"
+      type: File
+      doc: "Pairwise SNP distance matrix (core SNPs)"
+    - id: all_dist_matrix
+      pattern: "all_kSNPdist.matrix"
+      type: File
+      doc: "Pairwise SNP distance matrix (all SNPs)"
+    - id: core_snps_matrix
+      pattern: "core_SNPs_matrix.txt"
+      type: File
+      doc: "Core SNP alignment matrix"
+    - id: all_snps_matrix
+      pattern: "SNPs_all_matrix.txt"
+      type: File
+      doc: "All SNPs alignment matrix"

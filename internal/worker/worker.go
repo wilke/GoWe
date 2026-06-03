@@ -536,6 +536,22 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
+		// Inject BV-BRC token as env var when hint is set.
+		if task.RuntimeHints.InjectBVBRCToken &&
+			task.RuntimeHints.StagerOverrides != nil &&
+			task.RuntimeHints.StagerOverrides.HTTPCredential != nil &&
+			task.RuntimeHints.StagerOverrides.HTTPCredential.Token != "" {
+			if cfg.SecretEnvVars == nil {
+				cfg.SecretEnvVars = make(map[string]string)
+			} else {
+				copied := make(map[string]string, len(cfg.SecretEnvVars)+1)
+				for k, v := range cfg.SecretEnvVars {
+					copied[k] = v
+				}
+				cfg.SecretEnvVars = copied
+			}
+			cfg.SecretEnvVars["BVBRC_TOKEN"] = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
+		}
 	}
 
 	// Execute the tool.

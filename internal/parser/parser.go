@@ -1944,6 +1944,9 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 		if gpu, ok := goweMap["gpu"].(bool); ok && gpu {
 			h.RequiresGPU = true
 		}
+		if inject, ok := goweMap["inject_bvbrc_token"].(bool); ok && inject {
+			h.InjectBVBRCToken = true
+		}
 	}
 
 	// CWL standard DockerRequirement — check hints first, then requirements.

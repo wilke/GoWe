@@ -41,7 +41,43 @@ inputs:
     doc: "Basename for the generated output files. [bvbrc:wsid]"
 
 outputs:
-  result:
-    type: File[]
+  report:
+    type: File
+    doc: "Interactive HTML report with tree and allele call summary"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "cgMLST_Report.html"
+  allele_results:
+    type: File
+    doc: "Allele call results for all genomes"
+    outputBinding:
+      glob: "result_alleles.tsv"
+  mstree_nwk:
+    type: File
+    doc: "MSTreeV2 minimum spanning tree (Newick)"
+    outputBinding:
+      glob: "*_MSTreeV2.tre"
+  mstree_phyloxml:
+    type: File?
+    doc: "MSTreeV2 tree (PhyloXML with genome metadata)"
+    outputBinding:
+      glob: "*_MSTreeV2.tre.phyloxml"
+  mstree_svg:
+    type: File?
+    doc: "MSTreeV2 tree visualization (SVG)"
+    outputBinding:
+      glob: "*_MSTreeV2.tre.svg"
+  distance_matrix:
+    type: File?
+    doc: "Pairwise allelic distance matrix (PHYLIP)"
+    outputBinding:
+      glob: "*_distance.phylip"
+  cluster_result:
+    type: File?
+    doc: "Hierarchical clustering result (pHierCC)"
+    outputBinding:
+      glob: "*_cluster_result_cgMLSTv1.HierCC"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

@@ -94,6 +94,10 @@ type RuntimeHints struct {
 	// RequiresGPU indicates the task needs a GPU-enabled worker.
 	RequiresGPU bool `json:"requires_gpu,omitempty"`
 
+	// InjectBVBRCToken indicates the worker should inject the user's BV-BRC
+	// token as BVBRC_TOKEN env var into the container execution.
+	InjectBVBRCToken bool `json:"inject_bvbrc_token,omitempty"`
+
 	// RequiredDatasets lists reference datasets needed by this task.
 	// Parsed from the gowe:ResourceData CWL hint.
 	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`

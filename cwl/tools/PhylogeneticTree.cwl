@@ -21,11 +21,14 @@ inputs:
     type: string
     doc: "Basename for the generated output files. [bvbrc:wsid]"
   in_genome_ids:
-    type: string[]
+    type: string[]?
     doc: "In-group genomes [bvbrc:list]"
   out_genome_ids:
-    type: string[]
+    type: string[]?
     doc: "Out-group genomes [bvbrc:list]"
+  genome_groups:
+    type: string[]?
+    doc: "Genome groups (workspace paths) [bvbrc:list]"
   full_tree_method:
     type: string?
     doc: "Full tree method"
@@ -36,7 +39,43 @@ inputs:
     default: "yes"
 
 outputs:
-  result:
-    type: File[]
+  tree_nwk:
+    type: File
+    doc: "Phylogenetic tree (Newick format, RAxML)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "$(inputs.output_file)_tree.nwk"
+  tree_phyloxml:
+    type: File
+    doc: "Phylogenetic tree (PhyloXML with genome metadata)"
+    outputBinding:
+      glob: "$(inputs.output_file)_tree.phyloxml"
+  report:
+    type: File
+    doc: "HTML report with tree visualization and statistics"
+    outputBinding:
+      glob: "$(inputs.output_file)_report.html"
+  tree_svg:
+    type: File?
+    doc: "Tree visualization (SVG)"
+    outputBinding:
+      glob: "$(inputs.output_file).svg"
+  alignment:
+    type: File?
+    doc: "Concatenated protein+codon alignment (FASTA)"
+    outputBinding:
+      glob: "$(inputs.output_file).afa"
+  alignment_stats:
+    type: File?
+    doc: "Per-PGFam alignment statistics"
+    outputBinding:
+      glob: "$(inputs.output_file).homologAlignmentStats.txt"
+  analysis_stats:
+    type: File?
+    doc: "Summary statistics (genomes, alignments, positions, runtime)"
+    outputBinding:
+      glob: "$(inputs.output_file).analysisStats"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

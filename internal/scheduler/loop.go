@@ -991,6 +991,13 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 			}
 			task.RuntimeHints.RequiresGPU = true
 		}
+		// Propagate BV-BRC token injection hint.
+		if step.Hints.InjectBVBRCToken {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			task.RuntimeHints.InjectBVBRCToken = true
+		}
 		// Propagate dataset requirements from step hints to task runtime hints.
 		if len(step.Hints.RequiredDatasets) > 0 {
 			if task.RuntimeHints == nil {
