@@ -8,6 +8,8 @@ $namespaces:
 
 requirements:
   InlineJavascriptRequirement: {}
+  NetworkAccess:
+    networkAccess: true
   InitialWorkDirRequirement:
     listing:
       - entryname: create_genome_group.py
@@ -47,7 +49,7 @@ requirements:
 
               req = urllib.request.Request(WS_URL, data=payload, headers={
                   "Content-Type": "application/json",
-                  "Authorization": "OAuth " + token,
+                  "Authorization": token,
               })
 
               resp = urllib.request.urlopen(req)

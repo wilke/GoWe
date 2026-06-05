@@ -224,10 +224,21 @@ func (e *BVBRCExecutor) Status(ctx context.Context, task *model.Task) (model.Tas
 	state := mapBVBRCState(jobInfo.Status)
 
 	// On success, build outputs from the output_files list.
-	if state == model.TaskStateSuccess && len(jobInfo.OutputFiles) > 0 {
-		outputs := e.buildOutputs(task, jobInfo.OutputFiles, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
-		if len(outputs) > 0 {
-			task.Outputs = outputs
+	// If output_files is empty (some BV-BRC apps don't populate it),
+	// fall back to constructing outputs from CWL glob patterns.
+	if state == model.TaskStateSuccess {
+		if len(jobInfo.OutputFiles) > 0 {
+			outputs := e.buildOutputs(task, jobInfo.OutputFiles, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
+			if len(outputs) > 0 {
+				task.Outputs = outputs
+			}
+		} else if len(task.Outputs) == 0 {
+			outputs := e.buildOutputsFromGlobs(task, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
+			if len(outputs) > 0 {
+				task.Outputs = outputs
+				e.logger.Info("built outputs from glob patterns (output_files empty)",
+					"task_id", task.ID, "output_count", len(outputs))
+			}
 		}
 	}
 
@@ -276,6 +287,81 @@ func (e *BVBRCExecutor) buildOutputs(task *model.Task, outputFiles [][]string, o
 	}
 
 	return outputs
+}
+
+// buildOutputsFromGlobs constructs CWL outputs from the tool's glob patterns
+// when BV-BRC query_tasks doesn't return output_files. Each glob pattern is
+// resolved to a ws:// URI under the result folder.
+func (e *BVBRCExecutor) buildOutputsFromGlobs(task *model.Task, outputPath, outputFile string) map[string]any {
+	if outputPath == "" || outputFile == "" || task.Tool == nil {
+		return nil
+	}
+
+	resultFolder := outputPath + "/." + outputFile
+	outputs := make(map[string]any)
+
+	outputs["result_folder"] = map[string]any{
+		"class":    "Directory",
+		"location": "ws://" + resultFolder,
+		"basename": "." + outputFile,
+	}
+
+	// Iterate CWL outputs and resolve glob patterns to workspace paths.
+	iterateOutputGlobs(task.Tool, func(id, glob string) {
+		if id == "result_folder" || id == "result" || glob == "." {
+			return
+		}
+		pattern := strings.ReplaceAll(glob, "$(inputs.output_file)", outputFile)
+		// Skip wildcard globs — we can't resolve them without listing the folder.
+		if strings.ContainsAny(pattern, "*?[") {
+			return
+		}
+		outputs[id] = map[string]any{
+			"class":    "File",
+			"location": "ws://" + resultFolder + "/" + pattern,
+			"basename": pattern,
+		}
+	})
+
+	return outputs
+}
+
+// iterateOutputGlobs calls fn(id, glob) for each CWL output with a glob pattern.
+func iterateOutputGlobs(tool map[string]any, fn func(id, glob string)) {
+	toolOutputs, ok := tool["outputs"]
+	if !ok {
+		return
+	}
+
+	visit := func(id string, m map[string]any) {
+		binding, ok := m["outputBinding"].(map[string]any)
+		if !ok {
+			return
+		}
+		glob, ok := binding["glob"].(string)
+		if !ok || glob == "" {
+			return
+		}
+		fn(id, glob)
+	}
+
+	switch out := toolOutputs.(type) {
+	case map[string]any:
+		for id, def := range out {
+			if m, ok := def.(map[string]any); ok {
+				visit(id, m)
+			}
+		}
+	case []any:
+		for _, item := range out {
+			if m, ok := item.(map[string]any); ok {
+				id, _ := m["id"].(string)
+				if id != "" {
+					visit(id, m)
+				}
+			}
+		}
+	}
 }
 
 // matchOutputByGlob checks if a filename matches any CWL output's glob pattern.

@@ -713,6 +713,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				now := time.Now().UTC()
 				task.CompletedAt = &now
 				task.Job = combo
+				task.Inputs = combo
 				if err := l.store.CreateTask(ctx, task); err != nil {
 					now := time.Now().UTC()
 					si.State = model.StepStateFailed
@@ -726,6 +727,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 
 		task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
 		task.Job = combo
+		task.Inputs = combo
 
 		l.addUserToken(task, sub)
 
@@ -1200,7 +1202,9 @@ func (l *Loop) hasOnlineWorkers() bool {
 // handles all ws:// operations and workers don't need the token — skip embedding
 // it in task data to avoid storing credentials in the database unnecessarily.
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
-	if sub.UserToken != "" && l.wsStager == nil {
+	needsToken := l.wsStager == nil ||
+		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken)
+	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
 		}

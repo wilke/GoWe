@@ -1,13 +1,14 @@
 cwlVersion: v1.2
 class: Workflow
+label: genome-analysis-pipeline
 
 doc: |
   Genome Analysis Pipeline: CGA → PhylogeneticTree + CoreGenomeMLST + WholeGenomeSNPAnalysis
 
-  Annotates a genome from reads or contigs using CGA, extracts the genome_id
-  from workspace autometadata, creates a genome group combining the new genome
-  with user-provided reference genomes, then runs three comparative analyses
-  in parallel.
+  Annotates one or more genomes from contigs using CGA (scatter), extracts
+  genome_ids from workspace autometadata, creates a genome group combining
+  the new genomes with user-provided reference genomes, then runs three
+  comparative analyses in parallel.
 
 $namespaces:
   gowe: "https://github.com/wilke/GoWe#"
@@ -16,21 +17,22 @@ requirements:
   StepInputExpressionRequirement: {}
   InlineJavascriptRequirement: {}
   MultipleInputFeatureRequirement: {}
+  ScatterFeatureRequirement: {}
 
 inputs:
-  # CGA inputs
+  # CGA inputs (contigs, scientific_name, taxonomy_id are parallel arrays for scatter)
   input_type:
     type: string
     doc: "Input type: reads, contigs, or genbank"
   contigs:
-    type: File?
-    doc: "Input contigs (when input_type=contigs)"
+    type: string[]
+    doc: "Workspace paths to input contigs"
   scientific_name:
-    type: string
-    doc: "Scientific name of genome to annotate"
+    type: string[]
+    doc: "Scientific name per genome"
   taxonomy_id:
-    type: int?
-    doc: "NCBI Taxonomy ID"
+    type: int[]?
+    doc: "NCBI Taxonomy ID per genome"
   code:
     type: string
     default: "11"
@@ -55,15 +57,17 @@ inputs:
 
   # Common
   output_path:
-    type: Directory
-    doc: "BV-BRC workspace output folder [bvbrc:folder]"
+    type: string
+    doc: "BV-BRC workspace output folder path [bvbrc:folder]"
   output_file:
     type: string
-    doc: "Basename for output files [bvbrc:wsid]"
+    doc: "Job name prefix — each BV-BRC app gets a unique suffix [bvbrc:wsid]"
 
 steps:
   cga:
     run: "gowe://ComprehensiveGenomeAnalysis"
+    scatter: [contigs, scientific_name, taxonomy_id]
+    scatterMethod: dotproduct
     in:
       input_type: input_type
       contigs: contigs
@@ -72,11 +76,14 @@ steps:
       code: code
       domain: domain
       output_path: output_path
-      output_file: output_file
+      output_file:
+        source: output_file
+        valueFrom: $(self + "_" + inputs.scientific_name.replace(/ /g, "_"))
     out: [annotated_genome, full_report, result_folder]
 
   get_genome_id:
     run: "gowe://bvbrc-get-genome-id"
+    scatter: genome_ws_path
     in:
       genome_ws_path:
         source: cga/annotated_genome
@@ -88,10 +95,8 @@ steps:
     in:
       group_name:
         source: output_file
-        valueFrom: $(self + "_comparison_group")
-      workspace_path:
-        source: output_path
-        valueFrom: $(self.location.replace('ws://', ''))
+        valueFrom: $(self + "_group")
+      workspace_path: output_path
       genome_ids:
         source: [get_genome_id/genome_id, reference_genome_ids]
         linkMerge: merge_flattened
@@ -168,14 +173,14 @@ steps:
     out: [report, core_snps, all_snps, result_folder]
 
 outputs:
-  cga_report:
-    type: File
+  cga_reports:
+    type: File[]
     outputSource: cga/full_report
-  cga_genome:
-    type: File
+  cga_genomes:
+    type: File[]
     outputSource: cga/annotated_genome
-  genome_id:
-    type: string
+  genome_ids:
+    type: string[]
     outputSource: get_genome_id/genome_id
   genome_group:
     type: string

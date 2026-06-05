@@ -8,6 +8,8 @@ $namespaces:
 
 requirements:
   InlineJavascriptRequirement: {}
+  NetworkAccess:
+    networkAccess: true
   InitialWorkDirRequirement:
     listing:
       - entryname: get_genome_id.py
@@ -35,14 +37,16 @@ requirements:
               }).encode()
               req = urllib.request.Request(WS_URL, data=payload, headers={
                   "Content-Type": "application/json",
-                  "Authorization": "OAuth " + token,
+                  "Authorization": token,
               })
               resp = urllib.request.urlopen(req)
               result = json.loads(resp.read())
               if "error" in result:
                   raise RuntimeError(result["error"].get("message", str(result["error"])))
-              # Tuple: [path, type, owner, time, id, owner_id, size, user_meta, auto_meta, ...]
+              # Workspace.get returns [[[tuple]]]; tuple is [name, type, path, time, id, owner_id, size, user_meta, auto_meta, ...]
               obj = result["result"][0][0]
+              if isinstance(obj[0], list):
+                  obj = obj[0]
               auto_meta = obj[8] if len(obj) > 8 else {}
               return auto_meta
 

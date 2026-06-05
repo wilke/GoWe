@@ -645,6 +645,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 		ID:           stringField(raw, "id"),
 		Class:        stringField(raw, "class"),
 		CWLVersion:   stringField(raw, "cwlVersion"),
+		Label:        stringField(raw, "label"),
 		Doc:          stringField(raw, "doc"),
 		Inputs:       make(map[string]cwl.InputParam),
 		Outputs:      make(map[string]cwl.OutputParam),
