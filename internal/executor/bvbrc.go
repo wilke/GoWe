@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/pkg/cwl"
@@ -105,27 +109,22 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", err
 	}
 
-	// Build params: copy task inputs, stripping reserved keys and
-	// extracting Directory locations for BV-BRC.
+	// Build params: copy task inputs, stripping reserved keys and null values,
+	// and resolving File/Directory CWL objects to workspace path strings.
+	// BV-BRC Perl apps expect plain workspace paths, not CWL objects.
 	params := make(map[string]any, len(task.Inputs))
 	for k, v := range task.Inputs {
 		if reservedKeys[k] {
 			continue
 		}
-		if dir, ok := v.(map[string]any); ok && dir["class"] == "Directory" {
-			loc, _ := dir["location"].(string)
-			scheme, path := cwl.ParseLocationScheme(loc)
-			switch scheme {
-			case cwl.SchemeWorkspace, "":
-				params[k] = path
-			case cwl.SchemeShock:
-				params[k] = loc
-			default:
-				return "", fmt.Errorf("task %s: unsupported scheme %q for Directory input %q", task.ID, scheme, k)
-			}
-		} else {
-			params[k] = v
+		if v == nil {
+			continue
 		}
+		resolved := resolveBVBRCInput(v)
+		if resolved == nil {
+			continue
+		}
+		params[k] = resolved
 	}
 
 	// Determine workspace path from params or default.
@@ -176,6 +175,8 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 }
 
 // Status calls AppService.query_tasks and maps the BV-BRC status to a TaskState.
+// When a job completes successfully, it also fetches the job result to populate
+// task.Outputs with the output file list from the workspace.
 func (e *BVBRCExecutor) Status(ctx context.Context, task *model.Task) (model.TaskState, error) {
 	if task.ExternalID == "" {
 		return model.TaskStateQueued, nil
@@ -194,10 +195,8 @@ func (e *BVBRCExecutor) Status(ctx context.Context, task *model.Task) (model.Tas
 		return "", fmt.Errorf("task %s: query_tasks: %w", task.ID, err)
 	}
 
-	// Response: result is [{jobID: {id, status, ...}}]
-	var results []map[string]struct {
-		Status string `json:"status"`
-	}
+	// Response: result is [{jobID: {id, status, output_files, parameters, ...}}]
+	var results []map[string]json.RawMessage
 	if err := json.Unmarshal(result, &results); err != nil {
 		return "", fmt.Errorf("task %s: parse query_tasks response: %w", task.ID, err)
 	}
@@ -205,12 +204,225 @@ func (e *BVBRCExecutor) Status(ctx context.Context, task *model.Task) (model.Tas
 		return model.TaskStateQueued, nil
 	}
 
-	info, ok := results[0][task.ExternalID]
+	raw, ok := results[0][task.ExternalID]
 	if !ok {
 		return model.TaskStateQueued, nil
 	}
 
-	return mapBVBRCState(info.Status), nil
+	var jobInfo struct {
+		Status      string     `json:"status"`
+		OutputFiles [][]string `json:"output_files"` // [[ws_path, uuid], ...]
+		Parameters  struct {
+			OutputPath string `json:"output_path"`
+			OutputFile string `json:"output_file"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &jobInfo); err != nil {
+		return "", fmt.Errorf("task %s: parse job info: %w", task.ID, err)
+	}
+
+	state := mapBVBRCState(jobInfo.Status)
+
+	// On success, build outputs from the output_files list.
+	// If output_files is empty (some BV-BRC apps don't populate it),
+	// fall back to constructing outputs from CWL glob patterns.
+	if state == model.TaskStateSuccess {
+		if len(jobInfo.OutputFiles) > 0 {
+			outputs := e.buildOutputs(task, jobInfo.OutputFiles, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
+			if len(outputs) > 0 {
+				task.Outputs = outputs
+			}
+		} else if len(task.Outputs) == 0 {
+			outputs := e.buildOutputsFromGlobs(task, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
+			if len(outputs) > 0 {
+				task.Outputs = outputs
+				e.logger.Info("built outputs from glob patterns (output_files empty)",
+					"task_id", task.ID, "output_count", len(outputs))
+			}
+		}
+	}
+
+	return state, nil
+}
+
+// buildOutputs maps BV-BRC output_files to CWL output IDs using the tool's
+// output declarations. Files are referenced as ws:// URIs.
+func (e *BVBRCExecutor) buildOutputs(task *model.Task, outputFiles [][]string, outputPath, outputFile string) map[string]any {
+	outputs := make(map[string]any)
+
+	// Build result_folder from the hidden output directory.
+	resultFolder := outputPath + "/." + outputFile
+	outputs["result_folder"] = map[string]any{
+		"class":    "Directory",
+		"location": "ws://" + resultFolder,
+		"basename": "." + outputFile,
+	}
+
+	// Collect all output files as a listing for the result_folder.
+	var listing []any
+	for _, entry := range outputFiles {
+		if len(entry) < 1 {
+			continue
+		}
+		wsPath := entry[0]
+		basename := wsPath[strings.LastIndex(wsPath, "/")+1:]
+
+		fileObj := map[string]any{
+			"class":    "File",
+			"location": "ws://" + wsPath,
+			"basename": basename,
+		}
+		listing = append(listing, fileObj)
+
+		// Try to match this file to a declared CWL output by glob pattern.
+		if task.Tool != nil {
+			if matched := matchOutputByGlob(task.Tool, basename, outputFile); matched != "" {
+				outputs[matched] = fileObj
+			}
+		}
+	}
+
+	if len(listing) > 0 {
+		outputs["result_folder"].(map[string]any)["listing"] = listing
+	}
+
+	return outputs
+}
+
+// buildOutputsFromGlobs constructs CWL outputs from the tool's glob patterns
+// when BV-BRC query_tasks doesn't return output_files. Each glob pattern is
+// resolved to a ws:// URI under the result folder.
+func (e *BVBRCExecutor) buildOutputsFromGlobs(task *model.Task, outputPath, outputFile string) map[string]any {
+	if outputPath == "" || outputFile == "" || task.Tool == nil {
+		return nil
+	}
+
+	resultFolder := outputPath + "/." + outputFile
+	outputs := make(map[string]any)
+
+	outputs["result_folder"] = map[string]any{
+		"class":    "Directory",
+		"location": "ws://" + resultFolder,
+		"basename": "." + outputFile,
+	}
+
+	// Iterate CWL outputs and resolve glob patterns to workspace paths.
+	iterateOutputGlobs(task.Tool, func(id, glob string) {
+		if id == "result_folder" || id == "result" || glob == "." {
+			return
+		}
+		pattern := strings.ReplaceAll(glob, "$(inputs.output_file)", outputFile)
+		// Skip wildcard globs — we can't resolve them without listing the folder.
+		if strings.ContainsAny(pattern, "*?[") {
+			return
+		}
+		outputs[id] = map[string]any{
+			"class":    "File",
+			"location": "ws://" + resultFolder + "/" + pattern,
+			"basename": pattern,
+		}
+	})
+
+	return outputs
+}
+
+// iterateOutputGlobs calls fn(id, glob) for each CWL output with a glob pattern.
+func iterateOutputGlobs(tool map[string]any, fn func(id, glob string)) {
+	toolOutputs, ok := tool["outputs"]
+	if !ok {
+		return
+	}
+
+	visit := func(id string, m map[string]any) {
+		binding, ok := m["outputBinding"].(map[string]any)
+		if !ok {
+			return
+		}
+		glob, ok := binding["glob"].(string)
+		if !ok || glob == "" {
+			return
+		}
+		fn(id, glob)
+	}
+
+	switch out := toolOutputs.(type) {
+	case map[string]any:
+		for id, def := range out {
+			if m, ok := def.(map[string]any); ok {
+				visit(id, m)
+			}
+		}
+	case []any:
+		for _, item := range out {
+			if m, ok := item.(map[string]any); ok {
+				id, _ := m["id"].(string)
+				if id != "" {
+					visit(id, m)
+				}
+			}
+		}
+	}
+}
+
+// matchOutputByGlob checks if a filename matches any CWL output's glob pattern.
+// Returns the output ID if matched, empty string otherwise.
+func matchOutputByGlob(tool map[string]any, filename, outputFile string) string {
+	toolOutputs, ok := tool["outputs"]
+	if !ok {
+		return ""
+	}
+
+	outputMap, ok := toolOutputs.(map[string]any)
+	if !ok {
+		// Try as list (CWL outputs can be a list of maps with "id" field).
+		if outputList, ok := toolOutputs.([]any); ok {
+			for _, item := range outputList {
+				if m, ok := item.(map[string]any); ok {
+					id, _ := m["id"].(string)
+					if id == "" || id == "result_folder" || id == "result" {
+						continue
+					}
+					if globMatches(m, filename, outputFile) {
+						return id
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	for id, def := range outputMap {
+		if id == "result_folder" || id == "result" {
+			continue
+		}
+		m, ok := def.(map[string]any)
+		if !ok {
+			continue
+		}
+		if globMatches(m, filename, outputFile) {
+			return id
+		}
+	}
+	return ""
+}
+
+// globMatches checks if a filename matches the glob pattern in a CWL output definition.
+func globMatches(outputDef map[string]any, filename, outputFile string) bool {
+	binding, ok := outputDef["outputBinding"].(map[string]any)
+	if !ok {
+		return false
+	}
+	glob, ok := binding["glob"].(string)
+	if !ok || glob == "" || glob == "." {
+		return false
+	}
+
+	// Replace CWL expression $(inputs.output_file) with the actual value.
+	pattern := strings.ReplaceAll(glob, "$(inputs.output_file)", outputFile)
+
+	// Simple glob matching: support * wildcards.
+	matched, _ := filepath.Match(pattern, filename)
+	return matched
 }
 
 // Cancel calls AppService.kill_task for the given task.
@@ -238,26 +450,110 @@ func (e *BVBRCExecutor) Logs(ctx context.Context, task *model.Task) (string, str
 		return task.Stdout, task.Stderr, nil
 	}
 
-	// Get caller for this task.
-	caller, _, err := e.getTaskCaller(task)
+	caller, token, err := e.getTaskCaller(task)
 	if err != nil {
-		e.logger.Debug("no caller for logs, using stored logs", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil
 	}
 
-	result, err := caller.Call(ctx, "AppService.query_app_log", []any{task.ExternalID})
+	// Get stderr/stdout URLs from task details.
+	result, err := caller.Call(ctx, "AppService.query_task_details", []any{task.ExternalID})
 	if err != nil {
-		e.logger.Debug("query_app_log failed, using stored logs", "task_id", task.ID, "error", err)
+		e.logger.Debug("query_task_details failed", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil
 	}
 
-	var logText string
-	if err := json.Unmarshal(result, &logText); err != nil {
-		// Try as raw string.
-		logText = string(result)
+	var details []struct {
+		StderrURL string `json:"stderr_url"`
+		StdoutURL string `json:"stdout_url"`
+	}
+	if err := json.Unmarshal(result, &details); err != nil || len(details) == 0 {
+		return task.Stdout, task.Stderr, nil
 	}
 
-	return logText, "", nil
+	// Fetch logs via HTTP with OAuth auth.
+	var stdout, stderr string
+	if details[0].StdoutURL != "" {
+		stdout = e.fetchLog(ctx, details[0].StdoutURL, token)
+	}
+	if details[0].StderrURL != "" {
+		stderr = e.fetchLog(ctx, details[0].StderrURL, token)
+	}
+
+	if stdout == "" && stderr == "" {
+		return task.Stdout, task.Stderr, nil
+	}
+	return stdout, stderr, nil
+}
+
+// fetchLog downloads a log file from BV-BRC using OAuth authentication.
+func (e *BVBRCExecutor) fetchLog(ctx context.Context, url, token string) string {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "OAuth "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+// resolveBVBRCInput converts CWL File/Directory objects to workspace path strings.
+// Arrays are resolved recursively. Non-CWL values pass through unchanged.
+func resolveBVBRCInput(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class == "File" || class == "Directory" {
+			return resolveLocation(val)
+		}
+		return val
+	case []any:
+		resolved := make([]any, len(val))
+		for i, item := range val {
+			resolved[i] = resolveBVBRCInput(item)
+		}
+		return resolved
+	default:
+		return v
+	}
+}
+
+// resolveLocation extracts a path from a CWL File/Directory object.
+// For ws:// and file:// URIs, returns the path component.
+// For shock://, returns the full URI. Falls back to path, then basename.
+func resolveLocation(obj map[string]any) string {
+	loc, _ := obj["location"].(string)
+	if loc != "" {
+		scheme, path := cwl.ParseLocationScheme(loc)
+		switch scheme {
+		case cwl.SchemeWorkspace, cwl.SchemeFile, "":
+			return path
+		case cwl.SchemeShock:
+			return loc
+		default:
+			return path
+		}
+	}
+	if p, ok := obj["path"].(string); ok && p != "" {
+		return p
+	}
+	if b, ok := obj["basename"].(string); ok && b != "" {
+		return b
+	}
+	return ""
 }
 
 // mapBVBRCState converts a BV-BRC job status string to a GoWe TaskState.

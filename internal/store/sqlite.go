@@ -1071,14 +1071,14 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
-		task.RetryCount, task.MaxRetries,
+		task.Priority, task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
@@ -1091,7 +1091,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, erro
 	s.logger.Debug("sql", "op", "select", "table", "tasks", "id", id)
 	return s.scanTask(s.db.QueryRowContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE id = ?`, id))
@@ -1102,7 +1102,7 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
@@ -1145,7 +1145,7 @@ func (s *SQLiteStore) ListTasksBySubmissionPaged(ctx context.Context, submission
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
@@ -1168,7 +1168,7 @@ func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceI
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE step_instance_id = ? ORDER BY scatter_index, created_at`, stepInstanceID)
@@ -1217,11 +1217,11 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
-		 outputs=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
+		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
 		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
 		 step_instance_id=?, scatter_index=? WHERE id=?`,
 		string(task.State), string(task.ExecutorType), task.ExternalID,
-		string(outputsJSON), task.RetryCount, task.MaxRetries,
+		string(outputsJSON), task.Priority, task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
@@ -1243,10 +1243,30 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanTasks(rows)
+}
+
+func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {
+	s.logger.Debug("sql", "op", "get_active_tasks")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
+		 stdout, stderr, exit_code, created_at, started_at, completed_at,
+		 tool, job, runtime_hints, scatter_index
+		 FROM tasks WHERE state IN (?, ?, ?, ?)
+		 ORDER BY priority DESC, created_at`,
+		string(model.TaskStatePending), string(model.TaskStateScheduled),
+		string(model.TaskStateQueued), string(model.TaskStateRunning))
 	if err != nil {
 		return nil, err
 	}
@@ -1376,7 +1396,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
 		&executorType, &task.ExternalID, &task.BVBRCAppID,
 		&inputsJSON, &outputsJSON, &dependsOnJSON,
-		&task.RetryCount, &task.MaxRetries,
+		&task.Priority, &task.RetryCount, &task.MaxRetries,
 		&task.Stdout, &task.Stderr, &task.ExitCode,
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
@@ -1443,7 +1463,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
 			&executorType, &task.ExternalID, &task.BVBRCAppID,
 			&inputsJSON, &outputsJSON, &dependsOnJSON,
-			&task.RetryCount, &task.MaxRetries,
+			&task.Priority, &task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
@@ -1772,11 +1792,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, retry_count, max_retries,
+		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
 		 tool, job, runtime_hints, scatter_index
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
-		 ORDER BY created_at LIMIT 10`)
+		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
 		return nil, err
 	}
@@ -1793,7 +1813,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
 			&executorType, &task.ExternalID, &task.BVBRCAppID,
 			&inputsJSON, &outputsJSON, &dependsOnJSON,
-			&task.RetryCount, &task.MaxRetries,
+			&task.Priority, &task.RetryCount, &task.MaxRetries,
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
@@ -1859,12 +1879,13 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		return nil, err
 	}
 
-	// Look up the worker's datasets for affinity matching.
+	// Look up the worker's datasets and GPU capability for affinity matching.
 	var workerDatasetsJSON string
 	var workerDatasets map[string]string
-	if err := tx.QueryRowContext(ctx, `SELECT datasets FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON); err != nil {
+	var workerGPUEnabled bool
+	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON, &workerGPUEnabled); err != nil {
 		if err != sql.ErrNoRows {
-			s.logger.Warn("sql", "op", "checkout_task_load_worker_datasets", "worker_id", workerID, "error", err)
+			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
 		}
 		workerDatasets = map[string]string{}
 	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
@@ -1875,13 +1896,16 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// Filter by runtime capability, worker group, and dataset affinity.
 	canRunContainers := model.HasContainerRuntime(runtime)
 
-	var selected *model.Task
-	bestCacheScore := -1
+	// Filter candidates into eligible tasks, scoring by affinity.
+	type scored struct {
+		task       *model.Task
+		cacheScore int
+		gpuMatch   bool // true if task wants GPU and worker has GPU
+	}
+	var eligible []scored
+
 	for _, task := range candidates {
 		// Check container runtime capability.
-		// If a task has a DockerImage (from DockerRequirement), the worker must
-		// have a container runtime (docker or apptainer) to execute it.
-		// Workers with only runtime=none cannot run containerized tasks.
 		taskNeedsContainer := false
 		if task.RuntimeHints != nil && task.RuntimeHints.DockerImage != "" {
 			taskNeedsContainer = true
@@ -1893,29 +1917,31 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			continue
 		}
 
+		// Check GPU requirement: CPU-only workers skip GPU tasks.
+		taskWantsGPU := task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU
+		if taskWantsGPU && !workerGPUEnabled {
+			continue
+		}
+
 		// Check worker group matching.
-		// A non-default worker only picks up tasks that target its group.
-		// A default worker picks up tasks with no group or group "default".
 		taskGroup := ""
 		if task.RuntimeHints != nil {
 			taskGroup = task.RuntimeHints.WorkerGroup
 		}
 		if workerGroup != "default" && workerGroup != "" {
-			// Non-default worker: only pick up tasks targeting this group.
 			if taskGroup != workerGroup {
 				continue
 			}
 		} else {
-			// Default worker: skip tasks targeting a specific non-default group.
 			if taskGroup != "" && taskGroup != "default" {
 				continue
 			}
 		}
 
 		// Check dataset affinity.
+		cacheScore := 0
 		if task.RuntimeHints != nil && len(task.RuntimeHints.RequiredDatasets) > 0 {
 			missingPrestage := false
-			cacheScore := 0
 			for _, req := range task.RuntimeHints.RequiredDatasets {
 				if req.Mode == "prestage" {
 					if _, ok := workerDatasets[req.ID]; !ok {
@@ -1929,19 +1955,32 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 				}
 			}
 			if missingPrestage {
-				continue // Worker missing required prestage dataset
-			}
-			// For cache-mode datasets, prefer workers that have more matching datasets.
-			if cacheScore > bestCacheScore {
-				bestCacheScore = cacheScore
-				selected = task
 				continue
 			}
 		}
 
-		if selected == nil {
-			selected = task
+		eligible = append(eligible, scored{
+			task:       task,
+			cacheScore: cacheScore,
+			gpuMatch:   taskWantsGPU && workerGPUEnabled,
+		})
+	}
+
+	// Select best task: GPU workers prefer GPU tasks, then best cache score, then first.
+	var selected *model.Task
+	bestScore := -1
+	for _, e := range eligible {
+		score := e.cacheScore
+		if workerGPUEnabled && e.gpuMatch {
+			score += 100 // Strongly prefer GPU tasks on GPU workers
 		}
+		if score > bestScore {
+			bestScore = score
+			selected = e.task
+		}
+	}
+	if selected == nil && len(eligible) > 0 {
+		selected = eligible[0].task
 	}
 
 	if selected == nil {

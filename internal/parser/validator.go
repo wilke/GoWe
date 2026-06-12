@@ -31,6 +31,7 @@ func (v *Validator) Validate(graph *cwl.GraphDocument) *model.APIError {
 	errs = append(errs, v.validateSources(graph)...)
 	errs = append(errs, v.validateOutputSources(graph)...)
 	errs = append(errs, v.validateToolRefs(graph)...)
+	errs = append(errs, v.validateOutputBindings(graph)...)
 	errs = append(errs, v.validateDAG(graph)...)
 
 	if len(errs) == 0 {
@@ -319,6 +320,83 @@ func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldEr
 	}
 
 	return errs
+}
+
+// validateOutputBindings checks every tool's output globs and outputEval
+// expressions for shell-style ${...} interpolations, which are invalid CWL —
+// CWL parameter references use $(...) syntax. ${...} would be passed through
+// as a literal string at execution time, producing output paths that never
+// match any real file (e.g. "${params.output_path}/blast_out.json").
+//
+// Catches the bug pattern seen in the original blast-protein-search workflow
+// which inlined a Homology tool with globs like
+// "${params.output_path}/.${params.output_file}/blast_out.json".
+func (v *Validator) validateOutputBindings(graph *cwl.GraphDocument) []model.FieldError {
+	var errs []model.FieldError
+	for toolID, tool := range graph.Tools {
+		for outID, out := range tool.Outputs {
+			if out.OutputBinding == nil {
+				continue
+			}
+			pathPrefix := fmt.Sprintf("tools.%s.outputs.%s.outputBinding", toolID, outID)
+			errs = append(errs, checkShellInterp(out.OutputBinding.Glob, pathPrefix+".glob", "glob")...)
+			if out.OutputBinding.OutputEval != "" {
+				errs = append(errs, checkShellInterpString(out.OutputBinding.OutputEval, pathPrefix+".outputEval", "outputEval")...)
+			}
+		}
+	}
+	return errs
+}
+
+// checkShellInterp reports any ${...} occurrences in a glob value (which may
+// be a string, array of strings, or other CWL expression type). Returns one
+// FieldError per offending string.
+func checkShellInterp(glob any, field, kind string) []model.FieldError {
+	switch g := glob.(type) {
+	case string:
+		return checkShellInterpString(g, field, kind)
+	case []any:
+		var errs []model.FieldError
+		for i, item := range g {
+			if s, ok := item.(string); ok {
+				errs = append(errs, checkShellInterpString(s, fmt.Sprintf("%s[%d]", field, i), kind)...)
+			}
+		}
+		return errs
+	case []string:
+		var errs []model.FieldError
+		for i, s := range g {
+			errs = append(errs, checkShellInterpString(s, fmt.Sprintf("%s[%d]", field, i), kind)...)
+		}
+		return errs
+	}
+	return nil
+}
+
+// checkShellInterpString reports any ${...} substring as a FieldError.
+// CWL parameter references use $(...), never ${...}; the latter is shell
+// syntax that CWL treats as a literal string.
+func checkShellInterpString(s, field, kind string) []model.FieldError {
+	idx := strings.Index(s, "${")
+	if idx < 0 {
+		return nil
+	}
+	// Extract the offending fragment up to the closing brace for a helpful message.
+	end := strings.Index(s[idx:], "}")
+	fragment := s[idx:]
+	if end > 0 && end < 80 {
+		fragment = s[idx : idx+end+1]
+	} else if len(fragment) > 80 {
+		fragment = fragment[:80] + "..."
+	}
+	return []model.FieldError{{
+		Field: field,
+		Message: fmt.Sprintf(
+			"%s contains shell-style %q interpolation; CWL parameter references use $(...) syntax. "+
+				"This pattern is passed through as a literal string and will never match a real file. "+
+				"Replace with a valid CWL expression like $(inputs.<input_id>).",
+			kind, fragment),
+	}}
 }
 
 func (v *Validator) validateDAG(graph *cwl.GraphDocument) []model.FieldError {

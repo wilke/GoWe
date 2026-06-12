@@ -15,14 +15,14 @@ baseCommand: [GenomeComparison]
 
 inputs:
   genome_ids:
-    type: string[]?
-    doc: "Genome IDs [bvbrc:list]"
+    type: string?
+    doc: "Genome IDs"
   user_genomes:
-    type: File[]?
-    doc: "Protein FASTA files [bvbrc:wstype]"
+    type: File?
+    doc: "Genome protein sequence files in FASTA [bvbrc:wstype]"
   user_feature_groups:
-    type: File[]?
-    doc: "Feature groups [bvbrc:wstype]"
+    type: File?
+    doc: "User feature groups [bvbrc:wstype]"
   reference_genome_index:
     type: int?
     doc: "Index of genome to be used as reference (1-based)"

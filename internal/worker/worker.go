@@ -43,6 +43,7 @@ type Worker struct {
 	extraBinds        []toolexec.ExtraBind // Extra bind mounts for containers
 	datasets          map[string]string   // Merged dataset map: ID → host path
 	secrets           map[string]string   // Secret env vars injected into containers
+	envVars           map[string]string   // Non-secret env vars injected into containers
 	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
 	logger            *slog.Logger
 }
@@ -97,6 +98,9 @@ type Config struct {
 	// Secrets are environment variables injected into every container.
 	// Never sent to the server or stored in task data.
 	Secrets map[string]string
+
+	// EnvVars are non-secret environment variables injected into every container.
+	EnvVars map[string]string
 
 	// Version is the build version (git commit hash), sent during registration.
 	Version string
@@ -356,6 +360,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		extraBinds:        extraBinds,
 		datasets:          datasets,
 		secrets:           cfg.Secrets,
+		envVars:           cfg.EnvVars,
 		logger:            logger.With("component", "worker"),
 	}, nil
 }
@@ -525,11 +530,28 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		RemoveDefaultListings: true,
 		ExtraBinds:            w.extraBinds,
 		SecretEnvVars:         w.secrets,
+		EnvVars:               w.envVars,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
+		// Inject BV-BRC token as env var when hint is set.
+		if task.RuntimeHints.InjectBVBRCToken &&
+			task.RuntimeHints.StagerOverrides != nil &&
+			task.RuntimeHints.StagerOverrides.HTTPCredential != nil &&
+			task.RuntimeHints.StagerOverrides.HTTPCredential.Token != "" {
+			if cfg.SecretEnvVars == nil {
+				cfg.SecretEnvVars = make(map[string]string)
+			} else {
+				copied := make(map[string]string, len(cfg.SecretEnvVars)+1)
+				for k, v := range cfg.SecretEnvVars {
+					copied[k] = v
+				}
+				cfg.SecretEnvVars = copied
+			}
+			cfg.SecretEnvVars["BVBRC_TOKEN"] = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
+		}
 	}
 
 	// Execute the tool.

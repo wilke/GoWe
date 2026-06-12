@@ -59,6 +59,9 @@ scratchpad*.md
 /server
 /worker
 testdata/cwl-v1.2
+
+# Git worktrees
+/.worktree/
 conformance-results.txt
 conformance-*-results.txt
 conformance-*-timing.xml

@@ -6,7 +6,8 @@ type ServerConfig struct {
 	LogLevel        string // Log level: debug, info, warn, error
 	LogFormat       string // Log format: text, json
 	DBPath          string // SQLite database path (default ~/.gowe/gowe.db, ":memory:" for testing)
-	DefaultExecutor string // Default executor type: "local", "docker", "worker", "" (auto/hint-based)
+	DefaultExecutor string // Default executor when no CWL hint is set: "local", "docker", "worker", "" (auto)
+	ForceExecutor   string // Force all tasks to this executor, ignoring CWL hints (testing only)
 }
 
 // DefaultServerConfig returns sensible defaults.

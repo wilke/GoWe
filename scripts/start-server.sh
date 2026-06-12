@@ -102,6 +102,8 @@ for i in $(seq 1 "$NUM_WORKERS"); do
         --image-dir "$IMAGE_DIR" \
         --pre-stage-dir "$PRE_STAGE_DIR" \
         --extra-bind /scout/data \
+        --secret-file "$BASE_DIR/gowe/secrets.env" \
+        --env-file "$BASE_DIR/gowe/worker-env.env" \
         --workspace-stager \
         > "$LOG_DIR/worker-${i}.log" 2>&1 &
     echo $! > "$PID_DIR/worker-${i}.pid"

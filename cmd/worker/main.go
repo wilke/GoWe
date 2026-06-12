@@ -75,6 +75,12 @@ func main() {
 	flag.Var(&stringMapFlag{&secretVars}, "secret", "Secret env var 'NAME=value' injected into containers (repeatable, never sent to server)")
 	flag.StringVar(&secretFile, "secret-file", "", "File with secret env vars (NAME=value per line, # comments)")
 
+	// Non-secret environment variables for containers.
+	var envVars map[string]string
+	var envFile string
+	flag.Var(&stringMapFlag{&envVars}, "env", "Environment var 'NAME=value' injected into containers (repeatable)")
+	flag.StringVar(&envFile, "env-file", "", "File with environment vars (NAME=value per line, # comments)")
+
 	// TLS flags (applies to server API + HTTPS staging).
 	var caCert string
 	var insecure bool
@@ -209,6 +215,26 @@ func main() {
 			names = append(names, k)
 		}
 		logger.Info("loaded secrets", "names", names)
+	}
+
+	// Wire env vars: merge --env flags with --env-file.
+	envMap := make(map[string]string)
+	if envFile != "" {
+		loaded, err := parseSecretFile(envFile) // same format: NAME=value
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load env file: %v\n", err)
+			os.Exit(1)
+		}
+		for k, v := range loaded {
+			envMap[k] = v
+		}
+	}
+	for k, v := range envVars {
+		envMap[k] = v
+	}
+	if len(envMap) > 0 {
+		cfg.EnvVars = envMap
+		logger.Info("loaded env vars", "vars", envMap)
 	}
 
 	// Default worker name to hostname.

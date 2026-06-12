@@ -30,7 +30,8 @@ import (
 type Config struct {
 	PollInterval     time.Duration
 	MaxRetries       int    // Default max retries for tasks (0 = no retries).
-	DefaultExecutor  string // Server-wide default executor (overrides CWL hints). Empty = hint-based.
+	DefaultExecutor  string // Server-wide default executor (fallback when no CWL hint). Empty = auto.
+	ForceExecutor    string // Force all tasks to this executor, ignoring CWL hints. Empty = respect hints.
 	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 
 	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
@@ -712,6 +713,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				now := time.Now().UTC()
 				task.CompletedAt = &now
 				task.Job = combo
+				task.Inputs = combo
 				if err := l.store.CreateTask(ctx, task); err != nil {
 					now := time.Now().UTC()
 					si.State = model.StepStateFailed
@@ -725,6 +727,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 
 		task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
 		task.Job = combo
+		task.Inputs = combo
 
 		l.addUserToken(task, sub)
 
@@ -983,6 +986,20 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 				task.RuntimeHints.WorkerGroup = step.Hints.WorkerGroup
 			}
 		}
+		// Propagate GPU requirement from step hints.
+		if step.Hints.RequiresGPU {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			task.RuntimeHints.RequiresGPU = true
+		}
+		// Propagate BV-BRC token injection hint.
+		if step.Hints.InjectBVBRCToken {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			task.RuntimeHints.InjectBVBRCToken = true
+		}
 		// Propagate dataset requirements from step hints to task runtime hints.
 		if len(step.Hints.RequiredDatasets) > 0 {
 			if task.RuntimeHints == nil {
@@ -1010,17 +1027,17 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 }
 
 // determineExecutorType determines the executor type for a step.
-// The server's DefaultExecutor (WHERE to run) takes precedence over CWL hints.
-// CWL DockerRequirement (HOW to run) is orthogonal — it's passed to the worker
-// via runtime hints so the worker can choose bare vs container execution.
 //
-// When no executor is explicitly set and the step uses a container (DockerRequirement),
-// prefer dispatching to a worker if any online workers are registered. This avoids
-// running container tasks on the server when workers are available.
+// Priority order:
+//  1. ForceExecutor (server flag) — overrides everything, ignores all hints
+//  2. CWL hint (gowe:Execution.executor) — explicit per-step routing
+//  3. Auto-promote: DockerRequirement + online workers → worker executor
+//  4. DefaultExecutor (server flag) — fallback when no hint is set
+//  5. local
 func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) model.ExecutorType {
-	// Server-wide default executor overrides CWL hints.
-	if l.config.DefaultExecutor != "" {
-		return model.ExecutorType(l.config.DefaultExecutor)
+	// Force executor overrides everything.
+	if l.config.ForceExecutor != "" {
+		return model.ExecutorType(l.config.ForceExecutor)
 	}
 	// Explicit step hint from CWL (gowe:Execution.executor) — but not "container",
 	// which describes HOW to run (use container runtime), not WHERE to run.
@@ -1028,12 +1045,15 @@ func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) mo
 		return step.Hints.ExecutorType
 	}
 	// Auto-promote container tasks to worker when workers are available.
-	// This covers DockerRequirement steps that don't have an explicit gowe:Execution hint.
 	if step.Hints != nil && step.Hints.DockerImage != "" {
 		caps := l.workerCapabilities()
 		if caps.OnlineCount > 0 {
 			return model.ExecutorTypeWorker
 		}
+	}
+	// Server-wide default executor as fallback.
+	if l.config.DefaultExecutor != "" {
+		return model.ExecutorType(l.config.DefaultExecutor)
 	}
 	return model.ExecutorTypeLocal
 }
@@ -1104,12 +1124,18 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 		}
 	}
 
+	wantGPU := hints != nil && hints.RequiresGPU
+
 	// Fast path: no constraints beyond "any worker".
-	if wantGroup == "" && len(prestageIDs) == 0 {
+	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU {
 		return true, ""
 	}
 
 	for _, w := range caps.Workers {
+		// Check GPU requirement.
+		if wantGPU && !w.GPUEnabled {
+			continue
+		}
 		// Check worker group.
 		if wantGroup != "" {
 			wGroup := w.Group
@@ -1148,6 +1174,18 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 			reasons = append(reasons, fmt.Sprintf("no workers with prestage dataset %q", dsID))
 		}
 	}
+	if wantGPU {
+		hasGPU := false
+		for _, w := range caps.Workers {
+			if w.GPUEnabled {
+				hasGPU = true
+				break
+			}
+		}
+		if !hasGPU {
+			reasons = append(reasons, "no GPU-enabled workers")
+		}
+	}
 	if len(reasons) == 0 {
 		reasons = append(reasons, "no single worker satisfies all constraints simultaneously")
 	}
@@ -1163,8 +1201,15 @@ func (l *Loop) hasOnlineWorkers() bool {
 // When server-side workspace staging is enabled (wsStager != nil), the server
 // handles all ws:// operations and workers don't need the token — skip embedding
 // it in task data to avoid storing credentials in the database unnecessarily.
+// BV-BRC executor tasks always need the submitter's token at the
+// AppService.start_app boundary, regardless of staging mode — otherwise the
+// executor falls back to its default caller and the job runs under the wrong
+// user identity.
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
-	if sub.UserToken != "" && l.wsStager == nil {
+	needsToken := l.wsStager == nil ||
+		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
+		task.ExecutorType == model.ExecutorTypeBVBRC
+	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
 		}

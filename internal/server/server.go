@@ -233,6 +233,7 @@ func (s *Server) routes() {
 					r.Get("/inputs", s.handleGetWorkflowInputs)
 					r.Get("/outputs", s.handleGetWorkflowOutputs)
 					r.Put("/", s.handleUpdateWorkflow)
+					r.Patch("/labels", s.handlePatchWorkflowLabels)
 					r.Delete("/", s.handleDeleteWorkflow)
 					r.Post("/validate", s.handleValidateWorkflow)
 				})
@@ -284,6 +285,8 @@ func (s *Server) routes() {
 			// Admin endpoints (require admin role)
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(requireAdmin(s.logger))
+				r.Get("/tasks/active", s.handleListActiveTasks)
+				r.Put("/tasks/{tid}/priority", s.handleSetTaskPriority)
 				r.Get("/users", s.handleListUsers)
 				r.Route("/users/{username}", func(r chi.Router) {
 					r.Put("/role", s.handleSetUserRole)

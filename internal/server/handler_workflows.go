@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -364,28 +365,82 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, reqID, existing)
 }
 
-func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
-	reqID := RequestIDFromContext(r.Context())
-	id := chi.URLParam(r, "id")
-
-	// Fetch the workflow first for ownership check.
+// getOwnedWorkflow fetches a workflow by ID and checks ownership.
+// Returns the workflow or writes an error response and returns nil.
+func (s *Server) getOwnedWorkflow(w http.ResponseWriter, r *http.Request, reqID, id string) *model.Workflow {
 	existing, err := s.store.GetWorkflow(r.Context(), id)
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
+		return nil
 	}
 	if existing == nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", id))
-		return
+		return nil
 	}
-
-	// Ownership check: non-admin users can only delete workflows they created.
 	userCtx := UserFromContext(r.Context())
 	if userCtx != nil && !userCtx.User.IsAdmin() && existing.CreatedBy != "" && existing.CreatedBy != userCtx.User.Username {
 		respondError(w, reqID, http.StatusForbidden, &model.APIError{
 			Code: model.ErrForbidden, Message: "you can only modify workflows you created",
 		})
+		return nil
+	}
+	return existing
+}
+
+func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	existing := s.getOwnedWorkflow(w, r, reqID, id)
+	if existing == nil {
+		return
+	}
+
+	var req struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("invalid JSON: " + err.Error()))
+		return
+	}
+
+	if req.Labels == nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("labels field is required"))
+		return
+	}
+
+	if apiErr := s.validateLabelsAgainstCV(r.Context(), req.Labels); apiErr != nil {
+		respondError(w, reqID, http.StatusUnprocessableEntity, apiErr)
+		return
+	}
+
+	// Merge: new labels are added/overwritten, existing labels preserved.
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	for k, v := range req.Labels {
+		existing.Labels[k] = v
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	if err := s.store.UpdateWorkflow(r.Context(), existing); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	respondOK(w, reqID, existing)
+}
+
+func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	existing := s.getOwnedWorkflow(w, r, reqID, id)
+	if existing == nil {
 		return
 	}
 
@@ -440,9 +495,31 @@ func (s *Server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) 
 // For Workflows (multi-step): use the workflow ID.
 // For CommandLineTools: bvbrc_app_id > baseCommand > fallback.
 func inferWorkflowName(graph *cwl.GraphDocument) string {
-	// Multi-step workflows: use the workflow ID.
-	if graph.OriginalClass == "Workflow" && graph.Workflow != nil && graph.Workflow.ID != "" {
+	// Multi-step workflows: use the workflow ID (skip "main" — synthetic ID from $graph packing).
+	if graph.OriginalClass == "Workflow" && graph.Workflow != nil && graph.Workflow.ID != "" && graph.Workflow.ID != "main" {
 		return graph.Workflow.ID
+	}
+
+	// Try workflow label, then doc first line (slugified).
+	if graph.Workflow != nil && graph.Workflow.Label != "" {
+		return graph.Workflow.Label
+	}
+	if graph.Workflow != nil && graph.Workflow.Doc != "" {
+		name := strings.SplitN(graph.Workflow.Doc, "\n", 2)[0]
+		name = strings.TrimSpace(name)
+		name = strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+				return r
+			}
+			if r == ' ' || r == ':' {
+				return '-'
+			}
+			return -1
+		}, name)
+		name = strings.Trim(name, "-")
+		if name != "" && len(name) <= 80 {
+			return strings.ToLower(name)
+		}
 	}
 
 	// Try bvbrc_app_id from the first tool's gowe:Execution hint (or legacy goweHint).

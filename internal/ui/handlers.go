@@ -575,6 +575,16 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 	if sess != nil {
 		sub.SubmittedBy = sess.Username
+		sub.UserToken = sess.Token
+		if !sess.TokenExp.IsZero() {
+			sub.TokenExpiry = sess.TokenExp
+		}
+		sub.AuthProvider = "bvbrc"
+	}
+
+	// Output destination from form (optional).
+	if dest := r.FormValue("output_destination"); dest != "" {
+		sub.OutputDestination = dest
 	}
 
 	if err := ui.store.CreateSubmission(r.Context(), sub); err != nil {
@@ -1117,6 +1127,36 @@ func (ui *UI) HandleAdminHealth(w http.ResponseWriter, r *http.Request) {
 		"HasBVBRC":  ui.bvbrcCaller != nil,
 	}
 	ui.render(w, "admin/health", data)
+}
+
+// HandleAdminActiveTasks renders the active tasks dashboard.
+func (ui *UI) HandleAdminActiveTasks(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+
+	active, err := ui.store.GetActiveTasks(r.Context())
+	if err != nil {
+		slog.Error("admin tasks: failed to get active tasks", "error", err)
+	}
+
+	// Load submission info for each task.
+	subCache := make(map[string]*model.Submission)
+	for _, t := range active {
+		if _, ok := subCache[t.SubmissionID]; !ok {
+			sub, err := ui.store.GetSubmission(r.Context(), t.SubmissionID)
+			if err == nil && sub != nil {
+				subCache[t.SubmissionID] = sub
+			}
+		}
+	}
+
+	data := map[string]any{
+		"Title":       "Active Tasks - GoWe",
+		"Session":     sess,
+		"Tasks":       active,
+		"Submissions": subCache,
+		"Total":       len(active),
+	}
+	ui.render(w, "admin/tasks", data)
 }
 
 // --- Admin Label Vocabulary Handlers ---

@@ -1,0 +1,45 @@
+# Job inputs for cwl/workflows/genome-analysis-pipeline.cwl
+# Test case 2: Two genomes — M. tuberculosis H37Rv + CDC1551
+# Tests scatter over CGA and get_genome_id steps.
+#
+# Usage:
+#   gowe submit --workflow genome-analysis-pipeline \
+#     -i cwl/jobs/genome-analysis-pipeline-2genomes.yml \
+#     --output-destination "ws:///awilke@bvbrc/home/gowe-test/mtb-pipeline-test/"
+
+# CGA inputs (parallel arrays — one entry per genome)
+input_type: contigs
+contigs:
+  - "/awilke@bvbrc/home/gowe-test/mtb-pipeline-test/h37rv_contigs.fasta"
+  - "/awilke@bvbrc/home/gowe-test/mtb-pipeline-test/cdc1551_contigs.fasta"
+scientific_name:
+  - "Mycobacterium tuberculosis H37Rv"
+  - "Mycobacterium tuberculosis CDC1551"
+taxonomy_id:
+  - 83332
+  - 83331
+code: "11"
+domain: "Bacteria"
+
+# Reference genomes for comparative analysis
+reference_genome_ids:
+  - "1452723.3"    # M. tuberculosis 18b
+  - "1249615.4"    # M. tuberculosis K
+
+# Optional genomes for CodonTree — not penalized if PGFams are missing.
+# Includes M. bovis BCG (formerly used as outgroup) and the freshly-annotated
+# genomes are added programmatically as optional via the workflow.
+optional_genome_ids:
+  - "1206780.3"    # M. bovis BCG str. Korea 1168P
+
+# cgMLST schema
+input_schema_selection: "Mycobacterium tuberculosis"
+
+# Output — each BV-BRC app gets output_file + suffix:
+#   CGA:    mtb_2g_Mycobacterium_tuberculosis_H37Rv
+#           mtb_2g_Mycobacterium_tuberculosis_CDC1551
+#   Tree:   mtb_2g_tree
+#   cgMLST: mtb_2g_cgmlst
+#   SNP:    mtb_2g_snp
+output_path: "/awilke@bvbrc/home/gowe-test/mtb-pipeline-test"
+output_file: "mtb_2g"

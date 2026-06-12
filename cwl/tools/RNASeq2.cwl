@@ -15,7 +15,7 @@ baseCommand: [RNASeq2]
 
 inputs:
   experimental_conditions:
-    type: string[]?
+    type: string?
     doc: "Experimental conditions"
   contrasts:
     type: string?
@@ -32,27 +32,22 @@ inputs:
           type: record
           name: paired_end_lib
           fields:
-            - name: sample_id
-              type: string
-              doc: "Sample ID"
             - name: read1
               type: File
               doc: "Forward reads"
             - name: read2
               type: File?
               doc: "Reverse reads"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
             - name: interleaved
               type: boolean
               default: false
-            - name: insert_size_mean
-              type: int?
-              doc: "Insert size mean"
-            - name: insert_size_stdev
-              type: float?
-              doc: "Insert size standard deviation"
-            - name: condition
-              type: int?
-              doc: "Condition index"
+            - name: read_orientation_outward
+              type: boolean
+              default: false
     doc: " [bvbrc:group]"
   single_end_libs:
     type:
@@ -62,15 +57,13 @@ inputs:
           type: record
           name: single_end_lib
           fields:
-            - name: sample_id
-              type: string
-              doc: "Sample ID"
             - name: read
               type: File
               doc: "Read file"
-            - name: condition
-              type: int?
-              doc: "Condition index"
+            - name: platform
+              type: string?
+              doc: "Sequencing platform"
+              default: "infer"
     doc: " [bvbrc:group]"
   srr_libs:
     type:
@@ -80,15 +73,9 @@ inputs:
           type: record
           name: srr_lib
           fields:
-            - name: sample_id
-              type: string
-              doc: "Sample ID"
             - name: srr_accession
               type: string
               doc: "SRA run accession"
-            - name: condition
-              type: int?
-              doc: "Condition index"
     doc: " [bvbrc:group]"
   reference_genome_id:
     type: string?

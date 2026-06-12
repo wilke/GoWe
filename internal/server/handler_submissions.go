@@ -433,11 +433,15 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 
 	for _, step := range wf.Steps {
 		execType := model.ExecutorTypeLocal
-		// Server default takes precedence over CWL hints to enable distributed mode.
-		if s.config.DefaultExecutor != "" {
-			execType = model.ExecutorType(s.config.DefaultExecutor)
-		} else if step.Hints != nil && step.Hints.ExecutorType != "" {
+		// Executor selection: force > hint > auto-promote > default > local.
+		if s.config.ForceExecutor != "" {
+			execType = model.ExecutorType(s.config.ForceExecutor)
+		} else if step.Hints != nil && step.Hints.ExecutorType != "" && step.Hints.ExecutorType != model.ExecutorTypeContainer {
 			execType = step.Hints.ExecutorType
+		} else if step.Hints != nil && step.Hints.DockerImage != "" {
+			execType = model.ExecutorTypeWorker
+		} else if s.config.DefaultExecutor != "" {
+			execType = model.ExecutorType(s.config.DefaultExecutor)
 		}
 		executorSet[execType] = true
 
@@ -552,11 +556,15 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 
 	for _, step := range wf.Steps {
 		execType := model.ExecutorTypeLocal
-		// Server default takes precedence over CWL hints to enable distributed mode.
-		if s.config.DefaultExecutor != "" {
-			execType = model.ExecutorType(s.config.DefaultExecutor)
-		} else if step.Hints != nil && step.Hints.ExecutorType != "" {
+		// Executor selection: force > hint > auto-promote > default > local.
+		if s.config.ForceExecutor != "" {
+			execType = model.ExecutorType(s.config.ForceExecutor)
+		} else if step.Hints != nil && step.Hints.ExecutorType != "" && step.Hints.ExecutorType != model.ExecutorTypeContainer {
 			execType = step.Hints.ExecutorType
+		} else if step.Hints != nil && step.Hints.DockerImage != "" {
+			execType = model.ExecutorTypeWorker
+		} else if s.config.DefaultExecutor != "" {
+			execType = model.ExecutorType(s.config.DefaultExecutor)
 		}
 
 		if !s.anonConfig.IsExecutorAllowed(execType) {

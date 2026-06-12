@@ -24,13 +24,13 @@ inputs:
     type: int?
     doc: "NCBI Taxonomy identfier for this genome"
   code:
-    type: int?
-    doc: "Genetic code used in translation of DNA sequences [enum: 0, 1, 4, 11, 25] [bvbrc:enum]"
-    default: 0
+    type: string
+    doc: "Genetic code used in translation of DNA sequences [enum: 11, 4] [bvbrc:enum]"
+    default: 11
   domain:
     type: string
-    doc: "Domain of the submitted genome [enum: Bacteria, Archaea, Viruses, auto] [bvbrc:enum]"
-    default: "auto"
+    doc: "Domain of the submitted genome [enum: Bacteria, Archaea] [bvbrc:enum]"
+    default: "Bacteria"
   public:
     type: boolean?
     doc: "Make this genome public [bvbrc:bool]"
@@ -92,15 +92,63 @@ inputs:
   analyze_quality:
     type: boolean?
     doc: "If enabled, run quality analysis on genome [bvbrc:bool]"
-  assembly_output:
-    type: Directory?
-    doc: "Workspace path to assembly output [bvbrc:folder]"
   custom_pipeline:
     type: string?
     doc: "Customize the RASTtk pipeline [bvbrc:group]"
 
 outputs:
-  result:
-    type: File[]
+  genome:
+    type: File
+    doc: "Annotated Genome Typed Object (GTO, JSON)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "$(inputs.output_file).genome"
+  genbank:
+    type: File
+    doc: "Genome in GenBank format"
+    outputBinding:
+      glob: "$(inputs.output_file).gb"
+  gff:
+    type: File
+    doc: "Features in GFF3 format"
+    outputBinding:
+      glob: "$(inputs.output_file).gff"
+  protein_fasta:
+    type: File
+    doc: "Protein sequences (FASTA)"
+    outputBinding:
+      glob: "$(inputs.output_file).feature_protein.fasta"
+  dna_fasta:
+    type: File?
+    doc: "Feature DNA sequences (FASTA)"
+    outputBinding:
+      glob: "$(inputs.output_file).feature_dna.fasta"
+  contigs:
+    type: File?
+    doc: "Contig sequences (FASTA)"
+    outputBinding:
+      glob: "$(inputs.output_file).contigs.fasta"
+  features:
+    type: File?
+    doc: "Feature table (TSV)"
+    outputBinding:
+      glob: "$(inputs.output_file).features.txt"
+  embl:
+    type: File?
+    doc: "Genome in EMBL format"
+    outputBinding:
+      glob: "$(inputs.output_file).embl"
+  spreadsheet:
+    type: File?
+    doc: "Annotation spreadsheet (XLS)"
+    outputBinding:
+      glob: "$(inputs.output_file).xls"
+  quality:
+    type: File?
+    doc: "Genome quality metrics (JSON)"
+    outputBinding:
+      glob: "quality.json"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

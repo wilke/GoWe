@@ -47,12 +47,6 @@ inputs:
             - name: read_orientation_outward
               type: boolean
               default: false
-            - name: insert_size_mean
-              type: int?
-              doc: "Insert size mean"
-            - name: insert_size_stdev
-              type: float?
-              doc: "Insert size standard deviation"
     doc: " [bvbrc:group]"
   single_end_libs:
     type:
@@ -71,8 +65,8 @@ inputs:
               default: "infer"
     doc: " [bvbrc:group]"
   srr_ids:
-    type: string[]?
-    doc: "Sequence Read Archive (SRA) Run IDs"
+    type: string?
+    doc: "Sequence Read Archive (SRA) Run ID"
   reference_assembly:
     type: File?
     doc: "Reference set of assembled DNA contigs [bvbrc:wstype]"
@@ -81,7 +75,7 @@ inputs:
     doc: "Preannotated genome object [bvbrc:wstype]"
   recipe:
     type: string?
-    doc: "Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell, flye] [bvbrc:enum]"
+    doc: "Recipe used for assembly [enum: auto, unicycler, canu, spades, meta-spades, plasmid-spades, single-cell] [bvbrc:enum]"
     default: "auto"
   racon_iter:
     type: int?
@@ -95,18 +89,6 @@ inputs:
     type: boolean?
     doc: "Trim reads before assembly"
     default: false
-  normalize:
-    type: boolean?
-    doc: "Normalize reads (BBNorm)"
-    default: false
-  filtlong:
-    type: boolean?
-    doc: "Filter long reads"
-    default: false
-  target_depth:
-    type: int?
-    doc: "Target depth for BBNorm/Filtlong"
-    default: 200
   min_contig_len:
     type: int?
     doc: "Filter out short contigs in final assembly"
@@ -116,9 +98,9 @@ inputs:
     doc: "Filter out contigs with low read depth in final assembly"
     default: 5
   genome_size:
-    type: int?
+    type: string?
     doc: "Estimated genome size (for canu)"
-    default: 5000000
+    default: "5M"
   genbank_file:
     type: File?
     doc: "Genome to process [bvbrc:wstype]"
@@ -132,13 +114,13 @@ inputs:
     type: int?
     doc: "NCBI Taxonomy identfier for this genome"
   code:
-    type: int?
-    doc: "Genetic code used in translation of DNA sequences [enum: 0, 1, 4, 11, 25] [bvbrc:enum]"
-    default: 0
+    type: string
+    doc: "Genetic code used in translation of DNA sequences [enum: 11, 4] [bvbrc:enum]"
+    default: 11
   domain:
     type: string
-    doc: "Domain of the submitted genome [enum: Bacteria, Archaea, Viruses, auto] [bvbrc:enum]"
-    default: "auto"
+    doc: "Domain of the submitted genome [enum: Bacteria, Archaea] [bvbrc:enum]"
+    default: "Bacteria"
   public:
     type: boolean?
     doc: "Make this genome public [bvbrc:bool]"
@@ -169,7 +151,33 @@ inputs:
     default: 0
 
 outputs:
-  result:
-    type: File[]
+  full_report:
+    type: File
+    doc: "Integrated genome report with assembly, annotation, and phylogeny"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "FullGenomeReport.html"
+  annotated_genome:
+    type: File
+    doc: "Annotated genome object with assembly and annotation metadata"
+    outputBinding:
+      glob: "annotated.genome"
+  circos_svg:
+    type: File?
+    doc: "Circular genome visualization (SVG)"
+    outputBinding:
+      glob: "circos.svg"
+  circos_png:
+    type: File?
+    doc: "Circular genome visualization (PNG)"
+    outputBinding:
+      glob: "circos.png"
+  codon_tree_svg:
+    type: File?
+    doc: "Phylogenetic tree visualization (SVG)"
+    outputBinding:
+      glob: "codonTree.svg"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

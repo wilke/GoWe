@@ -46,7 +46,43 @@ inputs:
     doc: "Basename for the generated output files. [bvbrc:wsid]"
 
 outputs:
-  result:
-    type: File[]
+  report:
+    type: File
+    doc: "Interactive HTML report with heatmaps and tree visualizations"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "WholeGenomeSNP_Report.html"
+  core_snps:
+    type: File
+    doc: "Core SNP calls (present in all genomes)"
+    outputBinding:
+      glob: "core_SNPs.tsv"
+  all_snps:
+    type: File
+    doc: "All SNP calls"
+    outputBinding:
+      glob: "SNPs_all.tsv"
+  core_dist_matrix:
+    type: File?
+    doc: "Pairwise SNP distance matrix (core SNPs)"
+    outputBinding:
+      glob: "core_kSNPdist.matrix"
+  all_dist_matrix:
+    type: File?
+    doc: "Pairwise SNP distance matrix (all SNPs)"
+    outputBinding:
+      glob: "all_kSNPdist.matrix"
+  core_snps_matrix:
+    type: File?
+    doc: "Core SNP alignment matrix"
+    outputBinding:
+      glob: "core_SNPs_matrix.txt"
+  all_snps_matrix:
+    type: File?
+    doc: "All SNPs alignment matrix"
+    outputBinding:
+      glob: "SNPs_all_matrix.txt"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

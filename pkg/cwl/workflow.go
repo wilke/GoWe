@@ -6,6 +6,7 @@ type Workflow struct {
 	ID           string
 	Class        string
 	CWLVersion   string
+	Label        string
 	Doc          string
 	Inputs       map[string]InputParam
 	Outputs      map[string]OutputParam

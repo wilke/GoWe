@@ -13,7 +13,39 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/bvbrc"
+	"gopkg.in/yaml.v3"
 )
+
+// outputCatalogEntry describes a single output file for a BV-BRC app.
+type outputCatalogEntry struct {
+	ID      string `yaml:"id"`
+	Pattern string `yaml:"pattern"` // {base} = output_file value
+	Type    string `yaml:"type"`    // File or Directory
+	Doc     string `yaml:"doc"`
+}
+
+// outputCatalog maps app ID → {primary, secondary} output lists.
+type outputCatalog map[string]struct {
+	Primary   []outputCatalogEntry `yaml:"primary"`
+	Secondary []outputCatalogEntry `yaml:"secondary"`
+}
+
+// loadOutputCatalog loads app_outputs.yaml from the given directory.
+func loadOutputCatalog(dir string) (outputCatalog, error) {
+	path := filepath.Join(dir, "app_outputs.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // no catalog is OK — fall back to generic outputs
+		}
+		return nil, fmt.Errorf("load output catalog: %w", err)
+	}
+	var catalog outputCatalog
+	if err := yaml.Unmarshal(data, &catalog); err != nil {
+		return nil, fmt.Errorf("parse output catalog: %w", err)
+	}
+	return catalog, nil
+}
 
 const appServiceURL = "https://p3.theseed.org/services/app_service"
 
@@ -115,7 +147,17 @@ func main() {
 		}
 	}
 
-	// 4. Generate CWL tools and collect report data.
+	// 4. Load output catalog.
+	catalog, err := loadOutputCatalog(*outputDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+	if catalog != nil {
+		fmt.Printf("Loaded output catalog for %d apps\n", len(catalog))
+	}
+
+	// 5. Generate CWL tools and collect report data.
 	sort.Slice(apps, func(i, j int) bool {
 		idI, _ := apps[i]["id"].(string)
 		idJ, _ := apps[j]["id"].(string)
@@ -124,7 +166,7 @@ func main() {
 
 	var reports []appReport
 	for _, app := range apps {
-		report := generateCWLTool(app, toolsDir)
+		report := generateCWLTool(app, toolsDir, catalog)
 		reports = append(reports, report)
 		if report.Error != "" {
 			fmt.Printf("  SKIP  %s — %s\n", report.AppID, report.Error)
@@ -192,7 +234,7 @@ func fetchApps(ctx context.Context, caller bvbrc.RPCCaller) ([]map[string]any, e
 }
 
 // generateCWLTool creates a .cwl file for the given app and returns report data.
-func generateCWLTool(app map[string]any, toolsDir string) appReport {
+func generateCWLTool(app map[string]any, toolsDir string, catalog outputCatalog) appReport {
 	appID, _ := app["id"].(string)
 	label, _ := app["label"].(string)
 	desc, _ := app["description"].(string)
@@ -289,7 +331,7 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 	report.Inputs = inputs
 
 	// Build CWL content.
-	cwl := buildCWL(appID, label, desc, inputs)
+	cwl := buildCWL(appID, label, desc, inputs, catalog)
 
 	// Write file.
 	path := filepath.Join(toolsDir, appID+".cwl")
@@ -300,7 +342,7 @@ func generateCWLTool(app map[string]any, toolsDir string) appReport {
 }
 
 // buildCWL constructs the CWL CommandLineTool YAML string.
-func buildCWL(appID, label, desc string, inputs []inputReport) string {
+func buildCWL(appID, label, desc string, inputs []inputReport, catalog outputCatalog) string {
 	var b strings.Builder
 
 	b.WriteString("cwlVersion: v1.2\nclass: CommandLineTool\n\n")
@@ -357,14 +399,52 @@ func buildCWL(appID, label, desc string, inputs []inputReport) string {
 		}
 	}
 
-	// Outputs — result file derived from output_path + output_file inputs.
+	// Outputs — use catalog if available, else fall back to generic pattern.
 	b.WriteString("\noutputs:\n")
+	if catalog != nil {
+		if entry, ok := catalog[appID]; ok && (len(entry.Primary) > 0 || len(entry.Secondary) > 0) {
+			for _, out := range entry.Primary {
+				writeOutput(&b, out, false)
+			}
+			for _, out := range entry.Secondary {
+				writeOutput(&b, out, true)
+			}
+			// Always include result_folder as catch-all.
+			b.WriteString("  result_folder:\n")
+			b.WriteString("    type: Directory\n")
+			b.WriteString("    doc: \"Full output folder\"\n")
+			b.WriteString("    outputBinding:\n")
+			b.WriteString("      glob: \".\"\n")
+			return b.String()
+		}
+	}
+	// Fallback: generic glob pattern.
 	b.WriteString("  result:\n")
 	b.WriteString("    type: File[]\n")
 	b.WriteString("    outputBinding:\n")
 	b.WriteString("      glob: $(inputs.output_path.location)/$(inputs.output_file)*\n")
 
 	return b.String()
+}
+
+// writeOutput emits a single CWL output entry.
+func writeOutput(b *strings.Builder, out outputCatalogEntry, optional bool) {
+	b.WriteString(fmt.Sprintf("  %s:\n", out.ID))
+	typ := out.Type
+	if typ == "" {
+		typ = "File"
+	}
+	if optional {
+		typ += "?"
+	}
+	b.WriteString(fmt.Sprintf("    type: %s\n", typ))
+	if out.Doc != "" {
+		b.WriteString(fmt.Sprintf("    doc: %q\n", out.Doc))
+	}
+	// Convert {base} placeholder to CWL expression.
+	glob := strings.ReplaceAll(out.Pattern, "{base}", "$(inputs.output_file)")
+	b.WriteString("    outputBinding:\n")
+	b.WriteString(fmt.Sprintf("      glob: %q\n", glob))
 }
 
 // writeRecordArrayType emits a CWL v1.2 record array type for group parameters.

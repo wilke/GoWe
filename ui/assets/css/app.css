@@ -156,8 +156,8 @@ th a:hover {
 }
 
 .badge-pending {
-  background-color: #fef3c7;
-  color: #92400e;
+  background-color: #f3f4f6;
+  color: #374151;
 }
 
 .badge-running {
@@ -178,7 +178,7 @@ th a:hover {
 
 .badge-cancelled {
   background-color: #f3f4f6;
-  color: #374151;
+  color: #6b7280;
 }
 
 /* File picker modal */

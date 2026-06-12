@@ -1,7 +1,9 @@
 cwlVersion: v1.2
 class: CommandLineTool
 
-doc: "Compute phylogenetic tree from PGFam protein and DNA sequence — Computes a phylogenetic tree based on protein and DNA sequences of PGFams for a set of genomes"
+label: codon-tree
+
+doc: "Compute phylogenetic tree from PGFam protein and DNA sequence — RAxML-based codon tree from single-copy PGFams across a set of genomes. Replaces the deprecated PhylogeneticTree app."
 
 $namespaces:
   gowe: "https://github.com/wilke/GoWe#"
@@ -16,25 +18,19 @@ baseCommand: [CodonTree]
 inputs:
   output_path:
     type: Directory
-    doc: "Path to which the output will be written  [bvbrc:folder]"
+    doc: "Path to which the output will be written [bvbrc:folder]"
   output_file:
     type: string
     doc: "Basename for the generated output files [bvbrc:wsid]"
   genome_ids:
-    type: string[]?
-    doc: "Main genomes [bvbrc:list]"
-  genome_groups:
-    type: string[]?
-    doc: "Genome groups [bvbrc:list]"
+    type: string[]
+    doc: "Main genomes (must have PGFam coverage) [bvbrc:list]"
   optional_genome_ids:
     type: string[]?
     doc: "Optional genomes (not penalized for missing/duplicated genes) [bvbrc:list]"
-  genome_metadata_fields:
-    type: string[]?
-    doc: "Metadata fields to retrieve for each genome [bvbrc:list]"
   number_of_genes:
     type: int?
-    doc: "Desired number of genes"
+    doc: "Desired number of single-copy PGFams to build the tree from"
     default: 20
   bootstraps:
     type: int?
@@ -50,7 +46,38 @@ inputs:
     default: 0
 
 outputs:
-  result:
-    type: File[]
+  tree_nwk:
+    type: File
+    doc: "Best phylogenetic tree (Newick, RAxML)"
     outputBinding:
-      glob: $(inputs.output_path.location)/$(inputs.output_file)*
+      glob: "$(inputs.output_file)_tree.nwk"
+  tree_phyloxml:
+    type: File?
+    doc: "Phylogenetic tree (PhyloXML with metadata)"
+    outputBinding:
+      glob: "$(inputs.output_file)_tree.phyloxml"
+  report:
+    type: File
+    doc: "HTML report with tree visualization and statistics"
+    outputBinding:
+      glob: "$(inputs.output_file)_report.html"
+  tree_svg:
+    type: File?
+    doc: "Tree visualization (SVG)"
+    outputBinding:
+      glob: "$(inputs.output_file).svg"
+  alignment:
+    type: File?
+    doc: "Concatenated protein alignment (FASTA)"
+    outputBinding:
+      glob: "$(inputs.output_file).afa"
+  detail_files:
+    type: Directory?
+    doc: "Auxiliary outputs (rooted tree, RAxML artifacts, stats, logs)"
+    outputBinding:
+      glob: "detail_files"
+  result_folder:
+    type: Directory
+    doc: "Full output folder"
+    outputBinding:
+      glob: "."

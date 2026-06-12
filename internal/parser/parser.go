@@ -645,6 +645,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 		ID:           stringField(raw, "id"),
 		Class:        stringField(raw, "class"),
 		CWLVersion:   stringField(raw, "cwlVersion"),
+		Label:        stringField(raw, "label"),
 		Doc:          stringField(raw, "doc"),
 		Inputs:       make(map[string]cwl.InputParam),
 		Outputs:      make(map[string]cwl.OutputParam),
@@ -1941,6 +1942,12 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 		}
 		h.DockerImage = stringField(goweMap, "docker_image")
 		h.WorkerGroup = stringField(goweMap, "worker_group")
+		if gpu, ok := goweMap["gpu"].(bool); ok && gpu {
+			h.RequiresGPU = true
+		}
+		if inject, ok := goweMap["inject_bvbrc_token"].(bool); ok && inject {
+			h.InjectBVBRCToken = true
+		}
 	}
 
 	// CWL standard DockerRequirement — check hints first, then requirements.

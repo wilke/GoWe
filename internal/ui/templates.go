@@ -30,17 +30,22 @@ var templateFuncs = template.FuncMap{
 		}
 		return t.Format("2006-01-02")
 	},
-	"formatDuration": func(t time.Time) string {
-		if t.IsZero() {
+	"formatDuration": func(start *time.Time, end ...*time.Time) string {
+		if start == nil || start.IsZero() {
 			return "-"
 		}
-		return time.Since(t).Round(time.Second).String()
+		if len(end) > 0 && end[0] != nil {
+			return end[0].Sub(*start).Round(time.Second).String()
+		}
+		return time.Since(*start).Round(time.Second).String()
 	},
 	"stateColor": func(state string) string {
 		switch strings.ToUpper(state) {
-		case "PENDING", "SCHEDULED":
+		case "PENDING":
+			return "gray"
+		case "SCHEDULED", "QUEUED":
 			return "yellow"
-		case "RUNNING", "QUEUED":
+		case "RUNNING":
 			return "blue"
 		case "SUCCESS", "COMPLETED":
 			return "green"
@@ -79,21 +84,21 @@ var templateFuncs = template.FuncMap{
 		// Returns CSS gradient for stage pills (AWE-style)
 		switch strings.ToUpper(state) {
 		case "PENDING":
-			return "background: linear-gradient(to bottom, #9CA3AF, #6B7280);"
+			return "background: linear-gradient(to bottom, #f3f4f6, #e5e7eb);"
 		case "SCHEDULED", "QUEUED":
-			return "background: linear-gradient(to bottom, #FBB450, #F89406);"
+			return "background: linear-gradient(to bottom, #fbbf24, #f59e0b);"
 		case "RUNNING":
-			return "background: linear-gradient(to bottom, #0088CC, #0044CC);"
+			return "background: linear-gradient(to bottom, #60a5fa, #3b82f6);"
 		case "SUCCESS", "COMPLETED":
-			return "background: linear-gradient(to bottom, #62C462, #51A351);"
+			return "background: linear-gradient(to bottom, #4ade80, #22c55e);"
 		case "FAILED":
-			return "background: linear-gradient(to bottom, #EE5F5B, #BD362F);"
+			return "background: linear-gradient(to bottom, #f87171, #ef4444);"
 		case "RETRYING":
-			return "background: linear-gradient(to bottom, #F97316, #EA580C);"
+			return "background: linear-gradient(to bottom, #fb923c, #f97316);"
 		case "SKIPPED", "CANCELLED":
-			return "background: linear-gradient(to bottom, #D1D5DB, #9CA3AF);"
+			return "background: linear-gradient(to bottom, #d1d5db, #9ca3af);"
 		default:
-			return "background: linear-gradient(to bottom, #9CA3AF, #6B7280);"
+			return "background: linear-gradient(to bottom, #f3f4f6, #e5e7eb);"
 		}
 	},
 	"list": func(args ...int) []int {
@@ -225,6 +230,14 @@ var templateFuncs = template.FuncMap{
 			return "bg-purple-100 text-purple-800"
 		}
 		return "bg-indigo-100 text-indigo-800"
+	},
+	"hasLabel": func(labels []string, target string) bool {
+		for _, l := range labels {
+			if l == target {
+				return true
+			}
+		}
+		return false
 	},
 	"labelColor": func(color string) string {
 		switch color {
@@ -710,6 +723,10 @@ var templates = map[string]string{
                     <a href="/workflows?class=Tool&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .ClassFilter "Tool"}}bg-purple-100 text-purple-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Tools
+                    </a>
+                    <a href="/workflows?label=executor:bvbrc&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                       class="px-3 py-1 text-sm rounded-full {{if hasLabel .LabelFilters "executor:bvbrc"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
+                        BV-BRC
                     </a>
                 </div>
             </div>
@@ -1207,16 +1224,16 @@ var templates = map[string]string{
                                 </div>
                                 <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden flex">
                                     {{if gt .TaskSummary.Success 0}}
-                                    <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                                    <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #4ade80, #22c55e);"></div>
                                     {{end}}
                                     {{if gt .TaskSummary.Running 0}}
-                                    <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                                    <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #60a5fa, #3b82f6);"></div>
                                     {{end}}
                                     {{if gt .TaskSummary.Queued 0}}
-                                    <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                                    <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #fbbf24, #f59e0b);"></div>
                                     {{end}}
                                     {{if gt .TaskSummary.Failed 0}}
-                                    <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                                    <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #f87171, #ef4444);"></div>
                                     {{end}}
                                 </div>
                             </div>
@@ -1291,16 +1308,16 @@ var templates = map[string]string{
                     </div>
                     <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden flex">
                         {{if gt .TaskSummary.Success 0}}
-                        <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                        <div class="h-full" style="width: {{percent .TaskSummary.Success .TaskSummary.Total}}%; background: linear-gradient(to bottom, #4ade80, #22c55e);"></div>
                         {{end}}
                         {{if gt .TaskSummary.Running 0}}
-                        <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                        <div class="h-full animate-pulse" style="width: {{percent .TaskSummary.Running .TaskSummary.Total}}%; background: linear-gradient(to bottom, #60a5fa, #3b82f6);"></div>
                         {{end}}
                         {{if gt .TaskSummary.Queued 0}}
-                        <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                        <div class="h-full" style="width: {{percent .TaskSummary.Queued .TaskSummary.Total}}%; background: linear-gradient(to bottom, #fbbf24, #f59e0b);"></div>
                         {{end}}
                         {{if gt .TaskSummary.Failed 0}}
-                        <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                        <div class="h-full" style="width: {{percent .TaskSummary.Failed .TaskSummary.Total}}%; background: linear-gradient(to bottom, #f87171, #ef4444);"></div>
                         {{end}}
                     </div>
                 </div>
@@ -1395,23 +1412,23 @@ var templates = map[string]string{
         <!-- Legend -->
         <div class="flex flex-wrap gap-4 text-xs">
             <div class="flex items-center">
-                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #9CA3AF, #6B7280);"></div>
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #f3f4f6, #e5e7eb);"></div>
                 <span>Pending</span>
             </div>
             <div class="flex items-center">
-                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #FBB450, #F89406);"></div>
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #fbbf24, #f59e0b);"></div>
                 <span>Queued</span>
             </div>
             <div class="flex items-center">
-                <div class="w-3 h-3 rounded mr-1 animate-pulse" style="background: linear-gradient(to bottom, #0088CC, #0044CC);"></div>
+                <div class="w-3 h-3 rounded mr-1 animate-pulse" style="background: linear-gradient(to bottom, #60a5fa, #3b82f6);"></div>
                 <span>Running</span>
             </div>
             <div class="flex items-center">
-                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #62C462, #51A351);"></div>
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #4ade80, #22c55e);"></div>
                 <span>Success</span>
             </div>
             <div class="flex items-center">
-                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #EE5F5B, #BD362F);"></div>
+                <div class="w-3 h-3 rounded mr-1" style="background: linear-gradient(to bottom, #f87171, #ef4444);"></div>
                 <span>Failed</span>
             </div>
         </div>
@@ -1473,9 +1490,9 @@ var templates = map[string]string{
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             {{if .StartedAt}}
                                 {{if .CompletedAt}}
-                                    {{formatDuration .StartedAt}}
+                                    {{formatDuration .StartedAt .CompletedAt}}
                                 {{else}}
-                                    <span class="text-blue-600">Running...</span>
+                                    <span class="text-blue-600">{{formatDuration .StartedAt}}</span>
                                 {{end}}
                             {{else}}
                                 -
@@ -1774,6 +1791,7 @@ var templates = map[string]string{
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Statistics</h1>
@@ -1938,6 +1956,7 @@ var templates = map[string]string{
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Health</h1>
@@ -2372,6 +2391,72 @@ var templates = map[string]string{
             </tbody>
         </table>
     </div>
+</div>
+{{end}}`,
+
+	"admin/tasks": `{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-4 flex space-x-4 border-b border-gray-200">
+        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Tasks</a>
+    </div>
+    <div class="mb-4">
+        <h1 class="text-2xl font-semibold text-gray-900">Active Tasks</h1>
+        <p class="mt-1 text-sm text-gray-500">{{.Total}} tasks currently queued or running across all submissions</p>
+    </div>
+
+    {{if .Tasks}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-md">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Task</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Step</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Submission</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Executor</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Status</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {{range .Tasks}}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-3 text-xs font-mono text-gray-500 truncate" style="max-width: 180px;" title="{{.ID}}">{{.ID}}</td>
+                    <td class="px-4 py-3 text-sm text-gray-900">{{.StepID}}</td>
+                    <td class="px-4 py-3">
+                        {{with index $.Submissions .SubmissionID}}
+                        <a href="/submissions/{{.ID}}" class="text-sm text-indigo-600 hover:text-indigo-800 truncate" style="max-width: 200px;" title="{{.WorkflowName}}">{{.WorkflowName}}</a>
+                        {{else}}
+                        <span class="text-xs font-mono text-gray-400">{{.SubmissionID}}</span>
+                        {{end}}
+                    </td>
+                    <td class="px-4 py-3 text-sm text-gray-500">
+                        {{with index $.Submissions .SubmissionID}}{{.SubmittedBy}}{{end}}
+                    </td>
+                    <td class="px-4 py-3 text-xs text-gray-500">{{.ExecutorType}}</td>
+                    <td class="px-4 py-3 text-xs text-gray-500">{{formatTime .CreatedAt}}</td>
+                    <td class="px-4 py-3 text-right">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                            {{if eq (stateColor .State.String) "blue"}}bg-blue-100 text-blue-800{{end}}
+                            {{if eq (stateColor .State.String) "yellow"}}bg-yellow-100 text-yellow-800{{end}}
+                            {{if eq (stateColor .State.String) "gray"}}bg-gray-100 text-gray-800{{end}}
+                        ">
+                            {{.State}}
+                        </span>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="text-center py-12">
+        <p class="text-sm text-gray-500">No active tasks</p>
+    </div>
+    {{end}}
 </div>
 {{end}}`,
 }
