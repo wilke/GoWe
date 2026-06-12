@@ -7,8 +7,8 @@ Last updated: 2026-06-12
 | Item | Value |
 |------|-------|
 | Host | `coconut` |
-| Binary | `f6deb8b` (dev tag `20260612-095153-f6deb8b`) |
-| Branch | `feature/bvbrc-app-outputs` (26 commits ahead of main, 8 unpushed) |
+| Binary | `f216c5b` (dev tag `20260612-113835-ffc8f35`) |
+| Branch | `feature/bvbrc-app-outputs` (30 commits ahead of main, 12 unpushed) |
 | Server | Port 8091, `--default-executor worker`, `--workspace-staging server` |
 | Workers | 2 GPU (start script) + 2 GPU + 20 CPU (manual) = 24 total |
 | GPUs | 4x H200 NVL assigned (IDs 1-4), GPU 0 reserved |
@@ -62,7 +62,7 @@ done
 
 ## Open PR
 
-**PR #115**: `feature/bvbrc-app-outputs` — 26 commits, not yet merged to main. Last 8 commits unpushed to origin (SSH key not in current session).
+**PR #115**: `feature/bvbrc-app-outputs` — 30 commits, not yet merged to main. Last 12 commits unpushed to origin (SSH key not in current session).
 
 ### Genome Analysis Pipeline (June 2026 work)
 
@@ -80,9 +80,15 @@ End-to-end CGA → CodonTree + cgMLST + WG-SNP pipeline. Verified working on H37
 - **`inject_bvbrc_token` hint**: new `gowe:Execution.inject_bvbrc_token: true` makes the worker inject `BVBRC_TOKEN` env var for worker-executed tools that call BV-BRC APIs (used by the 3 utility tools above).
 - **Workflow naming (`baa9903`)**: packed `$graph` workflows got synthetic `id: "main"`. Fix: prefer `label:` field, then slugified `doc:` first line; always pass explicit `name` in registration JSON.
 
-### Homology Fixes (June 2026 work)
-- **`Homology.cwl`**: rewrote outputs to match actual `BV-BRC/homology_service` filenames (`blast_out.json`, `blast_out.raw.json`, `blast_out.txt`, `blast_headers.txt`, `blast_out.metadata.json`, `blast_out.archive`, plus `result_folder`). Added `blast_evalue_cutoff` (float), `blast_max_hits` (int), `blast_min_coverage` (int).
-- **`output_path: string`**: switched from `Directory` to bypass the `bundle.ResolveFilePaths` ws:// mangling bug (see Known Issues). Verified end-to-end (sub_03ea3d5b).
+### Homology / blast-protein-search Fixes (June 2026 work)
+- **`Homology.cwl`** (`884ceb4`, `03df2ec`): rewrote outputs to match actual `BV-BRC/homology_service` filenames (`blast_out.json`, `blast_out.raw.json`, `blast_out.txt`, `blast_headers.txt`, `blast_out.metadata.json`, `blast_out.archive`, plus `result_folder`). Added `blast_evalue_cutoff` (float), `blast_max_hits` (int), `blast_min_coverage` (int). Switched `output_path: Directory → string` to bypass `bundle.ResolveFilePaths` ws:// mangling. Verified end-to-end (`sub_03ea3d5b`).
+- **`blast-protein-search.cwl`** (`ffc8f35`): replaces Clark's original pre-registered workflow which inlined a stale Homology with broken shell-style globs. Now a Workflow that references `gowe://Homology` so future Homology.cwl changes propagate automatically. Exposes all 7 typed outputs. Verified end-to-end (`sub_c9e5f137`).
+
+### Validator Hardening (June 2026 work)
+- **Reject shell-style `${...}` in outputBinding glob/outputEval** (`f216c5b`): `Validator.validateOutputBindings` walks every CommandLineTool output's glob (string or array) and outputEval expression for `${...}` substrings. CWL parameter references use `$(...)` syntax — `${...}` is shell-interpolation, passed through as literal at execution time, never matches a real file. Catches the exact bug pattern from Clark's blast-protein-search before the workflow is persisted. 4 new unit tests in `validator_test.go`. POST `/api/v1/workflows` now returns HTTP 400 with field-level error messages.
+
+### 2-genome scatter pipeline (verified)
+`sub_88b97faa`: H37Rv + CDC1551, 10 tasks total — all SUCCESS including final CodonTree (BV-BRC job 22519933). Required one zombie-task requeue mid-flight (see Known Issues / GH #118).
 
 ### Changes in PR #115 (earlier)
 
@@ -156,6 +162,7 @@ End-to-end CGA → CodonTree + cgMLST + WG-SNP pipeline. Verified working on H37
 
 | Issue | Status | Notes |
 |-------|--------|-------|
+| #118 Zombie tasks after server restart | Open | Server restart leaves in-flight worker tasks RUNNING forever — worker reconnects but doesn't reclaim its prior `current_task`. Detection: `tasks.state='RUNNING'` AND owning worker's `current_task=''`. SQL workaround: `UPDATE tasks SET state='QUEUED', started_at=NULL, external_id='' WHERE id IN (...)`. Proper fix: scheduler reaper. See [[worker-task-zombies]] memory. |
 | `bundle.ResolveFilePaths` ws:// mangling | Open | `internal/bundle/bundle.go:451` treats any non-http/https location as relative local path. `ws:///user@bvbrc/home` → `filepath.Join(jobDir, "ws:///...")` → `/tmp/ws:/user@bvbrc/home`, then `filepath.Base` extracts `"home"` as basename. Workaround: declare BV-BRC `output_path` as `string` not `Directory` (CGA/cgMLST/SNP/CodonTree still use Directory but their workflows wrap output_path as string). |
 | Multiple registrations under same name | Open | `gowe submit --workflow <name>` resolves to one of N entries; explicit `name` doesn't enforce uniqueness. Affects e.g. `blast-protein-search` (Clark's original + later registrations). |
 | `blast-protein-search` inlines broken Homology | Open | Pre-registered workflow inlines its own Homology CommandLineTool with the old broken `_output_globs`/Directory output_path. Re-registering the standalone `Homology` tool doesn't propagate. Owner should re-register with `gowe://Homology` reference. |
