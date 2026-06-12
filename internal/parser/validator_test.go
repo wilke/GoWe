@@ -355,6 +355,105 @@ func TestValidate_CommandLineTool_EmptyOutputs(t *testing.T) {
 	}
 }
 
+func TestValidate_OutputBinding_ShellInterp_RejectGlob(t *testing.T) {
+	v := testValidator()
+	g := validGraph()
+	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
+		"blast_json": {
+			
+			Type: "File",
+			OutputBinding: &cwl.OutputBinding{
+				Glob: "${params.output_path}/.${params.output_file}/blast_out.json",
+			},
+		},
+	}
+	apiErr := v.Validate(g)
+	if apiErr == nil {
+		t.Fatal("expected validation error for shell-style ${...} glob, got nil")
+	}
+	if !hasFieldError(apiErr.Details, "tools.tool1.outputs.blast_json.outputBinding.glob") {
+		t.Errorf("expected field error on glob, got: %v", apiErr.Details)
+	}
+	if !hasFieldErrorMsg(apiErr.Details, "shell-style") {
+		t.Errorf("expected 'shell-style' in message, got: %v", apiErr.Details)
+	}
+}
+
+func TestValidate_OutputBinding_ShellInterp_RejectGlobArray(t *testing.T) {
+	v := testValidator()
+	g := validGraph()
+	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
+		"results": {
+			
+			Type: "File[]",
+			OutputBinding: &cwl.OutputBinding{
+				Glob: []any{"good_*.txt", "${BAD}/bad_*.txt"},
+			},
+		},
+	}
+	apiErr := v.Validate(g)
+	if apiErr == nil {
+		t.Fatal("expected validation error for ${...} in glob array, got nil")
+	}
+	if !hasFieldError(apiErr.Details, "tools.tool1.outputs.results.outputBinding.glob[1]") {
+		t.Errorf("expected error on array index 1, got: %v", apiErr.Details)
+	}
+}
+
+func TestValidate_OutputBinding_ShellInterp_RejectOutputEval(t *testing.T) {
+	v := testValidator()
+	g := validGraph()
+	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
+		"computed": {
+			
+			Type: "File",
+			OutputBinding: &cwl.OutputBinding{
+				Glob:       "out.txt",
+				OutputEval: "${self[0].contents.trim()}",
+			},
+		},
+	}
+	apiErr := v.Validate(g)
+	if apiErr == nil {
+		t.Fatal("expected validation error for ${...} in outputEval, got nil")
+	}
+	if !hasFieldError(apiErr.Details, "tools.tool1.outputs.computed.outputBinding.outputEval") {
+		t.Errorf("expected error on outputEval, got: %v", apiErr.Details)
+	}
+}
+
+func TestValidate_OutputBinding_Valid_CWLExpression(t *testing.T) {
+	v := testValidator()
+	g := validGraph()
+	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
+		"tree_nwk": {
+			
+			Type: "File",
+			OutputBinding: &cwl.OutputBinding{
+				Glob:       "$(inputs.output_file)_tree.nwk",
+				OutputEval: "$(self[0].contents.trim())",
+			},
+		},
+		"plain": {
+			
+			Type: "File",
+			OutputBinding: &cwl.OutputBinding{
+				Glob: "blast_out.json",
+			},
+		},
+		"all_results": {
+			
+			Type: "File[]",
+			OutputBinding: &cwl.OutputBinding{
+				Glob: []any{"$(inputs.output_file)*.txt", "report.html"},
+			},
+		},
+	}
+	if apiErr := v.Validate(g); apiErr != nil {
+		t.Errorf("valid CWL $(...) expressions should pass, got: %v", apiErr)
+	}
+}
+
 // --- Test helpers ---
 
 func hasFieldError(errs []model.FieldError, field string) bool {
