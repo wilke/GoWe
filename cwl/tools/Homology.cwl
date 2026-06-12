@@ -67,7 +67,7 @@ inputs:
     type: int?
     doc: "Minimum HSP query coverage percent (-qcov_hsp_perc)"
   output_path:
-    type: Directory
+    type: string
     doc: "Path to which the output will be written [bvbrc:folder]"
   output_file:
     type: string
