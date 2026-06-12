@@ -1201,9 +1201,14 @@ func (l *Loop) hasOnlineWorkers() bool {
 // When server-side workspace staging is enabled (wsStager != nil), the server
 // handles all ws:// operations and workers don't need the token — skip embedding
 // it in task data to avoid storing credentials in the database unnecessarily.
+// BV-BRC executor tasks always need the submitter's token at the
+// AppService.start_app boundary, regardless of staging mode — otherwise the
+// executor falls back to its default caller and the job runs under the wrong
+// user identity.
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	needsToken := l.wsStager == nil ||
-		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken)
+		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
+		task.ExecutorType == model.ExecutorTypeBVBRC
 	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
