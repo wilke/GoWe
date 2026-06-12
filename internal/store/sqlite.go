@@ -2113,6 +2113,111 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 	return int(n), nil
 }
 
+// ReconcileWorkerTasks requeues tasks the database attributes to workerID
+// (state=RUNNING, executor_type=worker) that the worker no longer reports as
+// running. running is the set of task IDs the worker claims to be executing,
+// reported via heartbeat. Tasks whose started_at is younger than minAge are left
+// alone to avoid racing the checkout→first-heartbeat window (a freshly checked-out
+// task the worker has not yet had a chance to report). Returns the IDs requeued.
+//
+// This complements MarkStaleWorkersOffline+RequeueWorkerTasks (which only handles
+// dead workers): it catches the alive-but-forgetful case where a worker keeps
+// heartbeating after a server restart but has dropped its in-flight task.
+func (s *SQLiteStore) ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error) {
+	s.logger.Debug("sql", "op", "reconcile_worker_tasks", "worker_id", workerID, "running", len(running))
+
+	runningSet := make(map[string]struct{}, len(running))
+	for _, id := range running {
+		runningSet[id] = struct{}{}
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, started_at FROM tasks
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile: query running tasks: %w", err)
+	}
+
+	cutoff := time.Now().UTC().Add(-minAge)
+	var orphans []string
+	for rows.Next() {
+		var id string
+		var startedAt *string
+		if err := rows.Scan(&id, &startedAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("reconcile: scan: %w", err)
+		}
+		// Worker still claims this task — legitimately in-flight.
+		if _, ok := runningSet[id]; ok {
+			continue
+		}
+		// Within the grace window — too fresh to judge as orphaned.
+		if startedAt != nil {
+			if t, terr := parseTimeOrZero(*startedAt); terr == nil && t.After(cutoff) {
+				continue
+			}
+		}
+		orphans = append(orphans, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reconcile: rows: %w", err)
+	}
+
+	for _, id := range orphans {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+			 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`,
+			id, workerID); err != nil {
+			return nil, fmt.Errorf("reconcile: requeue %s: %w", id, err)
+		}
+		// Clear current_task only if it pointed at this orphaned task.
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE workers SET current_task = '' WHERE id = ? AND current_task = ?`,
+			workerID, id); err != nil {
+			return nil, fmt.Errorf("reconcile: clear current_task %s: %w", id, err)
+		}
+	}
+
+	return orphans, nil
+}
+
+// CancelledTasksForWorker returns the subset of the given task IDs whose owning
+// submission is CANCELLED — the tasks a worker is running that it should kill.
+// The submission state is the durable cancellation signal: the scheduler marks a
+// cancelled submission's tasks terminal (SKIPPED), but that does not stop the
+// worker's process, which is what this drives. Returns nil for an empty input.
+func (s *SQLiteStore) CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(taskIDs))
+	args := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `SELECT t.id FROM tasks t
+		 JOIN submissions s ON t.submission_id = s.id
+		 WHERE t.id IN (` + strings.Join(placeholders, ",") + `)
+		   AND s.state = 'CANCELLED'`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("cancelled tasks: query: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("cancelled tasks: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // --- User operations ---
 
 func (s *SQLiteStore) GetUser(ctx context.Context, username string) (*model.User, error) {

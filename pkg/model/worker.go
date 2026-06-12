@@ -24,6 +24,23 @@ type Worker struct {
 	RegisteredAt time.Time         `json:"registered_at"`
 }
 
+// HeartbeatRequest is the body a worker sends on each heartbeat. RunningTasks is
+// the set of task IDs the worker is currently executing; the server uses it to
+// reconcile orphaned tasks and to decide which tasks to cancel. An empty body
+// (no running tasks) is valid and backward-compatible.
+type HeartbeatRequest struct {
+	RunningTasks []string `json:"running_tasks,omitempty"`
+}
+
+// HeartbeatResponse is the server's reply to a heartbeat. CancelTasks lists task
+// IDs the worker is running whose submission has been cancelled — the worker
+// should kill those and report them CANCELLED.
+type HeartbeatResponse struct {
+	WorkerID    string      `json:"worker_id"`
+	State       WorkerState `json:"state"`
+	CancelTasks []string    `json:"cancel_tasks,omitempty"`
+}
+
 // WorkerState represents the lifecycle state of a Worker.
 type WorkerState string
 

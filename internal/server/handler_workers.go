@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -142,9 +143,40 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondOK(w, reqID, map[string]any{
-		"worker_id": worker.ID,
-		"state":     worker.State,
+	// Parse the optional heartbeat body. An empty/missing body is valid and means
+	// the worker is reporting no in-flight tasks (backward compatible).
+	var req model.HeartbeatRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+				Code:    model.ErrValidation,
+				Message: "invalid heartbeat body: " + err.Error(),
+			})
+			return
+		}
+	}
+
+	// Reconcile orphaned tasks: any task the DB still attributes to this worker
+	// (RUNNING) that the worker no longer reports — and that is past the grace
+	// window — is requeued. This recovers tasks orphaned by a server restart.
+	if requeued, err := s.store.ReconcileWorkerTasks(r.Context(), worker.ID, req.RunningTasks, defaultWorkerTimeout); err != nil {
+		s.logger.Error("heartbeat: reconcile worker tasks", "worker_id", worker.ID, "error", err)
+	} else if len(requeued) > 0 {
+		s.logger.Warn("requeued orphaned tasks from heartbeat reconcile",
+			"worker_id", worker.ID, "tasks", requeued)
+	}
+
+	// Tell the worker which of its running tasks have been cancelled so it can
+	// kill the underlying process and free resources.
+	cancelTasks, err := s.store.CancelledTasksForWorker(r.Context(), req.RunningTasks)
+	if err != nil {
+		s.logger.Error("heartbeat: cancelled tasks lookup", "worker_id", worker.ID, "error", err)
+	}
+
+	respondOK(w, reqID, model.HeartbeatResponse{
+		WorkerID:    worker.ID,
+		State:       worker.State,
+		CancelTasks: cancelTasks,
 	})
 }
 
