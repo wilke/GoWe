@@ -1,14 +1,14 @@
 # GoWe Project Status
 
-Last updated: 2026-05-18
+Last updated: 2026-06-12
 
 ## Production Deployment
 
 | Item | Value |
 |------|-------|
 | Host | `coconut` |
-| Binary | `336de46` (2026-05-06) |
-| Branch | `feature/bvbrc-app-outputs` (17 commits ahead of main) |
+| Binary | `f6deb8b` (dev tag `20260612-095153-f6deb8b`) |
+| Branch | `feature/bvbrc-app-outputs` (26 commits ahead of main, 8 unpushed) |
 | Server | Port 8091, `--default-executor worker`, `--workspace-staging server` |
 | Workers | 2 GPU (start script) + 2 GPU + 20 CPU (manual) = 24 total |
 | GPUs | 4x H200 NVL assigned (IDs 1-4), GPU 0 reserved |
@@ -62,9 +62,29 @@ done
 
 ## Open PR
 
-**PR #115**: `feature/bvbrc-app-outputs` — 17 commits, not yet merged to main.
+**PR #115**: `feature/bvbrc-app-outputs` — 26 commits, not yet merged to main. Last 8 commits unpushed to origin (SSH key not in current session).
 
-### Changes in PR #115
+### Genome Analysis Pipeline (June 2026 work)
+
+End-to-end CGA → CodonTree + cgMLST + WG-SNP pipeline. Verified working on H37Rv contigs (sub_3dbbe5c6, all 7 steps SUCCESS). Key files:
+- `cwl/workflows/genome-analysis-pipeline.cwl` — scatter over contigs, parallel comparative analyses
+- `cwl/tools/CodonTree.cwl` — replaces deprecated `PhylogeneticTree` (TheSEED/app_service stub; BV-BRC web UI maps `CodonTree → PhylogeneticTree`)
+- `cwl/tools/bvbrc-wait-for-pgfams.cwl` — polls solr until freshly-annotated genome has PGFam-tagged CDS (gates CodonTree's `verify_genome_ids`)
+- `cwl/tools/bvbrc-get-genome-id.cwl` — extracts genome_id from workspace autometadata
+- `cwl/tools/bvbrc-create-genome-group.cwl` — creates genome group for cgMLST/SNP
+
+### Scheduler/Executor Fixes (June 2026 work)
+
+- **Token propagation (`f6deb8b`)**: `addUserToken` skipped embedding `sub.UserToken` whenever `--workspace-staging server` was on, unless the task had `inject_bvbrc_token`. BV-BRC executor tasks fell through and used the server's default token, making jobs run under the wrong identity. Fix: also embed when `task.ExecutorType == ExecutorTypeBVBRC`.
+- **Scatter task inputs (`baa9903`)**: scatter dispatch only set `task.Job = combo`, leaving `task.Inputs` empty. BV-BRC executor reads from `Inputs`. Fix: set both in scatter and when-skipped paths.
+- **`inject_bvbrc_token` hint**: new `gowe:Execution.inject_bvbrc_token: true` makes the worker inject `BVBRC_TOKEN` env var for worker-executed tools that call BV-BRC APIs (used by the 3 utility tools above).
+- **Workflow naming (`baa9903`)**: packed `$graph` workflows got synthetic `id: "main"`. Fix: prefer `label:` field, then slugified `doc:` first line; always pass explicit `name` in registration JSON.
+
+### Homology Fixes (June 2026 work)
+- **`Homology.cwl`**: rewrote outputs to match actual `BV-BRC/homology_service` filenames (`blast_out.json`, `blast_out.raw.json`, `blast_out.txt`, `blast_headers.txt`, `blast_out.metadata.json`, `blast_out.archive`, plus `result_folder`). Added `blast_evalue_cutoff` (float), `blast_max_hits` (int), `blast_min_coverage` (int).
+- **`output_path: string`**: switched from `Directory` to bypass the `bundle.ResolveFilePaths` ws:// mangling bug (see Known Issues). Verified end-to-end (sub_03ea3d5b).
+
+### Changes in PR #115 (earlier)
 
 #### BV-BRC App Outputs (Phase 1-3)
 - `cwl/app_outputs.yaml` — output catalog for 8 priority apps
@@ -110,21 +130,38 @@ done
 
 ## Registered Workflows
 
-### Production Tools (with `executor:bvbrc` label)
-- `GenomeAssembly2`, `GenomeAnnotation`, `ComprehensiveGenomeAnalysis`
-- `Variation`, `RNASeq`, `MSA`, `CodonTree`, `MetagenomeBinning`
+### BV-BRC Tools
+- `ComprehensiveGenomeAnalysis`, `GenomeAssembly2`, `GenomeAnnotation`
+- `Variation`, `RNASeq`, `MSA`, `MetagenomeBinning`
+- `CodonTree` (replaces deprecated `PhylogeneticTree` stub)
+- `CoreGenomeMLST`, `WholeGenomeSNPAnalysis`
+- `Homology` (BLAST; `output_path: string`)
+
+### Worker Utility Tools (with `inject_bvbrc_token: true`)
+- `bvbrc-get-genome-id` — extract genome_id from workspace autometadata
+- `bvbrc-wait-for-pgfams` — poll until PGFam features indexed in solr
+- `bvbrc-create-genome-group` — programmatically create genome groups
+
+### Pipelines
+- `genome-analysis-pipeline` — CGA → CodonTree + cgMLST + WG-SNP (scatter-friendly)
+- `protein-structure-prediction` — multi-tool structure prediction
 
 ### Protein Structure Tools
 - `predict-structure` (worker, gpu: true)
 - `protein-compare`, `select-structure`
 - `boltz`, `chai`, `alphafold`, `esmfold`
-- `protein-structure-prediction` (workflow, uses gowe:// references)
 - `predict-structure-app` (bvbrc executor variant)
 
 ## Known Issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
+| `bundle.ResolveFilePaths` ws:// mangling | Open | `internal/bundle/bundle.go:451` treats any non-http/https location as relative local path. `ws:///user@bvbrc/home` → `filepath.Join(jobDir, "ws:///...")` → `/tmp/ws:/user@bvbrc/home`, then `filepath.Base` extracts `"home"` as basename. Workaround: declare BV-BRC `output_path` as `string` not `Directory` (CGA/cgMLST/SNP/CodonTree still use Directory but their workflows wrap output_path as string). |
+| Multiple registrations under same name | Open | `gowe submit --workflow <name>` resolves to one of N entries; explicit `name` doesn't enforce uniqueness. Affects e.g. `blast-protein-search` (Clark's original + later registrations). |
+| `blast-protein-search` inlines broken Homology | Open | Pre-registered workflow inlines its own Homology CommandLineTool with the old broken `_output_globs`/Directory output_path. Re-registering the standalone `Homology` tool doesn't propagate. Owner should re-register with `gowe://Homology` reference. |
+| `_preflight` echoed back to BV-BRC | Cosmetic | BV-BRC stderr warns about unspecified `_preflight` key. Non-fatal. Should be in `reservedKeys` in `bvbrc.go`. |
+| #117 ws:// URI not recognized by CWL parser | Open | Documented, not fixed |
+| #116 gowe:// in bundler (client-side) | Deferred | User declined fix for now |
 | #113 Worker cancellation | Open | Workers don't cancel running tasks when submission is cancelled |
 | AlphaFold `--af2-data-dir` | Open | `predict-structure alphafold` needs to default data dir internally |
 | `predict-structure-app` on BV-BRC | Open | `App-PredictStructure` not deployed on BV-BRC cluster yet |
@@ -139,7 +176,7 @@ done
 | server-local | 376 | 0 | 2 |
 | server-worker | 376 | 0 | 2 |
 
-Last run: 2026-04-28 on `609bfa3` (all pass).
+Last run: 2026-04-28 on `609bfa3` (all pass). **Should be re-run on `03df2ec`** after the recent scheduler/Homology/CodonTree changes.
 
 ## To Resume After Reboot
 
@@ -151,17 +188,24 @@ Last run: 2026-04-28 on `609bfa3` (all pass).
 
 ## Build & Deploy
 
+Go is **not natively installed** — build inside the apptainer golang container:
+
 ```bash
 cd /scout/Experiments/GoWe
-TAG="$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
-mkdir -p /tmp/gomod && apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 bash -c "\
-  go build -o bin/gowe-server-${TAG} ./cmd/server && \
-  go build -o bin/gowe-${TAG} ./cmd/cli && \
-  go build -o bin/cwl-runner-${TAG} ./cmd/cwl-runner && \
-  go build -ldflags \"-X main.Version=$(git rev-parse HEAD)\" -o bin/gowe-worker-${TAG} ./cmd/worker"
-cd bin && for b in gowe gowe-server gowe-worker cwl-runner; do ln -sf "${b}-${TAG}" "$b"; done
-# Then restart server + workers
+mkdir -p /tmp/gomod && apptainer exec --bind /tmp/gomod:/go docker://golang:1.24 bash -c "make dev"
+
+# Update symlinks to the new versioned binaries:
+DEV_TAG=$(ls -t bin/gowe-server-* | head -1 | sed 's|bin/gowe-server-||')
+cd bin && for b in gowe gowe-server gowe-worker cwl-runner; do ln -sf "${b}-${DEV_TAG}" "$b"; done
+
+# Restart server with the existing cmdline:
+SERVER_PID=$(pgrep -f "gowe-server --addr :8091")
+cat /proc/$SERVER_PID/cmdline | tr '\0' ' ' > /tmp/server_cmdline
+kill -TERM $SERVER_PID && sleep 3
+nohup $(cat /tmp/server_cmdline) > /scout/wf/gowe/server.log 2>&1 &
 ```
+
+A project skill `/build` automates this — see `.claude/skills/build/SKILL.md`.
 
 ## Merge Plan
 
