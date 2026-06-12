@@ -3,7 +3,7 @@ class: Workflow
 label: genome-analysis-pipeline
 
 doc: |
-  Genome Analysis Pipeline: CGA → PhylogeneticTree + CoreGenomeMLST + WholeGenomeSNPAnalysis
+  Genome Analysis Pipeline: CGA → CodonTree + CoreGenomeMLST + WholeGenomeSNPAnalysis
 
   Annotates one or more genomes from contigs using CGA (scatter), extracts
   genome_ids from workspace autometadata, creates a genome group combining
@@ -46,9 +46,9 @@ inputs:
   reference_genome_ids:
     type: string[]
     doc: "BV-BRC genome IDs of reference genomes for comparison"
-  out_genome_ids:
+  optional_genome_ids:
     type: string[]?
-    doc: "Outgroup genome IDs for phylogenetic tree"
+    doc: "Optional genomes for CodonTree (not penalized for missing/duplicated PGFams). Use this for freshly-annotated genomes whose PGFam coverage may be incomplete."
 
   # cgMLST-specific
   input_schema_selection:
@@ -90,6 +90,17 @@ steps:
         valueFrom: $(self.location.replace('ws://', ''))
     out: [genome_id]
 
+  # Block until PGFam features for each freshly-annotated genome are indexed
+  # in solr. CodonTree's preflight rejects genomes that can't anchor PGFam
+  # alignments (App-CodonTree.pl verify_genome_ids). PGFam assignment is an
+  # async indexing step that completes minutes to ~1 hour after annotation.
+  wait_for_pgfams:
+    run: "gowe://bvbrc-wait-for-pgfams"
+    scatter: genome_id
+    in:
+      genome_id: get_genome_id/genome_id
+    out: [genome_id]
+
   create_genome_group:
     run: "gowe://bvbrc-create-genome-group"
     in:
@@ -116,11 +127,13 @@ steps:
           }
     out: [genome_group_path]
 
-  phylo_tree:
-    run: "gowe://PhylogeneticTree"
+  codon_tree:
+    run: "gowe://CodonTree"
     in:
-      in_genome_ids:
-        source: [get_genome_id/genome_id, reference_genome_ids]
+      # Main genomes: freshly-annotated (now PGFam-ready via wait_for_pgfams)
+      # plus user-supplied references. All are real leaves on the resulting tree.
+      genome_ids:
+        source: [wait_for_pgfams/genome_id, reference_genome_ids]
         linkMerge: merge_flattened
         valueFrom: |
           ${
@@ -129,20 +142,18 @@ steps:
               self.forEach(function(item) {
                 if (Array.isArray(item)) {
                   item.forEach(function(id) { ids.push(id); });
-                } else {
+                } else if (item != null) {
                   ids.push(item);
                 }
               });
             }
             return ids;
           }
-      out_genome_ids: out_genome_ids
+      optional_genome_ids: optional_genome_ids
       output_path: output_path
       output_file:
         source: output_file
-        valueFrom: $(self + "_phylo")
-      full_tree_method:
-        default: "ml"
+        valueFrom: $(self + "_tree")
     out: [tree_nwk, tree_phyloxml, report, result_folder]
 
   cgmlst:
@@ -187,10 +198,10 @@ outputs:
     outputSource: create_genome_group/genome_group_path
   phylo_tree:
     type: File
-    outputSource: phylo_tree/tree_nwk
+    outputSource: codon_tree/tree_nwk
   phylo_report:
     type: File
-    outputSource: phylo_tree/report
+    outputSource: codon_tree/report
   cgmlst_report:
     type: File
     outputSource: cgmlst/report

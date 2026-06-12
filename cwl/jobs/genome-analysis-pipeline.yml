@@ -23,8 +23,10 @@ reference_genome_ids:
   - "1452723.3"    # M. tuberculosis 18b
   - "1249615.4"    # M. tuberculosis K
 
-# Outgroup for phylogenetic tree (M. bovis BCG)
-out_genome_ids:
+# Optional genomes for CodonTree — not penalized if PGFams are missing.
+# Use this for freshly-annotated genomes whose PGFam coverage may be incomplete,
+# or for additional reference points (replaces the old out_genome_ids outgroup concept).
+optional_genome_ids:
   - "1206780.3"    # M. bovis BCG str. Korea 1168P
 
 # cgMLST schema
@@ -32,7 +34,7 @@ input_schema_selection: "Mycobacterium tuberculosis"
 
 # Output — each BV-BRC app gets output_file + suffix:
 #   CGA:    mtb_analysis_Mycobacterium_tuberculosis_H37Rv
-#   Phylo:  mtb_analysis_phylo
+#   Tree:   mtb_analysis_tree
 #   cgMLST: mtb_analysis_cgmlst
 #   SNP:    mtb_analysis_snp
 output_path: "/awilke@bvbrc/home/gowe-test/mtb-pipeline-test"
