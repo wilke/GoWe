@@ -97,14 +97,24 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 	return &worker, nil
 }
 
-// Heartbeat sends a heartbeat to update last_seen.
-func (c *Client) Heartbeat(ctx context.Context) error {
-	_, err := c.doRequest(ctx, http.MethodPut,
-		fmt.Sprintf("/api/v1/workers/%s/heartbeat", c.workerID), nil)
+// Heartbeat sends a heartbeat to update last_seen, reporting the worker's
+// currently-running task IDs. The server uses this to reconcile orphaned tasks
+// and returns any tasks the worker should cancel (their submission was cancelled).
+func (c *Client) Heartbeat(ctx context.Context, running []string) (*model.HeartbeatResponse, error) {
+	body, err := json.Marshal(model.HeartbeatRequest{RunningTasks: running})
 	if err != nil {
-		return fmt.Errorf("heartbeat: %w", err)
+		return nil, fmt.Errorf("heartbeat: marshal: %w", err)
 	}
-	return nil
+	resp, err := c.doRequest(ctx, http.MethodPut,
+		fmt.Sprintf("/api/v1/workers/%s/heartbeat", c.workerID), body)
+	if err != nil {
+		return nil, fmt.Errorf("heartbeat: %w", err)
+	}
+	var hb model.HeartbeatResponse
+	if err := decodeResponseData(resp, &hb); err != nil {
+		return nil, fmt.Errorf("heartbeat: %w", err)
+	}
+	return &hb, nil
 }
 
 // Checkout requests a task from the server. Returns nil if no work available (204).

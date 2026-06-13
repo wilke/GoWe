@@ -33,18 +33,19 @@ type Worker struct {
 	stageOut          string
 	stagerCfg         StagerConfig
 	poll              time.Duration
-	containerRuntime  string               // "docker", "apptainer", or "none"
-	gpu               GPUWorkerConfig     // GPU configuration
-	resources         ResourceWorkerConfig // Resource limits
-	imageDir          string              // Base directory for resolving .sif image paths
-	dockerHostPathMap map[string]string // Docker-in-Docker path mapping
-	dockerVolume      string            // Named Docker volume shared with tool containers
-	inputPathMap      map[string]string // Input path mapping for host->container translation
-	extraBinds        []toolexec.ExtraBind // Extra bind mounts for containers
-	datasets          map[string]string   // Merged dataset map: ID → host path
-	secrets           map[string]string   // Secret env vars injected into containers
-	envVars           map[string]string   // Non-secret env vars injected into containers
+	containerRuntime  string                   // "docker", "apptainer", or "none"
+	gpu               GPUWorkerConfig          // GPU configuration
+	resources         ResourceWorkerConfig     // Resource limits
+	imageDir          string                   // Base directory for resolving .sif image paths
+	dockerHostPathMap map[string]string        // Docker-in-Docker path mapping
+	dockerVolume      string                   // Named Docker volume shared with tool containers
+	inputPathMap      map[string]string        // Input path mapping for host->container translation
+	extraBinds        []toolexec.ExtraBind     // Extra bind mounts for containers
+	datasets          map[string]string        // Merged dataset map: ID → host path
+	secrets           map[string]string        // Secret env vars injected into containers
+	envVars           map[string]string        // Non-secret env vars injected into containers
 	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
+	active            *activeTaskSet           // In-flight tasks → per-task cancel funcs
 	logger            *slog.Logger
 }
 
@@ -361,6 +362,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		datasets:          datasets,
 		secrets:           cfg.Secrets,
 		envVars:           cfg.EnvVars,
+		active:            newActiveTaskSet(),
 		logger:            logger.With("component", "worker"),
 	}, nil
 }
@@ -409,8 +411,18 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := w.client.Heartbeat(ctx); err != nil {
+			resp, err := w.client.Heartbeat(ctx, w.active.ids())
+			if err != nil {
 				w.logger.Warn("heartbeat failed", "error", err)
+				continue
+			}
+			// Cancel any tasks the server reports as cancelled. Cancelling the
+			// task's execution context kills the underlying process and frees
+			// resources (e.g. GPU) without waiting for the tool to finish.
+			for _, taskID := range resp.CancelTasks {
+				if w.active.cancel(taskID) {
+					w.logger.Info("cancelling task on server request", "task_id", taskID)
+				}
 			}
 		}
 	}
@@ -471,13 +483,63 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 		return w.reportFailure(ctx, task, fmt.Errorf("create task dir: %w", err))
 	}
 
+	// Per-task execution context so the heartbeat loop can cancel this specific
+	// task — killing its process and freeing resources (e.g. GPU) — without
+	// affecting the worker or other tasks.
+	runCtx, cancel := context.WithCancel(ctx)
+	w.active.add(task.ID, cancel)
+	defer func() {
+		w.active.remove(task.ID)
+		cancel()
+	}()
+
 	// Check if task has Tool+Job (new format) or legacy _base_command.
 	if task.HasTool() {
-		return w.executeWithCWLTool(ctx, task, taskDir)
+		return w.executeWithCWLTool(runCtx, task, taskDir)
 	}
 
 	// Legacy path: use _base_command from task.Inputs.
-	return w.executeLegacy(ctx, task, taskDir)
+	return w.executeLegacy(runCtx, task, taskDir)
+}
+
+// reportComplete reports a final task result, detaching from ctx cancellation so a
+// cancelled or killed task can still be reported (bounded by a short timeout).
+func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskResult) error {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	return w.client.ReportComplete(rctx, taskID, result)
+}
+
+// reportCancelled reports a task as SKIPPED (the scheduler's terminal state for a
+// cancelled task), used when the server has cancelled the task mid-execution.
+func (w *Worker) reportCancelled(ctx context.Context, task *model.Task) error {
+	exitCode := -1
+	return w.reportComplete(ctx, task.ID, TaskResult{
+		State:    model.TaskStateSkipped,
+		ExitCode: &exitCode,
+		Stderr:   "task cancelled by server",
+	})
+}
+
+// handleExecCancellation reports the right terminal outcome when tool execution
+// returns an error and the run context was cancelled. It returns (handled, error):
+// handled=false means the cancellation did not apply and the caller should fall
+// back to normal failure reporting.
+func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task) (bool, error) {
+	switch {
+	case w.active.wasCancelled(task.ID):
+		// Explicit server-driven cancellation → report SKIPPED (terminal).
+		w.logger.Info("task cancelled by server, reporting SKIPPED", "task_id", task.ID)
+		return true, w.reportCancelled(runCtx, task)
+	case runCtx.Err() != nil:
+		// Context cancelled but not an explicit task cancel → the worker is
+		// shutting down. Leave the task non-terminal so the server reaper requeues
+		// it rather than marking it FAILED.
+		w.logger.Info("worker shutting down mid-task, leaving for requeue", "task_id", task.ID)
+		return true, runCtx.Err()
+	default:
+		return false, nil
+	}
 }
 
 // executeWithCWLTool executes a task using the cwltool package with full CWL support.
@@ -559,8 +621,14 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 
 	// Handle execution errors.
 	if err != nil {
+		// If the run context was cancelled, report the cancellation outcome
+		// (SKIPPED for an explicit server cancel; leave for requeue on shutdown)
+		// rather than a spurious FAILED.
+		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
+			return cerr
+		}
 		if result != nil {
-			return w.client.ReportComplete(ctx, task.ID, TaskResult{
+			return w.reportComplete(ctx, task.ID, TaskResult{
 				State:    model.TaskStateFailed,
 				ExitCode: &result.ExitCode,
 				Stdout:   result.Stdout,
@@ -585,7 +653,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task, outStager, "")
 	}
 
-	return w.client.ReportComplete(ctx, task.ID, TaskResult{
+	return w.reportComplete(ctx, task.ID, TaskResult{
 		State:    model.TaskStateSuccess,
 		ExitCode: &result.ExitCode,
 		Stdout:   result.Stdout,
@@ -640,6 +708,10 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 
 	result, runErr := w.runtime.Run(ctx, spec)
 	if runErr != nil {
+		// Cancellation takes precedence over a generic runtime error.
+		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
+			return cerr
+		}
 		// Runtime infrastructure error (e.g., binary not found).
 		return w.reportFailure(ctx, task, runErr)
 	}
@@ -677,7 +749,7 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		state = model.TaskStateFailed
 	}
 
-	return w.client.ReportComplete(ctx, task.ID, TaskResult{
+	return w.reportComplete(ctx, task.ID, TaskResult{
 		State:    state,
 		ExitCode: &result.ExitCode,
 		Stdout:   result.Stdout,
@@ -770,7 +842,7 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, 
 // reportFailure sends a FAILED completion with the given error as stderr.
 func (w *Worker) reportFailure(ctx context.Context, task *model.Task, execErr error) error {
 	exitCode := -1
-	reportErr := w.client.ReportComplete(ctx, task.ID, TaskResult{
+	reportErr := w.reportComplete(ctx, task.ID, TaskResult{
 		State:    model.TaskStateFailed,
 		ExitCode: &exitCode,
 		Stderr:   execErr.Error(),

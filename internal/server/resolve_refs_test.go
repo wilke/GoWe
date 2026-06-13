@@ -28,14 +28,14 @@ func (m *mockStore) GetWorkflowByHash(_ context.Context, _ string) (*model.Workf
 }
 
 // Stub the rest of the Store interface (unused in these tests).
-func (m *mockStore) CreateWorkflow(context.Context, *model.Workflow) error  { return nil }
+func (m *mockStore) CreateWorkflow(context.Context, *model.Workflow) error { return nil }
 func (m *mockStore) ListWorkflows(context.Context, model.ListOptions) ([]*model.Workflow, int, error) {
 	return nil, 0, nil
 }
 func (m *mockStore) UpdateWorkflow(context.Context, *model.Workflow) error { return nil }
 func (m *mockStore) DeleteWorkflow(context.Context, string) error          { return nil }
 
-func (m *mockStore) CreateSubmission(context.Context, *model.Submission) error  { return nil }
+func (m *mockStore) CreateSubmission(context.Context, *model.Submission) error { return nil }
 func (m *mockStore) GetSubmission(context.Context, string) (*model.Submission, error) {
 	return nil, nil
 }
@@ -53,7 +53,7 @@ func (m *mockStore) CountSubmissionsByState(_ context.Context, _ time.Time, _ st
 	return nil, nil
 }
 
-func (m *mockStore) CreateStepInstance(context.Context, *model.StepInstance) error  { return nil }
+func (m *mockStore) CreateStepInstance(context.Context, *model.StepInstance) error { return nil }
 func (m *mockStore) BatchCreateStepInstances(context.Context, []*model.StepInstance) error {
 	return nil
 }
@@ -71,8 +71,8 @@ func (m *mockStore) CancelNonTerminalSteps(context.Context, string, time.Time) (
 	return 0, nil
 }
 
-func (m *mockStore) CreateTask(context.Context, *model.Task) error           { return nil }
-func (m *mockStore) GetTask(context.Context, string) (*model.Task, error)    { return nil, nil }
+func (m *mockStore) CreateTask(context.Context, *model.Task) error        { return nil }
+func (m *mockStore) GetTask(context.Context, string) (*model.Task, error) { return nil, nil }
 func (m *mockStore) ListTasksBySubmission(context.Context, string) ([]*model.Task, error) {
 	return nil, nil
 }
@@ -82,7 +82,7 @@ func (m *mockStore) ListTasksBySubmissionPaged(context.Context, string, model.Li
 func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.Task, error) {
 	return nil, nil
 }
-func (m *mockStore) UpdateTask(context.Context, *model.Task) error                         { return nil }
+func (m *mockStore) UpdateTask(context.Context, *model.Task) error { return nil }
 func (m *mockStore) GetTasksByState(context.Context, model.TaskState) ([]*model.Task, error) {
 	return nil, nil
 }
@@ -93,20 +93,20 @@ func (m *mockStore) GetActiveTasks(context.Context) ([]*model.Task, error) { ret
 func (m *mockStore) GetTaskSummaries(context.Context, []string) (map[string]model.TaskSummary, error) {
 	return nil, nil
 }
-func (m *mockStore) ResetFailedTasks(context.Context, string) (int, error)  { return 0, nil }
+func (m *mockStore) ResetFailedTasks(context.Context, string) (int, error) { return 0, nil }
 func (m *mockStore) ResetFailedSteps(context.Context, string) (int, error) { return 0, nil }
 
-func (m *mockStore) CreateSession(context.Context, *model.Session) error            { return nil }
-func (m *mockStore) GetSession(context.Context, string) (*model.Session, error)     { return nil, nil }
-func (m *mockStore) DeleteSession(context.Context, string) error                    { return nil }
-func (m *mockStore) DeleteExpiredSessions(context.Context) (int64, error)           { return 0, nil }
-func (m *mockStore) DeleteSessionsByUserID(context.Context, string) (int64, error)  { return 0, nil }
+func (m *mockStore) CreateSession(context.Context, *model.Session) error           { return nil }
+func (m *mockStore) GetSession(context.Context, string) (*model.Session, error)    { return nil, nil }
+func (m *mockStore) DeleteSession(context.Context, string) error                   { return nil }
+func (m *mockStore) DeleteExpiredSessions(context.Context) (int64, error)          { return 0, nil }
+func (m *mockStore) DeleteSessionsByUserID(context.Context, string) (int64, error) { return 0, nil }
 
-func (m *mockStore) CreateWorker(context.Context, *model.Worker) error          { return nil }
-func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error)   { return nil, nil }
-func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error          { return nil }
-func (m *mockStore) DeleteWorker(context.Context, string) error                 { return nil }
-func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)       { return nil, nil }
+func (m *mockStore) CreateWorker(context.Context, *model.Worker) error        { return nil }
+func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error) { return nil, nil }
+func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error        { return nil }
+func (m *mockStore) DeleteWorker(context.Context, string) error               { return nil }
+func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)     { return nil, nil }
 func (m *mockStore) CheckoutTask(context.Context, string, string, model.ContainerRuntime) (*model.Task, error) {
 	return nil, nil
 }
@@ -114,13 +114,19 @@ func (m *mockStore) MarkStaleWorkersOffline(_ context.Context, _ time.Duration) 
 	return nil, nil
 }
 func (m *mockStore) RequeueWorkerTasks(context.Context, string) (int, error) { return 0, nil }
+func (m *mockStore) ReconcileWorkerTasks(context.Context, string, []string, time.Duration) ([]string, error) {
+	return nil, nil
+}
+func (m *mockStore) CancelledTasksForWorker(context.Context, []string) ([]string, error) {
+	return nil, nil
+}
 
 func (m *mockStore) GetUser(context.Context, string) (*model.User, error) { return nil, nil }
 func (m *mockStore) GetOrCreateUser(context.Context, string, model.AuthProvider) (*model.User, error) {
 	return nil, nil
 }
-func (m *mockStore) UpdateUser(context.Context, *model.User) error            { return nil }
-func (m *mockStore) ListUsers(context.Context) ([]*model.User, error)         { return nil, nil }
+func (m *mockStore) UpdateUser(context.Context, *model.User) error    { return nil }
+func (m *mockStore) ListUsers(context.Context) ([]*model.User, error) { return nil, nil }
 func (m *mockStore) LinkProvider(context.Context, string, model.AuthProvider, string) error {
 	return nil
 }

@@ -66,6 +66,8 @@ type Store interface {
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
 	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
 	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
+	ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error)
+	CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error)
 
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)
