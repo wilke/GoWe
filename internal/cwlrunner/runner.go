@@ -1669,9 +1669,11 @@ func splitBasenameExt(basename string) (string, string) {
 	return basename, ""
 }
 
-// isURI checks if a string is a URI.
+// isURI reports whether s has a recognized URI scheme (file, http, https, ws,
+// shock, …). Delegates to cwl.IsURI so all resolvers agree on which locations
+// must be preserved rather than joined with a base directory (issue #117).
 func isURI(s string) bool {
-	return len(s) > 5 && (s[:5] == "file:" || s[:5] == "http:" || s[:6] == "https:")
+	return cwl.IsURI(s)
 }
 
 // resolveStepInputs resolves inputs for a workflow step.

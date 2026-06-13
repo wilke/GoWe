@@ -89,6 +89,39 @@ func TestInferScheme(t *testing.T) {
 	}
 }
 
+func TestIsURI(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		// Recognized URI schemes — all true.
+		{"file:///data/output", true},
+		{"http://example.com/x", true},
+		{"https://example.com/x", true},
+		{"ws:///user@bvbrc/home/contigs.fasta", true},
+		{"shock://p3.theseed.org/node/abc", true},
+		{"s3://bucket/key", true},
+		// Bare/relative/absolute local paths — all false (must be joined with baseDir).
+		{"/user@bvbrc/home/output", false},
+		{"/tmp/local/path", false},
+		{"relative/path", false},
+		{"contigs.fasta", false},
+		{"", false},
+		// Windows-style path is not a URI.
+		{`C:\data\x`, false},
+		// A leading "://" with no scheme is not a URI.
+		{"://nope", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := IsURI(tt.input); got != tt.want {
+				t.Errorf("IsURI(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseLocationScheme_RoundTrip(t *testing.T) {
 	// Ensure BuildLocation → ParseLocationScheme round-trips correctly.
 	cases := []struct {

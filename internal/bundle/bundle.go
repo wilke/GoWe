@@ -438,22 +438,29 @@ func ResolveFilePaths(v any, baseDir string) any {
 			var absLocation string
 			if loc, ok := result["location"].(string); ok {
 				// Decode URL-encoded characters in the location.
-				loc = cwl.DecodeLocation(loc)
+				decoded := cwl.DecodeLocation(loc)
+				scheme, _ := cwl.ParseLocationScheme(decoded)
 
-				if strings.HasPrefix(loc, "file://") {
-					// Strip file:// prefix and resolve.
-					localPath := strings.TrimPrefix(loc, "file://")
+				switch {
+				case scheme == cwl.SchemeFile || strings.HasPrefix(decoded, "file://"):
+					// Strip file:// prefix and resolve to a local path.
+					localPath := strings.TrimPrefix(decoded, "file://")
 					if !filepath.IsAbs(localPath) {
 						localPath = filepath.Join(baseDir, localPath)
 					}
 					absLocation = localPath
 					result["location"] = "file://" + localPath
-				} else if !strings.HasPrefix(loc, "http://") && !strings.HasPrefix(loc, "https://") {
-					// Relative local path.
-					if !filepath.IsAbs(loc) {
-						absLocation = filepath.Join(baseDir, loc)
+				case scheme != "":
+					// Remote/non-local URI (http, https, ws, shock, …): preserve the
+					// location verbatim and derive no local path. ws:// in particular
+					// must reach the BV-BRC executor intact so it can be flattened to a
+					// workspace path (issue #117).
+				default:
+					// Relative or absolute local path.
+					if !filepath.IsAbs(decoded) {
+						absLocation = filepath.Join(baseDir, decoded)
 					} else {
-						absLocation = loc
+						absLocation = decoded
 					}
 					result["location"] = absLocation
 				}
