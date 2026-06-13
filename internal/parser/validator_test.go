@@ -360,7 +360,7 @@ func TestValidate_OutputBinding_ShellInterp_RejectGlob(t *testing.T) {
 	g := validGraph()
 	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
 		"blast_json": {
-			
+
 			Type: "File",
 			OutputBinding: &cwl.OutputBinding{
 				Glob: "${params.output_path}/.${params.output_file}/blast_out.json",
@@ -384,7 +384,7 @@ func TestValidate_OutputBinding_ShellInterp_RejectGlobArray(t *testing.T) {
 	g := validGraph()
 	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
 		"results": {
-			
+
 			Type: "File[]",
 			OutputBinding: &cwl.OutputBinding{
 				Glob: []any{"good_*.txt", "${BAD}/bad_*.txt"},
@@ -405,7 +405,7 @@ func TestValidate_OutputBinding_ShellInterp_RejectOutputEval(t *testing.T) {
 	g := validGraph()
 	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
 		"computed": {
-			
+
 			Type: "File",
 			OutputBinding: &cwl.OutputBinding{
 				Glob:       "out.txt",
@@ -427,7 +427,7 @@ func TestValidate_OutputBinding_Valid_CWLExpression(t *testing.T) {
 	g := validGraph()
 	g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{
 		"tree_nwk": {
-			
+
 			Type: "File",
 			OutputBinding: &cwl.OutputBinding{
 				Glob:       "$(inputs.output_file)_tree.nwk",
@@ -435,14 +435,14 @@ func TestValidate_OutputBinding_Valid_CWLExpression(t *testing.T) {
 			},
 		},
 		"plain": {
-			
+
 			Type: "File",
 			OutputBinding: &cwl.OutputBinding{
 				Glob: "blast_out.json",
 			},
 		},
 		"all_results": {
-			
+
 			Type: "File[]",
 			OutputBinding: &cwl.OutputBinding{
 				Glob: []any{"$(inputs.output_file)*.txt", "report.html"},
@@ -451,6 +451,69 @@ func TestValidate_OutputBinding_Valid_CWLExpression(t *testing.T) {
 	}
 	if apiErr := v.Validate(g); apiErr != nil {
 		t.Errorf("valid CWL $(...) expressions should pass, got: %v", apiErr)
+	}
+}
+
+func TestValidate_OutputBinding_Valid_JSExpressionBody(t *testing.T) {
+	// A whole-string ${ ... } block containing a return statement is a valid CWL
+	// JavaScript expression body (legal in outputEval and expression globs with
+	// InlineJavascriptRequirement). It must NOT be flagged as shell-style. These
+	// mirror CWL v1.2 conformance tests (optional-numerical-output-0, wc4-tool,
+	// listing_shallow3) that regressed under the original blanket ${...} check.
+	cases := []struct {
+		name string
+		out  cwl.ToolOutputParam
+	}{
+		{
+			name: "single-line outputEval with return",
+			out: cwl.ToolOutputParam{
+				Type: "float",
+				OutputBinding: &cwl.OutputBinding{
+					Glob:       "a.txt",
+					OutputEval: "${\n    return parseFloat(self[0].contents);\n}",
+				},
+			},
+		},
+		{
+			name: "multi-line outputEval with nested braces and return",
+			out: cwl.ToolOutputParam{
+				Type: "int",
+				OutputBinding: &cwl.OutputBinding{
+					Glob:       "output.txt",
+					OutputEval: "${\n  var s = self[0].contents.split(/\\r?\\n/);\n  return parseInt(s[s.length-2]);\n}",
+				},
+			},
+		},
+		{
+			name: "loop body with inner braces and return",
+			out: cwl.ToolOutputParam{
+				Type: "File",
+				OutputBinding: &cwl.OutputBinding{
+					Glob:       ".",
+					OutputEval: "${\n  for (var i = 0; i < self[0].listing.length; i++) {\n    if (self[0].listing[i].basename == \"file2\") {\n      return self[0].listing[i];\n    }\n  }\n}",
+				},
+			},
+		},
+		{
+			name: "expression-body glob with return",
+			out: cwl.ToolOutputParam{
+				Type: "File",
+				OutputBinding: &cwl.OutputBinding{
+					Glob: "${ return inputs.name + \".txt\"; }",
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := testValidator()
+			g := validGraph()
+			g.Tools["tool1"].Outputs = map[string]cwl.ToolOutputParam{"computed": tc.out}
+			if apiErr := v.Validate(g); apiErr != nil {
+				t.Errorf("valid ${...} JS expression body should pass, got: %v", apiErr.Details)
+			}
+		})
 	}
 }
 
