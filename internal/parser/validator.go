@@ -4,11 +4,16 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
+
+// reReturnStmt matches a JavaScript `return` keyword on a word boundary, used to
+// recognize a CWL ${ ... } JavaScript expression body.
+var reReturnStmt = regexp.MustCompile(`\breturn\b`)
 
 // Validator performs semantic validation on a parsed CWL GraphDocument.
 type Validator struct {
@@ -373,10 +378,18 @@ func checkShellInterp(glob any, field, kind string) []model.FieldError {
 	return nil
 }
 
-// checkShellInterpString reports any ${...} substring as a FieldError.
-// CWL parameter references use $(...), never ${...}; the latter is shell
-// syntax that CWL treats as a literal string.
+// checkShellInterpString reports a ${...} substring as a FieldError when it is
+// shell-style interpolation. CWL parameter references use $(...), and ${...}
+// embedded in a larger literal is shell syntax that CWL treats as a literal
+// string. However, a value that is a single whole-string ${ ... } block
+// containing a return statement is a valid CWL JavaScript expression *body*
+// (legal in outputEval and expression globs with InlineJavascriptRequirement);
+// such values are accepted.
 func checkShellInterpString(s, field, kind string) []model.FieldError {
+	if isJSExpressionBody(s) {
+		return nil
+	}
+
 	idx := strings.Index(s, "${")
 	if idx < 0 {
 		return nil
@@ -397,6 +410,45 @@ func checkShellInterpString(s, field, kind string) []model.FieldError {
 				"Replace with a valid CWL expression like $(inputs.<input_id>).",
 			kind, fragment),
 	}}
+}
+
+// isJSExpressionBody reports whether s is a single whole-string ${ ... } block
+// containing a return statement — the CWL JavaScript expression-body form. Such
+// a value is a valid expression (in outputEval or an expression glob when
+// InlineJavascriptRequirement is in scope), not shell-style interpolation.
+//
+// It distinguishes:
+//   - valid:   "${ return parseFloat(self[0].contents); }"   (whole block + return)
+//   - invalid: "${params.output_path}/blast_out.json"        (embedded, no return)
+//   - invalid: "${self[0].contents.trim()}"                  (no return; use $(...))
+//
+// Brace matching handles nested braces in the JS body (loops, conditionals).
+func isJSExpressionBody(s string) bool {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "${") || !strings.HasSuffix(t, "}") {
+		return false
+	}
+	// The opening "${" must balance with the trailing "}" as one block — i.e. the
+	// brace opened at index 1 closes only at the final character. If it closes
+	// earlier, the string is "${...}<more>" (embedded), not a whole expression.
+	depth := 0
+	for i := 1; i < len(t); i++ {
+		switch t[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && i != len(t)-1 {
+				return false
+			}
+		}
+	}
+	if depth != 0 {
+		return false // unbalanced
+	}
+	// A CWL ${...} body must return a value; require a return keyword to
+	// distinguish it from shell-style ${var} / ${var.attr} references.
+	return reReturnStmt.MatchString(t)
 }
 
 func (v *Validator) validateDAG(graph *cwl.GraphDocument) []model.FieldError {
