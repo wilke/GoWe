@@ -285,6 +285,64 @@ func TestBVBRCExecutor_SubmitFileAndDirectoryResolved(t *testing.T) {
 	}
 }
 
+// File/Directory objects nested inside a [bvbrc:group] / record parameter (e.g.
+// paired_end_libs[].read1) must also be flattened to workspace path strings.
+// Reproduces the real GenomeAssembly2 failure where read1/read2 reached BV-BRC as
+// CWL objects ("File HASH(0x...) does not exist").
+func TestBVBRCExecutor_SubmitFlattensNestedGroupFiles(t *testing.T) {
+	mock := &mockRPCCaller{result: json.RawMessage(`[{"id":"j1","status":"queued"}]`)}
+	e := newTestBVBRCExecutor(mock)
+
+	task := &model.Task{
+		ID:         "task_1",
+		BVBRCAppID: "GenomeAssembly2",
+		Inputs: map[string]any{
+			"paired_end_libs": []any{
+				map[string]any{
+					"read1":    map[string]any{"class": "File", "location": "ws:///user@bvbrc/home/sample1_R1.fastq.gz"},
+					"read2":    map[string]any{"class": "File", "location": "ws:///user@bvbrc/home/sample1_R2.fastq.gz"},
+					"platform": "illumina",
+				},
+			},
+			"output_path": map[string]any{"class": "Directory", "location": "ws:///user@bvbrc/home/"},
+			"output_file": "asm",
+		},
+	}
+
+	if _, err := e.Submit(context.Background(), task); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	params := mock.calls[0].Params[1].(map[string]any)
+	libs, ok := params["paired_end_libs"].([]any)
+	if !ok || len(libs) != 1 {
+		t.Fatalf("paired_end_libs = %#v, want 1-element array", params["paired_end_libs"])
+	}
+	lib := libs[0].(map[string]any)
+
+	for _, field := range []struct{ key, want string }{
+		{"read1", "/user@bvbrc/home/sample1_R1.fastq.gz"},
+		{"read2", "/user@bvbrc/home/sample1_R2.fastq.gz"},
+	} {
+		got, isStr := lib[field.key].(string)
+		if !isStr {
+			t.Errorf("%s = %T (%v), want flat workspace string — a CWL object reached the API", field.key, lib[field.key], lib[field.key])
+			continue
+		}
+		if got != field.want {
+			t.Errorf("%s = %q, want %q", field.key, got, field.want)
+		}
+	}
+	// Non-File fields in the group are preserved as-is.
+	if lib["platform"] != "illumina" {
+		t.Errorf("platform = %v, want illumina", lib["platform"])
+	}
+	// Top-level Directory still flattens.
+	if got := params["output_path"]; got != "/user@bvbrc/home/" {
+		t.Errorf("output_path = %v, want /user@bvbrc/home/", got)
+	}
+}
+
 func TestBVBRCExecutor_StatusQueued(t *testing.T) {
 	mock := &mockRPCCaller{
 		result: json.RawMessage(`[{"job-1":{"status":"queued"}}]`),
