@@ -842,6 +842,14 @@ func uploadFileInput(fileObj map[string]any, quiet bool) (map[string]any, error)
 
 // uploadDirectoryInput uploads all files in a Directory's listing.
 func uploadDirectoryInput(dirObj map[string]any, quiet bool) (map[string]any, error) {
+	// A Directory whose location is a remote URI (ws://, shock://, http(s)://) is
+	// already accessible to the executor/worker — it must not be uploaded and its
+	// location must be preserved (e.g. a BV-BRC ws:// output_path). Mirrors
+	// uploadFileInput, which leaves remote-URI File locations untouched (#117).
+	if loc, _ := dirObj["location"].(string); cwl.IsURI(loc) {
+		return dirObj, nil
+	}
+
 	result := make(map[string]any)
 	for k, v := range dirObj {
 		result[k] = v
