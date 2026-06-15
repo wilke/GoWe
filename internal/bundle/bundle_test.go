@@ -14,6 +14,62 @@ func testdataPath(rel string) string {
 	return filepath.Join("..", "..", "testdata", rel)
 }
 
+// ResolveFilePaths must NOT mangle remote URI locations (ws://, shock://,
+// http(s)://): they are not local paths and must survive bundling intact so the
+// BV-BRC executor can flatten them to a workspace path, and so worker/local
+// execution can resolve them. Only file:// and scheme-less locations are local.
+func TestResolveFilePaths_PreservesRemoteURIs(t *testing.T) {
+	cases := []struct {
+		name     string
+		class    string
+		location string
+	}{
+		{"workspace file", "File", "ws:///user@bvbrc/home/data/contigs.fasta"},
+		{"workspace dir", "Directory", "ws:///user@bvbrc/home/output"},
+		{"shock file", "File", "shock://p3.theseed.org/node/abc123"},
+		{"https file", "File", "https://example.com/data/x.fasta"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := map[string]any{"class": tc.class, "location": tc.location}
+			out, ok := ResolveFilePaths(in, "/jobs/basedir").(map[string]any)
+			if !ok {
+				t.Fatalf("ResolveFilePaths returned %T, want map", out)
+			}
+			if got := out["location"]; got != tc.location {
+				t.Errorf("location = %q, want %q (must be preserved, not joined with baseDir)", got, tc.location)
+			}
+			// A remote URI must not acquire a local baseDir-joined path.
+			if p, ok := out["path"].(string); ok && strings.Contains(p, "/jobs/basedir") {
+				t.Errorf("path = %q leaked baseDir for a remote URI", p)
+			}
+		})
+	}
+}
+
+// file:// and relative locations remain local-path resolution (regression guard
+// that the remote-URI fix did not change local behavior).
+func TestResolveFilePaths_LocalStillResolved(t *testing.T) {
+	t.Run("file:// localized", func(t *testing.T) {
+		in := map[string]any{"class": "File", "location": "file:///tmp/staged/x.fasta"}
+		out := ResolveFilePaths(in, "/jobs/basedir").(map[string]any)
+		if got := out["location"]; got != "file:///tmp/staged/x.fasta" {
+			t.Errorf("location = %q, want file:///tmp/staged/x.fasta", got)
+		}
+		if got := out["path"]; got != "/tmp/staged/x.fasta" {
+			t.Errorf("path = %q, want /tmp/staged/x.fasta", got)
+		}
+	})
+	t.Run("relative joined with baseDir", func(t *testing.T) {
+		in := map[string]any{"class": "File", "location": "sub/x.fasta"}
+		out := ResolveFilePaths(in, "/jobs/basedir").(map[string]any)
+		if got := out["location"]; got != "/jobs/basedir/sub/x.fasta" {
+			t.Errorf("location = %q, want /jobs/basedir/sub/x.fasta", got)
+		}
+	})
+}
+
 func TestBundle_SeparateFiles(t *testing.T) {
 	result, err := Bundle(testdataPath("separate/pipeline.cwl"))
 	if err != nil {

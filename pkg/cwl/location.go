@@ -27,6 +27,17 @@ func ParseLocationScheme(location string) (scheme, path string) {
 	return "", location
 }
 
+// IsURI reports whether s is a URI with a recognized scheme prefix (file, http,
+// https, ws, shock, s3, …) — i.e. it has a "scheme://" prefix. Bare, relative,
+// and absolute local paths return false; those must be resolved against a base
+// directory. Centralizing this here keeps every resolver (bundler, cwltool,
+// cwlrunner) in agreement about which locations are URIs that must be preserved
+// rather than joined with a base directory.
+func IsURI(s string) bool {
+	scheme, _ := ParseLocationScheme(s)
+	return scheme != ""
+}
+
 // BuildLocation constructs a scheme://path URI.
 func BuildLocation(scheme, path string) string {
 	switch scheme {
