@@ -519,7 +519,15 @@ func resolveBVBRCInput(v any) any {
 		if class == "File" || class == "Directory" {
 			return resolveLocation(val)
 		}
-		return val
+		// Recurse into nested maps. [bvbrc:group] / record parameters (e.g.
+		// paired_end_libs) carry File/Directory objects in their fields; those
+		// must be flattened to workspace path strings too, or BV-BRC receives a
+		// raw CWL object ("File HASH(0x...) does not exist").
+		out := make(map[string]any, len(val))
+		for k, item := range val {
+			out[k] = resolveBVBRCInput(item)
+		}
+		return out
 	case []any:
 		resolved := make([]any, len(val))
 		for i, item := range val {
