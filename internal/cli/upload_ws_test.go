@@ -30,6 +30,22 @@ func TestUploadDirectoryInput_PreservesRemoteURI(t *testing.T) {
 	}
 }
 
+// A file:// Directory is LOCAL and must NOT take the remote-URI early-return —
+// it must still go through the upload path. Regression guard: cwl.IsURI returns
+// true for file://, so the guard must check the scheme, not just IsURI. Using a
+// nonexistent path means no upload is attempted (no server client needed); the
+// observable is that the local-path branch ran and stripped the location.
+func TestUploadDirectoryInput_FileURLNotPreserved(t *testing.T) {
+	in := map[string]any{"class": "Directory", "location": "file:///nonexistent-dir-xyz-12345"}
+	out, err := uploadDirectoryInput(in, true)
+	if err != nil {
+		t.Fatalf("uploadDirectoryInput: %v", err)
+	}
+	if _, ok := out["location"]; ok {
+		t.Errorf("file:// directory kept its location %v — it took the remote-URI early-return instead of the local upload path", out["location"])
+	}
+}
+
 // A File input with a remote URI location is likewise preserved (already the
 // case; locks it in alongside the Directory fix).
 func TestUploadFileInput_PreservesRemoteURI(t *testing.T) {
