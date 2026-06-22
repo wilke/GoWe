@@ -1521,7 +1521,7 @@ func resolveInputValue(v any, baseDir string) any {
 	case map[string]any:
 		if class, ok := val["class"].(string); ok {
 			if class == "File" || class == "Directory" {
-				return resolveFileObject(val, baseDir)
+				return cwltool.ResolveFileObject(val, baseDir)
 			}
 		}
 		// Recursively resolve nested maps.
@@ -1539,141 +1539,6 @@ func resolveInputValue(v any, baseDir string) any {
 	default:
 		return v
 	}
-}
-
-// resolveFileObject resolves a File or Directory path.
-func resolveFileObject(obj map[string]any, baseDir string) map[string]any {
-	resolved := make(map[string]any)
-	for k, v := range obj {
-		resolved[k] = v
-	}
-
-	// Handle file literals: File objects with "contents" but no path/location.
-	// These need to be materialized as actual files.
-	if _, err := fileliteral.MaterializeFileObject(resolved); err != nil {
-		// Log error but continue - file literals are not critical.
-		_ = err
-	}
-
-	// Step 1: Resolve location (make it absolute if relative).
-	if loc, ok := resolved["location"].(string); ok {
-		if !filepath.IsAbs(loc) && !isURI(loc) {
-			resolved["location"] = filepath.Join(baseDir, loc)
-		}
-	}
-
-	// Step 2: Resolve path (make it absolute if relative).
-	if path, ok := resolved["path"].(string); ok {
-		if !filepath.IsAbs(path) {
-			resolved["path"] = filepath.Join(baseDir, path)
-		}
-	}
-
-	// Step 3: If path not set, derive from location.
-	if _, hasPath := resolved["path"]; !hasPath {
-		if loc, ok := resolved["location"].(string); ok {
-			// Strip file:// prefix if present.
-			var path string
-			if strings.HasPrefix(loc, "file://") {
-				path = loc[7:]
-			} else if !strings.Contains(loc, "://") {
-				path = loc
-			}
-			// URL-decode the path (handle %23 -> # etc).
-			if path != "" {
-				path = cwl.DecodePath(path)
-				resolved["path"] = path
-			}
-		}
-	}
-
-	// Step 4: Final check - ensure path is absolute.
-	// Note: path has already been joined with baseDir in steps 2 or 3,
-	// so we only need to call Abs() to resolve the full path.
-	if path, ok := resolved["path"].(string); ok && !filepath.IsAbs(path) {
-		absPath, err := filepath.Abs(path)
-		if err == nil {
-			resolved["path"] = absPath
-		}
-	}
-
-	// Step 5: Compute basename, dirname, nameroot, nameext if path is available.
-	if path, ok := resolved["path"].(string); ok && path != "" {
-		if _, hasBasename := resolved["basename"]; !hasBasename {
-			resolved["basename"] = filepath.Base(path)
-		}
-		if _, hasDirname := resolved["dirname"]; !hasDirname {
-			resolved["dirname"] = filepath.Dir(path)
-		}
-		basename := filepath.Base(path)
-		if _, hasNameroot := resolved["nameroot"]; !hasNameroot {
-			nameroot, nameext := splitBasenameExt(basename)
-			resolved["nameroot"] = nameroot
-			resolved["nameext"] = nameext
-		}
-
-		// Step 5b: Populate size for File objects if not already set.
-		class, _ := resolved["class"].(string)
-		if class == "File" {
-			if _, hasSize := resolved["size"]; !hasSize {
-				if info, err := os.Stat(path); err == nil && !info.IsDir() {
-					resolved["size"] = info.Size()
-				}
-			}
-		}
-	}
-
-	// Step 6: For Directory objects, resolve listing entries.
-	if listing, ok := resolved["listing"].([]any); ok {
-		// Get the directory path for resolving relative paths in listing.
-		dirPath := baseDir
-		if path, ok := resolved["path"].(string); ok {
-			dirPath = path
-		}
-		resolvedListing := make([]any, len(listing))
-		for i, item := range listing {
-			if itemMap, ok := item.(map[string]any); ok {
-				resolvedListing[i] = resolveFileObject(itemMap, dirPath)
-			} else {
-				resolvedListing[i] = item
-			}
-		}
-		resolved["listing"] = resolvedListing
-	}
-
-	// Step 7: For File objects, resolve secondaryFiles entries.
-	// Secondary file locations from job files are relative to the job file's baseDir,
-	// not the primary file's directory. This matches CWL spec behavior.
-	if secFiles, ok := resolved["secondaryFiles"].([]any); ok {
-		resolvedSecFiles := make([]any, len(secFiles))
-		for i, item := range secFiles {
-			if itemMap, ok := item.(map[string]any); ok {
-				resolvedSecFiles[i] = resolveFileObject(itemMap, baseDir)
-			} else {
-				resolvedSecFiles[i] = item
-			}
-		}
-		resolved["secondaryFiles"] = resolvedSecFiles
-	}
-
-	return resolved
-}
-
-// splitBasenameExt splits a filename into nameroot and nameext.
-func splitBasenameExt(basename string) (string, string) {
-	for i := len(basename) - 1; i > 0; i-- {
-		if basename[i] == '.' {
-			return basename[:i], basename[i:]
-		}
-	}
-	return basename, ""
-}
-
-// isURI reports whether s has a recognized URI scheme (file, http, https, ws,
-// shock, …). Delegates to cwl.IsURI so all resolvers agree on which locations
-// must be preserved rather than joined with a base directory (issue #117).
-func isURI(s string) bool {
-	return cwl.IsURI(s)
 }
 
 // resolveStepInputs resolves inputs for a workflow step.
@@ -2482,7 +2347,7 @@ func resolveDefaultValue(v any, cwlDir string) any {
 		if class, ok := val["class"].(string); ok {
 			if class == "File" || class == "Directory" {
 				// Resolve File/Directory paths relative to CWL file.
-				return resolveFileObject(val, cwlDir)
+				return cwltool.ResolveFileObject(val, cwlDir)
 			}
 		}
 		// Recursively resolve nested maps.
