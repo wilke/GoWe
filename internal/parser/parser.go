@@ -207,10 +207,10 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			}
 
 			subGraph := &cwl.GraphDocument{
-				CWLVersion:    version,
-				OriginalClass: "Workflow",
-				Workflow:      pw.result.Workflow,
-				Tools:         pw.result.InlineTools,
+				CWLVersion:      version,
+				OriginalClass:   "Workflow",
+				Workflow:        pw.result.Workflow,
+				Tools:           pw.result.InlineTools,
 				ExpressionTools: pw.result.InlineExpressionTools,
 			}
 			if graph.SubWorkflows == nil {
@@ -1611,8 +1611,9 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 		mw.Inputs = append(mw.Inputs, model.WorkflowInput{
 			ID:       id,
 			Type:     inp.Type,
-			Required: inp.Default == nil,
+			Required: !strings.HasSuffix(inp.Type, "?"),
 			Default:  inp.Default,
+			Doc:      inp.Doc,
 		})
 	}
 	sort.Slice(mw.Inputs, func(i, j int) bool {

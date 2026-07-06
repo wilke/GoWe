@@ -36,6 +36,7 @@ type WorkflowInput struct {
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
 	Default  any    `json:"default,omitempty"`
+	Doc      string `json:"doc,omitempty"`
 }
 
 // WorkflowOutput describes a typed output of a Workflow.
@@ -50,16 +51,16 @@ type WorkflowOutput struct {
 
 // Step is a single node in a Workflow's DAG.
 type Step struct {
-	ID         string      `json:"id"`
-	ToolRef    string      `json:"tool_ref"`
-	ToolInline *Tool       `json:"tool_inline,omitempty"`
-	DependsOn  []string    `json:"depends_on"`
-	In         []StepInput `json:"in"`
-	Out        []string    `json:"out"`
+	ID            string      `json:"id"`
+	ToolRef       string      `json:"tool_ref"`
+	ToolInline    *Tool       `json:"tool_inline,omitempty"`
+	DependsOn     []string    `json:"depends_on"`
+	In            []StepInput `json:"in"`
+	Out           []string    `json:"out"`
 	Scatter       []string    `json:"scatter,omitempty"`
 	ScatterMethod string      `json:"scatter_method,omitempty"`
 	When          string      `json:"when,omitempty"`
-	Hints      *StepHints  `json:"hints,omitempty"`
+	Hints         *StepHints  `json:"hints,omitempty"`
 }
 
 // StepInput maps a step input to its source(s).
@@ -76,12 +77,12 @@ type StepInput struct {
 // StepHints holds GoWe-specific hints extracted from a CWL step.
 type StepHints struct {
 	BVBRCAppID       string               `json:"bvbrc_app_id,omitempty"`
-	ExecutorType     ExecutorType          `json:"executor,omitempty"`
+	ExecutorType     ExecutorType         `json:"executor,omitempty"`
 	DockerImage      string               `json:"docker_image,omitempty"`
 	WorkerGroup      string               `json:"worker_group,omitempty"`
-	RequiresGPU        bool                 `json:"requires_gpu,omitempty"`
-	InjectBVBRCToken   bool                 `json:"inject_bvbrc_token,omitempty"`
-	RequiredDatasets   []DatasetRequirement  `json:"required_datasets,omitempty"`
+	RequiresGPU      bool                 `json:"requires_gpu,omitempty"`
+	InjectBVBRCToken bool                 `json:"inject_bvbrc_token,omitempty"`
+	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`
 }
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.
