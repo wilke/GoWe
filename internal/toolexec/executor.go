@@ -28,10 +28,17 @@ const (
 type Result struct {
 	Outputs      map[string]any
 	ExitCode     int
+	Stdout       string
+	Stderr       string
 	PeakMemoryKB int64
 	StartTime    time.Time
 	Duration     time.Duration
 }
+
+// maxLogCapture is the maximum number of bytes captured for stdout/stderr
+// reporting. Output beyond this limit is truncated to the last maxLogCapture
+// bytes so that the tail (most useful for debugging) is preserved.
+const maxLogCapture = 256 * 1024 // 256 KB
 
 // GPUConfig holds GPU configuration for container execution.
 type GPUConfig struct {
