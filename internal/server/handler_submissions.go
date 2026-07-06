@@ -301,6 +301,42 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := s.store.GetSubmission(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if sub == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+		return
+	}
+
+	// Ownership check: non-admin users can only delete their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if !requireSubmissionAccess(sub, userCtx) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
+		return
+	}
+
+	if err := s.store.DeleteSubmission(r.Context(), id); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	respondOK(w, reqID, map[string]any{
+		"id":      id,
+		"deleted": true,
+	})
+}
+
 func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")

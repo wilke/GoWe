@@ -240,18 +240,18 @@ func (ui *UI) HandleWorkflowList(w http.ResponseWriter, r *http.Request) {
 	)
 
 	data := map[string]any{
-		"Title":          "Workflows - GoWe",
-		"Session":        sess,
-		"Workflows":      workflows,
-		"Pagination":     ui.buildPagination(opts, total, len(workflows), filterParams, []int{10, 20, 50, 100}),
-		"SearchQuery":    opts.Search,
-		"ClassFilter":    opts.Class,
-		"LabelFilters":   opts.Labels,
-		"ActiveLabels":   activeLabelSet,
-		"LabelVocab":     vocab,
-		"SortBy":         opts.SortBy,
-		"SortDir":        opts.SortDir,
-		"FilterBase":     filterBase,
+		"Title":        "Workflows - GoWe",
+		"Session":      sess,
+		"Workflows":    workflows,
+		"Pagination":   ui.buildPagination(opts, total, len(workflows), filterParams, []int{10, 20, 50, 100}),
+		"SearchQuery":  opts.Search,
+		"ClassFilter":  opts.Class,
+		"LabelFilters": opts.Labels,
+		"ActiveLabels": activeLabelSet,
+		"LabelVocab":   vocab,
+		"SortBy":       opts.SortBy,
+		"SortDir":      opts.SortDir,
+		"FilterBase":   filterBase,
 	}
 	ui.render(w, "workflows/list", data)
 }
@@ -289,6 +289,29 @@ func (ui *UI) HandleWorkflowCreate(w http.ResponseWriter, r *http.Request) {
 		"Error":   r.URL.Query().Get("error"),
 	}
 	ui.render(w, "workflows/create", data)
+}
+
+// HandleWorkflowEdit renders the workflow edit form.
+func (ui *UI) HandleWorkflowEdit(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+	id := ui.pathParam(r, "id")
+
+	wf, err := ui.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		ui.renderError(w, "Failed to load workflow", err)
+		return
+	}
+	if wf == nil {
+		ui.renderNotFound(w, "Workflow not found")
+		return
+	}
+
+	data := map[string]any{
+		"Title":    "Edit " + wf.Name + " - GoWe",
+		"Session":  sess,
+		"Workflow": wf,
+	}
+	ui.render(w, "workflows/edit", data)
 }
 
 // HandleWorkflowDelete deletes a workflow (HTMX).
@@ -495,6 +518,16 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 		hasWorkspace = true
 	}
 
+	// Fetch worker groups for admin users (dropdown), non-admins type freely.
+	isAdmin := sess != nil && sess.IsAdmin()
+	var workerGroups []string
+	if isAdmin {
+		workerGroups, err = ui.store.ListWorkerGroups(r.Context())
+		if err != nil {
+			slog.Error("submission create: failed to list worker groups", "error", err)
+		}
+	}
+
 	data := map[string]any{
 		"Title":            "Submit Workflow - GoWe",
 		"Session":          sess,
@@ -502,6 +535,8 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 		"SelectedWorkflow": selectedWorkflow,
 		"WorkspacePath":    workspacePath,
 		"HasWorkspace":     hasWorkspace,
+		"WorkerGroups":     workerGroups,
+		"IsAdmin":          isAdmin,
 		"Error":            r.URL.Query().Get("error"),
 	}
 	ui.render(w, "submissions/create", data)
@@ -560,6 +595,11 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	labels := map[string]string{}
 	if labelsStr := r.FormValue("labels"); labelsStr != "" {
 		_ = json.Unmarshal([]byte(labelsStr), &labels)
+	}
+
+	// Set worker group label if provided (mirrors CLI --group behavior).
+	if workerGroup := strings.TrimSpace(r.FormValue("worker_group")); workerGroup != "" {
+		labels["worker_group"] = workerGroup
 	}
 
 	now := time.Now().UTC()
@@ -649,6 +689,33 @@ func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to refresh the page.
 	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.WriteHeader(http.StatusOK)
+}
+
+// HandleSubmissionDelete deletes a submission and all its tasks/steps (HTMX).
+func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
+	id := ui.pathParam(r, "id")
+
+	sub, err := ui.store.GetSubmission(r.Context(), id)
+	if err != nil || sub == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Ownership check: non-admin users can only delete their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	if err := ui.store.DeleteSubmission(r.Context(), id); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect to the submission list after deletion.
+	w.Header().Set("HX-Redirect", "/submissions")
 	w.WriteHeader(http.StatusOK)
 }
 
