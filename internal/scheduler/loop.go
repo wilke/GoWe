@@ -62,10 +62,10 @@ func DefaultConfig() Config {
 // WorkerCapabilities summarizes what online workers can do. Built once per tick.
 type WorkerCapabilities struct {
 	OnlineCount  int
-	HasContainer bool              // any worker with docker/apptainer
-	Groups       map[string]int    // group → count of online workers
-	Datasets     map[string]int    // dataset ID → count of online workers
-	Workers      []*model.Worker   // full list of online workers
+	HasContainer bool            // any worker with docker/apptainer
+	Groups       map[string]int  // group → count of online workers
+	Datasets     map[string]int  // dataset ID → count of online workers
+	Workers      []*model.Worker // full list of online workers
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -188,8 +188,8 @@ func (l *Loop) updateSubmission(ctx context.Context, sub *model.Submission) erro
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
-	l.cachedWorkerCaps = nil // Reset per-tick worker capability cache.
-	l.cache = newTickCache() // Reset per-tick entity cache.
+	l.cachedWorkerCaps = nil          // Reset per-tick worker capability cache.
+	l.cache = newTickCache()          // Reset per-tick entity cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
@@ -795,13 +795,13 @@ func (l *Loop) dispatchSubWorkflowStep(ctx context.Context, si *model.StepInstan
 
 	// Create a temporary task for the child submission linkage.
 	parentTask := &model.Task{
-		ID:           "task_" + uuid.New().String(),
-		SubmissionID: si.SubmissionID,
-		StepID:       si.StepID,
+		ID:             "task_" + uuid.New().String(),
+		SubmissionID:   si.SubmissionID,
+		StepID:         si.StepID,
 		StepInstanceID: si.ID,
-		Tool:         tmpTask.Tool,
-		Job:          tmpTask.Job,
-		RuntimeHints: tmpTask.RuntimeHints,
+		Tool:           tmpTask.Tool,
+		Job:            tmpTask.Job,
+		RuntimeHints:   tmpTask.RuntimeHints,
 	}
 
 	childSub, err := l.createChildSubmission(ctx, parentTask, subGraph, tmpTask.Job, sub, wf)
@@ -895,9 +895,9 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 	}
 
 	parentTask := &model.Task{
-		ID:           "task_" + uuid.New().String(),
-		SubmissionID: si.SubmissionID,
-		StepID:       si.StepID,
+		ID:             "task_" + uuid.New().String(),
+		SubmissionID:   si.SubmissionID,
+		StepID:         si.StepID,
 		StepInstanceID: si.ID,
 	}
 
@@ -1198,17 +1198,16 @@ func (l *Loop) hasOnlineWorkers() bool {
 }
 
 // addUserToken adds user authentication token to task runtime hints.
-// When server-side workspace staging is enabled (wsStager != nil), the server
-// handles all ws:// operations and workers don't need the token — skip embedding
-// it in task data to avoid storing credentials in the database unnecessarily.
-// BV-BRC executor tasks always need the submitter's token at the
-// AppService.start_app boundary, regardless of staging mode — otherwise the
-// executor falls back to its default caller and the job runs under the wrong
-// user identity.
+// Worker and BV-BRC executor tasks always receive the submitter's token so
+// that tools can make authenticated downstream calls (workspace, AppService).
+// For other executor types, the token is only embedded when server-side
+// workspace staging is disabled (wsStager == nil) or when the step has the
+// InjectBVBRCToken hint.
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	needsToken := l.wsStager == nil ||
 		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
-		task.ExecutorType == model.ExecutorTypeBVBRC
+		task.ExecutorType == model.ExecutorTypeBVBRC ||
+		task.ExecutorType == model.ExecutorTypeWorker
 	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
