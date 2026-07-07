@@ -1,0 +1,51 @@
+name: release-please
+
+# Normal release path. On every push to main, release-please maintains a
+# "release PR" that bumps the version (from Conventional Commits) and updates
+# CHANGELOG.md. Merging that PR creates the tag + GitHub Release, and the
+# goreleaser job below builds the binaries for it.
+#
+# GoReleaser runs here (rather than via release.yml's tag trigger) because tags
+# created with GITHUB_TOKEN do not trigger separate tag-push workflows.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        id: rp
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  goreleaser:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
