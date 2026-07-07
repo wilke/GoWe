@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/wilke/GoWe/compare/v0.13.1...v0.13.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* **release:** per-binary archives so the release produces assets ([#152](https://github.com/wilke/GoWe/issues/152)) ([f531de5](https://github.com/wilke/GoWe/commit/f531de537b9a6e652527cc9fb1bbf0d3eed1ddd6))
+
 ## [0.13.1](https://github.com/wilke/GoWe/compare/v0.13.0...v0.13.1) (2026-07-07)
 
 
