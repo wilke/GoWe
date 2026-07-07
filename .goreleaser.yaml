@@ -25,8 +25,8 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags: ["-s -w -X main.Version={{ .Version }}"]
-  # Linux only: the worker daemon uses syscall.Sysinfo (Linux-only) for host
-  # memory, so it cannot cross-compile to darwin. Workers run on Linux/HPC.
+  # Linux only: workers run container/Apptainer workloads on Linux/HPC, so a
+  # macOS worker binary isn't a useful artifact. (The code cross-compiles fine.)
   - id: gowe-worker
     main: ./cmd/worker
     binary: gowe-worker
@@ -44,10 +44,23 @@ builds:
     flags: [-trimpath]
     ldflags: ["-s -w -X main.Version={{ .Version }}"]
 
-# One archive per OS/arch containing all four binaries.
+# One archive per binary (per OS/arch). Per-binary rather than a single bundle so
+# the Linux-only worker doesn't produce archives with different binary counts
+# across platforms (which GoReleaser rejects), and so users can grab just the
+# tool they need.
 archives:
   - id: gowe
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    ids: [gowe]
+    name_template: "gowe_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: gowe-server
+    ids: [gowe-server]
+    name_template: "gowe-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: gowe-worker
+    ids: [gowe-worker]
+    name_template: "gowe-worker_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: cwl-runner
+    ids: [cwl-runner]
+    name_template: "cwl-runner_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
