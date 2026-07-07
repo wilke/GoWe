@@ -61,6 +61,9 @@ informal synonym for **Workflow**. Code and docs MUST use the normative term.
 
 ## 4. Workflow definition
 
+Rationale for adopting CWL as the sole definition format:
+[ADR-0001](docs/adr/0001-adopt-cwl-v1.2-as-workflow-definition-format.md).
+
 ### 4.1 Format
 
 A workflow or tool definition MUST be a CWL v1.2 YAML or JSON document. GoWe supports:
@@ -437,7 +440,8 @@ The full route table is defined in `internal/server/`.
 
 GoWe separates credentials into four planes and holds them together with one invariant:
 **execution secrets MUST NOT travel back to the server** (§13.2). Identity is delegated to
-external providers — GoWe stores no user passwords.
+external providers — GoWe stores no user passwords. Rationale for the auth model:
+[ADR-0009](docs/adr/0009-delegated-identity-and-optional-worker-keys.md).
 
 ### 13.1 Credential planes
 
