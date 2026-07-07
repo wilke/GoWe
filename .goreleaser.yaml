@@ -61,3 +61,6 @@ changelog:
 
 release:
   prerelease: auto
+  # release-please creates the GitHub Release first; append assets to it
+  # rather than failing on an existing release.
+  mode: append
