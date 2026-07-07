@@ -75,11 +75,32 @@ if [[ -f "$LOG_DIR/server.log" ]]; then
     mv "$LOG_DIR/server.log" "$LOG_DIR/server.log.$(date +%Y%m%d-%H%M%S)"
 fi
 
+# Provider-token encryption key (GH #138). The server fails closed on a
+# token-carrying submission when no key is configured, so real BV-BRC
+# submissions require one. Generate a persistent 32-byte key on first run and
+# reuse it thereafter so tokens encrypted earlier stay decryptable across
+# restarts. Keep this file secret. Set ALLOW_PLAINTEXT_TOKENS=1 to opt out and
+# store tokens in the clear instead (not recommended).
+TOKEN_KEY_FILE="${TOKEN_KEY_FILE:-$BASE_DIR/gowe/token.key}"
+TOKEN_FLAGS=()
+if [[ "${ALLOW_PLAINTEXT_TOKENS:-0}" == "1" ]]; then
+    TOKEN_FLAGS=(--allow-plaintext-tokens)
+    echo "  WARNING: provider tokens will be stored in PLAINTEXT (ALLOW_PLAINTEXT_TOKENS=1)"
+else
+    if [[ ! -s "$TOKEN_KEY_FILE" ]]; then
+        ( umask 077; head -c 32 /dev/urandom | base64 > "$TOKEN_KEY_FILE" )
+        echo "  generated token-encryption key: $TOKEN_KEY_FILE"
+    fi
+    chmod 600 "$TOKEN_KEY_FILE" 2>/dev/null || true
+    TOKEN_FLAGS=(--token-key-file "$TOKEN_KEY_FILE")
+fi
+
 ./bin/gowe-server \
     --addr ":${GOWE_PORT}" \
     --db "$DB_PATH" \
     --default-executor worker \
     "${ANON_FLAGS[@]}" \
+    "${TOKEN_FLAGS[@]}" \
     --scheduler-poll "$SCHEDULER_POLL" \
     --upload-backend local \
     --upload-local-dir "$UPLOAD_DIR" \

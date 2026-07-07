@@ -35,23 +35,61 @@ type UI struct {
 	workspaceCaller bvbrc.RPCCaller // Workspace service caller
 	adminChecker    AdminChecker    // Admin role checker (nil = no admins)
 	startTime       time.Time
-	secure          bool // Use secure cookies (HTTPS)
+
+	// Session cookie hardening.
+	secureCookies       bool // Always set the Secure attribute on session cookies
+	trustForwardedProto bool // Honor X-Forwarded-Proto when deciding the Secure attribute
 }
 
 // Config holds UI configuration.
 type Config struct {
-	Secure bool // Use secure cookies for HTTPS
+	// SecureCookies forces the Secure attribute on session cookies for every
+	// request. Set this when TLS is terminated in-process, or by a trusted
+	// upstream proxy that always speaks HTTPS to clients.
+	SecureCookies bool
+	// TrustForwardedProto enables honoring the X-Forwarded-Proto header to
+	// decide the Secure attribute per-request. Enable only when the server sits
+	// behind a trusted reverse proxy that sets this header, since a client can
+	// otherwise spoof it.
+	TrustForwardedProto bool
 }
 
 // New creates a new UI handler.
 func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 	return &UI{
-		store:     st,
-		sessions:  NewSessionManager(st),
-		logger:    logger.With("component", "ui"),
-		startTime: time.Now(),
-		secure:    cfg.Secure,
+		store:               st,
+		sessions:            NewSessionManager(st),
+		logger:              logger.With("component", "ui"),
+		startTime:           time.Now(),
+		secureCookies:       cfg.SecureCookies,
+		trustForwardedProto: cfg.TrustForwardedProto,
 	}
+}
+
+// resolveSecureCookie decides whether a session cookie should carry the Secure
+// attribute for the given request. A cookie is marked Secure when any of the
+// following hold:
+//   - forceSecure is set (native TLS, or an operator opting in explicitly);
+//   - the request reached the server over an in-process TLS connection;
+//   - trustForwardedProto is enabled and the upstream proxy reports the
+//     original client scheme as HTTPS via X-Forwarded-Proto.
+func resolveSecureCookie(r *http.Request, forceSecure, trustForwardedProto bool) bool {
+	if forceSecure {
+		return true
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if trustForwardedProto && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return false
+}
+
+// secureCookie reports whether the session cookie for this request should be
+// marked Secure, based on the server's configuration and the request scheme.
+func (ui *UI) secureCookie(r *http.Request) bool {
+	return resolveSecureCookie(r, ui.secureCookies, ui.trustForwardedProto)
 }
 
 // WithBVBRCCaller sets the BV-BRC RPC caller for AppService operations.
@@ -131,7 +169,7 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set session cookie.
-	SetSessionCookie(w, sess, ui.secure)
+	SetSessionCookie(w, sess, ui.secureCookie(r))
 
 	ui.logger.Info("user logged in", "username", username, "session", sess.ID)
 	http.Redirect(w, r, "/", http.StatusSeeOther)

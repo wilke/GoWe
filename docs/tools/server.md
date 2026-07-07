@@ -231,19 +231,27 @@ Token sources (checked in order):
 
 ### Worker Authentication
 
-Workers authenticate using shared secrets and can belong to groups:
+Workers authenticate by sending an `X-Worker-Key` header. The server validates it against two sources; if **neither** has any key, worker endpoints are open (dev convenience — production SHOULD configure keys).
+
+**1. Per-worker keys (recommended, hashed at rest).** Minted and revoked through the admin API (see [Admin](#admin) below). Only the SHA-256 hash of each key is stored, so the datastore never holds the raw secret, and one leaked worker's key can be revoked without disrupting the fleet.
+
+**2. Static keys (file/env, for bootstrap or dev).** A key set can also be configured statically and mapped to allowed groups:
 
 ```json
 // ~/.gowe/worker-keys.json
 {
   "keys": {
     "secret-key-1": {
+      "id": "gpu-cluster",
       "groups": ["default", "gpu-workers"],
       "description": "Production GPU cluster"
     },
-    "secret-key-2": {
+    "sha256:9f86d0818...": {
+      "id": "cpu-workers",
       "groups": ["cpu-workers"],
-      "description": "CPU-only workers"
+      "description": "Stored as a hash instead of the raw secret",
+      "disabled": false,
+      "expires_at": "2026-12-31T00:00:00Z"
     }
   }
 }
@@ -251,9 +259,10 @@ Workers authenticate using shared secrets and can belong to groups:
 
 ```bash
 gowe-server --worker-keys ~/.gowe/worker-keys.json
+# or: GOWE_WORKER_KEYS='{"secret-key-1":["default"]}' gowe-server
 ```
 
-Workers send `X-Worker-Key` header on registration. Tasks can target specific groups via `RuntimeHints.WorkerGroup`.
+Each static entry may carry an `id` (logged for attribution — the raw key is never logged), and optional `disabled` / `expires_at` lifecycle fields. A map key prefixed with `sha256:` is treated as an already-hashed key, so the raw secret need not live in the config file. Tasks target specific groups via `RuntimeHints.WorkerGroup`.
 
 ### Scheduler
 
@@ -868,6 +877,63 @@ curl -X PUT http://localhost:8080/api/v1/admin/users/user@bvbrc/role \
   -H "Authorization: $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"role": "admin"}'
+```
+
+#### `POST /api/v1/admin/worker-keys`
+
+Mint a per-worker key. The raw secret is returned **exactly once**; only its SHA-256 hash is persisted. `groups` scopes which worker groups the key may join (empty = any); `expires_at` is optional.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/worker-keys \
+  -H "Authorization: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"label":"gpu-node-01","groups":["esmfold"],"description":"A100 box","expires_at":"2026-12-31T00:00:00Z"}'
+```
+
+Response (201) — save `key` now, it cannot be retrieved again:
+
+```json
+{
+  "key": "gwk_o4Zk...redacted...",
+  "worker_key": {
+    "id": "wk_1f2e...",
+    "label": "gpu-node-01",
+    "key_prefix": "gwk_o4Zk8Q",
+    "groups": ["esmfold"],
+    "disabled": false,
+    "created_by": "awilke@bvbrc",
+    "created_at": "2026-07-06T12:00:00Z",
+    "expires_at": "2026-12-31T00:00:00Z"
+  },
+  "warning": "store this key now; it cannot be retrieved again"
+}
+```
+
+#### `GET /api/v1/admin/worker-keys`
+
+List all worker keys. Key hashes and raw secrets are never returned — only metadata and the non-secret `key_prefix`.
+
+```bash
+curl http://localhost:8080/api/v1/admin/worker-keys -H "Authorization: $ADMIN_TOKEN"
+```
+
+#### `PATCH /api/v1/admin/worker-keys/{id}`
+
+Enable/disable or edit a key. Disabling is the **reversible** form of revocation. Any subset of fields may be sent; `clear_expiry: true` removes an expiry.
+
+```bash
+# Disable a key without deleting it
+curl -X PATCH http://localhost:8080/api/v1/admin/worker-keys/wk_1f2e... \
+  -H "Authorization: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"disabled": true}'
+```
+
+#### `DELETE /api/v1/admin/worker-keys/{id}`
+
+Permanently revoke (delete) a key. Use this for a compromised worker — other workers' keys are unaffected.
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/admin/worker-keys/wk_1f2e... \
+  -H "Authorization: $ADMIN_TOKEN"
 ```
 
 ## Graceful Shutdown

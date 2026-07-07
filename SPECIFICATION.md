@@ -1,6 +1,6 @@
 # GoWe Specification
 
-> **Status**: Living specification · **Version**: draft-3 (2026-07-06)
+> **Status**: Living specification · **Version**: draft-6 (2026-07-06)
 > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
 > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
 > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
@@ -469,7 +469,7 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 |--------|--------------|---------------------|------------|
 | User token | `Authorization: Bearer <token>` or `X-MG-RAST-Token` | Provider-issued pipe-delimited token: non-empty username and unexpired `expiry` | User/API endpoints |
 | Anonymous | *(no token)* + server `--allow-anonymous` | Nothing; request runs as the anonymous user | User/API endpoints, if enabled |
-| Worker key | `X-Worker-Key` | Key present in the configured key set; yields allowed groups | Worker endpoints |
+| Worker key | `X-Worker-Key` | Key is present, enabled, and unexpired; yields allowed groups | Worker endpoints |
 
 - When a token is presented, the server MUST reject it if the username is empty or the token
   is expired (`401`).
@@ -477,8 +477,17 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   user account keyed by `(username, provider)`.
 - When no user keys/tokens apply and anonymous access is disabled, protected endpoints MUST
   return `401`.
-- Worker-key enforcement is **optional**: if no keys are configured, worker endpoints are
-  open. Operators SHOULD configure keys in any multi-tenant or networked deployment.
+- Worker keys come in two forms, and the server MUST accept either: **per-worker keys** minted
+  and revoked through the admin API (§13.4), and **static keys** configured from a file or the
+  `GOWE_WORKER_KEYS` env var. Each key maps to a set of allowed groups; an empty set means any
+  group.
+- A worker key MUST be rejected (`401`) if it is disabled/revoked or past its `expires_at`.
+  Per-worker keys are independently issuable and revocable, so revoking one MUST NOT affect any
+  other key.
+- Worker-key enforcement is **optional**: if no keys are configured at all — neither static nor
+  per-worker — worker endpoints are open. Operators SHOULD configure keys in any multi-tenant
+  or networked deployment. If a store error prevents determining whether keys exist, the server
+  MUST fail closed (enforce authentication).
 
 ### 13.4 Authorization and roles
 
@@ -495,6 +504,11 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 - Worker secrets are loaded from `--secret`/`--secret-file` into worker memory. Secret
   **names** MAY be logged; secret **values** MUST NOT be logged.
 - The `X-Worker-Key` MUST NOT be logged in the clear; only a hash of it MAY be logged.
+- Per-worker keys MUST be stored hashed at rest: the server persists only the SHA-256 hash of
+  each key, never the raw secret. The raw key is returned to the operator exactly once at
+  issuance and is not retrievable thereafter. A non-secret key prefix and a stable key ID MAY
+  be stored and logged for attribution. Static keys MAY likewise be provided pre-hashed
+  (`sha256:<hex>`) so the raw secret need not reside in config.
 - A BV-BRC token MAY be injected into a task's container as `BVBRC_TOKEN` when, and only when,
   `gowe:Execution.inject_bvbrc_token` is set (or a workspace stager requires it); the injected
   token is the submitter's own, so the job runs under the user's identity. This opt-in gate is
@@ -504,14 +518,37 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   MUST be revised, and the least-privilege trade-off recorded in an ADR.)
 - Response bodies MUST NOT expose stored tokens: submission token fields are serialized with
   `json:"-"`.
+- Provider tokens MUST be encrypted at rest. A server-held key (`GOWE_TOKEN_KEY`, or
+  `--token-key-file`) enables AES-256-GCM envelope encryption of the submitter's token in
+  `submissions.user_token` and of any bearer credential embedded in `tasks.runtime_hints`.
+  Ciphertext is decrypted only in memory on the delegated-execution path and MUST NOT be
+  logged. When no key is configured the server MUST fail closed — refusing to persist a
+  delegated token — unless the operator explicitly opts into legacy plaintext with
+  `--allow-plaintext-tokens`. Rows written before a key was configured are read transparently
+  and re-encrypted on startup.
 
 ### 13.6 Transport security
 
 - Worker→server transport MAY be TLS; workers support a custom CA (`--ca-cert`) and, for
   testing only, `--insecure` to skip verification. `--insecure` MUST NOT be used in
   production.
-- The server does not currently terminate TLS itself (see §13.7); production deployments
-  SHOULD run it behind a TLS-terminating proxy.
+- The server MAY terminate TLS itself: when both `--tls-cert` and `--tls-key` are supplied it
+  serves HTTPS natively; the two flags MUST be supplied together or startup fails. When they
+  are omitted the server serves plain HTTP and SHOULD run behind an external TLS-terminating
+  proxy.
+- Production deployments MUST encrypt client and worker transport by one of these two modes
+  (native TLS or a TLS-terminating proxy). Provider tokens and session cookies MUST NOT
+  traverse an unencrypted network.
+- Session cookies MUST carry the `Secure` attribute whenever the connection is HTTPS. The
+  server sets it automatically under native TLS. Behind a TLS-terminating proxy, `--behind-proxy`
+  forces `Secure` unconditionally (the public leg is HTTPS even though the server sees plain
+  HTTP) and emits `Strict-Transport-Security`; `--secure-cookies` forces `Secure` on its own for
+  bespoke deployments. `--behind-proxy` MUST be enabled only when the server is genuinely
+  fronted by a trusted TLS terminator, since it marks every cookie `Secure` regardless of the
+  observed request scheme.
+- The server always bounds request-header reads; under native TLS it additionally pins a
+  minimum protocol version of TLS 1.2. A missing or unreadable certificate/key MUST fail
+  startup rather than silently falling back to plain HTTP.
 
 ### 13.7 Known limitations (informative)
 
@@ -519,14 +556,25 @@ These are current-state gaps, not normative requirements. They are documented so
 can compensate and so the project can track hardening. Each SHOULD be addressed before a
 security-sensitive production deployment:
 
-- **Tokens at rest are plaintext.** The submitter's BV-BRC token is persisted unencrypted in
-  `submissions.user_token` (SQLite). Protect the database file accordingly.
-- **Worker keys are shared secrets.** Keys are stored plaintext in config/env with no
-  per-worker identity or rotation; a leaked key affects every worker sharing it.
-- **Server TLS is not enforced.** Cookie `Secure` is hardcoded off (a standing TODO) and the
-  server serves plain HTTP; front it with a TLS terminator.
+- **Static worker keys remain plaintext in config.** The recommended path — per-worker keys
+  minted via the admin API (§13.3–§13.4) — gives each worker an individually revocable identity
+  and is **hashed at rest** (§13.5), so a leaked worker's key can be rotated without disrupting
+  the fleet. The legacy static key set (`--worker-keys` / `GOWE_WORKER_KEYS`) is retained for
+  bootstrap and dev; entries stored as raw secrets sit plaintext in config (use `sha256:` hash
+  entries, or prefer per-worker keys, to avoid this).
 - **Anonymous mode widens exposure.** If `--allow-anonymous` is enabled, always scope it with
   `--anonymous-executors`.
+
+> **Resolved (was a limitation):** Server TLS is now enforceable. The server can terminate
+> HTTPS natively (`--tls-cert`/`--tls-key`) or run behind a terminator, and session cookies
+> are marked `Secure` when the connection is HTTPS (see §13.6). Operators MUST still choose one
+> of the two transport-security modes for production; the capability exists but is not
+> automatic on a plain-HTTP listener.
+
+> **Resolved (was a limitation):** Shared worker keys now have a revocable alternative.
+> Per-worker keys minted via the admin API carry an individual identity, are hashed at rest,
+> and can be revoked without disrupting the rest of the fleet (see §13.3–§13.5). The legacy
+> static key set is retained only for bootstrap/dev.
 
 ---
 

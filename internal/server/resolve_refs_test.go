@@ -123,6 +123,19 @@ func (m *mockStore) CancelledTasksForWorker(context.Context, []string) ([]string
 	return nil, nil
 }
 
+func (m *mockStore) CreateWorkerKey(context.Context, *model.WorkerKey) error { return nil }
+func (m *mockStore) GetWorkerKeyByID(context.Context, string) (*model.WorkerKey, error) {
+	return nil, nil
+}
+func (m *mockStore) GetWorkerKeyByHash(context.Context, string) (*model.WorkerKey, error) {
+	return nil, nil
+}
+func (m *mockStore) ListWorkerKeys(context.Context) ([]*model.WorkerKey, error) { return nil, nil }
+func (m *mockStore) UpdateWorkerKey(context.Context, *model.WorkerKey) error    { return nil }
+func (m *mockStore) DeleteWorkerKey(context.Context, string) error              { return nil }
+func (m *mockStore) CountWorkerKeys(context.Context) (int, error)               { return 0, nil }
+func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error    { return nil }
+
 func (m *mockStore) GetUser(context.Context, string) (*model.User, error) { return nil, nil }
 func (m *mockStore) GetOrCreateUser(context.Context, string, model.AuthProvider) (*model.User, error) {
 	return nil, nil

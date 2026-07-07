@@ -172,6 +172,14 @@ done
 
 # --- Start server ---
 
+# Provider-token encryption key. Since #138 the server fails closed on a
+# token-carrying submission when no key is set; the conformance CLI forwards a
+# real provider token from the environment, so a key is required. Fixed
+# throwaway key over a disposable test DB — never a real secret. Also exercises
+# the at-rest encryption round-trip. Workers execute the plaintext token in
+# memory; only the DB column is encrypted.
+export GOWE_TOKEN_KEY="$(printf '%s' 'gowe-conformance-test-key-32byte' | base64)"
+
 log_info "Starting server..."
 ./bin/gowe-server \
     --addr ":${PORT}" \

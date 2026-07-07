@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/tokencrypt"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -39,6 +41,12 @@ func main() {
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 
+	// TLS / secure-cookie options.
+	flag.StringVar(&cfg.TLSCertFile, "tls-cert", cfg.TLSCertFile, "Path to PEM certificate; enables native HTTPS when set together with --tls-key")
+	flag.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "Path to PEM private key; enables native HTTPS when set together with --tls-cert")
+	flag.BoolVar(&cfg.SecureCookies, "secure-cookies", cfg.SecureCookies, "Always set the Secure attribute on session cookies (implied by --tls-cert/--tls-key)")
+	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Server sits behind a trusted TLS-terminating proxy: force Secure cookies and emit HSTS (enable only when the public leg is HTTPS)")
+
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
 	workspaceStaging := flag.String("workspace-staging", "", "Workspace staging mode: 'server' (pre/post-stage ws:// on server) or empty (passthrough to workers)")
@@ -53,6 +61,10 @@ func main() {
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
 	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
+
+	// Provider-token encryption at rest
+	tokenKeyFile := flag.String("token-key-file", "", "Path to a file holding the token-encryption key (base64 or hex, 32 bytes); overrides GOWE_TOKEN_KEY")
+	allowPlaintextTokens := flag.Bool("allow-plaintext-tokens", false, "Permit storing provider tokens in plaintext when no encryption key is set (migration/dev only)")
 
 	// File upload proxy options
 	uploadBackend := flag.String("upload-backend", "", "Enable file upload proxy with backend: shock, s3, local")
@@ -87,6 +99,27 @@ func main() {
 
 	logger := logging.NewLogger(logging.ParseLevel(cfg.LogLevel), cfg.LogFormat)
 
+	// Validate TLS flags: cert and key must be provided together.
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+		fmt.Fprintln(os.Stderr, "both --tls-cert and --tls-key must be provided to enable native HTTPS")
+		os.Exit(1)
+	}
+	if cfg.TLSEnabled() {
+		// Native TLS implies Secure cookies.
+		cfg.SecureCookies = true
+	} else if cfg.BehindProxy {
+		// A TLS-terminating proxy means the browser leg is always HTTPS even
+		// though this server sees plain HTTP. Force Secure cookies so a missing
+		// or non-standard X-Forwarded-Proto header can't silently downgrade the
+		// session cookie to non-Secure and leak it on a plaintext hop (GH #136).
+		cfg.SecureCookies = true
+	} else if cfg.SecureCookies {
+		// Forcing Secure cookies on a plaintext deployment (no TLS, no proxy)
+		// means browsers will refuse to send the cookie over plain HTTP,
+		// breaking sessions. Warn so misconfiguration is visible.
+		logger.Warn("--secure-cookies is set without native TLS or --behind-proxy; session cookies will not be sent over plain HTTP")
+	}
+
 	// Resolve database path.
 	dbPath := cfg.DBPath
 	if dbPath == "" {
@@ -116,6 +149,33 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("database ready", "path", dbPath)
+
+	// Configure provider-token encryption at rest. A configured key encrypts the
+	// submitter's token in submissions.user_token and any bearer credential in
+	// tasks.runtime_hints. With no key, delegated submissions (those carrying a
+	// provider token) are refused unless --allow-plaintext-tokens is set.
+	tokenCipher, err := loadTokenCipher(*tokenKeyFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "token encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	switch {
+	case tokenCipher != nil:
+		st.ConfigureTokenEncryption(tokenCipher, true)
+		if nSub, nTask, rerr := st.ReencryptPlaintextTokens(context.Background()); rerr != nil {
+			logger.Warn("re-encrypting existing plaintext tokens", "error", rerr)
+		} else if nSub > 0 || nTask > 0 {
+			logger.Info("upgraded existing plaintext tokens to encrypted", "submissions", nSub, "tasks", nTask)
+		}
+		logger.Info("provider-token encryption at rest enabled")
+	case *allowPlaintextTokens:
+		st.ConfigureTokenEncryption(nil, false)
+		logger.Warn("provider tokens will be stored in PLAINTEXT (--allow-plaintext-tokens); set GOWE_TOKEN_KEY to encrypt at rest")
+	default:
+		// Fail closed: no key, no explicit opt-in.
+		st.ConfigureTokenEncryption(nil, true)
+		logger.Warn("no token-encryption key configured; delegated submissions carrying a provider token will be refused — set GOWE_TOKEN_KEY (or pass --allow-plaintext-tokens to allow plaintext)")
+	}
 
 	// Create executor registry and register executors.
 	reg := executor.NewRegistry(logger)
@@ -188,7 +248,13 @@ func main() {
 	}
 
 	// Configure worker key authentication.
-	workerKeyConfig := server.LoadWorkerKeyConfig(*workerKeyFile)
+	workerKeyConfig, err := server.LoadWorkerKeyConfig(*workerKeyFile)
+	if err != nil {
+		// Fail closed: a configured key source we cannot load would otherwise
+		// silently leave worker auth open. Refuse to start instead.
+		fmt.Fprintf(os.Stderr, "worker key configuration: %v\n", err)
+		os.Exit(1)
+	}
 	if workerKeyConfig.IsEnabled() {
 		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
 		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
@@ -301,9 +367,22 @@ func main() {
 
 	srv := server.New(cfg, st, sched, logger, serverOpts...)
 
+	// When the client reaches us over HTTPS (native TLS or via a TLS-terminating
+	// proxy), tell browsers to pin HTTPS for future visits.
+	handler := srv.Handler()
+	if cfg.TLSEnabled() || cfg.BehindProxy {
+		handler = withHSTS(handler)
+	}
+
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: srv.Handler(),
+		Handler: handler,
+		// Explicit TLS floor. Go's server default is already TLS 1.2, but pin it
+		// so a GODEBUG or future default change can't silently regress it.
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		// Bound header reads so a slow client can't hold a connection open
+		// indefinitely (Slowloris).
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	// Graceful shutdown
@@ -315,7 +394,19 @@ func main() {
 	srv.StartWorkerReaper(ctx)
 
 	go func() {
-		logger.Info("server starting", "addr", cfg.Addr)
+		if cfg.TLSEnabled() {
+			logger.Info("server starting", "addr", cfg.Addr, "scheme", "https", "tls_cert", cfg.TLSCertFile)
+			if err := httpServer.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				logger.Error("server failed", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
+		scheme := "http"
+		if cfg.BehindProxy {
+			scheme = "http (behind TLS-terminating proxy)"
+		}
+		logger.Info("server starting", "addr", cfg.Addr, "scheme", scheme)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)
@@ -338,4 +429,33 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("server stopped")
+}
+
+// withHSTS wraps a handler to emit a Strict-Transport-Security header, telling
+// browsers to use HTTPS for future visits. Only applied when the client reaches
+// the server over TLS (native or via a TLS-terminating proxy).
+func withHSTS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loadTokenCipher builds the at-rest token cipher from --token-key-file (if set)
+// or the GOWE_TOKEN_KEY environment variable. Returns (nil, nil) when neither is
+// configured, so the caller can decide the no-key policy. A present-but-invalid
+// key is a hard error.
+func loadTokenCipher(keyFile string) (*tokencrypt.Cipher, error) {
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read token key file: %w", err)
+		}
+		key, err := tokencrypt.DecodeKey(string(data))
+		if err != nil {
+			return nil, err
+		}
+		return tokencrypt.New(key)
+	}
+	return tokencrypt.FromEnv()
 }

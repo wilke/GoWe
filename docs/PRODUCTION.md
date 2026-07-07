@@ -119,6 +119,65 @@ curl -s http://localhost:8091/api/v1/health | python3 -m json.tool
 
 Returns executor availability, worker summary (online/offline counts, runtimes, groups), and uptime.
 
+## TLS & Secure Cookies
+
+The server transmits provider tokens (BV-BRC) and session cookies, so production traffic **must** be encrypted. There are two supported deployment modes.
+
+Session-cookie hardening is tied to the transport: the `Secure` attribute (which stops browsers from ever sending the cookie over plain HTTP) is set automatically when the server knows the connection is HTTPS. The relevant flags:
+
+| Flag | Effect |
+|------|--------|
+| `--tls-cert <path>` / `--tls-key <path>` | Terminate TLS in-process (native HTTPS). Both required together. Implies `--secure-cookies`. |
+| `--secure-cookies` | Always mark session cookies `Secure`. Use when a trusted upstream proxy always terminates TLS. |
+| `--behind-proxy` | Trust the `X-Forwarded-Proto` header to mark cookies `Secure` per-request. Enable **only** behind a trusted reverse proxy — a direct client can otherwise spoof the header. |
+
+### Mode 1 — Native TLS (server terminates HTTPS)
+
+The server terminates TLS itself. No external proxy is required.
+
+```bash
+gowe-server \
+  --addr :8443 \
+  --tls-cert /etc/gowe/tls/fullchain.pem \
+  --tls-key  /etc/gowe/tls/privkey.pem \
+  ...
+```
+
+- The server calls `ListenAndServeTLS`; only HTTPS is accepted on `--addr`.
+- `--secure-cookies` is implied automatically, so session cookies are marked `Secure`.
+- If only one of `--tls-cert` / `--tls-key` is supplied, the server refuses to start.
+
+Use a real certificate in production (e.g. Let's Encrypt / your org CA). Self-signed certs are fine for internal testing but browsers and API clients will warn.
+
+### Mode 2 — External TLS terminator (reverse proxy)
+
+The server serves plain HTTP on a loopback/private interface and a proxy (nginx, Caddy, an ingress controller, a load balancer) terminates TLS and forwards requests. The proxy **must** set `X-Forwarded-Proto: https` on forwarded requests.
+
+```bash
+gowe-server \
+  --addr 127.0.0.1:8091 \
+  --behind-proxy \
+  ...
+```
+
+With `--behind-proxy`, cookies are marked `Secure` for any request the proxy tags as HTTPS via `X-Forwarded-Proto`. If your proxy always terminates TLS for every client, you can instead use `--secure-cookies` to force `Secure` unconditionally.
+
+Example nginx snippet:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8091;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;  # required for Secure cookies
+}
+```
+
+> **Warning:** Only enable `--behind-proxy` when a proxy you control actually sits in front of the server and overwrites `X-Forwarded-Proto`. If the server is directly reachable, a client can send a forged `X-Forwarded-Proto: https` header. Do not combine `--behind-proxy` with a directly-exposed listener.
+
+Running with `--secure-cookies` but neither native TLS nor `--behind-proxy` logs a warning: browsers will refuse to send `Secure` cookies over plain HTTP, breaking login.
+
 ## Secrets
 
 Worker secrets live in `/scout/wf/gowe/secrets.env` (mode `600`, never committed):
@@ -130,6 +189,34 @@ HF_TOKEN=<token>
 ```
 
 Workers load these via `--secret-file`. Secret values are injected into containers at runtime and never sent to the server, stored in task data, or exposed in API responses or logs.
+
+### Provider-token encryption at rest
+
+The server encrypts each submitter's BV-BRC/MG-RAST token before persisting it (in
+`submissions.user_token` and any bearer credential inside `tasks.runtime_hints`), using
+AES-256-GCM under a server-held key. Configure the key with **one** of:
+
+- `GOWE_TOKEN_KEY` — a 32-byte key, base64 or hex encoded, in the server's environment.
+- `--token-key-file <path>` — a file (mode `600`) whose contents are the encoded key; takes
+  precedence over the env var.
+
+Generate a key:
+
+```bash
+openssl rand -base64 32   # 32-byte AES-256 key
+```
+
+Behavior:
+
+- **Key set** → tokens are encrypted at rest; any legacy plaintext rows are re-encrypted on
+  startup. Decrypted values live only in memory on the delegated-execution path and are never
+  logged.
+- **No key** → the server **fails closed**: submissions that carry a delegated provider token
+  are rejected at persistence time. Pass `--allow-plaintext-tokens` only for local/dev or a
+  staged migration; it stores tokens unencrypted (a startup warning is logged).
+
+Rotating the key requires decrypting with the old key and re-encrypting with the new one;
+there is no in-place multi-key support yet, so rotate during a maintenance window.
 
 ## GPU Assignment
 
