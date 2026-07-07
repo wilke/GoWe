@@ -107,9 +107,12 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		opt(s)
 	}
 
-	// Create UI handler.
+	// Create UI handler. Session cookies are marked Secure when TLS is
+	// terminated in-process, when the operator opts in explicitly, or (behind a
+	// trusted proxy) per-request based on X-Forwarded-Proto.
 	s.ui = ui.New(st, logger, ui.Config{
-		Secure: false, // TODO: Make configurable based on TLS
+		SecureCookies:       cfg.SecureCookies || cfg.TLSEnabled(),
+		TrustForwardedProto: cfg.BehindProxy,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)

@@ -1,0 +1,51 @@
+diff --git a/SPECIFICATION.md b/SPECIFICATION.md
+index abad23b..ee41dac 100644
+--- a/SPECIFICATION.md
++++ b/SPECIFICATION.md
+@@ -1,6 +1,6 @@
+ # GoWe Specification
+ 
+-> **Status**: Living specification · **Version**: draft-3 (2026-07-06)
++> **Status**: Living specification · **Version**: draft-4 (2026-07-06)
+ > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
+ > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
+ > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
+@@ -504,8 +504,18 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
+ - Worker→server transport MAY be TLS; workers support a custom CA (`--ca-cert`) and, for
+   testing only, `--insecure` to skip verification. `--insecure` MUST NOT be used in
+   production.
+-- The server does not currently terminate TLS itself (see §13.7); production deployments
+-  SHOULD run it behind a TLS-terminating proxy.
++- The server MAY terminate TLS itself: when both `--tls-cert` and `--tls-key` are supplied it
++  serves HTTPS natively; the two flags MUST be supplied together or startup fails. When they
++  are omitted the server serves plain HTTP and SHOULD run behind an external TLS-terminating
++  proxy.
++- Production deployments MUST encrypt client and worker transport by one of these two modes
++  (native TLS or a TLS-terminating proxy). Provider tokens and session cookies MUST NOT
++  traverse an unencrypted network.
++- Session cookies MUST carry the `Secure` attribute whenever the connection is HTTPS. The
++  server sets it automatically under native TLS. Behind a proxy, `--behind-proxy` makes the
++  server honor `X-Forwarded-Proto: https` per-request, and `--secure-cookies` forces it
++  unconditionally. `--behind-proxy` MUST be enabled only when a trusted proxy sets that header,
++  since a direct client can otherwise forge it.
+ 
+ ### 13.7 Known limitations (informative)
+ 
+@@ -517,11 +527,15 @@ security-sensitive production deployment:
+   `submissions.user_token` (SQLite). Protect the database file accordingly.
+ - **Worker keys are shared secrets.** Keys are stored plaintext in config/env with no
+   per-worker identity or rotation; a leaked key affects every worker sharing it.
+-- **Server TLS is not enforced.** Cookie `Secure` is hardcoded off (a standing TODO) and the
+-  server serves plain HTTP; front it with a TLS terminator.
+ - **Anonymous mode widens exposure.** If `--allow-anonymous` is enabled, always scope it with
+   `--anonymous-executors`.
+ 
++> **Resolved (was a limitation):** Server TLS is now enforceable. The server can terminate
++> HTTPS natively (`--tls-cert`/`--tls-key`) or run behind a terminator, and session cookies
++> are marked `Secure` when the connection is HTTPS (see §13.6). Operators MUST still choose one
++> of the two transport-security modes for production; the capability exists but is not
++> automatic on a plain-HTTP listener.
++
+ ---
+ 
+ ## 14. Entry points

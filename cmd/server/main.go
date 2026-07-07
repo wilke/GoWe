@@ -36,6 +36,12 @@ func main() {
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 
+	// TLS / secure-cookie options.
+	flag.StringVar(&cfg.TLSCertFile, "tls-cert", cfg.TLSCertFile, "Path to PEM certificate; enables native HTTPS when set together with --tls-key")
+	flag.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "Path to PEM private key; enables native HTTPS when set together with --tls-cert")
+	flag.BoolVar(&cfg.SecureCookies, "secure-cookies", cfg.SecureCookies, "Always set the Secure attribute on session cookies (implied by --tls-cert/--tls-key)")
+	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Trust X-Forwarded-Proto to mark session cookies Secure (enable only behind a trusted TLS-terminating proxy)")
+
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
 	workspaceStaging := flag.String("workspace-staging", "", "Workspace staging mode: 'server' (pre/post-stage ws:// on server) or empty (passthrough to workers)")
@@ -83,6 +89,21 @@ func main() {
 	}
 
 	logger := logging.NewLogger(logging.ParseLevel(cfg.LogLevel), cfg.LogFormat)
+
+	// Validate TLS flags: cert and key must be provided together.
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+		fmt.Fprintln(os.Stderr, "both --tls-cert and --tls-key must be provided to enable native HTTPS")
+		os.Exit(1)
+	}
+	if cfg.TLSEnabled() {
+		// Native TLS implies Secure cookies.
+		cfg.SecureCookies = true
+	} else if cfg.SecureCookies && !cfg.BehindProxy {
+		// Forcing Secure cookies without TLS (native or via a trusted proxy)
+		// means browsers will refuse to send the cookie over plain HTTP,
+		// breaking sessions. Warn so misconfiguration is visible.
+		logger.Warn("--secure-cookies is set without native TLS or --behind-proxy; session cookies will not be sent over plain HTTP")
+	}
 
 	// Resolve database path.
 	dbPath := cfg.DBPath
@@ -312,7 +333,19 @@ func main() {
 	srv.StartWorkerReaper(ctx)
 
 	go func() {
-		logger.Info("server starting", "addr", cfg.Addr)
+		if cfg.TLSEnabled() {
+			logger.Info("server starting", "addr", cfg.Addr, "scheme", "https", "tls_cert", cfg.TLSCertFile)
+			if err := httpServer.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				logger.Error("server failed", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
+		scheme := "http"
+		if cfg.BehindProxy {
+			scheme = "http (behind TLS-terminating proxy)"
+		}
+		logger.Info("server starting", "addr", cfg.Addr, "scheme", scheme)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)
