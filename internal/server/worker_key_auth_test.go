@@ -395,3 +395,81 @@ func TestUpdateWorkerKey_RejectsEmptyGroups(t *testing.T) {
 		t.Errorf("PATCH groups=[]: status=%d, want 400", rec.Code)
 	}
 }
+
+// guardedWorkerKeyRouter mounts the worker-key admin routes behind the REAL
+// requireAdmin middleware, injecting the given principal (nil = unauthenticated).
+// Unlike adminRouter, this exercises the authorization gate itself.
+func guardedWorkerKeyRouter(s *Server, principal *UserContext) http.Handler {
+	r := chi.NewRouter()
+	r.Use(requestIDMiddleware)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if principal != nil {
+				req = req.WithContext(context.WithValue(req.Context(), ctxKeyUserAuth, principal))
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	r.Route("/api/v1/admin/worker-keys", func(r chi.Router) {
+		r.Use(requireAdmin(discardLogger()))
+		r.Get("/", s.handleListWorkerKeys)
+		r.Post("/", s.handleCreateWorkerKey)
+	})
+	return r
+}
+
+// TestWorkerKeyAdminOnly verifies the admin gate: only an admin principal may
+// mint/list worker keys; a standard user is 403, anonymous is 403, and an
+// unauthenticated caller is 401 (GH #143 F3 — was untested).
+func TestWorkerKeyAdminOnly(t *testing.T) {
+	srv := testServer()
+	cases := []struct {
+		name      string
+		principal *UserContext
+		want      int
+	}{
+		{"admin allowed", &UserContext{User: &model.User{Username: "admin", Role: model.RoleAdmin}}, http.StatusCreated},
+		{"standard user forbidden", &UserContext{User: &model.User{Username: "bob", Role: model.RoleUser}}, http.StatusForbidden},
+		{"anonymous forbidden", &UserContext{User: model.AnonymousUser}, http.StatusForbidden},
+		{"unauthenticated", nil, http.StatusUnauthorized},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			router := guardedWorkerKeyRouter(srv, tt.principal)
+			rec, _ := doAdmin(t, router, "POST", "/api/v1/admin/worker-keys", `{"label":"x","groups":["g"]}`)
+			if rec.Code != tt.want {
+				t.Errorf("POST worker-keys: status=%d, want %d", rec.Code, tt.want)
+			}
+			// List is also gated.
+			rec, _ = doAdmin(t, router, "GET", "/api/v1/admin/worker-keys", "")
+			wantList := tt.want
+			if wantList == http.StatusCreated {
+				wantList = http.StatusOK
+			}
+			if rec.Code != wantList {
+				t.Errorf("GET worker-keys: status=%d, want %d", rec.Code, wantList)
+			}
+		})
+	}
+}
+
+// TestAuthenticator_DBKeyExpiry verifies a DB-backed key past its ExpiresAt is
+// rejected by Authenticate (GH #143 F3 — only static expiry was covered).
+func TestAuthenticator_DBKeyExpiry(t *testing.T) {
+	st := testAuthStore(t)
+	auth := NewWorkerKeyAuthenticator(nil, st, discardLogger())
+	ctx := context.Background()
+
+	past := time.Now().Add(-time.Hour)
+	raw, hash, prefix, _ := model.GenerateWorkerKey()
+	key := &model.WorkerKey{
+		ID: "wk_exp", Label: "expired", KeyHash: hash, KeyPrefix: prefix,
+		Groups: []string{"g"}, CreatedAt: time.Now().UTC(), ExpiresAt: &past,
+	}
+	if err := st.CreateWorkerKey(ctx, key); err != nil {
+		t.Fatalf("CreateWorkerKey: %v", err)
+	}
+	if auth.Authenticate(ctx, raw) != nil {
+		t.Error("expired DB key authenticated through Authenticate")
+	}
+}
