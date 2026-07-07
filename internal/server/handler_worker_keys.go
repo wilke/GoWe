@@ -41,6 +41,14 @@ func (s *Server) handleCreateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An empty groups list means "any group" (see CanJoinGroup), which would
+	// silently grant a key fleet-wide reach. Default to the least-privilege
+	// "default" group so an omitted scope is narrow, not wildcard; an admin who
+	// genuinely wants a broad key must name the groups explicitly.
+	if len(req.Groups) == 0 {
+		req.Groups = []string{"default"}
+	}
+
 	raw, hash, prefix, err := model.GenerateWorkerKey()
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError, model.NewInternalError(err.Error()))
@@ -145,6 +153,16 @@ func (s *Server) handleUpdateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		key.Description = *req.Description
 	}
 	if req.Groups != nil {
+		// Reject an explicit empty list: it would turn the key into a wildcard
+		// (any group). To broaden a key, name the groups; to narrow it, use
+		// ["default"].
+		if len(*req.Groups) == 0 {
+			respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+				Code:    model.ErrValidation,
+				Message: "groups cannot be set to an empty list (empty means any group); name the groups explicitly",
+			})
+			return
+		}
 		key.Groups = *req.Groups
 	}
 	if req.ClearExpiry {

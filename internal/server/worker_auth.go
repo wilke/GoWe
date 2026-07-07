@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -62,21 +63,29 @@ type WorkerKeyEntry struct {
 const hashSentinelPrefix = "sha256:"
 
 // LoadWorkerKeyConfig loads worker key configuration from multiple sources.
-// Priority: 1. JSON file, 2. Environment variable (GOWE_WORKER_KEYS)
-func LoadWorkerKeyConfig(configFile string) *WorkerKeyConfig {
+// Priority: 1. JSON file, 2. Environment variable (GOWE_WORKER_KEYS).
+//
+// A configured source that cannot be read or parsed is a hard error rather than
+// a silent fallback: degrading to an empty config would leave worker auth open
+// (see Enabled) while the operator believes it is enforced. Callers MUST NOT
+// enable the server on error.
+func LoadWorkerKeyConfig(configFile string) (*WorkerKeyConfig, error) {
 	cfg := &WorkerKeyConfig{
 		Keys: make(map[string]WorkerKeyEntry),
 	}
 
-	// Try loading from config file.
+	// Load from config file, if one was configured.
 	if configFile != "" {
-		if data, err := os.ReadFile(configFile); err == nil {
-			var fileCfg WorkerKeyConfig
-			if err := json.Unmarshal(data, &fileCfg); err == nil {
-				for k, v := range fileCfg.Keys {
-					cfg.Keys[k] = v
-				}
-			}
+		data, err := os.ReadFile(configFile)
+		if err != nil {
+			return nil, fmt.Errorf("read worker-keys file %q: %w", configFile, err)
+		}
+		var fileCfg WorkerKeyConfig
+		if err := json.Unmarshal(data, &fileCfg); err != nil {
+			return nil, fmt.Errorf("parse worker-keys file %q: %w", configFile, err)
+		}
+		for k, v := range fileCfg.Keys {
+			cfg.Keys[k] = v
 		}
 	}
 
@@ -84,15 +93,16 @@ func LoadWorkerKeyConfig(configFile string) *WorkerKeyConfig {
 	// Format: {"key1": ["group1", "group2"], "key2": ["default"]}
 	if envVal := os.Getenv("GOWE_WORKER_KEYS"); envVal != "" {
 		var envKeys map[string][]string
-		if err := json.Unmarshal([]byte(envVal), &envKeys); err == nil {
-			for key, groups := range envKeys {
-				cfg.Keys[key] = WorkerKeyEntry{Groups: groups}
-			}
+		if err := json.Unmarshal([]byte(envVal), &envKeys); err != nil {
+			return nil, fmt.Errorf("parse GOWE_WORKER_KEYS: %w", err)
+		}
+		for key, groups := range envKeys {
+			cfg.Keys[key] = WorkerKeyEntry{Groups: groups}
 		}
 	}
 
 	cfg.build()
-	return cfg
+	return cfg, nil
 }
 
 // build constructs the hash index from Keys. Entries whose map key uses the

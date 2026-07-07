@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -324,5 +326,72 @@ func TestAdminWorkerKeyEndpoints(t *testing.T) {
 		`{"label":"bad","expires_at":"2000-01-01T00:00:00Z"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("past expiry: status=%d, want 400", rec.Code)
+	}
+}
+
+// TestLoadWorkerKeyConfig_FailsClosed verifies that a configured-but-unloadable
+// key source is a hard error rather than a silent degrade to open access (F1).
+func TestLoadWorkerKeyConfig_FailsClosed(t *testing.T) {
+	// A configured file that does not exist must error.
+	if _, err := LoadWorkerKeyConfig("/nonexistent/worker-keys.json"); err == nil {
+		t.Error("missing key file: expected error, got nil (would leave auth open)")
+	}
+
+	// A configured file with malformed JSON must error.
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	if _, err := LoadWorkerKeyConfig(bad); err == nil {
+		t.Error("malformed key file: expected error, got nil")
+	}
+
+	// No file configured is fine (returns an empty, disabled config).
+	cfg, err := LoadWorkerKeyConfig("")
+	if err != nil {
+		t.Errorf("no file configured: unexpected error %v", err)
+	}
+	if cfg.IsEnabled() {
+		t.Error("empty config should not be enabled")
+	}
+}
+
+// TestCreateWorkerKey_EmptyGroupsDefaultsToDefault verifies that minting a key
+// without groups yields a least-privilege ["default"] scope, not a wildcard (F2).
+func TestCreateWorkerKey_EmptyGroupsDefaultsToDefault(t *testing.T) {
+	router := adminRouter(testServer())
+
+	rec, env := doAdmin(t, router, "POST", "/api/v1/admin/worker-keys", `{"label":"no-groups"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mint: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var minted struct {
+		WorkerKey model.WorkerKey `json:"worker_key"`
+	}
+	if err := json.Unmarshal(env.Data, &minted); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(minted.WorkerKey.Groups) != 1 || minted.WorkerKey.Groups[0] != "default" {
+		t.Errorf("empty groups should default to [default], got %v", minted.WorkerKey.Groups)
+	}
+}
+
+// TestUpdateWorkerKey_RejectsEmptyGroups verifies a PATCH cannot widen a key to
+// wildcard by clearing its groups (F2).
+func TestUpdateWorkerKey_RejectsEmptyGroups(t *testing.T) {
+	router := adminRouter(testServer())
+
+	_, env := doAdmin(t, router, "POST", "/api/v1/admin/worker-keys",
+		`{"label":"scoped","groups":["esmfold"]}`)
+	var minted struct {
+		WorkerKey model.WorkerKey `json:"worker_key"`
+	}
+	if err := json.Unmarshal(env.Data, &minted); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	rec, _ := doAdmin(t, router, "PATCH", "/api/v1/admin/worker-keys/"+minted.WorkerKey.ID, `{"groups":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("PATCH groups=[]: status=%d, want 400", rec.Code)
 	}
 }
