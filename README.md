@@ -242,6 +242,16 @@ The default `docker-compose.yml` uses fast poll intervals (`500ms`) for testing.
 
 ## Architecture
 
+**Deep-dive documentation:**
+
+- 📊 **[Architecture dossier](docs/architecture-dossier.html)** — a visual, per-layer overview
+  (topology, execution path, state machines, scheduler, executors, credentials, hints, storage).
+  Self-contained HTML — open it directly in a browser.
+- 📕 **[Specification](SPECIFICATION.md)** — the normative reference for how GoWe interprets and
+  executes workflows.
+- 📐 **[Architecture Decision Records](docs/adr/)** — the *why* behind the design.
+- 🔌 **[BV-BRC & Workspace deep dive](docs/BVBRC-Workspace-Deep-Dive.md)** · **[CWL hints reference](docs/cwl-hints.md)**
+
 ### Data Flow
 
 ```
