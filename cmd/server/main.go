@@ -54,6 +54,7 @@ func main() {
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
+	tokenInjectGroups := flag.String("token-inject-groups", "", "Comma-separated worker groups whose tasks auto-receive the submitter's provider token without the per-tool inject_bvbrc_token opt-in (e.g. bvbrc,esmfold). Empty = opt-in only")
 
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
@@ -352,6 +353,14 @@ func main() {
 	schedCfg.PreflightDeferralTicks = *preflightDeferral
 	schedCfg.StuckTaskThreshold = *stuckTaskThreshold
 	schedCfg.StuckTaskAction = *stuckTaskAction
+	for _, g := range strings.Split(*tokenInjectGroups, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			schedCfg.TokenInjectGroups = append(schedCfg.TokenInjectGroups, g)
+		}
+	}
+	if len(schedCfg.TokenInjectGroups) > 0 {
+		logger.Info("token auto-injection enabled for worker groups", "groups", schedCfg.TokenInjectGroups)
+	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
 	// Configure server-side workspace staging if requested.

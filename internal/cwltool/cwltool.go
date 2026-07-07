@@ -23,23 +23,23 @@ import (
 
 // Config holds configuration for ExecuteTool.
 type Config struct {
-	Logger               *slog.Logger
-	CWLDir               string            // Directory containing the CWL file
-	Namespaces           map[string]string  // Namespace prefix -> URI mappings
-	ExpressionLib        []string           // JavaScript library from InlineJavascriptRequirement
-	ContainerRuntime     string             // "docker", "apptainer", or "" (auto-detect)
-	NoContainer          bool               // Force local execution even with DockerRequirement
-	ImageDir             string             // Base directory for resolving relative .sif image paths
-	GPU                  toolexec.GPUConfig // GPU configuration
-	MaxCPUs              int                // Worker max CPUs (0 = no limit)
-	MaxMemMB             int64              // Worker max memory in MiB (0 = no limit)
-	ApptainerCgroups     bool               // System supports cgroups v2 unified
-	DockerHostPathMap    map[string]string  // Container path -> host path for DinD
-	DockerVolume         string             // Named Docker volume shared with tool containers
-	ResolveSecondary      bool                // Resolve secondary files from tool definitions
-	JobRequirements       []any               // cwl:requirements from job file
-	OutDir                string              // Output directory for resolved output paths
-	RemoveDefaultListings bool                // Remove listings when loadListing is default (for worker/executor mode)
+	Logger                *slog.Logger
+	CWLDir                string               // Directory containing the CWL file
+	Namespaces            map[string]string    // Namespace prefix -> URI mappings
+	ExpressionLib         []string             // JavaScript library from InlineJavascriptRequirement
+	ContainerRuntime      string               // "docker", "apptainer", or "" (auto-detect)
+	NoContainer           bool                 // Force local execution even with DockerRequirement
+	ImageDir              string               // Base directory for resolving relative .sif image paths
+	GPU                   toolexec.GPUConfig   // GPU configuration
+	MaxCPUs               int                  // Worker max CPUs (0 = no limit)
+	MaxMemMB              int64                // Worker max memory in MiB (0 = no limit)
+	ApptainerCgroups      bool                 // System supports cgroups v2 unified
+	DockerHostPathMap     map[string]string    // Container path -> host path for DinD
+	DockerVolume          string               // Named Docker volume shared with tool containers
+	ResolveSecondary      bool                 // Resolve secondary files from tool definitions
+	JobRequirements       []any                // cwl:requirements from job file
+	OutDir                string               // Output directory for resolved output paths
+	RemoveDefaultListings bool                 // Remove listings when loadListing is default (for worker/executor mode)
 	ExtraBinds            []toolexec.ExtraBind // Extra bind mounts for containers (pre-staged datasets, admin paths)
 	SecretEnvVars         map[string]string    // Secret env vars injected into containers (never logged or stored)
 	EnvVars               map[string]string    // Non-secret env vars injected into containers
@@ -366,5 +366,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	return &Result{
 		Outputs:  execResult.Outputs,
 		ExitCode: execResult.ExitCode,
+		Stdout:   execResult.Stdout,
+		Stderr:   execResult.Stderr,
 	}, nil
 }

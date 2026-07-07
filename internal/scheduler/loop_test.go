@@ -1078,6 +1078,86 @@ func TestDetectStuckTasks_FailAction(t *testing.T) {
 	}
 }
 
+func TestScrubTaskToken(t *testing.T) {
+	tests := []struct {
+		name         string
+		task         *model.Task
+		wantNilCred  bool
+		wantNilHints bool
+	}{
+		{
+			name:         "nil RuntimeHints",
+			task:         &model.Task{},
+			wantNilHints: true,
+		},
+		{
+			name: "nil StagerOverrides",
+			task: &model.Task{
+				RuntimeHints: &model.RuntimeHints{DockerImage: "alpine"},
+			},
+			wantNilCred: true,
+		},
+		{
+			name: "nil HTTPCredential",
+			task: &model.Task{
+				RuntimeHints: &model.RuntimeHints{
+					StagerOverrides: &model.StagerOverrides{},
+				},
+			},
+			wantNilCred: true,
+		},
+		{
+			name: "credential is scrubbed",
+			task: &model.Task{
+				RuntimeHints: &model.RuntimeHints{
+					DockerImage: "alpine",
+					StagerOverrides: &model.StagerOverrides{
+						HTTPCredential: &model.HTTPCredential{
+							Type:  "bearer",
+							Token: "secret-token-value",
+						},
+					},
+				},
+			},
+			wantNilCred: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scrubTaskToken(tt.task)
+
+			if tt.wantNilHints {
+				// RuntimeHints was nil and should stay nil.
+				if tt.task.RuntimeHints != nil {
+					t.Error("expected RuntimeHints to remain nil")
+				}
+				return
+			}
+
+			if tt.task.RuntimeHints.StagerOverrides == nil {
+				if !tt.wantNilCred {
+					t.Error("StagerOverrides unexpectedly nil")
+				}
+				return
+			}
+
+			if tt.task.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+				t.Errorf("HTTPCredential should be nil after scrub, got %+v",
+					tt.task.RuntimeHints.StagerOverrides.HTTPCredential)
+			}
+
+			// Other fields should be preserved.
+			if tt.task.RuntimeHints.DockerImage == "alpine" {
+				// Verify DockerImage wasn't wiped.
+				if tt.task.RuntimeHints.DockerImage != "alpine" {
+					t.Error("DockerImage was unexpectedly cleared")
+				}
+			}
+		})
+	}
+}
+
 func TestRequirementKeyForTask(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1125,5 +1205,34 @@ func TestRequirementKeyForTask(t *testing.T) {
 				t.Errorf("requirementKeyForTask() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestGroupAutoInjectsToken verifies the scoped token-injection policy: only
+// worker groups the operator opted into (--token-inject-groups) auto-receive the
+// submitter's token; the default/untrusted groups stay opt-in (SPEC §13.5).
+func TestGroupAutoInjectsToken(t *testing.T) {
+	l := &Loop{config: Config{TokenInjectGroups: []string{"bvbrc", "esmfold"}}}
+	cases := []struct {
+		group string
+		want  bool
+	}{
+		{"bvbrc", true},
+		{"esmfold", true},
+		{"default", false},
+		{"", false},      // empty group resolves to "default"
+		{"random", false},
+	}
+	for _, c := range cases {
+		task := &model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: c.group}}
+		if got := l.groupAutoInjectsToken(task); got != c.want {
+			t.Errorf("group %q: got %v, want %v", c.group, got, c.want)
+		}
+	}
+
+	// With no configured groups, nothing auto-injects (safe default).
+	empty := &Loop{config: Config{}}
+	if empty.groupAutoInjectsToken(&model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: "bvbrc"}}) {
+		t.Error("empty TokenInjectGroups must never auto-inject")
 	}
 }

@@ -43,6 +43,7 @@ func (m *mockStore) ListSubmissions(context.Context, model.ListOptions) ([]*mode
 	return nil, 0, nil
 }
 func (m *mockStore) UpdateSubmission(context.Context, *model.Submission) error { return nil }
+func (m *mockStore) DeleteSubmission(context.Context, string) error            { return nil }
 func (m *mockStore) UpdateSubmissionInputs(context.Context, string, map[string]any) error {
 	return nil
 }
@@ -107,6 +108,7 @@ func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error) { 
 func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error        { return nil }
 func (m *mockStore) DeleteWorker(context.Context, string) error               { return nil }
 func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)     { return nil, nil }
+func (m *mockStore) ListWorkerGroups(context.Context) ([]string, error)       { return nil, nil }
 func (m *mockStore) CheckoutTask(context.Context, string, string, model.ContainerRuntime) (*model.Task, error) {
 	return nil, nil
 }

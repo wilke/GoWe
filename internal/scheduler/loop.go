@@ -34,6 +34,13 @@ type Config struct {
 	ForceExecutor    string // Force all tasks to this executor, ignoring CWL hints. Empty = respect hints.
 	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 
+	// TokenInjectGroups lists worker groups whose tasks automatically receive the
+	// submitter's provider token, without the per-tool gowe:Execution.inject_bvbrc_token
+	// opt-in. This scopes the auto-injection to operator-trusted groups (e.g. curated
+	// BV-BRC tool workers) while default/untrusted groups stay opt-in (least privilege,
+	// SPECIFICATION.md §13.5, ADR-0010). Empty = no group auto-injection.
+	TokenInjectGroups []string
+
 	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
 	// when no online worker can satisfy its requirements. After this many ticks,
 	// the step is failed with a descriptive error. 0 = disable pre-flight check.
@@ -62,10 +69,10 @@ func DefaultConfig() Config {
 // WorkerCapabilities summarizes what online workers can do. Built once per tick.
 type WorkerCapabilities struct {
 	OnlineCount  int
-	HasContainer bool              // any worker with docker/apptainer
-	Groups       map[string]int    // group → count of online workers
-	Datasets     map[string]int    // dataset ID → count of online workers
-	Workers      []*model.Worker   // full list of online workers
+	HasContainer bool            // any worker with docker/apptainer
+	Groups       map[string]int  // group → count of online workers
+	Datasets     map[string]int  // dataset ID → count of online workers
+	Workers      []*model.Worker // full list of online workers
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -188,8 +195,8 @@ func (l *Loop) updateSubmission(ctx context.Context, sub *model.Submission) erro
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
-	l.cachedWorkerCaps = nil // Reset per-tick worker capability cache.
-	l.cache = newTickCache() // Reset per-tick entity cache.
+	l.cachedWorkerCaps = nil          // Reset per-tick worker capability cache.
+	l.cache = newTickCache()          // Reset per-tick entity cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
@@ -795,13 +802,13 @@ func (l *Loop) dispatchSubWorkflowStep(ctx context.Context, si *model.StepInstan
 
 	// Create a temporary task for the child submission linkage.
 	parentTask := &model.Task{
-		ID:           "task_" + uuid.New().String(),
-		SubmissionID: si.SubmissionID,
-		StepID:       si.StepID,
+		ID:             "task_" + uuid.New().String(),
+		SubmissionID:   si.SubmissionID,
+		StepID:         si.StepID,
 		StepInstanceID: si.ID,
-		Tool:         tmpTask.Tool,
-		Job:          tmpTask.Job,
-		RuntimeHints: tmpTask.RuntimeHints,
+		Tool:           tmpTask.Tool,
+		Job:            tmpTask.Job,
+		RuntimeHints:   tmpTask.RuntimeHints,
 	}
 
 	childSub, err := l.createChildSubmission(ctx, parentTask, subGraph, tmpTask.Job, sub, wf)
@@ -895,9 +902,9 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 	}
 
 	parentTask := &model.Task{
-		ID:           "task_" + uuid.New().String(),
-		SubmissionID: si.SubmissionID,
-		StepID:       si.StepID,
+		ID:             "task_" + uuid.New().String(),
+		SubmissionID:   si.SubmissionID,
+		StepID:         si.StepID,
 		StepInstanceID: si.ID,
 	}
 
@@ -1198,17 +1205,37 @@ func (l *Loop) hasOnlineWorkers() bool {
 }
 
 // addUserToken adds user authentication token to task runtime hints.
-// When server-side workspace staging is enabled (wsStager != nil), the server
-// handles all ws:// operations and workers don't need the token — skip embedding
-// it in task data to avoid storing credentials in the database unnecessarily.
-// BV-BRC executor tasks always need the submitter's token at the
-// AppService.start_app boundary, regardless of staging mode — otherwise the
-// executor falls back to its default caller and the job runs under the wrong
-// user identity.
+// Worker and BV-BRC executor tasks always receive the submitter's token so
+// that tools can make authenticated downstream calls (workspace, AppService).
+// For other executor types, the token is only embedded when server-side
+// workspace staging is disabled (wsStager == nil) or when the step has the
+// InjectBVBRCToken hint.
+// groupAutoInjectsToken reports whether a worker task's target group is one the
+// operator has opted into automatic token injection via --token-inject-groups.
+// Tasks in other groups (including the default group) get the token only when
+// they explicitly opt in (gowe:Execution.inject_bvbrc_token) — preserving the
+// least-privilege boundary in SPECIFICATION.md §13.5 for untrusted tools.
+func (l *Loop) groupAutoInjectsToken(task *model.Task) bool {
+	if len(l.config.TokenInjectGroups) == 0 {
+		return false
+	}
+	group := "default"
+	if task.RuntimeHints != nil && task.RuntimeHints.WorkerGroup != "" {
+		group = task.RuntimeHints.WorkerGroup
+	}
+	for _, g := range l.config.TokenInjectGroups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	needsToken := l.wsStager == nil ||
 		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
-		task.ExecutorType == model.ExecutorTypeBVBRC
+		task.ExecutorType == model.ExecutorTypeBVBRC ||
+		(task.ExecutorType == model.ExecutorTypeWorker && l.groupAutoInjectsToken(task))
 	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
@@ -1228,6 +1255,16 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 			task.RuntimeHints = &model.RuntimeHints{}
 		}
 		task.RuntimeHints.OutputDestination = sub.OutputDestination
+	}
+}
+
+// scrubTaskToken removes the user authentication token from a task's runtime
+// hints so that credentials are not persisted in the database after the task
+// reaches a terminal state. The token is only needed while the task is in
+// flight; once complete, keeping it at rest is unnecessary exposure.
+func scrubTaskToken(task *model.Task) {
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
 	}
 }
 
@@ -1273,6 +1310,7 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 			stdout, stderr, _ := exec.Logs(ctx, task)
 			task.Stdout = stdout
 			task.Stderr = stderr
+			scrubTaskToken(task)
 			l.logger.Info("task completed", "task_id", task.ID, "state", newState, "step_id", task.StepID)
 		} else {
 			task.State = model.TaskStateQueued
@@ -1444,6 +1482,7 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				stdout, stderr, _ := exec.Logs(ctx, task)
 				task.Stdout = stdout
 				task.Stderr = stderr
+				scrubTaskToken(task)
 				l.logger.Info("task completed (poll)", "task_id", task.ID, "state", newState)
 			}
 

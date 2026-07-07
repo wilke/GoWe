@@ -365,4 +365,3 @@ func parseWSPath(uri string) string {
 	}
 	return path
 }
-

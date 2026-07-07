@@ -254,6 +254,7 @@ func (s *Server) routes() {
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", s.handleGetSubmission)
 					r.Put("/cancel", s.handleCancelSubmission)
+					r.Delete("/", s.handleDeleteSubmission)
 					r.Put("/retry", s.handleRetrySubmission)
 					// Tasks nested under submissions
 					r.Route("/tasks", func(r chi.Router) {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/me/gowe/pkg/model"
 )
 
 // Template functions available in all templates.
@@ -172,6 +174,25 @@ var templateFuncs = template.FuncMap{
 		// Check if CWL type is an array type
 		t = strings.TrimSuffix(t, "?")
 		return strings.HasSuffix(t, "[]") || strings.HasPrefix(t, "File[]")
+	},
+	"hasOptionalInputs": func(inputs []model.WorkflowInput) bool {
+		for _, inp := range inputs {
+			if !inp.Required {
+				return true
+			}
+		}
+		return false
+	},
+	"dict": func(values ...any) map[string]any {
+		if len(values)%2 != 0 {
+			return nil
+		}
+		d := make(map[string]any, len(values)/2)
+		for i := 0; i < len(values); i += 2 {
+			key, _ := values[i].(string)
+			d[key] = values[i+1]
+		}
+		return d
 	},
 	"workerStateColor": func(state string) string {
 		switch strings.ToLower(state) {
@@ -400,6 +421,69 @@ var templates = map[string]string{
     </span>
 </div>
 {{end}}
+{{end}}`,
+
+	// Reusable input field component for submission create form.
+	// Called with {{template "input_field" dict "Input" . "HasWorkspace" $.HasWorkspace "WorkspacePath" $.WorkspacePath}}
+	"components/input_field": `{{define "input_field"}}
+{{$inp := .Input}}
+<div class="mb-4">
+    <label for="input_{{$inp.ID}}" class="block text-sm font-medium text-gray-700">
+        {{$inp.ID}}
+        {{if $inp.Required}}<span class="text-red-500">*</span>{{end}}
+        <span class="text-gray-400 font-normal">({{$inp.Type}})</span>
+    </label>
+    {{if $inp.Doc}}<p class="mt-0.5 text-xs text-gray-500">{{$inp.Doc}}</p>{{end}}
+    {{if isFileType $inp.Type}}
+    <!-- File input with workspace picker -->
+    <div class="mt-1 flex items-center space-x-2">
+        <input type="text" name="inputs[{{$inp.ID}}]" id="input_{{$inp.ID}}"
+               {{if $inp.Required}}required{{end}}
+               placeholder="/username@bvbrc/home/path/to/file"
+               class="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono">
+        {{if .HasWorkspace}}
+        <button type="button"
+                onclick="GoWe.FilePicker.open('input_{{$inp.ID}}', '{{.WorkspacePath}}')"
+                class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Browse
+        </button>
+        {{end}}
+    </div>
+    {{else if isDirectoryType $inp.Type}}
+    <!-- Directory input with workspace folder picker -->
+    <div class="mt-1 flex items-center space-x-2">
+        <input type="text" name="inputs[{{$inp.ID}}]" id="input_{{$inp.ID}}"
+               {{if $inp.Required}}required{{end}}
+               {{if $inp.Default}}value="{{$inp.Default}}"{{end}}
+               placeholder="/username@bvbrc/home/folder"
+               class="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono">
+        {{if .HasWorkspace}}
+        <button type="button"
+                onclick="GoWe.FilePicker.open('input_{{$inp.ID}}', '{{.WorkspacePath}}', {mode: 'folder'})"
+                class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            Browse
+        </button>
+        <button type="button"
+                onclick="GoWe.FolderCreator.create('input_{{$inp.ID}}', '{{.WorkspacePath}}')"
+                class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            + Create
+        </button>
+        {{end}}
+    </div>
+    {{else if isArrayType $inp.Type}}
+    <!-- Array input -->
+    <textarea name="inputs[{{$inp.ID}}]" id="input_{{$inp.ID}}" rows="3"
+              {{if $inp.Required}}required{{end}}
+              class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono"
+              placeholder="One value per line, or JSON array"></textarea>
+    {{else}}
+    <!-- Standard text input -->
+    <input type="text" name="inputs[{{$inp.ID}}]" id="input_{{$inp.ID}}"
+           {{if $inp.Required}}required{{end}}
+           {{if $inp.Default}}value="{{$inp.Default}}"{{end}}
+           class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+    {{end}}
+</div>
 {{end}}`,
 
 	"layout": `<!DOCTYPE html>
@@ -787,6 +871,10 @@ var templates = map[string]string{
                                class="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
                                 Submit
                             </a>
+                            <a href="/workflows/{{.ID}}/edit"
+                               class="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                                Edit
+                            </a>
                             <button hx-delete="/workflows/{{.ID}}"
                                     hx-target="#workflow-{{.ID}}"
                                     hx-swap="outerHTML"
@@ -839,6 +927,10 @@ var templates = map[string]string{
                 <p class="mt-1 text-sm text-gray-500">{{.Workflow.Description}}</p>
             </div>
             <div class="flex space-x-2">
+                <a href="/workflows/{{.Workflow.ID}}/edit"
+                   class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50">
+                    Edit
+                </a>
                 <a href="/submissions/new?workflow_id={{.Workflow.ID}}"
                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                     Submit
@@ -1034,7 +1126,7 @@ var templates = map[string]string{
     </div>
     {{end}}
 
-    <form action="/api/v1/workflows" method="POST" enctype="multipart/form-data" class="space-y-6">
+    <form id="create-workflow-form" class="space-y-6">
         <div class="bg-white shadow sm:rounded-lg">
             <div class="px-4 py-5 sm:p-6">
                 <div class="space-y-6">
@@ -1067,12 +1159,131 @@ var templates = map[string]string{
                 <a href="/workflows" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
                     Cancel
                 </a>
-                <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                <button type="submit" id="create-workflow-btn" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
                     Create Workflow
                 </button>
             </div>
         </div>
     </form>
+    <script>
+    document.getElementById('create-workflow-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('create-workflow-btn');
+        btn.disabled = true;
+        btn.textContent = 'Creating...';
+
+        const body = {
+            name: document.getElementById('name').value,
+            description: document.getElementById('description').value,
+            cwl: document.getElementById('cwl').value
+        };
+
+        try {
+            const resp = await fetch('/api/v1/workflows', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            });
+            const data = await resp.json();
+            if (resp.ok && data.data && data.data.id) {
+                window.location.href = '/workflows/' + data.data.id;
+            } else {
+                const msg = (data.error && data.error.message) || 'Failed to create workflow';
+                GoWe.Toast.error(msg);
+                btn.disabled = false;
+                btn.textContent = 'Create Workflow';
+            }
+        } catch (err) {
+            GoWe.Toast.error('Request failed: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = 'Create Workflow';
+        }
+    });
+    </script>
+</div>
+{{end}}`,
+
+	"workflows/edit": `{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-6">
+        <h1 class="text-2xl font-semibold text-gray-900">Edit Workflow</h1>
+        <p class="mt-1 text-sm text-gray-500">Modify the CWL definition for <strong>{{.Workflow.Name}}</strong></p>
+    </div>
+
+    <form id="edit-workflow-form" class="space-y-6">
+        <div class="bg-white shadow sm:rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <div class="space-y-6">
+                    <div>
+                        <label for="name" class="block text-sm font-medium text-gray-700">Workflow Name</label>
+                        <input type="text" name="name" id="name"
+                               value="{{.Workflow.Name}}"
+                               class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    </div>
+
+                    <div>
+                        <label for="description" class="block text-sm font-medium text-gray-700">Description</label>
+                        <textarea name="description" id="description" rows="3"
+                                  class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                                  >{{.Workflow.Description}}</textarea>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">CWL Definition</label>
+                        <div class="mt-1">
+                            <textarea name="cwl" id="cwl" rows="30"
+                                      class="block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono"
+                                      >{{.Workflow.RawCWL}}</textarea>
+                        </div>
+                        <p class="mt-2 text-sm text-gray-500">Edit the CWL definition above. The workflow will be re-parsed and validated on save.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="px-4 py-3 bg-gray-50 text-right sm:px-6">
+                <a href="/workflows/{{.Workflow.ID}}" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
+                    Cancel
+                </a>
+                <button type="submit" id="save-workflow-btn" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    Save Changes
+                </button>
+            </div>
+        </div>
+    </form>
+    <script>
+    document.getElementById('edit-workflow-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('save-workflow-btn');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+
+        const body = {
+            name: document.getElementById('name').value,
+            description: document.getElementById('description').value,
+            cwl: document.getElementById('cwl').value
+        };
+
+        try {
+            const resp = await fetch('/api/v1/workflows/{{.Workflow.ID}}', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                window.location.href = '/workflows/{{.Workflow.ID}}';
+            } else {
+                const msg = (data.error && data.error.message) || 'Failed to update workflow';
+                GoWe.Toast.error(msg);
+                btn.disabled = false;
+                btn.textContent = 'Save Changes';
+            }
+        } catch (err) {
+            GoWe.Toast.error('Request failed: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = 'Save Changes';
+        }
+    });
+    </script>
 </div>
 {{end}}`,
 
@@ -1372,6 +1583,14 @@ var templates = map[string]string{
                     Cancel
                 </button>
                 {{end}}
+                <button hx-delete="/submissions/{{.Submission.ID}}"
+                        hx-confirm="Are you sure you want to delete this submission? This will permanently remove the submission and all its tasks."
+                        class="inline-flex items-center px-3 py-1 border border-red-300 text-sm font-medium rounded text-red-700 bg-white hover:bg-red-50">
+                    <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Delete
+                </button>
                 {{if eq .Submission.State.String "FAILED"}}
                 <button hx-post="/submissions/{{.Submission.ID}}/resume"
                         hx-confirm="Resume this submission from failed tasks?"
@@ -1499,12 +1718,10 @@ var templates = map[string]string{
                             {{end}}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm space-x-2">
-                            {{if or .Stdout .Stderr}}
                             <a href="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/logs"
                                class="text-indigo-600 hover:text-indigo-500">
                                 Logs
                             </a>
-                            {{end}}
                             {{if eq .State.String "FAILED"}}
                             <button hx-post="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/recompute"
                                     hx-confirm="Recompute this task from the beginning?"
@@ -1654,72 +1871,47 @@ var templates = map[string]string{
 
                     {{if .SelectedWorkflow}}
                     <div>
-                        <h4 class="text-sm font-medium text-gray-700 mb-2">Workflow Inputs</h4>
-                        {{range .SelectedWorkflow.Inputs}}
-                        <div class="mb-4">
-                            <label for="input_{{.ID}}" class="block text-sm font-medium text-gray-700">
-                                {{.ID}}
-                                {{if .Required}}<span class="text-red-500">*</span>{{end}}
-                                <span class="text-gray-400 font-normal">({{.Type}})</span>
-                            </label>
-                            {{if isFileType .Type}}
-                            <!-- File input with workspace picker -->
-                            <div class="mt-1 flex items-center space-x-2">
-                                <input type="text" name="inputs[{{.ID}}]" id="input_{{.ID}}"
-                                       {{if .Required}}required{{end}}
-                                       placeholder="/username@bvbrc/home/path/to/file"
-                                       class="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono">
-                                {{if $.HasWorkspace}}
-                                <button type="button"
-                                        onclick="GoWe.FilePicker.open('input_{{.ID}}', '{{$.WorkspacePath}}')"
-                                        class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-                                    📁 Browse
-                                </button>
-                                {{end}}
+                        <h4 class="text-sm font-medium text-gray-700 mb-2">Required Inputs</h4>
+                        {{range .SelectedWorkflow.Inputs}}{{if .Required}}
+                        {{template "input_field" dict "Input" . "HasWorkspace" $.HasWorkspace "WorkspacePath" $.WorkspacePath}}
+                        {{end}}{{end}}
+
+                        {{if hasOptionalInputs .SelectedWorkflow.Inputs}}
+                        <details class="mt-6 border border-gray-200 rounded-md">
+                            <summary class="px-4 py-3 cursor-pointer text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-md select-none">
+                                Optional Parameters
+                                <span class="text-gray-400 font-normal ml-1">(click to expand)</span>
+                            </summary>
+                            <div class="px-4 py-4">
+                                {{range .SelectedWorkflow.Inputs}}{{if not .Required}}
+                                {{template "input_field" dict "Input" . "HasWorkspace" $.HasWorkspace "WorkspacePath" $.WorkspacePath}}
+                                {{end}}{{end}}
                             </div>
-                            <p class="mt-1 text-xs text-gray-500">{{if $.HasWorkspace}}Enter a workspace path or browse to select a file{{else}}Enter a BV-BRC workspace path (e.g., /user@bvbrc/home/file.fasta){{end}}</p>
-                            {{else if isDirectoryType .Type}}
-                            <!-- Directory input with workspace folder picker -->
-                            <div class="mt-1 flex items-center space-x-2">
-                                <input type="text" name="inputs[{{.ID}}]" id="input_{{.ID}}"
-                                       {{if .Required}}required{{end}}
-                                       {{if .Default}}value="{{.Default}}"{{end}}
-                                       placeholder="/username@bvbrc/home/folder"
-                                       class="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono">
-                                {{if $.HasWorkspace}}
-                                <button type="button"
-                                        onclick="GoWe.FilePicker.open('input_{{.ID}}', '{{$.WorkspacePath}}', {mode: 'folder'})"
-                                        class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-                                    Browse
-                                </button>
-                                <button type="button"
-                                        onclick="GoWe.FolderCreator.create('input_{{.ID}}', '{{$.WorkspacePath}}')"
-                                        class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-                                    + Create
-                                </button>
-                                {{end}}
-                            </div>
-                            <p class="mt-1 text-xs text-gray-500">{{if $.HasWorkspace}}Select a workspace folder or create a new one{{else}}Enter a BV-BRC workspace path (e.g., /user@bvbrc/home/output){{end}}</p>
-                            {{else if isArrayType .Type}}
-                            <!-- Array input -->
-                            <textarea name="inputs[{{.ID}}]" id="input_{{.ID}}" rows="3"
-                                      {{if .Required}}required{{end}}
-                                      class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm font-mono"
-                                      placeholder="One value per line, or JSON array"></textarea>
-                            <p class="mt-1 text-xs text-gray-500">Enter one value per line, or a JSON array</p>
-                            {{else}}
-                            <!-- Standard text input -->
-                            <input type="text" name="inputs[{{.ID}}]" id="input_{{.ID}}"
-                                   {{if .Required}}required{{end}}
-                                   {{if .Default}}value="{{.Default}}"{{end}}
-                                   class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                            {{end}}
-                        </div>
+                        </details>
                         {{end}}
                     </div>
                     {{else}}
                     <p class="text-sm text-gray-500">Select a workflow to see its inputs.</p>
                     {{end}}
+
+                    <div>
+                        <label for="worker_group" class="block text-sm font-medium text-gray-700">Worker Group (optional)</label>
+                        {{if .IsAdmin}}
+                        <select name="worker_group" id="worker_group"
+                                class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                            <option value="">No group (default scheduling)</option>
+                            {{range .WorkerGroups}}
+                            <option value="{{.}}">{{.}}</option>
+                            {{end}}
+                        </select>
+                        <p class="mt-1 text-xs text-gray-500">Select a worker group to target specific workers for this submission</p>
+                        {{else}}
+                        <input type="text" name="worker_group" id="worker_group"
+                               class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                               placeholder="e.g., annotation">
+                        <p class="mt-1 text-xs text-gray-500">Enter a worker group name to target specific workers for this submission</p>
+                        {{end}}
+                    </div>
 
                     <div>
                         <label for="labels" class="block text-sm font-medium text-gray-700">Labels (optional)</label>

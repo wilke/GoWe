@@ -731,6 +731,38 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 	return nil
 }
 
+func (s *SQLiteStore) DeleteSubmission(ctx context.Context, id string) error {
+	s.logger.Debug("sql", "op", "delete", "table", "submissions", "id", id)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete child tasks first.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE submission_id = ?`, id); err != nil {
+		return fmt.Errorf("delete tasks: %w", err)
+	}
+
+	// Delete child step instances.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM step_instances WHERE submission_id = ?`, id); err != nil {
+		return fmt.Errorf("delete step_instances: %w", err)
+	}
+
+	// Delete the submission itself.
+	result, err := tx.ExecContext(ctx, `DELETE FROM submissions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete submission: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("submission %s not found", id)
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLiteStore) UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error {
 	s.logger.Debug("sql", "op", "update_inputs", "table", "submissions", "id", id)
 
@@ -1804,6 +1836,27 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		workers = append(workers, &w)
 	}
 	return workers, rows.Err()
+}
+
+func (s *SQLiteStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
+	s.logger.Debug("sql", "op", "list_groups", "table", "workers")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT worker_group FROM workers ORDER BY worker_group`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []string
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
 }
 
 // CheckoutTask atomically finds a QUEUED worker task and transitions it to

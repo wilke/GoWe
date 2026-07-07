@@ -6,13 +6,13 @@ import "fmt"
 type ErrorCode string
 
 const (
-	ErrValidation              ErrorCode = "VALIDATION_ERROR"
-	ErrNotFound                ErrorCode = "NOT_FOUND"
-	ErrConflict                ErrorCode = "CONFLICT"
-	ErrUnauthorized            ErrorCode = "UNAUTHORIZED"
-	ErrForbidden               ErrorCode = "FORBIDDEN"
-	ErrInternal                ErrorCode = "INTERNAL_ERROR"
-	ErrUnsupportedRequirement  ErrorCode = "UNSUPPORTED_REQUIREMENT"
+	ErrValidation             ErrorCode = "VALIDATION_ERROR"
+	ErrNotFound               ErrorCode = "NOT_FOUND"
+	ErrConflict               ErrorCode = "CONFLICT"
+	ErrUnauthorized           ErrorCode = "UNAUTHORIZED"
+	ErrForbidden              ErrorCode = "FORBIDDEN"
+	ErrInternal               ErrorCode = "INTERNAL_ERROR"
+	ErrUnsupportedRequirement ErrorCode = "UNSUPPORTED_REQUIREMENT"
 )
 
 // APIError is a structured error returned by the GoWe API.

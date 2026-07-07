@@ -406,13 +406,13 @@ func materializeDirOutput(obj map[string]any, outDir string) (map[string]any, er
 					}
 
 					// Keep original location for download (e.g., file:///workdir/uploads/...)
-				// but fall back to basename if no original location exists.
-				if _, hasLoc := processedObj["location"].(string); !hasLoc {
-					processedObj["location"] = itemBasename
-				}
-				if err := addFileMetadata(processedObj, srcPath); err != nil {
-					return nil, err
-				}
+					// but fall back to basename if no original location exists.
+					if _, hasLoc := processedObj["location"].(string); !hasLoc {
+						processedObj["location"] = itemBasename
+					}
+					if err := addFileMetadata(processedObj, srcPath); err != nil {
+						return nil, err
+					}
 				}
 			}
 

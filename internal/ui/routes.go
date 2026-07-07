@@ -36,6 +36,7 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Get("/new", ui.HandleWorkflowCreate)
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", ui.HandleWorkflowDetail)
+				r.Get("/edit", ui.HandleWorkflowEdit)
 				r.Delete("/", ui.HandleWorkflowDelete)
 			})
 		})
@@ -49,6 +50,7 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", ui.HandleSubmissionDetail)
 				r.Post("/cancel", ui.HandleSubmissionCancel)
+				r.Delete("/", ui.HandleSubmissionDelete)
 				r.Post("/resume", ui.HandleSubmissionResume)
 				r.Post("/recompute-failed", ui.HandleRecomputeFailed)
 				r.Route("/tasks/{tid}", func(r chi.Router) {

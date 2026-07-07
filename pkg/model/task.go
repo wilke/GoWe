@@ -60,7 +60,7 @@ type DatasetRequirement struct {
 	ID     string `json:"id"`
 	Path   string `json:"path,omitempty"`
 	Size   string `json:"size,omitempty"`
-	Mode   string `json:"mode"`            // "prestage" or "cache"
+	Mode   string `json:"mode"`             // "prestage" or "cache"
 	Source string `json:"source,omitempty"` // Future: shock://..., s3://...
 }
 

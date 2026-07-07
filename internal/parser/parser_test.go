@@ -1083,3 +1083,82 @@ func TestComputeDependsOn(t *testing.T) {
 		})
 	}
 }
+
+func TestToModel_InputRequired(t *testing.T) {
+	tests := []struct {
+		name    string
+		typStr  string
+		wantReq bool
+	}{
+		{name: "plain string is required", typStr: "string", wantReq: true},
+		{name: "plain File is required", typStr: "File", wantReq: true},
+		{name: "plain int is required", typStr: "int", wantReq: true},
+		{name: "nullable string is optional", typStr: "string?", wantReq: false},
+		{name: "nullable File is optional", typStr: "File?", wantReq: false},
+		{name: "nullable int is optional", typStr: "int?", wantReq: false},
+		{name: "nullable array is optional", typStr: "File[]?", wantReq: false},
+		{name: "plain array is required", typStr: "File[]", wantReq: true},
+		{name: "nullable record is optional", typStr: "record:paired_end_lib?", wantReq: false},
+		{name: "plain record is required", typStr: "record:paired_end_lib", wantReq: true},
+	}
+
+	p := testParser()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			graph := &cwl.GraphDocument{
+				CWLVersion: "v1.2",
+				Workflow: &cwl.Workflow{
+					Inputs: map[string]cwl.InputParam{
+						"test_input": {Type: tt.typStr},
+					},
+					Outputs: map[string]cwl.OutputParam{},
+					Steps:   map[string]cwl.Step{},
+				},
+				Tools: map[string]*cwl.CommandLineTool{},
+			}
+
+			mw, err := p.ToModel(graph, "test")
+			if err != nil {
+				t.Fatalf("ToModel: %v", err)
+			}
+
+			if len(mw.Inputs) != 1 {
+				t.Fatalf("expected 1 input, got %d", len(mw.Inputs))
+			}
+
+			inp := mw.Inputs[0]
+			if inp.Required != tt.wantReq {
+				t.Errorf("Required = %v for type %q, want %v", inp.Required, tt.typStr, tt.wantReq)
+			}
+		})
+	}
+}
+
+func TestToModel_InputDocPropagated(t *testing.T) {
+	p := testParser()
+
+	graph := &cwl.GraphDocument{
+		CWLVersion: "v1.2",
+		Workflow: &cwl.Workflow{
+			Inputs: map[string]cwl.InputParam{
+				"reads": {Type: "File", Doc: "The input FASTQ reads"},
+			},
+			Outputs: map[string]cwl.OutputParam{},
+			Steps:   map[string]cwl.Step{},
+		},
+		Tools: map[string]*cwl.CommandLineTool{},
+	}
+
+	mw, err := p.ToModel(graph, "test")
+	if err != nil {
+		t.Fatalf("ToModel: %v", err)
+	}
+
+	if len(mw.Inputs) != 1 {
+		t.Fatalf("expected 1 input, got %d", len(mw.Inputs))
+	}
+	if mw.Inputs[0].Doc != "The input FASTQ reads" {
+		t.Errorf("Doc = %q, want %q", mw.Inputs[0].Doc, "The input FASTQ reads")
+	}
+}
