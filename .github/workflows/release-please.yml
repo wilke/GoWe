@@ -25,6 +25,17 @@ jobs:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         id: rp
         with:
+          # Uses the default GITHUB_TOKEN. This requires the repo setting
+          # "Allow GitHub Actions to create and approve pull requests" to be ON
+          # (Settings → Actions → General → Workflow permissions), otherwise
+          # release-please cannot open its release PR.
+          #
+          # Caveat: a tag/Release created with GITHUB_TOKEN does NOT trigger
+          # other tag/release-listening workflows — which is why GoReleaser runs
+          # in the goreleaser job below rather than on a tag trigger. If you add
+          # downstream workflows that must fire on the release, swap this for a
+          # PAT or GitHub App token (e.g. token: ${{ secrets.RELEASE_PLEASE_PAT }})
+          # so the resulting events cascade.
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
