@@ -518,10 +518,15 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   (native TLS or a TLS-terminating proxy). Provider tokens and session cookies MUST NOT
   traverse an unencrypted network.
 - Session cookies MUST carry the `Secure` attribute whenever the connection is HTTPS. The
-  server sets it automatically under native TLS. Behind a proxy, `--behind-proxy` makes the
-  server honor `X-Forwarded-Proto: https` per-request, and `--secure-cookies` forces it
-  unconditionally. `--behind-proxy` MUST be enabled only when a trusted proxy sets that header,
-  since a direct client can otherwise forge it.
+  server sets it automatically under native TLS. Behind a TLS-terminating proxy, `--behind-proxy`
+  forces `Secure` unconditionally (the public leg is HTTPS even though the server sees plain
+  HTTP) and emits `Strict-Transport-Security`; `--secure-cookies` forces `Secure` on its own for
+  bespoke deployments. `--behind-proxy` MUST be enabled only when the server is genuinely
+  fronted by a trusted TLS terminator, since it marks every cookie `Secure` regardless of the
+  observed request scheme.
+- The server always bounds request-header reads; under native TLS it additionally pins a
+  minimum protocol version of TLS 1.2. A missing or unreadable certificate/key MUST fail
+  startup rather than silently falling back to plain HTTP.
 
 ### 13.7 Known limitations (informative)
 
