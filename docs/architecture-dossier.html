@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="GoWe — architecture dossier for the CWL v1.2 workflow engine.">
+<title>GoWe — Architecture Dossier</title>
+<style>
+  :root{
+    --paper:#F4F4F1; --card:#FFFFFF; --card-2:#FBFBF8;
+    --ink:#1C1C18; --ink-2:#3A3A31; --slate:#6B6B60; --muted:#9A9A8C;
+    --line:#E6E5DD; --line-2:#D3D2C7;
+    --accent:#177368; --accent-deep:#0E574E; --accent-wash:#E7F1ED;
+    --s-wait:#8A8B7E; --s-ready:#177368; --s-flight:#4B54B0;
+    --s-run:#2A63C4; --s-ok:#3B7D3B; --s-bad:#C1443C; --s-skip:#9A6B15;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,"Times New Roman",serif;
+    --mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+    --maxw:1080px;
+    scroll-behavior:smooth;
+  }
+  @media (prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
+  *{box-sizing:border-box}
+  body{margin:0}
+  .page{background:var(--paper); color:var(--ink); font-family:var(--serif);
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+    padding:clamp(22px,4vw,60px) clamp(16px,4vw,44px) 90px;}
+  .wrap{max-width:var(--maxw); margin:0 auto}
+  .mono{font-family:var(--mono)}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+  .eyebrow{font-family:var(--mono); font-size:11.5px; letter-spacing:.22em;
+    text-transform:uppercase; color:var(--accent); font-weight:600}
+  h1{font-family:var(--serif); font-weight:600; font-size:clamp(40px,7.5vw,76px);
+    line-height:1.0; letter-spacing:-.015em; margin:20px 0 0; text-wrap:balance;
+    color:var(--ink)}
+  .lede{font-size:clamp(17px,2.3vw,21px); line-height:1.5; color:var(--ink-2);
+    max-width:34ch; margin:22px 0 0; text-wrap:pretty}
+  @media(min-width:720px){.lede{max-width:52ch}}
+
+  /* ---- KPI stat cards ---- */
+  .stats{display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin:38px 0 0}
+  @media(max-width:720px){.stats{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--card); border:1px solid var(--line-2); border-radius:6px;
+    padding:16px 16px 14px}
+  .stat.hi{background:var(--accent-wash); border-color:#BcD8CF}
+  .stat .n{font-family:var(--serif); font-size:34px; line-height:1; font-weight:600;
+    color:var(--ink); font-variant-numeric:tabular-nums}
+  .stat.hi .n{color:var(--accent-deep)}
+  .stat .l{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted); margin-top:12px; line-height:1.4}
+  .stat.hi .l{color:var(--accent-deep)}
+
+  .rule{height:1px; background:var(--line-2); margin:40px 0 0}
+
+  /* ---- dossier two-column ---- */
+  .dossier{display:grid; grid-template-columns:236px 1fr; gap:52px; margin-top:36px;
+    align-items:start}
+  @media(max-width:860px){.dossier{grid-template-columns:1fr; gap:28px}}
+  .toc{position:sticky; top:22px}
+  @media(max-width:860px){.toc{position:static}}
+  .toc .tl{font-family:var(--mono); font-size:10.5px; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--muted); margin:0 0 12px; padding-left:14px}
+  .toc a{display:grid; grid-template-columns:20px 1fr; gap:10px; text-decoration:none;
+    color:var(--slate); font-family:var(--mono); font-size:12.5px; line-height:1.4;
+    padding:9px 12px 9px 14px; border-left:2px solid transparent; align-items:start}
+  .toc a .tn{color:var(--muted); font-variant-numeric:tabular-nums}
+  .toc a:hover{color:var(--ink)}
+  .toc a.active{color:var(--accent-deep); border-left-color:var(--accent);
+    background:var(--accent-wash)}
+  .toc a.active .tn{color:var(--accent)}
+
+  .content{min-width:0}
+  .intro{font-size:17px; line-height:1.6; color:var(--ink-2); max-width:64ch; margin:0}
+  .intro b{font-weight:600; color:var(--ink)}
+  .callout{margin:22px 0 0; padding:18px 22px; background:var(--accent-wash);
+    border-left:3px solid var(--accent); border-radius:0 6px 6px 0;
+    font-size:15px; line-height:1.6; color:var(--ink-2); max-width:66ch}
+  .callout b{color:var(--accent-deep); font-weight:600}
+  .callout code, .intro code{font-family:var(--mono); font-size:12.5px;
+    background:rgba(23,115,104,.09); color:var(--accent-deep); padding:1px 6px;
+    border-radius:3px}
+  .callout a{color:var(--accent-deep); text-decoration:underline; text-underline-offset:2px}
+
+  /* ---- sections ---- */
+  section{margin-top:clamp(44px,6vw,72px); scroll-margin-top:22px}
+  .shead{display:flex; align-items:baseline; gap:14px; padding-bottom:12px;
+    border-bottom:1px solid var(--line-2); margin-bottom:22px}
+  .shead .sn{font-family:var(--mono); font-size:12px; color:var(--accent);
+    font-weight:600; font-variant-numeric:tabular-nums}
+  .shead h2{font-family:var(--serif); font-weight:600; font-size:clamp(23px,3vw,30px);
+    letter-spacing:-.01em; margin:0; color:var(--ink)}
+  .shead .ss{margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--muted);
+    letter-spacing:.03em; text-align:right; align-self:center}
+  @media(max-width:560px){.shead .ss{display:none}}
+  .snote{font-size:14.5px; line-height:1.6; color:var(--slate); max-width:64ch; margin:14px 2px 0}
+  .snote b{color:var(--ink-2); font-weight:600}
+  .snote code{font-family:var(--mono); font-size:12px; color:var(--accent-deep)}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:6px}
+
+  /* ---- deployment ---- */
+  .deploy{display:grid; grid-template-columns:1fr auto 1fr auto 1fr; align-items:stretch; padding:8px}
+  @media(max-width:720px){.deploy{grid-template-columns:1fr}}
+  .proc{padding:18px 18px 16px; display:flex; flex-direction:column}
+  .proc .pt{font-family:var(--mono); font-size:13.5px; font-weight:600; color:var(--ink);
+    display:flex; align-items:center; gap:9px}
+  .proc .pk{font-family:var(--mono); font-size:10px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--muted); margin-top:3px}
+  .proc .pd{font-size:14px; line-height:1.5; color:var(--slate); margin-top:11px}
+  .proc ul{margin:11px 0 0; padding:0; list-style:none; display:grid; gap:5px}
+  .proc li{font-size:11.5px; color:var(--ink-2); font-family:var(--mono); padding-left:14px; position:relative}
+  .proc li::before{content:"·"; position:absolute; left:3px; color:var(--accent)}
+  .proc .glyph{width:26px;height:26px;border-radius:5px;display:inline-flex;align-items:center;
+    justify-content:center; font-size:13px; flex-shrink:0}
+  .link{display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 6px; min-width:118px}
+  @media(max-width:720px){.link{min-width:0; padding:14px 0; flex-direction:row; gap:10px}}
+  .link .ll{font-family:var(--mono); font-size:10px; color:var(--accent-deep);
+    text-transform:uppercase; letter-spacing:.06em; text-align:center; line-height:1.5}
+  .link .lw{font-family:var(--mono); font-size:9.5px; color:var(--muted); margin-top:3px}
+  .link .bar{width:100%; height:2px; background:var(--line-2); position:relative; margin:8px 0}
+  @media(max-width:720px){.link .bar{width:2px; height:34px; margin:0}}
+  .link .bar::after{content:"\25BA"; position:absolute; right:-2px; top:50%; transform:translateY(-50%);
+    color:var(--line-2); font-size:9px}
+
+  /* ---- flow spine ---- */
+  .spine{padding:8px 0}
+  .node{display:grid; grid-template-columns:150px 1fr; align-items:stretch}
+  @media(max-width:720px){.node{grid-template-columns:96px 1fr}}
+  .node .rail{position:relative; display:flex; justify-content:center}
+  .node .rail::before{content:""; position:absolute; top:0; bottom:0; width:2px; background:var(--line-2)}
+  .node:first-child .rail::before{top:50%}
+  .node:last-child .rail::before{bottom:50%}
+  .node .marker{position:relative; z-index:1; align-self:center; width:13px; height:13px;
+    border-radius:50%; background:var(--card); border:2px solid var(--accent)}
+  .node.io .marker{border-color:var(--muted); border-radius:2px}
+  .node .stage{font-family:var(--mono); font-size:11px; color:var(--slate); align-self:center;
+    text-align:right; padding-right:18px}
+  .node .body{padding:14px 0 14px 22px; border-left:1px dashed var(--line-2); margin-left:-7px}
+  .node .body h3{font-family:var(--mono); margin:0; font-size:13.5px; font-weight:600;
+    letter-spacing:-.01em; display:flex; align-items:center; gap:10px; flex-wrap:wrap; color:var(--ink)}
+  .node .body h3 code{font-size:12px; color:var(--accent-deep); background:var(--accent-wash);
+    padding:2px 7px; border-radius:3px; font-weight:500}
+  .node .body p{margin:6px 0 0; font-size:14px; line-height:1.5; color:var(--slate); max-width:62ch}
+
+  /* ---- state tracks ---- */
+  .tracks{display:grid; gap:14px}
+  .legend{display:flex; gap:14px; flex-wrap:wrap; margin:0 0 18px; font-family:var(--mono);
+    font-size:11px; color:var(--slate)}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .legend i{width:9px;height:9px;border-radius:2px;display:inline-block}
+  .track{padding:16px 18px}
+  .track-lab{display:flex; align-items:baseline; gap:10px; margin-bottom:13px; flex-wrap:wrap}
+  .track-lab b{font-family:var(--mono); font-size:13.5px; font-weight:600}
+  .track-lab code{font-family:var(--mono); font-size:11px; color:var(--muted)}
+  .track-lab .lvl{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted); margin-left:auto}
+  .states{display:flex; flex-wrap:wrap; align-items:center; gap:6px 4px}
+  .st{font-family:var(--mono); font-size:11.5px; font-weight:560; padding:4px 9px;
+    border-radius:3px; white-space:nowrap; border:1px solid; letter-spacing:.02em}
+  .arw{color:var(--line-2); font-size:12px; padding:0 1px}
+  .fork{display:inline-flex; flex-direction:column; gap:4px; vertical-align:middle}
+  .st.wait{color:#5F6056;border-color:#D9D9CE;background:#F0F0E9}
+  .st.ready{color:#0E574E;border-color:#B7D8CF;background:#E7F1ED}
+  .st.flight{color:#3A42A0;border-color:#C8CBEE;background:#EDEEF9}
+  .st.run{color:#22539C;border-color:#C4D3EE;background:#E9F0F9}
+  .st.ok{color:#2F6A2F;border-color:#C4DFC0;background:#EAF3E6}
+  .st.bad{color:#A83A33;border-color:#EDC7C3;background:#FAECEA}
+  .st.skip{color:#7E5810;border-color:#E5D3A9;background:#F8F1DE}
+  .shortcut{display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-top:11px;
+    padding-top:11px; border-top:1px dashed var(--line-2)}
+  .arw.dash{color:var(--s-flight); font-size:11px; letter-spacing:-1px}
+  .shortcut .note{font-size:13.5px; color:var(--slate)}
+  .shortcut .note code{font-family:var(--mono); font-size:11px; color:var(--ink-2)}
+
+  /* ---- ladders ---- */
+  .cols{display:grid; grid-template-columns:1fr 1fr; gap:20px}
+  @media(max-width:640px){.cols{grid-template-columns:1fr}}
+  .ladder{list-style:none; margin:0; padding:6px 0}
+  .ladder li{display:grid; grid-template-columns:auto 1fr; gap:14px; padding:11px 18px;
+    align-items:start; border-top:1px solid var(--line)}
+  .ladder li:first-child{border-top:0}
+  .ladder .k{font-family:var(--mono); font-size:11px; font-weight:600; color:var(--accent-deep);
+    background:var(--accent-wash); border:1px solid #Bcd8cf; border-radius:3px; padding:2px 7px;
+    min-width:36px; text-align:center; font-variant-numeric:tabular-nums}
+  .ladder .t{font-size:14.5px; line-height:1.5}
+  .ladder .t b{font-weight:600}
+  .ladder .t code{font-family:var(--mono); font-size:12px; color:var(--ink-2)}
+  .ladder .t p{margin:3px 0 0; color:var(--slate); font-size:13px}
+
+  /* ---- backends ---- */
+  .backs{display:grid; grid-template-columns:repeat(5,1fr); gap:10px}
+  @media(max-width:720px){.backs{grid-template-columns:repeat(2,1fr)}}
+  .back{padding:13px 12px}
+  .back .bn{font-family:var(--mono); font-size:13px; font-weight:600; color:var(--ink)}
+  .back .bd{font-size:12px; line-height:1.45; color:var(--slate); margin-top:5px}
+  .back .badge{font-family:var(--mono); font-size:9.5px; letter-spacing:.08em; text-transform:uppercase;
+    padding:2px 6px; border-radius:3px; display:inline-block; margin-top:9px; font-weight:600}
+  .badge.sync{background:#EAF3E6; color:#2F6A2F}
+  .badge.async{background:#EDEEF9; color:#3A42A0}
+
+  /* ---- worker loop ---- */
+  .loop{display:grid; grid-template-columns:repeat(4,1fr); padding:6px 0}
+  @media(max-width:720px){.loop{grid-template-columns:1fr 1fr}}
+  .lstep{padding:15px 16px; position:relative}
+  .lstep:not(:last-child)::after{content:"\2192"; position:absolute; right:-7px; top:50%;
+    transform:translateY(-50%); color:var(--line-2); font-size:15px; z-index:2}
+  .lstep .ln{font-family:var(--mono); font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted)}
+  .lstep .lt{font-family:var(--mono); font-size:13.5px; font-weight:600; margin-top:6px; color:var(--ink)}
+  .lstep .lp{font-size:12.5px; line-height:1.45; color:var(--slate); margin-top:5px}
+  .lstep .lep{font-family:var(--mono); font-size:10.5px; color:var(--accent-deep); margin-top:9px;
+    display:block; word-break:break-all}
+
+  /* ---- package table ---- */
+  .tbl-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:6px}
+  table{border-collapse:collapse; width:100%; min-width:520px; background:var(--card)}
+  th,td{text-align:left; padding:10px 16px; font-size:13.5px; border-bottom:1px solid var(--line)}
+  thead th{font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--muted); font-weight:600; background:var(--card-2)}
+  tbody tr:last-child td{border-bottom:0}
+  td.pkg{font-family:var(--mono); font-size:12.5px; color:var(--accent-deep); font-weight:500; white-space:nowrap}
+  td.role{color:var(--slate)}
+
+  /* ---- code ---- */
+  pre{font-family:var(--mono); font-size:12px; line-height:1.65; margin:0; padding:18px 20px;
+    background:#181A16; color:#D6DBCF; border-radius:6px; overflow-x:auto}
+  pre .c{color:#7E8574} pre .k{color:#7FD0BE} pre .v{color:#B9CF92} pre .n{color:#C7B0EA}
+
+  /* ---- hints reference ---- */
+  .subhead{font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--accent-deep); margin:28px 0 12px; display:flex; gap:9px; align-items:baseline; flex-wrap:wrap}
+  .subhead .sx{color:var(--muted); text-transform:none; letter-spacing:.02em; font-size:10.5px}
+  td.ty{font-family:var(--mono); font-size:11px; color:var(--muted); white-space:nowrap}
+  .reqgrid{display:grid; grid-template-columns:repeat(2,1fr); gap:0 22px; margin-top:6px}
+  @media(max-width:640px){.reqgrid{grid-template-columns:1fr}}
+  .reqgrid div{font-size:12.5px; color:var(--slate); line-height:1.45; border-top:1px solid var(--line); padding:9px 0}
+  .reqgrid code{font-family:var(--mono); font-size:11.5px; color:var(--accent-deep); display:block; margin-bottom:2px}
+  .pill-note{display:flex; gap:10px; align-items:flex-start; margin-top:12px; font-size:13px; color:var(--slate); line-height:1.5}
+  .pill-note .tag{font-family:var(--mono); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase;
+    padding:2px 7px; border-radius:3px; font-weight:600; flex-shrink:0; margin-top:1px}
+
+  /* ---- inputs & storage ---- */
+  td code{font-family:var(--mono); font-size:12px; color:var(--ink-2)}
+  .spill{font-family:var(--mono); font-size:9.5px; letter-spacing:.07em; text-transform:uppercase;
+    padding:2px 7px; border-radius:3px; font-weight:600; display:inline-block; white-space:nowrap}
+  .spill.sup{background:#EAF3E6; color:#2F6A2F}
+  .spill.def{background:#F8F1DE; color:#7E5810}
+  .spill.plan{background:#F0F0E9; color:#5F6056}
+  .subcard{padding:16px 18px}
+  .subcard .eyebrow{color:var(--slate); letter-spacing:.14em}
+  .subcard pre{margin-top:12px; font-size:11.5px}
+  .affin{display:flex; gap:8px; flex-wrap:wrap; margin-top:11px}
+  .affin .st{cursor:default}
+
+  /* ---- credentials ---- */
+  .callout.warn{background:#F8F1DE; border-left-color:#C79A2E}
+  .callout.warn b{color:#7E5810}
+  .callout.warn code{background:rgba(153,107,21,.1); color:#7E5810}
+  .callout.warn a{color:#7E5810}
+  .planes{display:grid; grid-template-columns:repeat(2,1fr); gap:12px}
+  @media(max-width:640px){.planes{grid-template-columns:1fr}}
+  .plane{padding:15px 16px}
+  .plane .ph{font-family:var(--mono); font-size:13px; font-weight:600; color:var(--ink);
+    display:flex; gap:9px; align-items:center; flex-wrap:wrap}
+  .ptag{font-family:var(--mono); font-size:9px; letter-spacing:.07em; text-transform:uppercase;
+    padding:2px 6px; border-radius:3px; font-weight:600}
+  .ptag.in{background:var(--accent-wash); color:var(--accent-deep)}
+  .ptag.wk{background:#E9F0F9; color:#22539C}
+  .ptag.local{background:#F8F1DE; color:#7E5810}
+  .ptag.del{background:#EDEEF9; color:#3A42A0}
+  .plane .pdesc{font-size:13px; line-height:1.5; color:var(--slate); margin-top:9px}
+  .plane .pdesc code{font-family:var(--mono); font-size:11px; color:var(--ink-2)}
+  .plane .ppath{font-family:var(--mono); font-size:10.5px; color:var(--accent-deep); margin-top:9px; display:block}
+  .boundary{position:relative}
+  .boundary .noreturn{font-family:var(--mono); font-size:11px; color:#7E5810; text-align:center;
+    margin:10px 2px 0; letter-spacing:.02em}
+  .boundary .noreturn b{color:#7E5810; font-weight:600}
+  .zone .pt .ptag{font-size:9px}
+
+  .foot{margin-top:70px; padding-top:20px; border-top:1px solid var(--line-2); display:flex;
+    flex-wrap:wrap; gap:12px 24px; justify-content:space-between; font-family:var(--mono);
+    font-size:11px; color:var(--muted)}
+  .foot a{color:var(--accent-deep); text-decoration:none}
+</style>
+</head>
+<body>
+<div class="page">
+<h2 class="sr-only">GoWe architecture dossier: deployment, execution model, scheduler, executors, and CWL routing hints.</h2>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">GoWe · Architecture Dossier</div>
+    <h1>Parsing, Scheduling&nbsp;&amp; Placement</h1>
+    <p class="lede">A per-layer deep dive into the CWL&nbsp;v1.2 workflow engine — how a
+      workflow parses into a DAG, ticks through a scheduler, and lands on one of five
+      execution backends.</p>
+
+    <div class="stats">
+      <div class="stat hi"><div class="n">4</div><div class="l">Entry binaries</div></div>
+      <div class="stat"><div class="n">5</div><div class="l">Executor backends</div></div>
+      <div class="stat"><div class="n">6</div><div class="l">Scheduler phases</div></div>
+      <div class="stat"><div class="n">3</div><div class="l">State levels</div></div>
+      <div class="stat"><div class="n">378</div><div class="l">CWL conformance tests</div></div>
+    </div>
+  </header>
+
+  <div class="rule"></div>
+
+  <div class="dossier">
+    <nav class="toc" aria-label="Contents">
+      <p class="tl">Contents</p>
+      <a href="#s0" class="active"><span class="tn">0</span><span>Deployment topology</span></a>
+      <a href="#s1"><span class="tn">1</span><span>Core execution path</span></a>
+      <a href="#s2"><span class="tn">2</span><span>Three-level state hierarchy</span></a>
+      <a href="#s3"><span class="tn">3</span><span>The scheduler tick</span></a>
+      <a href="#s4"><span class="tn">4</span><span>Executor registry</span></a>
+      <a href="#s5"><span class="tn">5</span><span>Worker pull model</span></a>
+      <a href="#s6"><span class="tn">6</span><span>Credentials &amp; auth</span></a>
+      <a href="#s7"><span class="tn">7</span><span>Package map</span></a>
+      <a href="#s8"><span class="tn">8</span><span>Routing hints</span></a>
+      <a href="#s9"><span class="tn">9</span><span>Inputs &amp; storage</span></a>
+    </nav>
+
+    <div class="content">
+      <p class="intro">GoWe compiles Common Workflow Language into a DAG, drives it through a
+        tick-based scheduler, and dispatches concrete work units across five interchangeable
+        backends — <b>local, Docker, Apptainer, remote pull-workers, and BV-BRC</b>. Each
+        section below takes one layer: what it does, the entities it moves, and the exact
+        states, phases, and endpoints involved.</p>
+
+      <div class="callout">
+        Companion to <a href="#">SPECIFICATION.md</a> (the normative contract) and
+        <b>docs/adr/</b> (the decisions behind this design). Scope: the Go implementation as
+        it stands today. Every state, phase, and route below was verified against the source —
+        state constants in <code>pkg/model</code>, the tick loop in
+        <code>internal/scheduler/loop.go</code>, and routes in <code>internal/server</code>.
+      </div>
+
+      <section id="s0">
+        <div class="shead"><span class="sn">00</span><h2>Deployment topology</h2>
+          <span class="ss">three processes · one HTTP contract</span></div>
+        <div class="card">
+          <div class="deploy">
+            <div class="proc">
+              <div class="pt"><span class="glyph" style="background:#EDEEF9;color:#3A42A0">◧</span>gowe</div>
+              <div class="pk">cmd/cli · client</div>
+              <div class="pd">Submits workflows and inspects runs. Stateless — every action is an
+                <code class="mono" style="color:var(--accent-deep)">/api/v1</code> call.</div>
+              <ul><li>POST /submissions</li><li>GET /submissions/{id}</li><li>SSE run updates</li></ul>
+            </div>
+            <div class="link"><div class="ll">REST + SSE</div><div class="bar"></div><div class="lw">on demand</div></div>
+            <div class="proc" style="background:var(--card-2)">
+              <div class="pt"><span class="glyph" style="background:var(--accent-wash);color:var(--accent-deep)">◆</span>gowe-server</div>
+              <div class="pk">cmd/server · control plane</div>
+              <div class="pd">The only stateful process: HTTP API, the scheduler tick loop, and the
+                SQLite store live here together.</div>
+              <ul><li>scheduler · ~2s tick</li><li>store · SQLite / WAL</li><li>queues worker tasks</li></ul>
+            </div>
+            <div class="link"><div class="ll">pull / poll</div><div class="bar"></div><div class="lw">~5s · X-Worker-Key</div></div>
+            <div class="proc">
+              <div class="pt"><span class="glyph" style="background:#E9F0F9;color:#22539C">▤</span>gowe-worker</div>
+              <div class="pk">cmd/worker · executor pool</div>
+              <div class="pd">Zero or many. Each polls for tasks it can run, executes in a container,
+                and reports results back.</div>
+              <ul><li>GET /workers/{id}/work</li><li>docker · apptainer · gpu</li><li>PUT …/complete</li></ul>
+            </div>
+          </div>
+        </div>
+        <p class="snote">A fourth binary, <code>cwl-runner</code>, needs none of this — it executes a
+          CWL document in-process with no server or store, for standalone and conformance runs.</p>
+      </section>
+
+      <section id="s1">
+        <div class="shead"><span class="sn">01</span><h2>Core execution path</h2>
+          <span class="ss">CWL → model → scheduler → task → backend</span></div>
+        <div class="card"><div class="spine">
+          <div class="node io"><div class="rail"><span class="stage">input</span><span class="marker"></span></div>
+            <div class="body"><h3>CWL document <code>.cwl</code></h3>
+              <p>A workflow definition plus its inputs — the unit a user submits.</p></div></div>
+          <div class="node"><div class="rail"><span class="stage">parse</span><span class="marker"></span></div>
+            <div class="body"><h3><code>internal/parser</code> → <code>model.Workflow</code></h3>
+              <p>Parses and validates CWL, builds the step DAG, extracts <code>gowe:</code> routing hints.</p></div></div>
+          <div class="node"><div class="rail"><span class="stage">submit</span><span class="marker"></span></div>
+            <div class="body"><h3><code>model.Submission</code></h3>
+              <p>One run of a workflow with concrete inputs — top of the state hierarchy, persisted to SQLite.</p></div></div>
+          <div class="node"><div class="rail"><span class="stage">schedule</span><span class="marker"></span></div>
+            <div class="body"><h3><code>internal/scheduler</code> — tick loop <code>~2s</code></h3>
+              <p>A six-phase tick advances the whole hierarchy: resolve dependencies, dispatch, retry, poll, finalize.</p></div></div>
+          <div class="node"><div class="rail"><span class="stage">expand</span><span class="marker"></span></div>
+            <div class="body"><h3><code>StepInstance</code> · per step, per submission</h3>
+              <p>One instance per step; a scatter step fans out into <b>N</b> instances, each carrying its own tasks.</p></div></div>
+          <div class="node"><div class="rail"><span class="stage">work unit</span><span class="marker"></span></div>
+            <div class="body"><h3><code>Task</code></h3>
+              <p>The concrete, schedulable unit of work handed to an executor.</p></div></div>
+          <div class="node"><div class="rail"><span class="stage">dispatch</span><span class="marker"></span></div>
+            <div class="body"><h3><code>internal/executor</code> — registry</h3>
+              <p>Selects a backend per task, then calls its <code>Submit · Status · Cancel · Logs</code> interface.</p></div></div>
+          <div class="node io"><div class="rail"><span class="stage">run</span><span class="marker"></span></div>
+            <div class="body"><h3>Backend executes → outputs staged back</h3>
+              <p>local · docker · apptainer · worker · bvbrc</p></div></div>
+        </div></div>
+      </section>
+
+      <section id="s2">
+        <div class="shead"><span class="sn">02</span><h2>Three-level state hierarchy</h2>
+          <span class="ss">pkg/model · state machines</span></div>
+        <div class="legend">
+          <span><i style="background:#8A8B7E"></i>waiting</span>
+          <span><i style="background:#177368"></i>ready</span>
+          <span><i style="background:#4B54B0"></i>in-flight</span>
+          <span><i style="background:#2A63C4"></i>running</span>
+          <span><i style="background:#3B7D3B"></i>terminal · ok</span>
+          <span><i style="background:#C1443C"></i>terminal · fail</span>
+          <span><i style="background:#9A6B15"></i>skipped</span>
+        </div>
+        <div class="tracks">
+          <div class="card track">
+            <div class="track-lab"><b>Submission</b><code>submission.go</code><span class="lvl">Level 1 · the run</span></div>
+            <div class="states">
+              <span class="st wait">PENDING</span><span class="arw">→</span>
+              <span class="st run">RUNNING</span><span class="arw">→</span>
+              <span class="fork"><span class="st ok">COMPLETED</span><span class="st bad">FAILED</span><span class="st bad">CANCELLED</span></span>
+            </div>
+          </div>
+          <div class="card track">
+            <div class="track-lab"><b>StepInstance</b><code>step_instance.go</code><span class="lvl">Level 2 · per step · scatter = N</span></div>
+            <div class="states">
+              <span class="st wait">WAITING</span><span class="arw">→</span>
+              <span class="st ready">READY</span><span class="arw">→</span>
+              <span class="st flight">DISPATCHED</span><span class="arw">→</span>
+              <span class="st run">RUNNING</span><span class="arw">→</span>
+              <span class="fork"><span class="st ok">COMPLETED</span><span class="st bad">FAILED</span><span class="st skip">SKIPPED</span></span>
+            </div>
+          </div>
+          <div class="card track">
+            <div class="track-lab"><b>Task</b><code>task.go</code><span class="lvl">Level 3 · the work unit</span></div>
+            <div class="states">
+              <span class="st wait">PENDING</span><span class="arw">→</span>
+              <span class="st ready">SCHEDULED</span><span class="arw">→</span>
+              <span class="st flight">QUEUED</span><span class="arw">→</span>
+              <span class="st run">RUNNING</span><span class="arw">→</span>
+              <span class="fork"><span class="st ok">SUCCESS</span><span class="st bad">FAILED</span><span class="st skip">RETRYING</span><span class="st skip">SKIPPED</span></span>
+            </div>
+            <div class="shortcut">
+              <span class="st wait">PENDING</span><span class="arw dash">╌╌╌╌╌►</span><span class="st flight">QUEUED</span>
+              <span class="note">worker-bound tasks skip <code>SCHEDULED</code> and enqueue directly for checkout</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s3">
+        <div class="shead"><span class="sn">03</span><h2>The scheduler tick</h2>
+          <span class="ss">~2s loop · six phases (+ sub-phases)</span></div>
+        <div class="cols">
+          <ol class="ladder card">
+            <li><span class="k">1</span><span class="t"><b>Advance waiting</b> — <code>WAITING → READY</code> once every dependency is met.
+              <p>1.5 · pre-stage workspace inputs for pending submissions (server mode).</p></span></li>
+            <li><span class="k">2</span><span class="t"><b>Dispatch</b> — resolve inputs, create <code>Task</code>s, submit to executors.
+              <p>2.5 · re-submit <code>RETRYING</code> tasks.</p></span></li>
+            <li><span class="k">3</span><span class="t"><b>Poll</b> — query <code>QUEUED</code>/<code>RUNNING</code> async tasks for status.
+              <p>3.5 · detect stuck queued worker tasks by progress.</p></span></li>
+          </ol>
+          <ol class="ladder card">
+            <li><span class="k">4</span><span class="t"><b>Advance steps</b> — move <code>DISPATCHED</code>/<code>RUNNING</code> instances forward when all their tasks are terminal.</span></li>
+            <li><span class="k">5</span><span class="t"><b>Finalize</b> — settle submissions once every step instance is terminal.
+              <p>5.5 · post-stage outputs to the workspace (server mode).</p></span></li>
+            <li><span class="k">6</span><span class="t"><b>Retries</b> — send newly-<code>FAILED</code> tasks to <code>RETRYING</code> while attempts remain.</span></li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="s4">
+        <div class="shead"><span class="sn">04</span><h2>Executor registry</h2>
+          <span class="ss">selection is ordered · first match wins</span></div>
+        <div class="cols">
+          <ol class="ladder card">
+            <li><span class="k">1st</span><span class="t"><b>Server override</b> — <code>--default-executor</code> forces the backend.</span></li>
+            <li><span class="k">2nd</span><span class="t"><b>CWL hint</b> — <code>gowe:Execution.executor</code>: <code>worker</code> · <code>bvbrc</code> · <code>local</code>.</span></li>
+            <li><span class="k">3rd</span><span class="t"><b>DockerRequirement</b> — auto-promoted to <code>worker</code> when workers are online, else <code>local</code>.</span></li>
+            <li><span class="k">4th</span><span class="t"><b>Default</b> — <code>local</code>.</span></li>
+          </ol>
+          <div>
+            <div class="backs">
+              <div class="card back"><div class="bn">local</div><div class="bd">In-process, on the scheduler host.</div><span class="badge sync">sync</span></div>
+              <div class="card back"><div class="bn">docker</div><div class="bd">Container via Docker runtime.</div><span class="badge sync">sync</span></div>
+              <div class="card back"><div class="bn">apptainer</div><div class="bd">Rootless <code>.sif</code>, HPC-friendly.</div><span class="badge sync">sync</span></div>
+              <div class="card back"><div class="bn">worker</div><div class="bd">Remote pull-workers claim tasks.</div><span class="badge async">async</span></div>
+              <div class="card back"><div class="bn">bvbrc</div><div class="bd">BV-BRC app service submission.</div><span class="badge async">async</span></div>
+            </div>
+            <p class="snote">Every backend implements the same four-method contract —
+              <code>Submit · Status · Cancel · Logs</code> — so the scheduler treats them uniformly.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="s5">
+        <div class="shead"><span class="sn">05</span><h2>Worker pull model</h2>
+          <span class="ss">no push · workers poll ~5s and claim</span></div>
+        <div class="card"><div class="loop">
+          <div class="lstep"><div class="ln">01 · poll · ~5s</div><div class="lt">Ask for work</div>
+            <div class="lp">Every ~5s the worker requests a task matched on runtime, group, and dataset affinity.</div>
+            <span class="lep">GET /workers/{id}/work</span></div>
+          <div class="lstep"><div class="ln">02 · execute</div><div class="lt">Run it</div>
+            <div class="lp">Executes through <code>toolexec</code> — mounts, GPU, injected secrets (never sent to the server).</div>
+            <span class="lep">internal/toolexec</span></div>
+          <div class="lstep"><div class="ln">03 · report</div><div class="lt">Stage &amp; report</div>
+            <div class="lp">Stages outputs, then posts status and the final result back to the server.</div>
+            <span class="lep">PUT …/status · PUT …/complete</span></div>
+          <div class="lstep"><div class="ln">04 · heartbeat</div><div class="lt">Stay alive</div>
+            <div class="lp">Periodic heartbeat keeps the worker registered; the scheduler flags stalled claims.</div>
+            <span class="lep">PUT /workers/{id}/heartbeat</span></div>
+        </div></div>
+        <p class="snote">Dataset affinity: <code>prestage</code> = require a match · <code>cache</code> = prefer one.
+          Container capability and worker group must match before a task is handed out.</p>
+      </section>
+
+      <section id="s6">
+        <div class="shead"><span class="sn">06</span><h2>Credentials &amp; auth</h2>
+          <span class="ss">four planes · one trust boundary</span></div>
+        <p class="snote">GoWe keeps <b>four credential planes</b> separate, and one rule holds them
+          together: <b>execution secrets never travel back to the server</b>. Identity is delegated to
+          external providers — GoWe stores no passwords.</p>
+
+        <div class="planes" style="margin-top:18px">
+          <div class="card plane">
+            <div class="ph">User / API token <span class="ptag in">client → server</span></div>
+            <div class="pdesc">A BV-BRC or MG-RAST pipe-delimited token on <code>Authorization</code> or
+              <code>X-MG-RAST-Token</code>. Parsed for username + expiry; the account is auto-created on
+              first use.</div>
+            <span class="ppath">internal/server/auth.go</span>
+          </div>
+          <div class="card plane">
+            <div class="ph">Worker key <span class="ptag wk">worker → server</span></div>
+            <div class="pdesc">A shared <code>X-Worker-Key</code> mapped to allowed worker groups. Optional —
+              open access if unset — and logged only as a <code>SHA-256</code> hash, never in the clear.</div>
+            <span class="ppath">internal/server/worker_auth.go</span>
+          </div>
+          <div class="card plane">
+            <div class="ph">Worker secrets <span class="ptag local">worker-local</span></div>
+            <div class="pdesc"><code>--secret NAME=value</code> / <code>--secret-file</code> injected into every
+              container's env. Held in worker memory only — never sent to the server; values never logged.</div>
+            <span class="ppath">internal/worker → internal/toolexec</span>
+          </div>
+          <div class="card plane">
+            <div class="ph">Delegated BV-BRC token <span class="ptag del">server → container</span></div>
+            <div class="pdesc">The submitter's own token, injected as <code>BVBRC_TOKEN</code> when
+              <code>gowe:Execution.inject_bvbrc_token</code> is set — so BV-BRC jobs run under the user's identity.</div>
+            <span class="ppath">scheduler/loop.go → worker.go</span>
+          </div>
+        </div>
+
+        <div class="card boundary" style="margin-top:14px">
+          <div class="deploy">
+            <div class="proc zone">
+              <div class="pt"><span class="glyph" style="background:#EDEEF9;color:#3A42A0">◧</span>Client</div>
+              <div class="pk">gowe CLI · browser</div>
+              <div class="pd">Holds the user's provider token; sends it per request.</div>
+              <ul><li>Authorization: Bearer …</li></ul>
+            </div>
+            <div class="link"><div class="ll">provider token</div><div class="bar"></div><div class="lw">per request</div></div>
+            <div class="proc zone" style="background:var(--card-2)">
+              <div class="pt"><span class="glyph" style="background:var(--accent-wash);color:var(--accent-deep)">◆</span>Server</div>
+              <div class="pk">auth middleware · store</div>
+              <div class="pd">Validates the token, applies roles, persists the run. No passwords at rest.</div>
+              <ul><li>roles: user · admin · anon</li><li>worker-key registry</li><li>user_token in submissions</li></ul>
+            </div>
+            <div class="link"><div class="ll">worker-key + task</div><div class="bar"></div><div class="lw">may carry deleg. token</div></div>
+            <div class="proc zone">
+              <div class="pt"><span class="glyph" style="background:#F8F1DE;color:#7E5810">▤</span>Worker → container</div>
+              <div class="pk">toolexec · runtime</div>
+              <div class="pd">Injects <code>--secret</code> env and any delegated token into the container.</div>
+              <ul><li>secrets = env only</li><li>BVBRC_TOKEN injected</li></ul>
+            </div>
+          </div>
+          <p class="noreturn">◀ &nbsp;<b>Return path carries results only</b> — injected secrets and container env never flow back to the server.</p>
+        </div>
+
+        <div class="callout warn">
+          <b>Current-state caveats.</b> The design is sound, but a few things are worth knowing before
+          production: the submitter's BV-BRC token is persisted <b>plaintext</b> in
+          <code>submissions.user_token</code> (SQLite); the worker key is a <b>shared</b> secret with no
+          per-worker rotation; and server TLS is <b>not enforced by default</b>
+          (<code>Secure:false</code>, a standing TODO) — front the server with a TLS terminator. Anonymous
+          access is opt-in and should always be scoped with <code>--anonymous-executors</code>.
+        </div>
+      </section>
+
+      <section id="s7">
+        <div class="shead"><span class="sn">07</span><h2>Package map</h2>
+          <span class="ss">where each responsibility lives</span></div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Package</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td class="pkg">internal/parser</td><td class="role">CWL v1.2 parsing, validation, DAG construction, hint extraction.</td></tr>
+            <tr><td class="pkg">internal/scheduler</td><td class="role">Tick loop, dependency resolution, dispatch, retry logic.</td></tr>
+            <tr><td class="pkg">internal/executor</td><td class="role">Registry + 5 backends (local, docker, apptainer, worker, bvbrc).</td></tr>
+            <tr><td class="pkg">internal/cwltool</td><td class="role">Full CommandLineTool executor — bindings, globbing, JS, IWDR.</td></tr>
+            <tr><td class="pkg">internal/toolexec</td><td class="role">Shared execution: command building, mounts, GPU, secrets.</td></tr>
+            <tr><td class="pkg">internal/cwlexpr</td><td class="role">CWL expression evaluation via the goja JS engine.</td></tr>
+            <tr><td class="pkg">internal/cwlrunner</td><td class="role">Standalone runner (no server) behind <code>bin/cwl-runner</code>.</td></tr>
+            <tr><td class="pkg">internal/worker</td><td class="role">Remote worker loop: poll, execute, stage outputs, heartbeat.</td></tr>
+            <tr><td class="pkg">internal/server</td><td class="role">HTTP handlers (go-chi), middleware, auth, SSE.</td></tr>
+            <tr><td class="pkg">internal/store</td><td class="role">SQLite persistence (pure Go, WAL, single writer).</td></tr>
+            <tr><td class="pkg">pkg/model</td><td class="role">Domain entities with state machines and valid transitions.</td></tr>
+            <tr><td class="pkg">pkg/cwl</td><td class="role">CWL v1.2 type definitions (loose for bundler, strict in parser).</td></tr>
+            <tr><td class="pkg">pkg/staging</td><td class="role">File staging: copy, symlink, reference modes.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="s8">
+        <div class="shead"><span class="sn">08</span><h2>Routing hints — reference</h2>
+          <span class="ss">gowe:* extensions · portable by design</span></div>
+        <p class="snote">CWL has two extension surfaces: <b>requirements</b> (the engine MUST support them
+          or reject the document) and <b>hints</b> (SHOULD support, MAY ignore). GoWe puts its
+          placement metadata in <b>namespaced hints</b> — so <code>cwltool</code>, Toil, and others skip
+          unknown <code>gowe:*</code> keys instead of failing, and the workflow stays one portable artifact.</p>
+
+        <div class="cols" style="margin-top:18px">
+          <div>
+            <pre><span class="n">$namespaces:</span>
+  <span class="k">gowe:</span> <span class="v">https://github.com/wilke/GoWe#</span>
+
+<span class="n">hints:</span>
+  <span class="k">gowe:Execution:</span>
+    <span class="k">executor:</span> <span class="v">worker</span>        <span class="c"># local · worker · bvbrc</span>
+    <span class="k">worker_group:</span> <span class="v">esmfold</span>
+    <span class="k">bvbrc_app_id:</span> <span class="v">GenomeAssembly2</span>
+    <span class="k">docker_image:</span> <span class="v">override.sif</span>
+    <span class="k">gpu:</span> <span class="v">true</span>
+    <span class="k">inject_bvbrc_token:</span> <span class="v">true</span>
+
+  <span class="k">gowe:ResourceData:</span>
+    <span class="k">datasets:</span>
+      - <span class="k">id:</span> <span class="v">boltz</span>
+        <span class="k">path:</span> <span class="v">/local_databases/boltz</span>
+        <span class="k">mode:</span> <span class="v">prestage</span>    <span class="c"># require | cache=prefer</span></pre>
+          </div>
+          <div class="card subcard">
+            <div class="eyebrow">Placement rule</div>
+            <div class="pill-note"><span class="tag ptag in">gowe:*</span>
+              <span>GoWe extensions go in <code>hints</code> — advisory and portable. They steer
+                <b>where</b> and <b>how</b> a step runs.</span></div>
+            <div class="pill-note"><span class="tag ptag wk">CWL std</span>
+              <span>Container / resource needs use standard <code>DockerRequirement</code> and
+                <code>ResourceRequirement</code>, honored as CWL intends.</span></div>
+            <p class="snote" style="margin-top:12px"><b>Caveat:</b> because hints are advisory, a workflow
+              that <i>depends</i> on GoWe routing runs differently (though validly) on another engine.</p>
+          </div>
+        </div>
+
+        <div class="subhead">gowe:Execution <span class="sx">— steers placement · recognized only in <code>hints</code></span></div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td class="pkg">executor</td><td class="ty">string</td><td class="role">Route to a backend: <code>local</code>, <code>worker</code>, or <code>bvbrc</code>.</td></tr>
+            <tr><td class="pkg">worker_group</td><td class="ty">string</td><td class="role">Target a worker pool (e.g. <code>esmfold</code>); overrides the submission-level <code>--group</code>.</td></tr>
+            <tr><td class="pkg">bvbrc_app_id</td><td class="ty">string</td><td class="role">BV-BRC application id; implies <code>executor: bvbrc</code>.</td></tr>
+            <tr><td class="pkg">docker_image</td><td class="ty">string</td><td class="role">Container image <b>override</b> — wins over <code>DockerRequirement</code>; feeds Docker <i>and</i> Apptainer.</td></tr>
+            <tr><td class="pkg">gpu</td><td class="ty">bool</td><td class="role">Request GPU passthrough on the executing worker.</td></tr>
+            <tr><td class="pkg">inject_bvbrc_token</td><td class="ty">bool</td><td class="role">Inject the submitter's token as <code>BVBRC_TOKEN</code> — job runs under the user's identity.</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="subhead">gowe:ResourceData <span class="sx">— reference-data affinity · <code>hints</code> or <code>requirements</code></span></div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Field</th><th>Req</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td class="pkg">id</td><td class="ty">yes</td><td class="role">Dataset identifier — must match a dataset a worker advertises.</td></tr>
+            <tr><td class="pkg">path</td><td class="ty">no</td><td class="role">Expected mount path inside the container.</td></tr>
+            <tr><td class="pkg">size</td><td class="ty">no</td><td class="role">Approximate size, informational only (e.g. <code>2TB</code>).</td></tr>
+            <tr><td class="pkg">mode</td><td class="ty">no</td><td class="role"><code>prestage</code> = require a worker with it; <code>cache</code> = prefer (default).</td></tr>
+            <tr><td class="pkg">source</td><td class="ty">no</td><td class="role">Reserved for future on-demand caching (<code>shock://</code>, <code>s3://</code>).</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="subhead">Standard CWL requirements <span class="sx">— honored, not GoWe-specific</span></div>
+        <div class="reqgrid">
+          <div><code>DockerRequirement</code>Container image (<code>dockerPull</code>); GoWe extends <code>.sif</code>/Apptainer resolution.</div>
+          <div><code>ResourceRequirement</code>CPU / RAM / disk requests.</div>
+          <div><code>InitialWorkDirRequirement</code>Stage files &amp; dirs into the working directory (IWDR).</div>
+          <div><code>InlineJavascriptRequirement</code>Enable <code>$(…)</code> / <code>${…}</code> expressions (goja).</div>
+          <div><code>EnvVarRequirement</code>Set environment variables.</div>
+          <div><code>ShellCommandRequirement</code>Interpret the command line through a shell.</div>
+          <div><code>SchemaDefRequirement</code>Custom input type definitions.</div>
+          <div><code>LoadListingRequirement</code>Control <code>Directory</code> listing depth.</div>
+          <div><code>NetworkAccess</code>Toggle network (Apptainer can't isolate unprivileged — test 227).</div>
+          <div><code>ToolTimeLimit</code>Maximum runtime for a tool.</div>
+          <div><code>ScatterFeatureRequirement</code>Enable scatter/gather over arrays.</div>
+          <div><code>SubworkflowFeatureRequirement</code>Allow a step to run a sub-workflow.</div>
+        </div>
+
+        <p class="snote" style="margin-top:22px"><b>On <code>docker_image</code>:</b> CWL's own
+          <code>DockerRequirement.dockerPull</code> is honored when present — this hint doesn't replace it.
+          It's an override that takes precedence, letting one step swap images at deploy time. Despite the
+          name, the value drives both runtimes: a <code>.sif</code> suffix resolves to a local Apptainer
+          image, anything else is pulled as <code>docker://</code>.</p>
+      </section>
+
+      <section id="s9">
+        <div class="shead"><span class="sn">09</span><h2>Inputs &amp; storage</h2>
+          <span class="ss">job inputs · six schemes · reference data</span></div>
+        <p class="snote">Two concerns share this layer: how a run's <b>inputs</b> arrive, and how
+          <b>File / Directory data</b> moves in and out. A file's <code>location</code> scheme selects the
+          backend — staging (<code>pkg/staging</code>) is pluggable and dispatches by URI scheme.</p>
+
+        <div class="legend" style="margin-top:16px">
+          <span><i style="background:#3B7D3B"></i>supported</span>
+          <span><i style="background:#9A6B15"></i>defined · implemented, not CI-verified</span>
+          <span><i style="background:#8A8B7E"></i>planned</span>
+        </div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Scheme</th><th>Backend</th><th>Behavior</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td class="pkg">local · <span style="color:var(--muted)">none</span></td><td><code>file.go</code></td>
+              <td class="role">In place, no copy — the <code>cwl-runner</code> default.</td><td><span class="spill sup">supported</span></td></tr>
+            <tr><td class="pkg">file://</td><td><code>shared.go</code></td>
+              <td class="role">Copy to a shared filesystem path — distributed workers.</td><td><span class="spill sup">supported</span></td></tr>
+            <tr><td class="pkg">http(s)://</td><td><code>http stager</code></td>
+              <td class="role">HTTP PUT/POST upload; custom headers, auth, retry.</td><td><span class="spill def">defined</span></td></tr>
+            <tr><td class="pkg">shock://</td><td><code>shock.go</code></td>
+              <td class="role">Shock data service — <code>shock://host/node/{id}</code>.</td><td><span class="spill def">defined</span></td></tr>
+            <tr><td class="pkg">ws://</td><td><code>workspace.go</code></td>
+              <td class="role">BV-BRC Workspace — the default for BV-BRC runs.</td><td><span class="spill def">defined</span></td></tr>
+            <tr><td class="pkg">s3://</td><td><code>s3.go</code></td>
+              <td class="role">S3-compatible object storage.</td><td><span class="spill plan">planned</span></td></tr>
+          </tbody>
+        </table></div>
+        <p class="snote"><b>Why <code>ws://</code> is "defined", not "supported".</b> The BV-BRC path is
+          built end to end — submit, poll, output mapping, and server-side pre/post-staging — but it
+          can't run in the conformance suite (it needs a live BV-BRC service and a real token), and it
+          carries edges only visible against real infrastructure: wildcard-glob outputs, large-file
+          streaming, and recursive directory download. Full round-trip in
+          <code>docs/BVBRC-Workspace-Deep-Dive.md</code>.</p>
+
+        <div class="cols" style="margin-top:20px">
+          <div class="card subcard">
+            <div class="eyebrow">Job inputs</div>
+            <p class="snote" style="margin-top:10px">Supplied at submit time as a YAML/JSON job document —
+              not a configured backend. Relative <code>File</code> paths resolve against the job file's directory.</p>
+<pre><span class="c"># CLI</span>
+gowe submit workflow.cwl <span class="k">--inputs</span> <span class="v">job.yaml</span>
+
+<span class="c"># API</span>
+<span class="k">POST</span> <span class="v">/api/v1/submissions</span>  <span class="c">{ inputs: … }</span></pre>
+          </div>
+          <div class="card subcard">
+            <div class="eyebrow">Reference data</div>
+            <p class="snote" style="margin-top:10px">Large read-only datasets (databases, model weights) are
+              <b>not</b> <code>File</code> inputs. Declared with <code>gowe:ResourceData</code> and matched to
+              workers by affinity:</p>
+            <div class="affin">
+              <span class="st ready">prestage = require</span>
+              <span class="st wait">cache = prefer</span>
+            </div>
+            <p class="snote" style="margin-top:11px">Workers advertise datasets via <code>--pre-stage-dir</code>
+              or <code>--dataset id=path</code>.</p>
+          </div>
+        </div>
+        <p class="snote"><b>Server-side staging.</b> The server can pre/post-stage <code>ws://</code> itself
+          (<code>--workspace-staging server</code>, <code>--workspace-url</code>) and proxy uploads to a
+          backend (<code>--upload-backend shock|s3|local</code>); otherwise outputs are staged by the workers.</p>
+      </section>
+
+    </div>
+  </div>
+
+  <footer class="foot">
+    <span>GoWe · CWL v1.2 workflow engine · Go</span>
+    <span>parser → scheduler → executor · <a href="https://github.com/wilke/GoWe">github.com/wilke/GoWe</a></span>
+  </footer>
+
+</div>
+</div>
+
+<script>
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+    var map = {};
+    links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(a){ a.classList.remove('active'); });
+          var a = map[e.target.id];
+          if(a) a.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+    document.querySelectorAll('section[id]').forEach(function(s){ obs.observe(s); });
+  })();
+</script>
+</body>
+</html>
