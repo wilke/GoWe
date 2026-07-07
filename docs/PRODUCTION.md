@@ -190,6 +190,34 @@ HF_TOKEN=<token>
 
 Workers load these via `--secret-file`. Secret values are injected into containers at runtime and never sent to the server, stored in task data, or exposed in API responses or logs.
 
+### Provider-token encryption at rest
+
+The server encrypts each submitter's BV-BRC/MG-RAST token before persisting it (in
+`submissions.user_token` and any bearer credential inside `tasks.runtime_hints`), using
+AES-256-GCM under a server-held key. Configure the key with **one** of:
+
+- `GOWE_TOKEN_KEY` — a 32-byte key, base64 or hex encoded, in the server's environment.
+- `--token-key-file <path>` — a file (mode `600`) whose contents are the encoded key; takes
+  precedence over the env var.
+
+Generate a key:
+
+```bash
+openssl rand -base64 32   # 32-byte AES-256 key
+```
+
+Behavior:
+
+- **Key set** → tokens are encrypted at rest; any legacy plaintext rows are re-encrypted on
+  startup. Decrypted values live only in memory on the delegated-execution path and are never
+  logged.
+- **No key** → the server **fails closed**: submissions that carry a delegated provider token
+  are rejected at persistence time. Pass `--allow-plaintext-tokens` only for local/dev or a
+  staged migration; it stores tokens unencrypted (a startup warning is logged).
+
+Rotating the key requires decrypting with the old key and re-encrypting with the new one;
+there is no in-place multi-key support yet, so rotate during a maintenance window.
+
 ## GPU Assignment
 
 GPU 0 is reserved for interactive/other use. The start script assigns workers to GPUs starting at index 1:

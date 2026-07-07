@@ -202,7 +202,7 @@ End-to-end CGA → CodonTree + cgMLST + WG-SNP pipeline. Verified working on H37
 | AlphaFold `--af2-data-dir` | Open | `predict-structure alphafold` needs to default data dir internally |
 | `predict-structure-app` on BV-BRC | Open | `App-PredictStructure` not deployed on BV-BRC cluster yet |
 | Anonymous shared visibility | Accepted | All anonymous users share submissions (session-scoped IDs deferred) |
-| Token encryption at rest | Deferred | `user_token` plaintext in SQLite |
+| Token encryption at rest | Done | AES-256-GCM for `submissions.user_token` and task bearer creds via `GOWE_TOKEN_KEY`; fails closed without a key (SPEC §13.5) |
 
 ## Conformance Test Baselines
 

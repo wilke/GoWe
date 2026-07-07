@@ -504,6 +504,14 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   MUST be revised, and the least-privilege trade-off recorded in an ADR.)
 - Response bodies MUST NOT expose stored tokens: submission token fields are serialized with
   `json:"-"`.
+- Provider tokens MUST be encrypted at rest. A server-held key (`GOWE_TOKEN_KEY`, or
+  `--token-key-file`) enables AES-256-GCM envelope encryption of the submitter's token in
+  `submissions.user_token` and of any bearer credential embedded in `tasks.runtime_hints`.
+  Ciphertext is decrypted only in memory on the delegated-execution path and MUST NOT be
+  logged. When no key is configured the server MUST fail closed — refusing to persist a
+  delegated token — unless the operator explicitly opts into legacy plaintext with
+  `--allow-plaintext-tokens`. Rows written before a key was configured are read transparently
+  and re-encrypted on startup.
 
 ### 13.6 Transport security
 
@@ -534,8 +542,6 @@ These are current-state gaps, not normative requirements. They are documented so
 can compensate and so the project can track hardening. Each SHOULD be addressed before a
 security-sensitive production deployment:
 
-- **Tokens at rest are plaintext.** The submitter's BV-BRC token is persisted unencrypted in
-  `submissions.user_token` (SQLite). Protect the database file accordingly.
 - **Worker keys are shared secrets.** Keys are stored plaintext in config/env with no
   per-worker identity or rotation; a leaked key affects every worker sharing it.
 - **Anonymous mode widens exposure.** If `--allow-anonymous` is enabled, always scope it with

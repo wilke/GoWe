@@ -21,6 +21,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/tokencrypt"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -60,6 +61,10 @@ func main() {
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
 	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
+
+	// Provider-token encryption at rest
+	tokenKeyFile := flag.String("token-key-file", "", "Path to a file holding the token-encryption key (base64 or hex, 32 bytes); overrides GOWE_TOKEN_KEY")
+	allowPlaintextTokens := flag.Bool("allow-plaintext-tokens", false, "Permit storing provider tokens in plaintext when no encryption key is set (migration/dev only)")
 
 	// File upload proxy options
 	uploadBackend := flag.String("upload-backend", "", "Enable file upload proxy with backend: shock, s3, local")
@@ -144,6 +149,33 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("database ready", "path", dbPath)
+
+	// Configure provider-token encryption at rest. A configured key encrypts the
+	// submitter's token in submissions.user_token and any bearer credential in
+	// tasks.runtime_hints. With no key, delegated submissions (those carrying a
+	// provider token) are refused unless --allow-plaintext-tokens is set.
+	tokenCipher, err := loadTokenCipher(*tokenKeyFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "token encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	switch {
+	case tokenCipher != nil:
+		st.ConfigureTokenEncryption(tokenCipher, true)
+		if nSub, nTask, rerr := st.ReencryptPlaintextTokens(context.Background()); rerr != nil {
+			logger.Warn("re-encrypting existing plaintext tokens", "error", rerr)
+		} else if nSub > 0 || nTask > 0 {
+			logger.Info("upgraded existing plaintext tokens to encrypted", "submissions", nSub, "tasks", nTask)
+		}
+		logger.Info("provider-token encryption at rest enabled")
+	case *allowPlaintextTokens:
+		st.ConfigureTokenEncryption(nil, false)
+		logger.Warn("provider tokens will be stored in PLAINTEXT (--allow-plaintext-tokens); set GOWE_TOKEN_KEY to encrypt at rest")
+	default:
+		// Fail closed: no key, no explicit opt-in.
+		st.ConfigureTokenEncryption(nil, true)
+		logger.Warn("no token-encryption key configured; delegated submissions carrying a provider token will be refused — set GOWE_TOKEN_KEY (or pass --allow-plaintext-tokens to allow plaintext)")
+	}
 
 	// Create executor registry and register executors.
 	reg := executor.NewRegistry(logger)
@@ -401,4 +433,23 @@ func withHSTS(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// loadTokenCipher builds the at-rest token cipher from --token-key-file (if set)
+// or the GOWE_TOKEN_KEY environment variable. Returns (nil, nil) when neither is
+// configured, so the caller can decide the no-key policy. A present-but-invalid
+// key is a hard error.
+func loadTokenCipher(keyFile string) (*tokencrypt.Cipher, error) {
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read token key file: %w", err)
+		}
+		key, err := tokencrypt.DecodeKey(string(data))
+		if err != nil {
+			return nil, err
+		}
+		return tokencrypt.New(key)
+	}
+	return tokencrypt.FromEnv()
 }
