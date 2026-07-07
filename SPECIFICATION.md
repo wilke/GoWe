@@ -1,6 +1,6 @@
 # GoWe Specification
 
-> **Status**: Living specification · **Version**: draft-5 (2026-07-06)
+> **Status**: Living specification · **Version**: draft-6 (2026-07-06)
 > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
 > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
 > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
@@ -469,7 +469,7 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 |--------|--------------|---------------------|------------|
 | User token | `Authorization: Bearer <token>` or `X-MG-RAST-Token` | Provider-issued pipe-delimited token: non-empty username and unexpired `expiry` | User/API endpoints |
 | Anonymous | *(no token)* + server `--allow-anonymous` | Nothing; request runs as the anonymous user | User/API endpoints, if enabled |
-| Worker key | `X-Worker-Key` | Key present in the configured key set; yields allowed groups | Worker endpoints |
+| Worker key | `X-Worker-Key` | Key is present, enabled, and unexpired; yields allowed groups | Worker endpoints |
 
 - When a token is presented, the server MUST reject it if the username is empty or the token
   is expired (`401`).
@@ -477,8 +477,17 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   user account keyed by `(username, provider)`.
 - When no user keys/tokens apply and anonymous access is disabled, protected endpoints MUST
   return `401`.
-- Worker-key enforcement is **optional**: if no keys are configured, worker endpoints are
-  open. Operators SHOULD configure keys in any multi-tenant or networked deployment.
+- Worker keys come in two forms, and the server MUST accept either: **per-worker keys** minted
+  and revoked through the admin API (§13.4), and **static keys** configured from a file or the
+  `GOWE_WORKER_KEYS` env var. Each key maps to a set of allowed groups; an empty set means any
+  group.
+- A worker key MUST be rejected (`401`) if it is disabled/revoked or past its `expires_at`.
+  Per-worker keys are independently issuable and revocable, so revoking one MUST NOT affect any
+  other key.
+- Worker-key enforcement is **optional**: if no keys are configured at all — neither static nor
+  per-worker — worker endpoints are open. Operators SHOULD configure keys in any multi-tenant
+  or networked deployment. If a store error prevents determining whether keys exist, the server
+  MUST fail closed (enforce authentication).
 
 ### 13.4 Authorization and roles
 
@@ -495,6 +504,11 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 - Worker secrets are loaded from `--secret`/`--secret-file` into worker memory. Secret
   **names** MAY be logged; secret **values** MUST NOT be logged.
 - The `X-Worker-Key` MUST NOT be logged in the clear; only a hash of it MAY be logged.
+- Per-worker keys MUST be stored hashed at rest: the server persists only the SHA-256 hash of
+  each key, never the raw secret. The raw key is returned to the operator exactly once at
+  issuance and is not retrievable thereafter. A non-secret key prefix and a stable key ID MAY
+  be stored and logged for attribution. Static keys MAY likewise be provided pre-hashed
+  (`sha256:<hex>`) so the raw secret need not reside in config.
 - A BV-BRC token MAY be injected into a task's container as `BVBRC_TOKEN` when, and only when,
   `gowe:Execution.inject_bvbrc_token` is set (or a workspace stager requires it); the injected
   token is the submitter's own, so the job runs under the user's identity. This opt-in gate is
@@ -542,8 +556,12 @@ These are current-state gaps, not normative requirements. They are documented so
 can compensate and so the project can track hardening. Each SHOULD be addressed before a
 security-sensitive production deployment:
 
-- **Worker keys are shared secrets.** Keys are stored plaintext in config/env with no
-  per-worker identity or rotation; a leaked key affects every worker sharing it.
+- **Static worker keys remain plaintext in config.** The recommended path — per-worker keys
+  minted via the admin API (§13.3–§13.4) — gives each worker an individually revocable identity
+  and is **hashed at rest** (§13.5), so a leaked worker's key can be rotated without disrupting
+  the fleet. The legacy static key set (`--worker-keys` / `GOWE_WORKER_KEYS`) is retained for
+  bootstrap and dev; entries stored as raw secrets sit plaintext in config (use `sha256:` hash
+  entries, or prefer per-worker keys, to avoid this).
 - **Anonymous mode widens exposure.** If `--allow-anonymous` is enabled, always scope it with
   `--anonymous-executors`.
 
@@ -552,6 +570,11 @@ security-sensitive production deployment:
 > are marked `Secure` when the connection is HTTPS (see §13.6). Operators MUST still choose one
 > of the two transport-security modes for production; the capability exists but is not
 > automatic on a plain-HTTP listener.
+
+> **Resolved (was a limitation):** Shared worker keys now have a revocable alternative.
+> Per-worker keys minted via the admin API carry an individual identity, are hashed at rest,
+> and can be revoked without disrupting the rest of the fleet (see §13.3–§13.5). The legacy
+> static key set is retained only for bootstrap/dev.
 
 ---
 

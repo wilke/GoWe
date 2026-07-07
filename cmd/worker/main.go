@@ -28,7 +28,7 @@ func main() {
 	flag.StringVar(&cfg.ServerURL, "server", "http://localhost:8080", "GoWe server URL")
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
-	flag.StringVar(&cfg.WorkerKey, "worker-key", "", "Shared secret for worker authentication")
+	flag.StringVar(&cfg.WorkerKey, "worker-key", "", "Worker authentication key sent as X-Worker-Key (a per-worker key issued by an admin, or a shared static key)")
 	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime(s), comma-separated (docker, apptainer, none)")
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")

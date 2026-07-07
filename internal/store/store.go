@@ -69,6 +69,16 @@ type Store interface {
 	ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error)
 	CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error)
 
+	// Worker key operations (per-worker authentication, hashed at rest)
+	CreateWorkerKey(ctx context.Context, k *model.WorkerKey) error
+	GetWorkerKeyByID(ctx context.Context, id string) (*model.WorkerKey, error)
+	GetWorkerKeyByHash(ctx context.Context, hash string) (*model.WorkerKey, error)
+	ListWorkerKeys(ctx context.Context) ([]*model.WorkerKey, error)
+	UpdateWorkerKey(ctx context.Context, k *model.WorkerKey) error
+	DeleteWorkerKey(ctx context.Context, id string) error
+	CountWorkerKeys(ctx context.Context) (int, error)
+	TouchWorkerKey(ctx context.Context, id string, when time.Time) error
+
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)
 	GetOrCreateUser(ctx context.Context, username string, provider model.AuthProvider) (*model.User, error)

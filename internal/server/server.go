@@ -27,15 +27,16 @@ type Server struct {
 	validator        *parser.Validator
 	store            store.Store
 	scheduler        scheduler.Scheduler
-	registry         *executor.Registry // optional; used by dry-run to check executor availability
-	bvbrcCaller      bvbrc.RPCCaller    // optional; AppService caller, nil when no BV-BRC token
-	workspaceCaller  bvbrc.RPCCaller    // optional; Workspace service caller
-	testApps         []map[string]any   // optional; static app list for testing without BV-BRC
-	ui               *ui.UI             // UI handler for web interface
-	adminConfig      *AdminConfig       // optional; admin role configuration
-	anonConfig       *AnonymousConfig   // optional; anonymous access configuration
-	workerKeyConfig  *WorkerKeyConfig   // optional; worker key authentication
-	fileUploadConfig *FileUploadConfig  // optional; file upload proxy configuration
+	registry         *executor.Registry      // optional; used by dry-run to check executor availability
+	bvbrcCaller      bvbrc.RPCCaller         // optional; AppService caller, nil when no BV-BRC token
+	workspaceCaller  bvbrc.RPCCaller         // optional; Workspace service caller
+	testApps         []map[string]any        // optional; static app list for testing without BV-BRC
+	ui               *ui.UI                  // UI handler for web interface
+	adminConfig      *AdminConfig            // optional; admin role configuration
+	anonConfig       *AnonymousConfig        // optional; anonymous access configuration
+	workerKeyConfig  *WorkerKeyConfig        // optional; static worker keys (file/env)
+	workerAuth       *WorkerKeyAuthenticator // validates static + DB-backed worker keys
+	fileUploadConfig *FileUploadConfig       // optional; file upload proxy configuration
 }
 
 // Option configures optional Server dependencies.
@@ -106,6 +107,10 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// Build the worker-key authenticator from static config (file/env) plus the
+	// DB-backed per-worker keys managed via the admin API.
+	s.workerAuth = NewWorkerKeyAuthenticator(s.workerKeyConfig, st, s.logger)
 
 	// Create UI handler. Session cookies are marked Secure when TLS is
 	// terminated in-process, when the operator opts in explicitly, or (behind a
@@ -209,7 +214,7 @@ func (s *Server) routes() {
 
 		// Worker endpoints (separate auth model using X-Worker-Key)
 		r.Route("/workers", func(r chi.Router) {
-			r.Use(workerAuthMiddleware(s.workerKeyConfig, s.logger))
+			r.Use(workerAuthMiddleware(s.workerAuth, s.logger))
 			r.Get("/", s.handleListWorkers)
 			r.Post("/", s.handleRegisterWorker)
 			r.Route("/{id}", func(r chi.Router) {
@@ -293,6 +298,14 @@ func (s *Server) routes() {
 				r.Get("/users", s.handleListUsers)
 				r.Route("/users/{username}", func(r chi.Router) {
 					r.Put("/role", s.handleSetUserRole)
+				})
+				r.Route("/worker-keys", func(r chi.Router) {
+					r.Get("/", s.handleListWorkerKeys)
+					r.Post("/", s.handleCreateWorkerKey)
+					r.Route("/{id}", func(r chi.Router) {
+						r.Patch("/", s.handleUpdateWorkerKey)
+						r.Delete("/", s.handleRevokeWorkerKey)
+					})
 				})
 				r.Route("/labels", func(r chi.Router) {
 					r.Get("/", s.handleListLabelVocabulary)

@@ -122,6 +122,24 @@ var schema = []string{
 	`CREATE INDEX IF NOT EXISTS idx_si_submission ON step_instances(submission_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_si_state ON step_instances(state)`,
 
+	// Worker keys for per-worker authentication.
+	// Only the SHA-256 hash of each key is stored (hashed at rest); the raw
+	// secret is shown to the operator once at issuance and never persisted.
+	`CREATE TABLE IF NOT EXISTS worker_keys (
+		id           TEXT PRIMARY KEY,
+		label        TEXT NOT NULL DEFAULT '',
+		key_hash     TEXT NOT NULL UNIQUE,
+		key_prefix   TEXT NOT NULL DEFAULT '',
+		groups       TEXT NOT NULL DEFAULT '[]',
+		description  TEXT NOT NULL DEFAULT '',
+		disabled     INTEGER NOT NULL DEFAULT 0,
+		created_by   TEXT NOT NULL DEFAULT '',
+		created_at   TEXT NOT NULL,
+		expires_at   TEXT,
+		last_used_at TEXT
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_keys_hash ON worker_keys(key_hash)`,
+
 	// Linked providers for multi-provider authentication
 	`CREATE TABLE IF NOT EXISTS linked_providers (
 		user_id   TEXT NOT NULL,
