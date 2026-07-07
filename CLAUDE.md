@@ -136,6 +136,28 @@ SQLite with `modernc.org/sqlite` (pure Go, no CGO). Schema in `internal/store/mi
 - Integration tests use build tags (`-tags=integration`)
 - `go.sum` is auto-generated; only edit `go.mod` manually
 
+## Branching, Commits & Releases
+
+Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+- **`main` is the only long-lived branch** and is always releasable. No `develop` branch.
+- **Branch from `main`** (not from another PR's branch) with `<type>/<desc>` naming:
+  `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, `security/`, `ci/`, `chore/`. Keep branches
+  short-lived; do **not** stack PRs.
+- **Conventional Commits are required** — `feat:`, `fix:`, `docs:`, `security:`, etc.;
+  `feat!:`/`BREAKING CHANGE:` for breaks. release-please derives the version and changelog
+  from them, so the type is the release automation. The **squash-merge message** is what
+  gets read — make it a valid Conventional Commit.
+- **PRs target `main`**, require green `ci` (`go vet`, `go build`, `go test`), and are
+  **squash-merged** (linear history; branch auto-deleted).
+- **Releases are automated — do not tag by hand normally.** Merging the open **release-please**
+  PR bumps `.release-please-manifest.json` + `CHANGELOG.md`, creates the `vX.Y.Z` tag, and
+  **GoReleaser** builds the four binaries (`gowe`, `gowe-server`, `gowe-worker`, `cwl-runner`)
+  for linux/darwin × amd64/arm64. Manual `git push origin vX.Y.Z` is the hotfix escape hatch
+  (triggers the `release` workflow). Pre-releases use a `-rc.N` suffix, not a branch.
+- Release config: `.goreleaser.yaml`, `release-please-config.json`,
+  `.release-please-manifest.json`, `.github/workflows/{ci,release,release-please}.yml`.
+
 ## Worker Flags (Key Ones)
 
 | Flag | Purpose |
