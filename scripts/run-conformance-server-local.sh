@@ -164,6 +164,13 @@ fi
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 
+# Provider-token encryption key. Since #138 the server fails closed on a
+# token-carrying submission when no key is set; the conformance CLI forwards a
+# real provider token from the environment, so a key is required. Fixed
+# throwaway key over a disposable test DB — never a real secret. Also exercises
+# the at-rest encryption round-trip.
+export GOWE_TOKEN_KEY="$(printf '%s' 'gowe-conformance-test-key-32byte' | base64)"
+
 # Start server with local executor and fast polling for tests
 log_info "Starting server with local executor..."
 ./bin/gowe-server \
