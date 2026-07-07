@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/me/gowe/internal/cwltool"
@@ -143,12 +142,11 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		cfg.Poll = 5 * time.Second
 	}
 
-	// Auto-detect system resources if not explicitly set.
+	// Auto-detect system resources if not explicitly set. Total-memory detection
+	// is platform-specific (see worker_meminfo_*.go); it returns 0 where the OS
+	// isn't supported, leaving MaxMemMB unset (no limit) — the prior behavior.
 	if cfg.Resources.MaxMemMB == 0 {
-		var si syscall.Sysinfo_t
-		if err := syscall.Sysinfo(&si); err == nil {
-			cfg.Resources.MaxMemMB = (int64(si.Totalram) * int64(si.Unit)) / (1024 * 1024)
-		}
+		cfg.Resources.MaxMemMB = sysTotalMemMB()
 	}
 	if cfg.Resources.MaxCPUs == 0 {
 		cfg.Resources.MaxCPUs = runtime.NumCPU()
