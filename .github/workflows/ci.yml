@@ -25,5 +25,13 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
+      - name: Cross-compile (release targets)
+        # Catch platform-specific breakage (e.g. Linux-only syscalls) before it
+        # fails the GoReleaser build at release time. Mirrors .goreleaser.yaml.
+        run: |
+          for target in darwin/amd64 darwin/arm64 linux/arm64; do
+            echo "building $target"
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build ./...
+          done
       - name: Test
         run: go test ./...
