@@ -47,9 +47,12 @@ authenticate, and how do workers authenticate.
   on transport security and provider issuance.
 - The shared worker key is coarse — no per-worker identity, no rotation; a leaked key affects
   every worker that shares it.
-- Delegation requires carrying and storing the user's token, which today lands **plaintext**
-  in `submissions.user_token` (SQLite). This and the two items above are tracked as hardening
-  work; see [`SPECIFICATION.md`](../../SPECIFICATION.md) §13.7.
+- Delegation requires carrying and storing the user's token. This is now **encrypted at rest**
+  (AES-256-GCM under a server-held `GOWE_TOKEN_KEY`) in both `submissions.user_token` and the
+  bearer credential embedded in `tasks.runtime_hints`; with no key the server fails closed on
+  delegated submissions unless `--allow-plaintext-tokens` is set. The remaining shared-worker-key
+  and transport items above are tracked as hardening work; see
+  [`SPECIFICATION.md`](../../SPECIFICATION.md) §13.5–§13.7.
 
 **Neutral**
 - Anonymous mode exists as a convenience for local/dev use; it is off by default and executor-scoped.
