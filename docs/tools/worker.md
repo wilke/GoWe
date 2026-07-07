@@ -33,7 +33,7 @@ gowe-worker [flags]
 | `--server` | `http://localhost:8080` | GoWe server URL |
 | `--name` | hostname | Worker name for identification |
 | `--group` | `default` | Worker group for targeted scheduling |
-| `--worker-key` | `""` | Shared secret for authentication |
+| `--worker-key` | `""` | Authentication key sent as `X-Worker-Key` — a per-worker key issued by an admin, or a shared static key |
 | `--runtime` | `none` | Container runtime(s), comma-separated: docker, apptainer, none |
 | `--workdir` | `$TMPDIR/gowe-worker` | Local working directory for task execution |
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
@@ -237,6 +237,53 @@ gowe-worker \
 
 The server validates worker keys against its configuration (see server.md). Tasks can target specific groups, and workers only receive tasks matching their group.
 
+### Worker keys
+
+A worker authenticates by sending its key in the `X-Worker-Key` header (via `--worker-key`). GoWe supports two kinds of keys, and validates against both:
+
+| Kind | Source | Lifecycle | At-rest storage |
+|------|--------|-----------|-----------------|
+| **Per-worker key** (recommended) | Minted by an admin through the API and handed to one worker | Individually issued, disabled, expired, and revoked without touching other workers | Only the SHA-256 **hash** is stored; the raw secret is shown once at issuance |
+| **Static key** | `--worker-keys` JSON file or `GOWE_WORKER_KEYS` env on the server | Edited by changing the config and restarting | Plaintext in config, unless stored as a `sha256:<hex>` hash entry |
+
+Per-worker keys are the hardened path: because each worker holds a distinct, individually-revocable secret, a single compromised worker can be rotated out (`DELETE`) without disrupting the fleet.
+
+**Issuing a key (admin):**
+
+```bash
+# Mint a key scoped to the "esmfold" group. The raw key is returned ONCE.
+curl -s -X POST http://gowe-server:8080/api/v1/admin/worker-keys \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"gpu-node-01","groups":["esmfold"],"description":"A100 box","expires_at":"2026-12-31T00:00:00Z"}'
+# => {"data":{"key":"gwk_XXXXXXXX...","worker_key":{"id":"wk_...","key_prefix":"gwk_XXXXXX",...}}}
+```
+
+Hand the returned `key` to exactly one worker:
+
+```bash
+gowe-worker --server http://gowe-server:8080 --group esmfold --worker-key "gwk_XXXXXXXX..."
+```
+
+**Managing keys (admin):**
+
+```bash
+# List keys (hashes and raw secrets are never returned)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://gowe-server:8080/api/v1/admin/worker-keys
+
+# Temporarily disable a key (reversible)
+curl -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"disabled":true}' http://gowe-server:8080/api/v1/admin/worker-keys/wk_...
+
+# Permanently revoke a leaked key (irreversible)
+curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://gowe-server:8080/api/v1/admin/worker-keys/wk_...
+```
+
+If a worker's key is revoked or expires, its next poll/heartbeat is rejected with `401`; the server's reaper eventually marks it offline and requeues its in-flight tasks.
+
+**Open access for dev:** if no keys are configured at all (no static config **and** no minted keys), worker endpoints are open. This is convenient for local/dev but production deployments SHOULD configure keys (see `SPECIFICATION.md` §13.3).
+
 ### GPU-enabled workers
 
 Enable GPU support for containerized workloads:
@@ -409,7 +456,7 @@ When the worker starts, it registers with the server:
 3. Receives a worker ID from the server
 4. Begins polling for tasks
 
-If `--worker-key` is provided, the worker sends it in the `X-Worker-Key` header.
+If `--worker-key` is provided, the worker sends it in the `X-Worker-Key` header. The server validates it against per-worker keys (hashed at rest) and static keys; see [Worker keys](#worker-keys).
 
 ### Task Lifecycle
 

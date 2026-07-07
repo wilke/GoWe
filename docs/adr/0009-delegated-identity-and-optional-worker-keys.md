@@ -26,9 +26,11 @@ authenticate, and how do workers authenticate.
   `anonymous`; admin membership comes from config (stored role, `--admins`, `GOWE_ADMINS`,
   config file). Anonymous access is **opt-in** (`--allow-anonymous`) and MUST be scoped by
   `--anonymous-executors`.
-- **Workers** authenticate with an **optional** shared `X-Worker-Key` that maps to a set of
-  allowed groups; if no keys are configured, worker endpoints are open. The key is never
-  logged in the clear (hash only).
+- **Workers** authenticate with an **optional** `X-Worker-Key` that maps to a set of allowed
+  groups; if no keys are configured, worker endpoints are open. The key is never logged in the
+  clear (hash only). Keys come in two forms: **per-worker keys** minted and revoked through the
+  admin API, stored **hashed at rest** and individually attributable/expirable; and legacy
+  **static keys** from a file/env, retained for bootstrap and dev.
 - **Delegation**: when `gowe:Execution.inject_bvbrc_token` is set, the submitter's own token
   is injected into the task container as `BVBRC_TOKEN`, so downstream BV-BRC work runs under
   the user's identity.
@@ -45,14 +47,15 @@ authenticate, and how do workers authenticate.
 - Trust is only as strong as the provider token and our validation: GoWe **parses** the token
   for username/expiry but does not cryptographically verify a provider signature, so it relies
   on transport security and provider issuance.
-- The shared worker key is coarse — no per-worker identity, no rotation; a leaked key affects
-  every worker that shares it.
+- The legacy *static* worker key is coarse — no per-worker identity, no rotation, plaintext in
+  config. This is now mitigated by per-worker keys (issue/revoke via the admin API, hashed at
+  rest, optional expiry), which are the recommended path; the static key set remains only for
+  bootstrap/dev. See `SPECIFICATION.md` §13.3–§13.5 and `docs/tools/worker.md`.
 - Delegation requires carrying and storing the user's token. This is now **encrypted at rest**
   (AES-256-GCM under a server-held `GOWE_TOKEN_KEY`) in both `submissions.user_token` and the
   bearer credential embedded in `tasks.runtime_hints`; with no key the server fails closed on
-  delegated submissions unless `--allow-plaintext-tokens` is set. The remaining shared-worker-key
-  and transport items above are tracked as hardening work; see
-  [`SPECIFICATION.md`](../../SPECIFICATION.md) §13.5–§13.7.
+  delegated submissions unless `--allow-plaintext-tokens` is set. The remaining transport item
+  above is tracked as hardening work; see [`SPECIFICATION.md`](../../SPECIFICATION.md) §13.5–§13.7.
 
 **Neutral**
 - Anonymous mode exists as a convenience for local/dev use; it is off by default and executor-scoped.
@@ -70,5 +73,5 @@ authenticate, and how do workers authenticate.
 
 ## References
 
-- Code: `internal/server/auth.go`, `internal/server/worker_auth.go`, `internal/server/admin_config.go`, `pkg/model/user.go`, `internal/worker/worker.go`, `internal/executor/bvbrc.go`
+- Code: `internal/server/auth.go`, `internal/server/worker_auth.go`, `internal/server/handler_worker_keys.go`, `internal/server/admin_config.go`, `internal/store/worker_keys.go`, `pkg/model/user.go`, `pkg/model/worker_key.go`, `internal/worker/worker.go`, `internal/executor/bvbrc.go`
 - Docs: [`SPECIFICATION.md`](../../SPECIFICATION.md) §13

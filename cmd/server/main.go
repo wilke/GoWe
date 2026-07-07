@@ -248,7 +248,13 @@ func main() {
 	}
 
 	// Configure worker key authentication.
-	workerKeyConfig := server.LoadWorkerKeyConfig(*workerKeyFile)
+	workerKeyConfig, err := server.LoadWorkerKeyConfig(*workerKeyFile)
+	if err != nil {
+		// Fail closed: a configured key source we cannot load would otherwise
+		// silently leave worker auth open. Refuse to start instead.
+		fmt.Fprintf(os.Stderr, "worker key configuration: %v\n", err)
+		os.Exit(1)
+	}
 	if workerKeyConfig.IsEnabled() {
 		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
 		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
