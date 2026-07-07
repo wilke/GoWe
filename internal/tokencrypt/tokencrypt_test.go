@@ -38,7 +38,11 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		if !IsEncrypted(enc) {
 			t.Fatalf("ciphertext missing marker: %q", enc)
 		}
-		if strings.Contains(enc, pt) {
+		// The leak check is only meaningful for plaintexts long enough that a
+		// coincidental substring in the base64 ciphertext is negligible. A
+		// single character like "a" appears in a random ~44-char base64 string
+		// roughly half the time, which made this assertion flaky (~50%).
+		if len(pt) >= 8 && strings.Contains(enc, pt) {
 			t.Fatalf("ciphertext leaks plaintext: %q", enc)
 		}
 		got, err := c.Decrypt(enc)
