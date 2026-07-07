@@ -24,6 +24,9 @@ import (
 	"github.com/me/gowe/pkg/staging"
 )
 
+// Version is the build version, stamped at release time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 func main() {
 	cfg := config.DefaultServerConfig()
 

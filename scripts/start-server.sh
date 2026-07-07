@@ -20,6 +20,13 @@ PRE_STAGE_DIR="${PRE_STAGE_DIR:-/local_databases}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 ADMINS="${ADMINS:-awilke,awilke@bvbrc,olson,olson@bvbrc}"
+# Scheduler poll interval. Kept at 1s (not 100ms) to avoid the workspace pre/post-stage
+# phases re-scanning ~100 submissions every tick — see GH #129. Lower only after #129
+# is fixed (query scoping), or CPU will spike again.
+SCHEDULER_POLL="${SCHEDULER_POLL:-1s}"
+# Anonymous submissions are DISABLED (require a BV-BRC token). Set ALLOW_ANONYMOUS=1
+# to re-enable (adds --allow-anonymous + --anonymous-executors).
+ALLOW_ANONYMOUS="${ALLOW_ANONYMOUS:-0}"
 
 # Derived paths
 DB_PATH="$BASE_DIR/gowe/gowe.db"
@@ -57,13 +64,23 @@ fi
 echo "Starting GoWe (port=${GOWE_PORT}, base=${BASE_DIR}, workers=${NUM_WORKERS})"
 
 # --- Start server ---
+# Anonymous access is off by default (ALLOW_ANONYMOUS=1 to re-enable).
+ANON_FLAGS=()
+if [[ "$ALLOW_ANONYMOUS" == "1" ]]; then
+    ANON_FLAGS=(--allow-anonymous --anonymous-executors "local,docker,worker,container")
+fi
+
+# Rotate the previous server log so it doesn't grow unbounded across restarts.
+if [[ -f "$LOG_DIR/server.log" ]]; then
+    mv "$LOG_DIR/server.log" "$LOG_DIR/server.log.$(date +%Y%m%d-%H%M%S)"
+fi
+
 ./bin/gowe-server \
     --addr ":${GOWE_PORT}" \
     --db "$DB_PATH" \
     --default-executor worker \
-    --allow-anonymous \
-    --anonymous-executors "local,docker,worker,container" \
-    --scheduler-poll 100ms \
+    "${ANON_FLAGS[@]}" \
+    --scheduler-poll "$SCHEDULER_POLL" \
     --upload-backend local \
     --upload-local-dir "$UPLOAD_DIR" \
     --upload-download-dirs "$DOWNLOAD_DIRS" \
