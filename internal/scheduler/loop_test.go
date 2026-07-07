@@ -1078,6 +1078,86 @@ func TestDetectStuckTasks_FailAction(t *testing.T) {
 	}
 }
 
+func TestScrubTaskToken(t *testing.T) {
+	tests := []struct {
+		name         string
+		task         *model.Task
+		wantNilCred  bool
+		wantNilHints bool
+	}{
+		{
+			name:         "nil RuntimeHints",
+			task:         &model.Task{},
+			wantNilHints: true,
+		},
+		{
+			name: "nil StagerOverrides",
+			task: &model.Task{
+				RuntimeHints: &model.RuntimeHints{DockerImage: "alpine"},
+			},
+			wantNilCred: true,
+		},
+		{
+			name: "nil HTTPCredential",
+			task: &model.Task{
+				RuntimeHints: &model.RuntimeHints{
+					StagerOverrides: &model.StagerOverrides{},
+				},
+			},
+			wantNilCred: true,
+		},
+		{
+			name: "credential is scrubbed",
+			task: &model.Task{
+				RuntimeHints: &model.RuntimeHints{
+					DockerImage: "alpine",
+					StagerOverrides: &model.StagerOverrides{
+						HTTPCredential: &model.HTTPCredential{
+							Type:  "bearer",
+							Token: "secret-token-value",
+						},
+					},
+				},
+			},
+			wantNilCred: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scrubTaskToken(tt.task)
+
+			if tt.wantNilHints {
+				// RuntimeHints was nil and should stay nil.
+				if tt.task.RuntimeHints != nil {
+					t.Error("expected RuntimeHints to remain nil")
+				}
+				return
+			}
+
+			if tt.task.RuntimeHints.StagerOverrides == nil {
+				if !tt.wantNilCred {
+					t.Error("StagerOverrides unexpectedly nil")
+				}
+				return
+			}
+
+			if tt.task.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+				t.Errorf("HTTPCredential should be nil after scrub, got %+v",
+					tt.task.RuntimeHints.StagerOverrides.HTTPCredential)
+			}
+
+			// Other fields should be preserved.
+			if tt.task.RuntimeHints.DockerImage == "alpine" {
+				// Verify DockerImage wasn't wiped.
+				if tt.task.RuntimeHints.DockerImage != "alpine" {
+					t.Error("DockerImage was unexpectedly cleared")
+				}
+			}
+		})
+	}
+}
+
 func TestRequirementKeyForTask(t *testing.T) {
 	tests := []struct {
 		name string

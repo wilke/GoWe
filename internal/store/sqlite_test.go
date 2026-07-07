@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -1271,6 +1272,229 @@ func TestCheckoutTask_CacheDatasetPreference(t *testing.T) {
 	}
 	if got.ID != task.ID {
 		t.Errorf("task id = %q, want %q", got.ID, task.ID)
+	}
+}
+
+// --- DeleteSubmission tests ---
+
+func TestDeleteSubmission_CascadeDeletesChildren(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	// Create a workflow, submission, tasks, and step instances.
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	sub := sampleSubmission(wf.ID)
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+
+	// Create two tasks.
+	task1 := sampleTask(sub.ID)
+	task1.ID = "task_del-1"
+	if err := st.CreateTask(ctx, task1); err != nil {
+		t.Fatalf("CreateTask 1: %v", err)
+	}
+	task2 := sampleTask(sub.ID)
+	task2.ID = "task_del-2"
+	task2.StepID = "annotate"
+	if err := st.CreateTask(ctx, task2); err != nil {
+		t.Fatalf("CreateTask 2: %v", err)
+	}
+
+	// Create a step instance.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	si := &model.StepInstance{
+		ID:           "si_del-1",
+		SubmissionID: sub.ID,
+		StepID:       "assemble",
+		State:        model.StepStateCompleted,
+		Outputs:      map[string]any{},
+		CreatedAt:    now,
+	}
+	if err := st.CreateStepInstance(ctx, si); err != nil {
+		t.Fatalf("CreateStepInstance: %v", err)
+	}
+
+	// Verify children exist before delete.
+	tasks, _ := st.ListTasksBySubmission(ctx, sub.ID)
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks before delete, got %d", len(tasks))
+	}
+	steps, _ := st.ListStepsBySubmission(ctx, sub.ID)
+	if len(steps) != 1 {
+		t.Fatalf("expected 1 step instance before delete, got %d", len(steps))
+	}
+
+	// Delete the submission.
+	if err := st.DeleteSubmission(ctx, sub.ID); err != nil {
+		t.Fatalf("DeleteSubmission: %v", err)
+	}
+
+	// Verify submission is gone.
+	got, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubmission after delete: %v", err)
+	}
+	if got != nil {
+		t.Error("expected submission to be deleted, got non-nil")
+	}
+
+	// Verify tasks are gone.
+	tasks, _ = st.ListTasksBySubmission(ctx, sub.ID)
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks after delete, got %d", len(tasks))
+	}
+
+	// Verify step instances are gone.
+	steps, _ = st.ListStepsBySubmission(ctx, sub.ID)
+	if len(steps) != 0 {
+		t.Errorf("expected 0 step instances after delete, got %d", len(steps))
+	}
+}
+
+func TestDeleteSubmission_NotFound(t *testing.T) {
+	st := testStore(t)
+	err := st.DeleteSubmission(context.Background(), "sub_nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent submission")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+func TestDeleteSubmission_DoesNotAffectOtherSubmissions(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	// Create two submissions.
+	sub1 := sampleSubmission(wf.ID)
+	sub1.ID = "sub_keep"
+	if err := st.CreateSubmission(ctx, sub1); err != nil {
+		t.Fatalf("CreateSubmission 1: %v", err)
+	}
+	sub2 := sampleSubmission(wf.ID)
+	sub2.ID = "sub_delete"
+	if err := st.CreateSubmission(ctx, sub2); err != nil {
+		t.Fatalf("CreateSubmission 2: %v", err)
+	}
+
+	// Create a task for each.
+	task1 := sampleTask(sub1.ID)
+	task1.ID = "task_keep"
+	if err := st.CreateTask(ctx, task1); err != nil {
+		t.Fatalf("CreateTask keep: %v", err)
+	}
+	task2 := sampleTask(sub2.ID)
+	task2.ID = "task_delete"
+	if err := st.CreateTask(ctx, task2); err != nil {
+		t.Fatalf("CreateTask delete: %v", err)
+	}
+
+	// Delete sub2.
+	if err := st.DeleteSubmission(ctx, sub2.ID); err != nil {
+		t.Fatalf("DeleteSubmission: %v", err)
+	}
+
+	// sub1 and its task should still exist.
+	got, err := st.GetSubmission(ctx, sub1.ID)
+	if err != nil {
+		t.Fatalf("GetSubmission: %v", err)
+	}
+	if got == nil {
+		t.Error("sub1 should still exist after deleting sub2")
+	}
+	tasks, _ := st.ListTasksBySubmission(ctx, sub1.ID)
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 task for sub1, got %d", len(tasks))
+	}
+}
+
+func TestDeleteSubmission_CancelBeforeDelete(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	sub := sampleSubmission(wf.ID)
+	sub.State = model.SubmissionStateRunning
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+
+	// Create a RUNNING task and a QUEUED task.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	running := sampleTask(sub.ID)
+	running.ID = "task_running"
+	running.State = model.TaskStateRunning
+	running.StartedAt = &now
+	if err := st.CreateTask(ctx, running); err != nil {
+		t.Fatalf("CreateTask running: %v", err)
+	}
+	queued := sampleTask(sub.ID)
+	queued.ID = "task_queued"
+	queued.State = model.TaskStateQueued
+	if err := st.CreateTask(ctx, queued); err != nil {
+		t.Fatalf("CreateTask queued: %v", err)
+	}
+
+	// Create a RUNNING step instance.
+	si := &model.StepInstance{
+		ID:           "si_running",
+		SubmissionID: sub.ID,
+		StepID:       "assemble",
+		State:        model.StepStateRunning,
+		Outputs:      map[string]any{},
+		CreatedAt:    now,
+	}
+	if err := st.CreateStepInstance(ctx, si); err != nil {
+		t.Fatalf("CreateStepInstance: %v", err)
+	}
+
+	// Cancel non-terminal children, then delete — mirrors handler behavior.
+	cancelTime := time.Now().UTC()
+	tasksCancelled, err := st.CancelNonTerminalTasks(ctx, sub.ID, cancelTime)
+	if err != nil {
+		t.Fatalf("CancelNonTerminalTasks: %v", err)
+	}
+	if tasksCancelled != 2 {
+		t.Errorf("expected 2 tasks cancelled, got %d", tasksCancelled)
+	}
+
+	stepsCancelled, err := st.CancelNonTerminalSteps(ctx, sub.ID, cancelTime)
+	if err != nil {
+		t.Fatalf("CancelNonTerminalSteps: %v", err)
+	}
+	if stepsCancelled != 1 {
+		t.Errorf("expected 1 step cancelled, got %d", stepsCancelled)
+	}
+
+	// Verify tasks were cancelled (not just deleted).
+	tasks, _ := st.ListTasksBySubmission(ctx, sub.ID)
+	for _, task := range tasks {
+		if task.State != model.TaskStateSkipped {
+			t.Errorf("task %s state = %s, want SKIPPED", task.ID, task.State)
+		}
+	}
+
+	// Now delete — should succeed cleanly.
+	if err := st.DeleteSubmission(ctx, sub.ID); err != nil {
+		t.Fatalf("DeleteSubmission: %v", err)
+	}
+
+	got, _ := st.GetSubmission(ctx, sub.ID)
+	if got != nil {
+		t.Error("submission should be deleted")
 	}
 }
 

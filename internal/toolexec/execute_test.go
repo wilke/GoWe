@@ -1,6 +1,10 @@
 package toolexec
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestResolveApptainerImage(t *testing.T) {
 	tests := []struct {
@@ -60,6 +64,57 @@ func TestResolveApptainerImage(t *testing.T) {
 			got := resolveApptainerImage(tt.image, tt.imageDir)
 			if got != tt.want {
 				t.Errorf("resolveApptainerImage(%q, %q) = %q, want %q", tt.image, tt.imageDir, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTailString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		limit int
+		want  string
+	}{
+		{
+			name:  "empty buffer",
+			input: "",
+			limit: 100,
+			want:  "",
+		},
+		{
+			name:  "under limit returns full content",
+			input: "hello world",
+			limit: 100,
+			want:  "hello world",
+		},
+		{
+			name:  "exactly at limit returns full content",
+			input: "12345",
+			limit: 5,
+			want:  "12345",
+		},
+		{
+			name:  "over limit truncates with marker",
+			input: "abcdefghij",
+			limit: 5,
+			want:  "... [truncated] ...\nfghij",
+		},
+		{
+			name:  "large content keeps tail",
+			input: strings.Repeat("x", 1000) + "TAIL",
+			limit: 10,
+			want:  "... [truncated] ...\nxxxxxxTAIL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := bytes.NewBufferString(tt.input)
+			got := tailString(buf, tt.limit)
+			if got != tt.want {
+				t.Errorf("tailString(%d bytes, limit=%d) = %q, want %q",
+					len(tt.input), tt.limit, got, tt.want)
 			}
 		})
 	}

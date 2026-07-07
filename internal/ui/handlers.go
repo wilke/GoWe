@@ -709,6 +709,12 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cancel any in-flight work before deleting rows so workers see the
+	// cancellation on their next poll rather than reporting to a missing task.
+	now := time.Now().UTC()
+	ui.store.CancelNonTerminalSteps(r.Context(), id, now)
+	ui.store.CancelNonTerminalTasks(r.Context(), id, now)
+
 	if err := ui.store.DeleteSubmission(r.Context(), id); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return

@@ -325,6 +325,12 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Cancel any in-flight work before deleting rows so workers see the
+	// cancellation on their next poll rather than reporting to a missing task.
+	now := time.Now().UTC()
+	stepsCancelled, _ := s.store.CancelNonTerminalSteps(r.Context(), id, now)
+	tasksCancelled, _ := s.store.CancelNonTerminalTasks(r.Context(), id, now)
+
 	if err := s.store.DeleteSubmission(r.Context(), id); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
@@ -332,8 +338,10 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 	}
 
 	respondOK(w, reqID, map[string]any{
-		"id":      id,
-		"deleted": true,
+		"id":              id,
+		"deleted":         true,
+		"steps_cancelled": stepsCancelled,
+		"tasks_cancelled": tasksCancelled,
 	})
 }
 

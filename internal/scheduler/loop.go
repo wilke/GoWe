@@ -1230,6 +1230,16 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	}
 }
 
+// scrubTaskToken removes the user authentication token from a task's runtime
+// hints so that credentials are not persisted in the database after the task
+// reaches a terminal state. The token is only needed while the task is in
+// flight; once complete, keeping it at rest is unnecessary exposure.
+func scrubTaskToken(task *model.Task) {
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
+	}
+}
+
 // submitAndUpdateTask submits a task to its executor and updates its state.
 func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	exec, err := l.registry.Get(task.ExecutorType)
@@ -1272,6 +1282,7 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 			stdout, stderr, _ := exec.Logs(ctx, task)
 			task.Stdout = stdout
 			task.Stderr = stderr
+			scrubTaskToken(task)
 			l.logger.Info("task completed", "task_id", task.ID, "state", newState, "step_id", task.StepID)
 		} else {
 			task.State = model.TaskStateQueued
@@ -1443,6 +1454,7 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				stdout, stderr, _ := exec.Logs(ctx, task)
 				task.Stdout = stdout
 				task.Stderr = stderr
+				scrubTaskToken(task)
 				l.logger.Info("task completed (poll)", "task_id", task.ID, "state", newState)
 			}
 
