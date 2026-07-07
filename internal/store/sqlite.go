@@ -450,7 +450,7 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 
 	// Encrypt the submitter's provider token before it touches disk. The
 	// in-memory sub.UserToken stays plaintext for the delegation path.
-	storedToken, err := s.encryptToken(sub.UserToken)
+	storedToken, err := s.encryptToken(sub.UserToken, submissionTokenAAD(sub.ID))
 	if err != nil {
 		return err
 	}
@@ -493,7 +493,7 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	}
 
 	sub.State = model.SubmissionState(state)
-	if sub.UserToken, err = s.decryptToken(sub.UserToken); err != nil {
+	if sub.UserToken, err = s.decryptToken(sub.UserToken, submissionTokenAAD(sub.ID)); err != nil {
 		return nil, fmt.Errorf("decrypt user token: %w", err)
 	}
 	if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
@@ -618,7 +618,7 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		}
 
 		sub.State = model.SubmissionState(state)
-		if sub.UserToken, err = s.decryptToken(sub.UserToken); err != nil {
+		if sub.UserToken, err = s.decryptToken(sub.UserToken, submissionTokenAAD(sub.ID)); err != nil {
 			slog.Error("skipping submission row with undecryptable token", "id", sub.ID, "error", err)
 			continue
 		}
@@ -1113,7 +1113,7 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
 	}
-	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints)
+	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
 	if err != nil {
 		return err
 	}
@@ -1259,7 +1259,7 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
 	}
-	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints)
+	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
 	if err != nil {
 		return err
 	}
@@ -1488,7 +1488,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
 		return nil, err
 	}
-	if err := s.revealRuntimeHints(task.RuntimeHints); err != nil {
+	if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
 		return nil, fmt.Errorf("decrypt runtime_hints token: %w", err)
 	}
 	if task.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
@@ -1560,7 +1560,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
 			continue
 		}
-		if err := s.revealRuntimeHints(task.RuntimeHints); err != nil {
+		if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
 			slog.Error("skipping task row with undecryptable token", "id", task.ID, "error", err)
 			continue
 		}
@@ -1936,7 +1936,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
 			continue
 		}
-		if err := s.revealRuntimeHints(task.RuntimeHints); err != nil {
+		if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
 			slog.Error("skipping task row with undecryptable token in checkout", "id", task.ID, "error", err)
 			continue
 		}

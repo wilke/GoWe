@@ -159,8 +159,8 @@ func TestTaskRuntimeHintsTokenEncryptedAtRest(t *testing.T) {
 	if strings.Contains(raw, secret) {
 		t.Fatalf("stored runtime_hints leaks plaintext token: %q", raw)
 	}
-	if !strings.Contains(raw, "enc:v1:") {
-		t.Fatalf("stored runtime_hints token not encrypted: %q", raw)
+	if !strings.Contains(raw, "enc:v2:") {
+		t.Fatalf("stored runtime_hints token not encrypted (expected v2/AAD-bound): %q", raw)
 	}
 
 	got, err := st.GetTask(ctx, "task_enc")
@@ -216,5 +216,56 @@ func TestReencryptPlaintextTokens(t *testing.T) {
 	nSub2, nTask2, err := st.ReencryptPlaintextTokens(ctx)
 	if err != nil || nSub2 != 0 || nTask2 != 0 {
 		t.Fatalf("second migration not idempotent: (%d,%d) err=%v", nSub2, nTask2, err)
+	}
+}
+
+// TestSubmissionTokenAADRejectsRelocation proves the at-rest ciphertext is bound
+// to its row: a blob valid for one submission fails to decrypt when moved into
+// another submission's row (GH #142 — AAD/enc:v2).
+func TestSubmissionTokenAADRejectsRelocation(t *testing.T) {
+	st := testStore(t)
+	st.ConfigureTokenEncryption(testTokenCipher(t), true)
+	ctx := context.Background()
+
+	if err := st.CreateSubmission(ctx, tokenSubmission("sub_A", "token-A|sig=aaa")); err != nil {
+		t.Fatalf("create sub_A: %v", err)
+	}
+	if err := st.CreateSubmission(ctx, tokenSubmission("sub_B", "token-B|sig=bbb")); err != nil {
+		t.Fatalf("create sub_B: %v", err)
+	}
+
+	// Transplant sub_A's ciphertext into sub_B's row (simulating a DB-write
+	// attacker relocating a credential).
+	cipherA := rawSubmissionToken(t, st, "sub_A")
+	if _, err := st.db.ExecContext(ctx,
+		`UPDATE submissions SET user_token=? WHERE id=?`, cipherA, "sub_B"); err != nil {
+		t.Fatalf("transplant: %v", err)
+	}
+
+	// Reading sub_B must now fail: the AAD binds cipherA to sub_A, not sub_B.
+	if _, err := st.GetSubmission(ctx, "sub_B"); err == nil {
+		t.Fatal("GetSubmission(sub_B) with relocated ciphertext: expected decrypt error, got nil")
+	}
+	// sub_A itself still decrypts fine.
+	if got, err := st.GetSubmission(ctx, "sub_A"); err != nil || got.UserToken != "token-A|sig=aaa" {
+		t.Fatalf("sub_A still valid: got (%v, %v)", got.UserToken, err)
+	}
+}
+
+// TestReadFailsClosedWithoutKey verifies that once a token is stored encrypted,
+// reading it back with no cipher configured is a hard error rather than handing
+// the ciphertext downstream as if it were a token (GH #142 read-side fail-closed).
+func TestReadFailsClosedWithoutKey(t *testing.T) {
+	st := testStore(t)
+	st.ConfigureTokenEncryption(testTokenCipher(t), true)
+	ctx := context.Background()
+
+	if err := st.CreateSubmission(ctx, tokenSubmission("sub_fc", "secret|sig=xyz")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Simulate a restart with the key removed/misconfigured.
+	st.ConfigureTokenEncryption(nil, true)
+	if _, err := st.GetSubmission(ctx, "sub_fc"); err == nil {
+		t.Fatal("GetSubmission with encrypted token and no key: expected error, got nil")
 	}
 }
