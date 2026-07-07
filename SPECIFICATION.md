@@ -191,7 +191,7 @@ Submission                       one run of a workflow
 | DISPATCHED | Tasks created and submitted to executors. |
 | RUNNING | At least one Task running. |
 | COMPLETED / FAILED | All Tasks terminal, success/failure aggregated. |
-| SKIPPED | `when` evaluated false. |
+| SKIPPED | `when` evaluated false, **or** the StepInstance was non-terminal when its Submission was cancelled. |
 
 ### 6.3 Task states
 
@@ -206,7 +206,7 @@ with `FAILED → RETRYING → QUEUED` while retries remain.
 | RUNNING | Executing. |
 | SUCCESS / FAILED | Terminal outcome. |
 | RETRYING | Failed but eligible for retry; re-enters QUEUED. |
-| SKIPPED | Conditional skip. |
+| SKIPPED | Conditional skip (`when` false), **or** cancellation of a non-terminal Task when its Submission is cancelled. |
 
 > Worker-bound tasks MAY transition directly `PENDING → QUEUED`, bypassing `SCHEDULED`, so
 > they are immediately available for checkout.
@@ -276,12 +276,14 @@ Every backend MUST implement `Submit`, `Status`, `Cancel`, and `Logs`
 
 The scheduler MUST select a Task's backend in this order:
 
-1. Server `--default-executor`, if set — overrides all hints.
-2. `gowe:Execution.executor` (`worker` | `bvbrc` | `local`).
-3. `gowe:Execution.bvbrc_app_id` present ⇒ `bvbrc`.
-4. `DockerRequirement` or `gowe:Execution.docker_image` present ⇒ `worker` when workers are
+1. Server `--force-executor`, if set — forces every Task to this backend, ignoring all hints
+   and `--default-executor`. Intended for testing only.
+2. Server `--default-executor`, if set — overrides all hints.
+3. `gowe:Execution.executor` (`worker` | `bvbrc` | `local`).
+4. `gowe:Execution.bvbrc_app_id` present ⇒ `bvbrc`.
+5. `DockerRequirement` or `gowe:Execution.docker_image` present ⇒ `worker` when workers are
    online, else `local`.
-5. Default ⇒ `local`.
+6. Default ⇒ `local`.
 
 ### 8.3 Container image resolution
 
@@ -495,7 +497,11 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 - The `X-Worker-Key` MUST NOT be logged in the clear; only a hash of it MAY be logged.
 - A BV-BRC token MAY be injected into a task's container as `BVBRC_TOKEN` when, and only when,
   `gowe:Execution.inject_bvbrc_token` is set (or a workspace stager requires it); the injected
-  token is the submitter's own, so the job runs under the user's identity.
+  token is the submitter's own, so the job runs under the user's identity. This opt-in gate is
+  a deliberate least-privilege boundary: a token MUST NOT be exposed to a tool that did not
+  request it. (A proposed change, PR #132 / issue #133, injects the token into every worker
+  task unconditionally and adds a `KB_AUTH_TOKEN` alias; if adopted, this clause and §13.1
+  MUST be revised, and the least-privilege trade-off recorded in an ADR.)
 - Response bodies MUST NOT expose stored tokens: submission token fields are serialized with
   `json:"-"`.
 

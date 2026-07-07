@@ -4,6 +4,10 @@
 > **Scope**: How a workflow step is submitted to BV-BRC, how results return, how the BV-BRC
 > Workspace (`ws://`) is used, and precisely why `ws://` is labelled **defined** rather than
 > **supported** in [`SPECIFICATION.md`](../SPECIFICATION.md) §10 and [`Execution-Modes.md`](Execution-Modes.md).
+>
+> **Note on code references**: `file.go:NNN` line numbers below are a snapshot taken against
+> `main` at authoring time and will drift as the code changes. Treat the enclosing
+> **function/symbol name** as the durable reference and the line number as a hint.
 
 ## TL;DR
 
