@@ -1745,3 +1745,101 @@ func TestCancelNonTerminalTasks(t *testing.T) {
 		t.Errorf("task_skipped state = %q, want SKIPPED", stateMap["task_skipped"])
 	}
 }
+
+// --- Callback URL tests ---
+
+func TestSubmission_CallbackURL_StoredAndRetrieved(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	sub := sampleSubmission(wf.ID)
+	sub.CallbackURL = "https://example.com/webhook"
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CallbackURL != "https://example.com/webhook" {
+		t.Errorf("CallbackURL = %q, want %q", got.CallbackURL, "https://example.com/webhook")
+	}
+}
+
+func TestSubmission_CallbackURL_EmptyByDefault(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	sub := sampleSubmission(wf.ID)
+	// Don't set CallbackURL — it should default to empty.
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CallbackURL != "" {
+		t.Errorf("CallbackURL = %q, want empty", got.CallbackURL)
+	}
+}
+
+func TestSubmission_CallbackURL_InListSubmissions(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	sub := sampleSubmission(wf.ID)
+	sub.CallbackURL = "https://example.com/callback"
+	st.CreateSubmission(ctx, sub)
+
+	subs, _, err := st.ListSubmissions(ctx, model.DefaultListOptions())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("len = %d, want 1", len(subs))
+	}
+	if subs[0].CallbackURL != "https://example.com/callback" {
+		t.Errorf("CallbackURL = %q, want %q", subs[0].CallbackURL, "https://example.com/callback")
+	}
+}
+
+func TestSubmission_CallbackURL_PreservedOnUpdate(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	sub := sampleSubmission(wf.ID)
+	sub.CallbackURL = "https://example.com/hook"
+	st.CreateSubmission(ctx, sub)
+
+	// Update submission state.
+	sub.State = model.SubmissionStateRunning
+	if err := st.UpdateSubmission(ctx, sub); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	got, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CallbackURL != "https://example.com/hook" {
+		t.Errorf("CallbackURL = %q, want %q", got.CallbackURL, "https://example.com/hook")
+	}
+	if got.State != model.SubmissionStateRunning {
+		t.Errorf("State = %q, want RUNNING", got.State)
+	}
+}

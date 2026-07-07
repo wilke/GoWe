@@ -20,6 +20,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/webhook"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -46,6 +47,7 @@ func main() {
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
+	webhookTimeout := flag.Duration("webhook-timeout", 10*time.Second, "HTTP timeout for webhook callback delivery")
 
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
@@ -145,7 +147,14 @@ func main() {
 	// Register BVBRCExecutor and create RPC callers if a token is available.
 	const workspaceURL = "https://p3.theseed.org/services/Workspace"
 
-	serverOpts := []server.Option{server.WithExecutorRegistry(reg)}
+	// Configure webhook delivery.
+	webhookCfg := webhook.DefaultConfig()
+	webhookCfg.Timeout = *webhookTimeout
+
+	serverOpts := []server.Option{
+		server.WithExecutorRegistry(reg),
+		server.WithWebhookConfig(&webhookCfg),
+	}
 
 	// Configure admin role assignment.
 	adminConfig := server.NewAdminConfig(st, "GOWE_ADMINS", *configFile)
@@ -286,6 +295,7 @@ func main() {
 	schedCfg.PreflightDeferralTicks = *preflightDeferral
 	schedCfg.StuckTaskThreshold = *stuckTaskThreshold
 	schedCfg.StuckTaskAction = *stuckTaskAction
+	schedCfg.WebhookTimeout = *webhookTimeout
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
 	// Configure server-side workspace staging if requested.

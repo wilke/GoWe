@@ -30,6 +30,10 @@ type Submission struct {
 	// OutputState tracks the output upload lifecycle: "" | "uploading" | "delivered" | "upload_failed" | "skipped".
 	OutputState string `json:"output_state,omitempty"`
 
+	// CallbackURL is an optional webhook URL to POST to when the submission reaches
+	// a terminal state (COMPLETED, FAILED, CANCELLED). If empty, no webhook fires.
+	CallbackURL string `json:"callback_url,omitempty"`
+
 	// Authentication token fields (not serialized to JSON responses).
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time

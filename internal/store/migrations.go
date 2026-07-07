@@ -282,6 +282,12 @@ var alterStatements = []struct {
 		alterSQL: "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(state, executor_type, priority DESC, created_at)",
 	},
+	// Callback URL for webhook notification on submission completion
+	{
+		table:    "submissions",
+		column:   "callback_url",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN callback_url TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

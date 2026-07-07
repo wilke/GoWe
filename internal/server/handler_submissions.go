@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/webhook"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -42,6 +43,7 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		Inputs            map[string]any    `json:"inputs"`
 		Labels            map[string]string `json:"labels"`
 		OutputDestination string            `json:"output_destination"`
+		CallbackURL       string            `json:"callback_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -101,6 +103,7 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		TokenExpiry:       userCtx.Expiry,
 		AuthProvider:      string(userCtx.Provider),
 		OutputDestination: req.OutputDestination,
+		CallbackURL:       req.CallbackURL,
 		CreatedAt:         now,
 	}
 	if sub.Inputs == nil {
@@ -291,6 +294,9 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		s.logger.Error("cancel non-terminal tasks", "submission_id", sub.ID, "error", err)
 	}
+
+	// Fire webhook if callback_url is set.
+	s.fireWebhookForSubmission(r.Context(), sub)
 
 	respondOK(w, reqID, map[string]any{
 		"id":                      sub.ID,
@@ -617,6 +623,45 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 	}
 
 	return nil
+}
+
+// fireWebhookForSubmission sends a completion webhook if the submission has a callback URL.
+// The HTTP POST is sent asynchronously in a goroutine to avoid blocking the request.
+func (s *Server) fireWebhookForSubmission(ctx context.Context, sub *model.Submission) {
+	if sub.CallbackURL == "" {
+		return
+	}
+
+	// Warn if session_id label is missing — the gateway requires it.
+	sessionID := ""
+	if sub.Labels != nil {
+		sessionID = sub.Labels["session_id"]
+	}
+	if sessionID == "" {
+		s.logger.Warn("webhook: callback_url set but session_id label is missing",
+			"submission_id", sub.ID, "callback_url", sub.CallbackURL)
+	}
+
+	// Load tasks if not already loaded.
+	if len(sub.Tasks) == 0 {
+		tasks, err := s.store.ListTasksBySubmission(ctx, sub.ID)
+		if err != nil {
+			s.logger.Error("webhook: load tasks for payload", "submission_id", sub.ID, "error", err)
+		}
+		sub.Tasks = make([]model.Task, 0, len(tasks))
+		for _, t := range tasks {
+			sub.Tasks = append(sub.Tasks, *t)
+		}
+	}
+
+	payload := webhook.BuildPayload(sub)
+
+	webhookCfg := webhook.DefaultConfig()
+	if s.webhookConfig != nil {
+		webhookCfg = *s.webhookConfig
+	}
+
+	go webhook.Send(sub.CallbackURL, payload, webhookCfg, s.logger)
 }
 
 // resolveWorkflow looks up a workflow by ID first, then falls back to name lookup.

@@ -436,13 +436,13 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state, callback_url)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
 		sub.UserToken, tokenExpiry, sub.AuthProvider, sub.ParentTaskID,
-		sub.OutputDestination, sub.OutputState,
+		sub.OutputDestination, sub.OutputState, sub.CallbackURL,
 	)
 	return err
 }
@@ -457,13 +457,13 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var tokenExpiry int64
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state, callback_url
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
 		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON,
-		&sub.OutputDestination, &sub.OutputState)
+		&sub.OutputDestination, &sub.OutputState, &sub.CallbackURL)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -568,7 +568,7 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	}, "created_at DESC")
 
 	// List query with pagination.
-	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, output_destination, output_state
+	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, output_destination, output_state, callback_url
 		FROM submissions` + whereSQL + ` ORDER BY ` + orderSQL + ` LIMIT ? OFFSET ?`
 	listArgs := append(countArgs, opts.Limit, opts.Offset)
 
@@ -590,7 +590,7 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 			&inputsJSON, &outputsJSON, &labelsJSON,
 			&sub.SubmittedBy, &createdAt, &completedAt,
 			&sub.UserToken, &tokenExpiry, &sub.AuthProvider,
-			&sub.OutputDestination, &sub.OutputState); err != nil {
+			&sub.OutputDestination, &sub.OutputState, &sub.CallbackURL); err != nil {
 			return nil, 0, err
 		}
 
@@ -691,8 +691,8 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=? WHERE id=?`,
-		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON, completedAt, sub.OutputDestination, sub.OutputState, sub.ID,
+		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=?, callback_url=? WHERE id=?`,
+		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON, completedAt, sub.OutputDestination, sub.OutputState, sub.CallbackURL, sub.ID,
 	)
 	if err != nil {
 		return err

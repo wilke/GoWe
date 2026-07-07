@@ -15,6 +15,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/ui"
+	"github.com/me/gowe/internal/webhook"
 )
 
 // Server is the GoWe REST API server.
@@ -36,6 +37,7 @@ type Server struct {
 	anonConfig       *AnonymousConfig   // optional; anonymous access configuration
 	workerKeyConfig  *WorkerKeyConfig   // optional; worker key authentication
 	fileUploadConfig *FileUploadConfig  // optional; file upload proxy configuration
+	webhookConfig    *webhook.Config    // optional; webhook delivery configuration
 }
 
 // Option configures optional Server dependencies.
@@ -87,6 +89,13 @@ func WithAnonymousConfig(cfg *AnonymousConfig) Option {
 func WithWorkerKeyConfig(cfg *WorkerKeyConfig) Option {
 	return func(s *Server) {
 		s.workerKeyConfig = cfg
+	}
+}
+
+// WithWebhookConfig sets the webhook delivery configuration.
+func WithWebhookConfig(cfg *webhook.Config) Option {
+	return func(s *Server) {
+		s.webhookConfig = cfg
 	}
 }
 

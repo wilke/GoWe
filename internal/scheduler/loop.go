@@ -22,6 +22,7 @@ import (
 	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/validate"
+	"github.com/me/gowe/internal/webhook"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -46,6 +47,10 @@ type Config struct {
 	// StuckTaskAction is the action to take when stuck tasks are detected:
 	// "warn" (default) logs an error, "fail" also fails the oldest task.
 	StuckTaskAction string
+
+	// WebhookTimeout is the HTTP timeout for webhook callback delivery.
+	// Zero means use the webhook package default (10s).
+	WebhookTimeout time.Duration
 }
 
 // DefaultConfig returns sensible defaults.
@@ -1858,6 +1863,7 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 				l.logger.Error("finalize submission", "submission_id", subID, "error", err)
 			} else {
 				l.logger.Info("submission finalized", "submission_id", subID, "state", sub.State)
+				l.fireWebhook(ctx, sub)
 			}
 		} else if (anyActive || anyFailed) && sub.State == model.SubmissionStatePending {
 			sub.State = model.SubmissionStateRunning
@@ -1870,6 +1876,46 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 	}
 
 	return nil
+}
+
+// fireWebhook sends a completion webhook if the submission has a callback URL.
+// The HTTP POST is sent asynchronously in a goroutine to avoid blocking the scheduler tick.
+func (l *Loop) fireWebhook(ctx context.Context, sub *model.Submission) {
+	if sub.CallbackURL == "" {
+		return
+	}
+
+	// Warn if session_id label is missing — the gateway requires it.
+	sessionID := ""
+	if sub.Labels != nil {
+		sessionID = sub.Labels["session_id"]
+	}
+	if sessionID == "" {
+		l.logger.Warn("webhook: callback_url set but session_id label is missing",
+			"submission_id", sub.ID, "callback_url", sub.CallbackURL)
+	}
+
+	// Load tasks for this submission so the payload includes step details.
+	// The submission from the cache may not have tasks loaded, so we fetch them.
+	tasks, err := l.store.ListTasksBySubmission(ctx, sub.ID)
+	if err != nil {
+		l.logger.Error("webhook: load tasks for payload", "submission_id", sub.ID, "error", err)
+	}
+	// Build a copy with tasks attached for payload construction.
+	subCopy := *sub
+	subCopy.Tasks = make([]model.Task, 0, len(tasks))
+	for _, t := range tasks {
+		subCopy.Tasks = append(subCopy.Tasks, *t)
+	}
+
+	payload := webhook.BuildPayload(&subCopy)
+
+	webhookCfg := webhook.DefaultConfig()
+	if l.config.WebhookTimeout > 0 {
+		webhookCfg.Timeout = l.config.WebhookTimeout
+	}
+
+	go webhook.Send(sub.CallbackURL, payload, webhookCfg, l.logger)
 }
 
 // buildSubmissionError constructs a SubmissionError from the first failed step
