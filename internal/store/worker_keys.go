@@ -159,10 +159,13 @@ func (s *SQLiteStore) UpdateWorkerKey(ctx context.Context, k *model.WorkerKey) e
 		disabled = 1
 	}
 
+	// Note: last_used_at is deliberately NOT written here. It is owned solely by
+	// TouchWorkerKey (updated on each successful auth); writing it from a PATCH's
+	// round-tripped struct could clobber a concurrent Touch with a stale value.
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE worker_keys SET label=?, groups=?, description=?, disabled=?, expires_at=?, last_used_at=? WHERE id=?`,
+		`UPDATE worker_keys SET label=?, groups=?, description=?, disabled=?, expires_at=? WHERE id=?`,
 		k.Label, string(groupsJSON), k.Description, disabled,
-		nullableTime(k.ExpiresAt), nullableTime(k.LastUsedAt), k.ID,
+		nullableTime(k.ExpiresAt), k.ID,
 	)
 	if err != nil {
 		return err
