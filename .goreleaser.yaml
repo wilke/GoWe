@@ -1,0 +1,61 @@
+# GoReleaser — builds and publishes the four user-facing GoWe binaries on tag push.
+# Docs: https://goreleaser.com  ·  validate locally with: goreleaser check
+version: 2
+
+project_name: gowe
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: gowe
+    main: ./cmd/cli
+    binary: gowe
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+  - id: gowe-server
+    main: ./cmd/server
+    binary: gowe-server
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+  - id: gowe-worker
+    main: ./cmd/worker
+    binary: gowe-worker
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+  - id: cwl-runner
+    main: ./cmd/cwl-runner
+    binary: cwl-runner
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+
+# One archive per OS/arch containing all four binaries.
+archives:
+  - id: gowe
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# release-please owns CHANGELOG.md; don't let GoReleaser generate release notes.
+changelog:
+  disable: true
+
+release:
+  prerelease: auto
