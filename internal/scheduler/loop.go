@@ -34,6 +34,13 @@ type Config struct {
 	ForceExecutor    string // Force all tasks to this executor, ignoring CWL hints. Empty = respect hints.
 	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 
+	// TokenInjectGroups lists worker groups whose tasks automatically receive the
+	// submitter's provider token, without the per-tool gowe:Execution.inject_bvbrc_token
+	// opt-in. This scopes the auto-injection to operator-trusted groups (e.g. curated
+	// BV-BRC tool workers) while default/untrusted groups stay opt-in (least privilege,
+	// SPECIFICATION.md §13.5, ADR-0010). Empty = no group auto-injection.
+	TokenInjectGroups []string
+
 	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
 	// when no online worker can satisfy its requirements. After this many ticks,
 	// the step is failed with a descriptive error. 0 = disable pre-flight check.
@@ -1203,11 +1210,32 @@ func (l *Loop) hasOnlineWorkers() bool {
 // For other executor types, the token is only embedded when server-side
 // workspace staging is disabled (wsStager == nil) or when the step has the
 // InjectBVBRCToken hint.
+// groupAutoInjectsToken reports whether a worker task's target group is one the
+// operator has opted into automatic token injection via --token-inject-groups.
+// Tasks in other groups (including the default group) get the token only when
+// they explicitly opt in (gowe:Execution.inject_bvbrc_token) — preserving the
+// least-privilege boundary in SPECIFICATION.md §13.5 for untrusted tools.
+func (l *Loop) groupAutoInjectsToken(task *model.Task) bool {
+	if len(l.config.TokenInjectGroups) == 0 {
+		return false
+	}
+	group := "default"
+	if task.RuntimeHints != nil && task.RuntimeHints.WorkerGroup != "" {
+		group = task.RuntimeHints.WorkerGroup
+	}
+	for _, g := range l.config.TokenInjectGroups {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	needsToken := l.wsStager == nil ||
 		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
 		task.ExecutorType == model.ExecutorTypeBVBRC ||
-		task.ExecutorType == model.ExecutorTypeWorker
+		(task.ExecutorType == model.ExecutorTypeWorker && l.groupAutoInjectsToken(task))
 	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}

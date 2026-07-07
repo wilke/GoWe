@@ -502,6 +502,23 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 	return w.executeLegacy(runCtx, task, taskDir)
 }
 
+// redactSecrets replaces every non-trivial secret value in s with a placeholder,
+// so an injected credential a tool echoed into its output (e.g. via `env` or
+// `set -x`) is never transmitted to the server or shown in logs. Values shorter
+// than 6 bytes are skipped to avoid pathological over-redaction of common
+// substrings; real tokens are far longer.
+func redactSecrets(s string, secrets map[string]string) string {
+	if s == "" || len(secrets) == 0 {
+		return s
+	}
+	for _, v := range secrets {
+		if len(v) >= 6 {
+			s = strings.ReplaceAll(s, v, "***REDACTED***")
+		}
+	}
+	return s
+}
+
 // reportComplete reports a final task result, detaching from ctx cancellation so a
 // cancelled or killed task can still be reported (bounded by a short timeout).
 func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskResult) error {
@@ -618,6 +635,15 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 
 	// Execute the tool.
 	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
+
+	// Redact any injected secret values (e.g. BVBRC_TOKEN/KB_AUTH_TOKEN) a tool
+	// may have echoed into its captured stdout/stderr before those logs leave the
+	// worker for the server. The trust-boundary invariant (SPECIFICATION.md §13.2)
+	// requires injected secrets never be transmitted to or persisted by the server.
+	if result != nil {
+		result.Stdout = redactSecrets(result.Stdout, cfg.SecretEnvVars)
+		result.Stderr = redactSecrets(result.Stderr, cfg.SecretEnvVars)
+	}
 
 	// Handle execution errors.
 	if err != nil {

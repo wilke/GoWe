@@ -314,6 +314,15 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 		task.Outputs = req.Outputs
 	}
 
+	// The task has reached a terminal state via the worker report path (the only
+	// path a worker task terminalizes on). The injected provider token is no
+	// longer needed, so drop it before persisting rather than retaining it at
+	// rest — the scheduler's scrubTaskToken never fires for worker completions.
+	// (SPECIFICATION.md §13.5: the token is needed only while the task is in flight.)
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
+	}
+
 	if err := s.store.UpdateTask(r.Context(), task); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))

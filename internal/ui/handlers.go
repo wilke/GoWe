@@ -344,6 +344,14 @@ func (ui *UI) HandleWorkflowEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The edit form exposes the raw CWL and leads to a mutation; restrict it to
+	// the owner or an admin, matching handleUpdateWorkflow's save-side check.
+	// (Legacy workflows with no recorded owner remain editable.)
+	if sess != nil && !sess.IsAdmin() && wf.CreatedBy != "" && wf.CreatedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
 	data := map[string]any{
 		"Title":    "Edit " + wf.Name + " - GoWe",
 		"Session":  sess,
@@ -741,8 +749,14 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ownership check: non-admin users can only delete their own submissions.
-	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+	// Deletion is permanent and cascading; require an authenticated session so an
+	// unauthenticated/anonymous caller cannot delete submissions. Non-admins may
+	// delete only their own.
+	if sess == nil {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}

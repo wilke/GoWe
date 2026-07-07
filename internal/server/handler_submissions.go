@@ -316,8 +316,19 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Ownership check: non-admin users can only delete their own submissions.
+	// Deletion is a permanent, cascading operation (unlike the reversible cancel),
+	// so require an authenticated, non-anonymous principal: in --allow-anonymous
+	// mode all callers share the anonymous identity, and requireSubmissionAccess
+	// treats a nil/anonymous context as authorized — acceptable for read/cancel
+	// but not for an irreversible delete of another user's submission.
 	userCtx := UserFromContext(r.Context())
+	if userCtx == nil || userCtx.User == nil || userCtx.User.IsAnonymous() {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "deleting a submission requires authentication",
+		})
+		return
+	}
+	// Ownership check: non-admin users can only delete their own submissions.
 	if !requireSubmissionAccess(sub, userCtx) {
 		respondError(w, reqID, http.StatusForbidden, &model.APIError{
 			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",

@@ -1,6 +1,6 @@
 # GoWe Specification
 
-> **Status**: Living specification · **Version**: draft-6 (2026-07-06)
+> **Status**: Living specification · **Version**: draft-7 (2026-07-07)
 > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
 > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
 > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
@@ -116,7 +116,7 @@ alias is accepted for backward compatibility; new documents SHOULD use `gowe:Exe
 | `bvbrc_app_id` | string | BV-BRC application id; implies `executor: bvbrc`. |
 | `docker_image` | string | Container image override. Takes priority over `DockerRequirement.dockerPull`. Feeds both Docker and Apptainer (§8.3). |
 | `gpu` | boolean | Request GPU passthrough. |
-| `inject_bvbrc_token` | boolean | Inject the caller's BV-BRC token into the task environment. |
+| `inject_bvbrc_token` | boolean | Inject the caller's BV-BRC token (`BVBRC_TOKEN`/`KB_AUTH_TOKEN`) into the task environment. Also injected automatically for operator-trusted worker groups (§13.5). |
 
 ### 5.2 `gowe:ResourceData`
 
@@ -428,7 +428,7 @@ middleware; worker endpoints via `X-Worker-Key`; admin endpoints require the adm
 |-------|--------------------------|
 | Health | `GET /health` |
 | Workflows | `GET/POST /workflows`, `GET/PUT/DELETE /workflows/{id}`, `GET …/inputs`, `GET …/outputs`, `POST …/validate` |
-| Submissions | `GET/POST /submissions`, `GET /submissions/{id}`, `PUT …/cancel`, `PUT …/retry`, `GET …/tasks`, `GET …/tasks/{tid}/logs` |
+| Submissions | `GET/POST /submissions`, `GET /submissions/{id}`, `DELETE /submissions/{id}`, `PUT …/cancel`, `PUT …/retry`, `GET …/tasks`, `GET …/tasks/{tid}/logs` |
 | Workers | `POST /workers`, `GET /workers`, `GET /workers/{id}/work`, `PUT /workers/{id}/heartbeat`, `PUT …/tasks/{tid}/status`, `PUT …/tasks/{tid}/complete`, `DELETE /workers/{id}` |
 | BV-BRC proxy | `GET /apps`, `GET /apps/{id}`, `GET /apps/{id}/cwl-tool`, `GET /workspace`, file up/download |
 | Streaming | `GET /sse/submissions/{id}` (server-sent events) |
@@ -452,7 +452,7 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 | **User / API token** | client → server | `Authorization` (BV-BRC) or `X-MG-RAST-Token` (MG-RAST) header | Verified per request (§13.3). |
 | **Worker key** | worker → server | `X-Worker-Key` header | Authenticates and scopes a worker to groups (§13.3). |
 | **Worker secrets** | worker-local | `--secret`, `--secret-file` | Injected into the container env on the worker only; MUST NOT reach the server (§13.5). |
-| **Delegated BV-BRC token** | server → container | task `RuntimeHints` → `BVBRC_TOKEN` env | The submitter's own token, injected only when opted in (§13.5). |
+| **Delegated BV-BRC token** | server → container | task `RuntimeHints` → `BVBRC_TOKEN`/`KB_AUTH_TOKEN` env | The submitter's own token, injected only on opt-in or an operator-trusted worker group; redacted from captured logs (§13.5). |
 
 ### 13.2 Trust boundary invariant
 
@@ -498,6 +498,11 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 - `/api/v1/admin/*` endpoints MUST require the `admin` role (`403` otherwise).
 - Anonymous submissions MUST be restricted to the executors allowed by
   `--anonymous-executors` (default `local,docker,worker`).
+- A user MAY read and cancel a submission when they are its owner or an admin; a `nil`/anonymous
+  principal is treated as authorized for those non-destructive operations under `--allow-anonymous`.
+  Permanently **deleting** a submission (`DELETE /submissions/{id}`, cascading to its tasks and step
+  instances) is irreversible and therefore MUST require an authenticated, non-anonymous owner or
+  admin — a shared anonymous identity MUST NOT delete submissions.
 
 ### 13.5 Secrets and token handling
 
@@ -509,13 +514,22 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   issuance and is not retrievable thereafter. A non-secret key prefix and a stable key ID MAY
   be stored and logged for attribution. Static keys MAY likewise be provided pre-hashed
   (`sha256:<hex>`) so the raw secret need not reside in config.
-- A BV-BRC token MAY be injected into a task's container as `BVBRC_TOKEN` when, and only when,
-  `gowe:Execution.inject_bvbrc_token` is set (or a workspace stager requires it); the injected
-  token is the submitter's own, so the job runs under the user's identity. This opt-in gate is
-  a deliberate least-privilege boundary: a token MUST NOT be exposed to a tool that did not
-  request it. (A proposed change, PR #132 / issue #133, injects the token into every worker
-  task unconditionally and adds a `KB_AUTH_TOKEN` alias; if adopted, this clause and §13.1
-  MUST be revised, and the least-privilege trade-off recorded in an ADR.)
+- The submitter's BV-BRC token MAY be injected into a task's container as `BVBRC_TOKEN` (and its
+  alias `KB_AUTH_TOKEN`, which BV-BRC Perl tooling reads) so the job runs under the user's
+  identity. Injection happens when **any** of the following holds, and MUST NOT happen otherwise:
+    1. the step opts in with `gowe:Execution.inject_bvbrc_token`;
+    2. the task targets the BV-BRC executor;
+    3. a workspace stager requires the token to move `ws://` data; or
+    4. the task's worker group is one the operator designated as trusted via
+       `--token-inject-groups` (e.g. curated BV-BRC tool workers).
+  This is the least-privilege boundary: a token MUST NOT be exposed to a tool that did not
+  request it and is not running on an operator-trusted group. The default group and any group
+  not listed in `--token-inject-groups` remain opt-in (case 1). The rationale and trade-off of
+  the group-scoped default are recorded in [ADR-0010](docs/adr/0010-scoped-worker-token-injection.md).
+- A token injected into a task's environment MUST NOT leak back to the server (§13.2). Because
+  the worker captures tool stdout/stderr for log reporting, it MUST redact every injected secret
+  value from the captured buffers before transmitting them; a tool that echoes its environment
+  therefore cannot expose the credential in stored logs.
 - Response bodies MUST NOT expose stored tokens: submission token fields are serialized with
   `json:"-"`.
 - Provider tokens MUST be encrypted at rest. A server-held key (`GOWE_TOKEN_KEY`, or

@@ -1,7 +1,6 @@
 package toolexec
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -128,7 +127,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	// Always tee into a buffer for log reporting.
 	var stdoutFile *os.File
 	var stdoutTempPath string
-	var stdoutBuf bytes.Buffer
+	stdoutBuf := newTailBuffer(maxLogCapture)
 	if stdoutCapture != "" {
 		var err error
 		stdoutFile, err = os.CreateTemp("", "cwl-stdout-*")
@@ -138,9 +137,9 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 		stdoutTempPath = stdoutFile.Name()
 		defer os.Remove(stdoutTempPath)
 		defer stdoutFile.Close()
-		cmd.Stdout = io.MultiWriter(stdoutFile, &stdoutBuf)
+		cmd.Stdout = io.MultiWriter(stdoutFile, stdoutBuf)
 	} else {
-		cmd.Stdout = &stdoutBuf
+		cmd.Stdout = stdoutBuf
 	}
 
 	// Determine stderr capture filename.
@@ -153,7 +152,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	// Always tee into a buffer for log reporting.
 	var stderrFile *os.File
 	var stderrTempPath string
-	var stderrBuf bytes.Buffer
+	stderrBuf := newTailBuffer(maxLogCapture)
 	if stderrCapture != "" {
 		var err error
 		stderrFile, err = os.CreateTemp("", "cwl-stderr-*")
@@ -163,9 +162,9 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 		stderrTempPath = stderrFile.Name()
 		defer os.Remove(stderrTempPath)
 		defer stderrFile.Close()
-		cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
+		cmd.Stderr = io.MultiWriter(stderrFile, stderrBuf)
 	} else {
-		cmd.Stderr = &stderrBuf
+		cmd.Stderr = stderrBuf
 	}
 
 	// Run command and capture exit code.
@@ -211,8 +210,8 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	return &Result{
 		Outputs:      outputs,
 		ExitCode:     exitCode,
-		Stdout:       tailString(&stdoutBuf, maxLogCapture),
-		Stderr:       tailString(&stderrBuf, maxLogCapture),
+		Stdout:       stdoutBuf.String(),
+		Stderr:       stderrBuf.String(),
 		PeakMemoryKB: peakMemoryKB,
 		StartTime:    startTime,
 		Duration:     duration,
@@ -451,7 +450,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 	// Handle stdout - capture to file if specified or needed for output.
 	// Always tee into a buffer for log reporting.
-	var stdoutBuf bytes.Buffer
+	stdoutBuf := newTailBuffer(maxLogCapture)
 	var stdoutFile *os.File
 	if stdoutCapture != "" {
 		stdoutPath := filepath.Join(workDir, stdoutCapture)
@@ -461,9 +460,9 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 			return nil, fmt.Errorf("create stdout file: %w", err)
 		}
 		defer stdoutFile.Close()
-		cmd.Stdout = io.MultiWriter(stdoutFile, &stdoutBuf)
+		cmd.Stdout = io.MultiWriter(stdoutFile, stdoutBuf)
 	} else {
-		cmd.Stdout = &stdoutBuf
+		cmd.Stdout = stdoutBuf
 	}
 
 	// Determine stderr capture filename.
@@ -474,7 +473,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 	// Handle stderr - capture to file if specified or needed for output.
 	// Always capture stderr in a buffer for error/log reporting.
-	var stderrBuf bytes.Buffer
+	stderrBuf := newTailBuffer(maxLogCapture)
 	var stderrFile *os.File
 	if stderrCapture != "" {
 		stderrPath := filepath.Join(workDir, stderrCapture)
@@ -484,9 +483,9 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 			return nil, fmt.Errorf("create stderr file: %w", err)
 		}
 		defer stderrFile.Close()
-		cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
+		cmd.Stderr = io.MultiWriter(stderrFile, stderrBuf)
 	} else {
-		cmd.Stderr = &stderrBuf
+		cmd.Stderr = stderrBuf
 	}
 
 	// Run Docker command and capture exit code.
@@ -527,8 +526,8 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	return &Result{
 		Outputs:      outputs,
 		ExitCode:     exitCode,
-		Stdout:       tailString(&stdoutBuf, maxLogCapture),
-		Stderr:       tailString(&stderrBuf, maxLogCapture),
+		Stdout:       stdoutBuf.String(),
+		Stderr:       stderrBuf.String(),
 		PeakMemoryKB: peakMemoryKB,
 		StartTime:    startTime,
 		Duration:     duration,
@@ -704,7 +703,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 
 	// Handle stdout - capture to file if specified or needed for output.
 	// Always tee into a buffer for log reporting.
-	var stdoutBuf bytes.Buffer
+	stdoutBuf := newTailBuffer(maxLogCapture)
 	var stdoutFile *os.File
 	if stdoutCapture != "" {
 		stdoutPath := filepath.Join(workDir, stdoutCapture)
@@ -714,9 +713,9 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 			return nil, fmt.Errorf("create stdout file: %w", err)
 		}
 		defer stdoutFile.Close()
-		cmd.Stdout = io.MultiWriter(stdoutFile, &stdoutBuf)
+		cmd.Stdout = io.MultiWriter(stdoutFile, stdoutBuf)
 	} else {
-		cmd.Stdout = &stdoutBuf
+		cmd.Stdout = stdoutBuf
 	}
 
 	// Determine stderr capture filename.
@@ -727,7 +726,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 
 	// Handle stderr - capture to file if specified or needed for output.
 	// Always capture stderr in a buffer for error/log reporting.
-	var stderrBuf bytes.Buffer
+	stderrBuf := newTailBuffer(maxLogCapture)
 	var stderrFile *os.File
 	if stderrCapture != "" {
 		stderrPath := filepath.Join(workDir, stderrCapture)
@@ -737,9 +736,9 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 			return nil, fmt.Errorf("create stderr file: %w", err)
 		}
 		defer stderrFile.Close()
-		cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
+		cmd.Stderr = io.MultiWriter(stderrFile, stderrBuf)
 	} else {
-		cmd.Stderr = &stderrBuf
+		cmd.Stderr = stderrBuf
 	}
 
 	// Run Apptainer command and capture exit code.
@@ -780,8 +779,8 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	return &Result{
 		Outputs:      outputs,
 		ExitCode:     exitCode,
-		Stdout:       tailString(&stdoutBuf, maxLogCapture),
-		Stderr:       tailString(&stderrBuf, maxLogCapture),
+		Stdout:       stdoutBuf.String(),
+		Stderr:       stderrBuf.String(),
 		PeakMemoryKB: peakMemoryKB,
 		StartTime:    startTime,
 		Duration:     duration,
@@ -821,14 +820,43 @@ func ResolveSymlinks(path string) string {
 	return staging.ResolveSymlinks(path)
 }
 
-// tailString returns the last maxLogCapture bytes of a buffer as a string.
-// If the buffer is smaller than the limit, the entire content is returned.
-func tailString(buf *bytes.Buffer, limit int) string {
-	b := buf.Bytes()
-	if len(b) <= limit {
-		return string(b)
+// tailBuffer is an io.Writer that retains only roughly the last `limit` bytes
+// written, bounding memory even when a tool streams unbounded output to
+// stdout/stderr. The earlier `bytes.Buffer` + post-hoc tail slice buffered the
+// entire stream first, which could OOM the worker. Compaction is amortized:
+// the backing slice is allowed to grow to 2*limit before the oldest bytes are
+// dropped, so steady-state writes don't reallocate on every call. Not safe for
+// concurrent writers (os/exec copies each stream from a single goroutine).
+type tailBuffer struct {
+	limit     int
+	buf       []byte
+	truncated bool
+}
+
+func newTailBuffer(limit int) *tailBuffer { return &tailBuffer{limit: limit} }
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.limit {
+		t.truncated = true
+		if len(t.buf) > 2*t.limit {
+			t.buf = append([]byte(nil), t.buf[len(t.buf)-t.limit:]...)
+		}
 	}
-	return "... [truncated] ...\n" + string(b[len(b)-limit:])
+	return len(p), nil
+}
+
+// String returns the retained tail, prefixed with a truncation marker when
+// earlier output was dropped.
+func (t *tailBuffer) String() string {
+	b := t.buf
+	if len(b) > t.limit {
+		b = b[len(b)-t.limit:]
+	}
+	if t.truncated {
+		return "... [truncated] ...\n" + string(b)
+	}
+	return string(b)
 }
 
 // translateDockerPath translates a container path to the Docker host path.

@@ -1207,3 +1207,32 @@ func TestRequirementKeyForTask(t *testing.T) {
 		})
 	}
 }
+
+// TestGroupAutoInjectsToken verifies the scoped token-injection policy: only
+// worker groups the operator opted into (--token-inject-groups) auto-receive the
+// submitter's token; the default/untrusted groups stay opt-in (SPEC §13.5).
+func TestGroupAutoInjectsToken(t *testing.T) {
+	l := &Loop{config: Config{TokenInjectGroups: []string{"bvbrc", "esmfold"}}}
+	cases := []struct {
+		group string
+		want  bool
+	}{
+		{"bvbrc", true},
+		{"esmfold", true},
+		{"default", false},
+		{"", false},      // empty group resolves to "default"
+		{"random", false},
+	}
+	for _, c := range cases {
+		task := &model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: c.group}}
+		if got := l.groupAutoInjectsToken(task); got != c.want {
+			t.Errorf("group %q: got %v, want %v", c.group, got, c.want)
+		}
+	}
+
+	// With no configured groups, nothing auto-injects (safe default).
+	empty := &Loop{config: Config{}}
+	if empty.groupAutoInjectsToken(&model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: "bvbrc"}}) {
+		t.Error("empty TokenInjectGroups must never auto-inject")
+	}
+}
