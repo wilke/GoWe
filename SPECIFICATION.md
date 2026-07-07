@@ -1,6 +1,6 @@
 # GoWe Specification
 
-> **Status**: Living specification · **Version**: draft-4 (2026-07-06)
+> **Status**: Living specification · **Version**: draft-5 (2026-07-06)
 > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
 > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
 > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
