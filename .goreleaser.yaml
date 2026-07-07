@@ -25,11 +25,13 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags: ["-s -w -X main.Version={{ .Version }}"]
+  # Linux only: the worker daemon uses syscall.Sysinfo (Linux-only) for host
+  # memory, so it cannot cross-compile to darwin. Workers run on Linux/HPC.
   - id: gowe-worker
     main: ./cmd/worker
     binary: gowe-worker
     env: [CGO_ENABLED=0]
-    goos: [linux, darwin]
+    goos: [linux]
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags: ["-s -w -X main.Version={{ .Version }}"]
