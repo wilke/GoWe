@@ -262,8 +262,8 @@ func TestBuilder_NullableArrayItemBinding(t *testing.T) {
 				},
 			},
 			"protein": {
-				Type:             "File[]?",
-				InputBinding:     nil, // No top-level binding
+				Type:         "File[]?",
+				InputBinding: nil, // No top-level binding
 				ItemInputBinding: &cwl.InputBinding{
 					Position: 2,
 					Prefix:   "--protein",

@@ -255,4 +255,3 @@ func (e *DockerExecutor) Cancel(ctx context.Context, task *model.Task) error {
 func (e *DockerExecutor) Logs(_ context.Context, task *model.Task) (string, string, error) {
 	return task.Stdout, task.Stderr, nil
 }
-

@@ -28,9 +28,9 @@ type InputDef struct {
 
 // Options configures step input resolution.
 type Options struct {
-	CWLDir            string   // Directory for resolving relative paths
-	ExpressionLib     []string // JavaScript library from InlineJavascriptRequirement
-	SkipAllValueFrom  bool     // Skip all valueFrom evaluation (used for scatter steps)
+	CWLDir           string   // Directory for resolving relative paths
+	ExpressionLib    []string // JavaScript library from InlineJavascriptRequirement
+	SkipAllValueFrom bool     // Skip all valueFrom evaluation (used for scatter steps)
 }
 
 // ResolveInputs resolves step inputs following CWL semantics:

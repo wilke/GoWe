@@ -402,7 +402,7 @@ func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Reques
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest,
-			model.NewValidationError("invalid JSON: " + err.Error()))
+			model.NewValidationError("invalid JSON: "+err.Error()))
 		return
 	}
 

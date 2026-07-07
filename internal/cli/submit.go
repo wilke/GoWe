@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/bundle"
+	"github.com/me/gowe/internal/bvbrc"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
