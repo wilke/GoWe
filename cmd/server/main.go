@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
@@ -38,6 +39,12 @@ func main() {
 	forceExecutor := flag.String("force-executor", "", "Force all tasks to this executor, ignoring CWL hints (testing only)")
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
+
+	// TLS / secure-cookie options.
+	flag.StringVar(&cfg.TLSCertFile, "tls-cert", cfg.TLSCertFile, "Path to PEM certificate; enables native HTTPS when set together with --tls-key")
+	flag.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "Path to PEM private key; enables native HTTPS when set together with --tls-cert")
+	flag.BoolVar(&cfg.SecureCookies, "secure-cookies", cfg.SecureCookies, "Always set the Secure attribute on session cookies (implied by --tls-cert/--tls-key)")
+	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Server sits behind a trusted TLS-terminating proxy: force Secure cookies and emit HSTS (enable only when the public leg is HTTPS)")
 
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
@@ -86,6 +93,27 @@ func main() {
 	}
 
 	logger := logging.NewLogger(logging.ParseLevel(cfg.LogLevel), cfg.LogFormat)
+
+	// Validate TLS flags: cert and key must be provided together.
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+		fmt.Fprintln(os.Stderr, "both --tls-cert and --tls-key must be provided to enable native HTTPS")
+		os.Exit(1)
+	}
+	if cfg.TLSEnabled() {
+		// Native TLS implies Secure cookies.
+		cfg.SecureCookies = true
+	} else if cfg.BehindProxy {
+		// A TLS-terminating proxy means the browser leg is always HTTPS even
+		// though this server sees plain HTTP. Force Secure cookies so a missing
+		// or non-standard X-Forwarded-Proto header can't silently downgrade the
+		// session cookie to non-Secure and leak it on a plaintext hop (GH #136).
+		cfg.SecureCookies = true
+	} else if cfg.SecureCookies {
+		// Forcing Secure cookies on a plaintext deployment (no TLS, no proxy)
+		// means browsers will refuse to send the cookie over plain HTTP,
+		// breaking sessions. Warn so misconfiguration is visible.
+		logger.Warn("--secure-cookies is set without native TLS or --behind-proxy; session cookies will not be sent over plain HTTP")
+	}
 
 	// Resolve database path.
 	dbPath := cfg.DBPath
@@ -301,9 +329,22 @@ func main() {
 
 	srv := server.New(cfg, st, sched, logger, serverOpts...)
 
+	// When the client reaches us over HTTPS (native TLS or via a TLS-terminating
+	// proxy), tell browsers to pin HTTPS for future visits.
+	handler := srv.Handler()
+	if cfg.TLSEnabled() || cfg.BehindProxy {
+		handler = withHSTS(handler)
+	}
+
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: srv.Handler(),
+		Handler: handler,
+		// Explicit TLS floor. Go's server default is already TLS 1.2, but pin it
+		// so a GODEBUG or future default change can't silently regress it.
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		// Bound header reads so a slow client can't hold a connection open
+		// indefinitely (Slowloris).
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	// Graceful shutdown
@@ -315,7 +356,19 @@ func main() {
 	srv.StartWorkerReaper(ctx)
 
 	go func() {
-		logger.Info("server starting", "addr", cfg.Addr)
+		if cfg.TLSEnabled() {
+			logger.Info("server starting", "addr", cfg.Addr, "scheme", "https", "tls_cert", cfg.TLSCertFile)
+			if err := httpServer.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				logger.Error("server failed", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
+		scheme := "http"
+		if cfg.BehindProxy {
+			scheme = "http (behind TLS-terminating proxy)"
+		}
+		logger.Info("server starting", "addr", cfg.Addr, "scheme", scheme)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)
@@ -338,4 +391,14 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("server stopped")
+}
+
+// withHSTS wraps a handler to emit a Strict-Transport-Security header, telling
+// browsers to use HTTPS for future visits. Only applied when the client reaches
+// the server over TLS (native or via a TLS-terminating proxy).
+func withHSTS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
 }
