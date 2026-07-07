@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.1](https://github.com/wilke/GoWe/compare/v0.13.0...v0.13.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* **release:** build gowe-worker for linux only ([#150](https://github.com/wilke/GoWe/issues/150)) ([89fce8b](https://github.com/wilke/GoWe/commit/89fce8ba681f3213917a2178374e9b8c37b3a6fd))
+* **worker:** make total-memory detection cross-compile (unbreak release binaries) ([#151](https://github.com/wilke/GoWe/issues/151)) ([265ff51](https://github.com/wilke/GoWe/commit/265ff51410886beb5b41533d847b40d7a88e9c63))
+
+
+### Security
+
+* **tokencrypt:** bind at-rest token ciphertext to its row via enc:v2 AAD ([#147](https://github.com/wilke/GoWe/issues/147)) ([999ac96](https://github.com/wilke/GoWe/commit/999ac96d252d3c2d6c9607125d3a860bc9f1b42d))
+* **worker-keys:** stop PATCH clobbering last_used_at; test admin gate ([#148](https://github.com/wilke/GoWe/issues/148)) ([3c81747](https://github.com/wilke/GoWe/commit/3c81747bf1b8d224ede4814adee6051c18e21ded))
+
 ## [0.13.0](https://github.com/wilke/GoWe/compare/v0.12.0...v0.13.0) (2026-07-07)
 
 
