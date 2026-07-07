@@ -32,6 +32,10 @@ var (
 
 const version = "1.2.1-dev"
 
+// Version is the build version, stamped at release time via -ldflags "-X main.Version=...".
+// (Distinct from `version` above, which reports the supported CWL spec version.)
+var Version = "dev"
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:     "cwl-runner [flags] <cwl-file> [job-file]",
