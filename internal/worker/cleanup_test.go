@@ -1,7 +1,10 @@
 package worker
 
 import (
+	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -249,6 +252,76 @@ func TestCleanupTaskDir(t *testing.T) {
 		}
 		if _, err := os.Stat(target); err != nil {
 			t.Errorf("symlink target was deleted: %v", err)
+		}
+	})
+}
+
+// TestExecuteTaskCleanupWiring exercises the legacy execute path end-to-end
+// against a stub server, verifying cleanup fires only when the SUCCESS result
+// was actually accepted.
+func TestExecuteTaskCleanupWiring(t *testing.T) {
+	newTestWorker := func(t *testing.T, serverURL string) (*Worker, string) {
+		t.Helper()
+		workDir := t.TempDir()
+		return &Worker{
+			client:  NewClient(serverURL, nil),
+			runtime: NewBareRuntime(),
+			workDir: workDir,
+			active:  newActiveTaskSet(),
+			logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		}, workDir
+	}
+
+	legacyTask := func(id string, cmd ...string) *model.Task {
+		args := make([]any, len(cmd))
+		for i, c := range cmd {
+			args[i] = c
+		}
+		return &model.Task{ID: id, Inputs: map[string]any{"_base_command": args}}
+	}
+
+	t.Run("success accepted by server removes dir", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+		w, workDir := newTestWorker(t, srv.URL)
+
+		if err := w.executeTask(context.Background(), legacyTask("task_ok", "true")); err != nil {
+			t.Fatalf("executeTask: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "task_ok")); !os.IsNotExist(err) {
+			t.Error("task dir still exists after accepted SUCCESS report")
+		}
+	})
+
+	t.Run("rejected report keeps dir", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		w, workDir := newTestWorker(t, srv.URL)
+
+		if err := w.executeTask(context.Background(), legacyTask("task_rej", "true")); err == nil {
+			t.Fatal("expected error from rejected report")
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "task_rej")); err != nil {
+			t.Errorf("task dir was deleted despite rejected report: %v", err)
+		}
+	})
+
+	t.Run("failed task keeps dir", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+		w, workDir := newTestWorker(t, srv.URL)
+
+		if err := w.executeTask(context.Background(), legacyTask("task_fail", "false")); err != nil {
+			t.Fatalf("executeTask: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "task_fail")); err != nil {
+			t.Errorf("failed task's dir was deleted: %v", err)
 		}
 	})
 }

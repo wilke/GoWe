@@ -509,12 +509,14 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 
 // cleanupTaskDir removes a completed task's working directories (the task dir
 // and its cwltool "_tmp" sibling). Called only after a SUCCESS result was
-// accepted by the server. The directories are kept when --keep-task-dirs is
-// set, when the task belongs to a debug submission (RuntimeHints.Debug, from
-// `gowe submit --debug`), and when any reported output still resolves into the
-// task dir — which happens with in-place stage-out (e.g. FileStager "local"
-// mode) or when a StageOut failed and left the local path; deleting the dir
-// then would destroy outputs that downstream tasks reference.
+// accepted by the server — FAILED and SKIPPED (cancelled) tasks deliberately
+// never reach it, so their directories stay around for debugging. The
+// directories are also kept when --keep-task-dirs is set, when the task
+// belongs to a debug submission (RuntimeHints.Debug, from `gowe submit
+// --debug`), and when any reported output still resolves into the task dir —
+// which happens with in-place stage-out (e.g. FileStager "local" mode) or
+// when a StageOut failed and left the local path; deleting the dir then would
+// destroy outputs that downstream tasks reference.
 func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 	if w.keepTaskDirs {
 		return
@@ -532,12 +534,16 @@ func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 		w.logger.Debug("keeping task dir: outputs are referenced in place", "task_id", taskID)
 		return
 	}
+	removed := true
 	for _, d := range []string{taskDir, taskDir + "_tmp"} {
 		if err := os.RemoveAll(d); err != nil {
 			w.logger.Warn("cleanup task dir", "dir", d, "error", err)
+			removed = false
 		}
 	}
-	w.logger.Debug("task dir removed", "task_id", taskID)
+	if removed {
+		w.logger.Debug("task dir removed", "task_id", taskID)
+	}
 }
 
 // outputsReferenceDir reports whether any output location resolves into dir.
