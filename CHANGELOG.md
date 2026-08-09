@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/wilke/GoWe/compare/v0.13.2...v0.14.0) (2026-08-09)
+
+
+### Features
+
+* **worker:** task-dir cleanup after success, with per-submission debug mode ([#158](https://github.com/wilke/GoWe/issues/158)) ([5f0d72f](https://github.com/wilke/GoWe/commit/5f0d72fb2c837f8cf54451367be06f2afd7e9d95)), closes [#157](https://github.com/wilke/GoWe/issues/157)
+
 ## [0.13.2](https://github.com/wilke/GoWe/compare/v0.13.1...v0.13.2) (2026-07-07)
 
 
