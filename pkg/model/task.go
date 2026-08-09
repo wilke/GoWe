@@ -105,6 +105,11 @@ type RuntimeHints struct {
 	// OutputDestination is the target URI for uploading task outputs
 	// (e.g., "ws:///user@bvbrc/home/results/"). Propagated from Submission.
 	OutputDestination string `json:"output_destination,omitempty"`
+
+	// Debug marks this task as part of a debug submission: workers keep all
+	// task working data (no cleanup) so it can be inspected afterwards.
+	// Propagated from the submission's "debug" label.
+	Debug bool `json:"debug,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

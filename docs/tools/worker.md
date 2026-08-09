@@ -39,6 +39,7 @@ gowe-worker [flags]
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
 | `--poll` | `5s` | Poll interval for checking new tasks |
 | `--stage-mode` | `copy` | File staging mode (`copy`, `symlink`, `reference`) |
+| `--keep-task-dirs` | `false` | Retain task working directories after successful completion (failed tasks are always kept) |
 | `--docker-host-path-map` | `""` | Path mapping for DinD (env: `DOCKER_HOST_PATH_MAP`) |
 | `--docker-volume` | `""` | Named Docker volume shared with tool containers (env: `DOCKER_VOLUME`) |
 | `--input-path-map` | `""` | Input path mapping (env: `INPUT_PATH_MAP`) |
@@ -556,6 +557,11 @@ gowe-worker --runtime none,apptainer
 
 Outputs remain in the worker's work directory. The server can retrieve them via API.
 
+Because the task directory itself holds the outputs in this mode, it is never
+auto-deleted (see [Work directory full](#work-directory-full)); with a copying
+stage-out destination (`file:///path`, HTTP, S3, Shock, `ws://`) the directory
+is removed automatically after successful completion.
+
 ```bash
 gowe-worker --stage-out local
 ```
@@ -916,7 +922,17 @@ apptainer pull docker://ubuntu:22.04
 
 ### Work directory full
 
-Clean up old task directories:
+Workers automatically delete a task's working directory (and its `_tmp`
+sibling) once the server accepts the task's SUCCESS result. Directories are
+retained when:
+
+- the task **failed** or was cancelled (kept for debugging)
+- the submission was run with `gowe submit --debug`
+- the worker runs with `--keep-task-dirs`
+- outputs are staged in place (`--stage-out local`), where downstream tasks
+  read directly from the task directory
+
+Clean up retained directories manually:
 ```bash
 # Remove tasks older than 7 days
 find /var/lib/gowe/work -maxdepth 1 -type d -mtime +7 -exec rm -rf {} \;

@@ -225,30 +225,35 @@ func ApplyLoadContents(value any, cwlDir string) any {
 	case map[string]any:
 		// Check if this is a File object.
 		if class, ok := v["class"].(string); ok && class == "File" {
-			// Get the file path.
-			path := ""
-			if p, ok := v["path"].(string); ok {
-				path = p
-			} else if p, ok := v["location"].(string); ok {
-				path = p
+			// Candidate paths: "path" first, then "location" as fallback —
+			// a worker task's local path may be gone (task-dir cleanup)
+			// while the staged location is still readable.
+			var candidates []string
+			if p, ok := v["path"].(string); ok && p != "" {
+				candidates = append(candidates, p)
 			}
-			if path == "" {
+			if p, ok := v["location"].(string); ok && p != "" {
+				candidates = append(candidates, p)
+			}
+			if len(candidates) == 0 {
 				return value
 			}
 
-			// Handle file:// URLs.
-			if strings.HasPrefix(path, "file://") {
-				path = strings.TrimPrefix(path, "file://")
-			}
-
-			// Make path absolute if needed.
-			if !filepath.IsAbs(path) && cwlDir != "" {
-				path = filepath.Join(cwlDir, path)
-			}
-
-			// Read up to 64 KiB of the file.
+			// Read up to 64 KiB of the first readable candidate.
 			const maxSize = 64 * 1024
-			data, err := os.ReadFile(path)
+			var data []byte
+			var err error
+			for _, path := range candidates {
+				// Handle file:// URLs.
+				path = strings.TrimPrefix(path, "file://")
+				// Make path absolute if needed.
+				if !filepath.IsAbs(path) && cwlDir != "" {
+					path = filepath.Join(cwlDir, path)
+				}
+				if data, err = os.ReadFile(path); err == nil {
+					break
+				}
+			}
 			if err != nil {
 				return value // Return unchanged if we can't read.
 			}

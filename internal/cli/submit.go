@@ -22,6 +22,7 @@ func newSubmitCmd() *cobra.Command {
 	var workspaceUpload bool
 	var workerGroup string
 	var outputDest string
+	var debug bool
 	var workflowRef string
 
 	cmd := &cobra.Command{
@@ -141,6 +142,9 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 			if workerGroup != "" {
 				labels["worker_group"] = workerGroup
 			}
+			if debug {
+				labels["debug"] = "true"
+			}
 			subReq := map[string]any{
 				"workflow_id": workflowID,
 				"inputs":      inputs,
@@ -184,6 +188,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 	cmd.Flags().BoolVar(&noUpload, "no-upload", false, "Disable file upload; assume files are accessible on workers")
 	cmd.Flags().BoolVar(&workspaceUpload, "workspace-upload", false, "Upload input files to BV-BRC workspace instead of server (for bvbrc executor)")
 	cmd.Flags().StringVar(&workerGroup, "group", "", "Target worker group for task scheduling")
+	cmd.Flags().BoolVar(&debug, "debug", false, "Debug mode: workers keep all task working data for this submission (no cleanup)")
 	cmd.Flags().StringVar(&outputDest, "output-destination", "", "Target URI for uploading outputs (e.g., ws:///user@bvbrc/home/results/)")
 	cmd.Flags().StringVar(&workflowRef, "workflow", "", "Submit using an already-registered workflow (by ID or name)")
 	return cmd

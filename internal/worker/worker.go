@@ -45,6 +45,7 @@ type Worker struct {
 	envVars           map[string]string        // Non-secret env vars injected into containers
 	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
 	active            *activeTaskSet           // In-flight tasks → per-task cancel funcs
+	keepTaskDirs      bool                     // Retain task working dirs after successful completion
 	logger            *slog.Logger
 }
 
@@ -104,6 +105,11 @@ type Config struct {
 
 	// Version is the build version (git commit hash), sent during registration.
 	Version string
+
+	// KeepTaskDirs retains task working directories after successful
+	// completion instead of deleting them (debugging aid). Directories of
+	// FAILED tasks are always kept regardless of this setting.
+	KeepTaskDirs bool
 
 	// WorkspaceStager enables the ws:// workspace stager for BV-BRC.
 	WorkspaceStager bool
@@ -360,6 +366,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		datasets:          datasets,
 		secrets:           cfg.Secrets,
 		envVars:           cfg.EnvVars,
+		keepTaskDirs:      cfg.KeepTaskDirs,
 		active:            newActiveTaskSet(),
 		logger:            logger.With("component", "worker"),
 	}, nil
@@ -498,6 +505,100 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 
 	// Legacy path: use _base_command from task.Inputs.
 	return w.executeLegacy(runCtx, task, taskDir)
+}
+
+// cleanupTaskDir removes a completed task's working directories (the task dir
+// and its "_tmp" / "_staging" siblings). Called only after a SUCCESS result was
+// accepted by the server — FAILED and SKIPPED (cancelled) tasks deliberately
+// never reach it, so their directories stay around for debugging. The
+// directories are also kept when --keep-task-dirs is set, when the task
+// belongs to a debug submission (RuntimeHints.Debug, from `gowe submit
+// --debug`), and when any reported output still resolves into the task dir —
+// which happens with in-place stage-out (e.g. FileStager "local" mode) or
+// when a StageOut failed and left the local path; deleting the dir then would
+// destroy outputs that downstream tasks reference.
+func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
+	if w.keepTaskDirs {
+		return
+	}
+	if task.RuntimeHints != nil && task.RuntimeHints.Debug {
+		w.logger.Debug("keeping task dir: debug submission", "task_id", task.ID)
+		return
+	}
+	taskID := task.ID
+	taskDir := filepath.Join(w.workDir, taskID)
+	if abs, err := filepath.Abs(taskDir); err == nil {
+		taskDir = abs
+	}
+	if outputsReferenceDir(outputs, taskDir) {
+		w.logger.Debug("keeping task dir: outputs are referenced in place", "task_id", taskID)
+		return
+	}
+	removed := true
+	for _, d := range []string{taskDir, taskDir + "_tmp", taskDir + "_staging"} {
+		if err := os.RemoveAll(d); err != nil {
+			w.logger.Warn("cleanup task dir", "dir", d, "error", err)
+			removed = false
+		}
+	}
+	if removed {
+		w.logger.Debug("task dir removed", "task_id", taskID)
+	}
+}
+
+// outputsReferenceDir reports whether any output location resolves into dir.
+// File/Directory objects are judged by their effective location ("location" if
+// staged, else the local "path"); bare strings (legacy staged locations) are
+// checked directly. The stale "path" left behind on a File whose "location"
+// was staged elsewhere is deliberately ignored.
+func outputsReferenceDir(v any, dir string) bool {
+	underDir := func(loc string) bool {
+		p := strings.TrimPrefix(loc, "file://")
+		return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
+	}
+	var walk func(any) bool
+	walk = func(v any) bool {
+		switch val := v.(type) {
+		case string:
+			return underDir(val)
+		case map[string]any:
+			if class, _ := val["class"].(string); class == "File" || class == "Directory" {
+				loc, _ := val["location"].(string)
+				if loc == "" {
+					loc, _ = val["path"].(string)
+				}
+				if underDir(loc) {
+					return true
+				}
+				return walk(val["secondaryFiles"]) || walk(val["listing"])
+			}
+			for _, item := range val {
+				if walk(item) {
+					return true
+				}
+			}
+		case []any:
+			for _, item := range val {
+				if walk(item) {
+					return true
+				}
+			}
+		case []map[string]any:
+			for _, item := range val {
+				if walk(item) {
+					return true
+				}
+			}
+		case []string:
+			for _, item := range val {
+				if underDir(item) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(v)
 }
 
 // redactSecrets replaces every non-trivial secret value in s with a placeholder,
@@ -677,13 +778,17 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task, outStager, "")
 	}
 
-	return w.reportComplete(ctx, task.ID, TaskResult{
+	if err := w.reportComplete(ctx, task.ID, TaskResult{
 		State:    model.TaskStateSuccess,
 		ExitCode: &result.ExitCode,
 		Stdout:   result.Stdout,
 		Stderr:   result.Stderr,
 		Outputs:  stagedOutputs,
-	})
+	}); err != nil {
+		return err
+	}
+	w.cleanupTaskDir(task, stagedOutputs)
+	return nil
 }
 
 // executeLegacy executes a task using the legacy _base_command approach.
@@ -751,11 +856,17 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		// Stage-out matched files.
 		var staged []string
 		for _, m := range matches {
+			if abs, err := filepath.Abs(m); err == nil {
+				m = abs
+			}
 			opts := execution.StageOptions{}
 			loc, err := w.stager.StageOut(ctx, m, task.ID, opts)
 			if err != nil {
-				w.logger.Warn("stage-out failed", "file", m, "error", err)
-				continue
+				// Report the local location instead of dropping the output:
+				// the file in the task dir is the only copy, and referencing
+				// it keeps cleanupTaskDir from deleting it.
+				w.logger.Warn("stage-out failed, reporting local location", "file", m, "error", err)
+				loc = cwl.BuildLocation(cwl.SchemeFile, m)
 			}
 			staged = append(staged, loc)
 		}
@@ -773,13 +884,19 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		state = model.TaskStateFailed
 	}
 
-	return w.reportComplete(ctx, task.ID, TaskResult{
+	if err := w.reportComplete(ctx, task.ID, TaskResult{
 		State:    state,
 		ExitCode: &result.ExitCode,
 		Stdout:   result.Stdout,
 		Stderr:   result.Stderr,
 		Outputs:  outputs,
-	})
+	}); err != nil {
+		return err
+	}
+	if state == model.TaskStateSuccess {
+		w.cleanupTaskDir(task, outputs)
+	}
+	return nil
 }
 
 // stageOutputValue recursively stages File objects in output values.
@@ -806,6 +923,15 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, 
 				if err == nil {
 					w.logger.Debug("staged file", "file", filepath.Base(path), "location", loc)
 					val["location"] = loc
+					// If the output actually moved (not an in-place file://
+					// URI), drop the stale local path/dirname so server-side
+					// consumers (loadContents, local-executor steps) resolve
+					// via the staged location instead of a path inside a task
+					// dir that cleanupTaskDir may delete.
+					if loc != cwl.BuildLocation(cwl.SchemeFile, path) {
+						delete(val, "path")
+						delete(val, "dirname")
+					}
 				} else {
 					w.logger.Warn("stage-out failed", "path", path, "error", err)
 				}

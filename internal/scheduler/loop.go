@@ -1028,6 +1028,13 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 				task.RuntimeHints.WorkerGroup = wg
 			}
 		}
+		// Debug submissions: workers keep all task working data for inspection.
+		if sub.Labels["debug"] == "true" {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			task.RuntimeHints.Debug = true
+		}
 	}
 
 	return task

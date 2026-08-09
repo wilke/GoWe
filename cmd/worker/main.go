@@ -33,6 +33,7 @@ func main() {
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
 	flag.DurationVar(&cfg.Poll, "poll", 5*time.Second, "Poll interval")
+	flag.BoolVar(&cfg.KeepTaskDirs, "keep-task-dirs", false, "Retain task working directories after successful completion (failed tasks are always kept)")
 
 	// Staging mode flags.
 	var stageMode string
