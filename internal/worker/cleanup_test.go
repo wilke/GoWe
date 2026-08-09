@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/me/gowe/pkg/model"
+	"github.com/me/gowe/pkg/staging"
 )
 
 func TestOutputsReferenceDir(t *testing.T) {
@@ -157,7 +159,7 @@ func TestCleanupTaskDir(t *testing.T) {
 		t.Helper()
 		taskDir := filepath.Join(workDir, taskID)
 		tmpDir := taskDir + "_tmp"
-		for _, d := range []string{taskDir, tmpDir} {
+		for _, d := range []string{taskDir, tmpDir, taskDir + "_staging"} {
 			if err := os.MkdirAll(d, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +170,7 @@ func TestCleanupTaskDir(t *testing.T) {
 		return taskDir, tmpDir
 	}
 
-	t.Run("removes task dir and tmp sibling after staged outputs", func(t *testing.T) {
+	t.Run("removes task dir and its siblings after staged outputs", func(t *testing.T) {
 		workDir := t.TempDir()
 		taskDir, tmpDir := mkTaskDirs(t, workDir, "task_1")
 		w := newWorker(workDir, false)
@@ -177,7 +179,7 @@ func TestCleanupTaskDir(t *testing.T) {
 			"out": map[string]any{"class": "File", "location": "file:///shared/task_1/out.txt"},
 		})
 
-		for _, d := range []string{taskDir, tmpDir} {
+		for _, d := range []string{taskDir, tmpDir, taskDir + "_staging"} {
 			if _, err := os.Stat(d); !os.IsNotExist(err) {
 				t.Errorf("%s still exists after cleanup", d)
 			}
@@ -322,6 +324,103 @@ func TestExecuteTaskCleanupWiring(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(workDir, "task_fail")); err != nil {
 			t.Errorf("failed task's dir was deleted: %v", err)
+		}
+	})
+}
+
+// failingStager errors on every StageOut, simulating an unreachable staging
+// destination.
+type failingStager struct{}
+
+func (failingStager) StageIn(context.Context, string, string, staging.StageOptions) error {
+	return errors.New("stager down")
+}
+func (failingStager) StageOut(context.Context, string, string, staging.StageOptions) (string, error) {
+	return "", errors.New("stager down")
+}
+func (failingStager) Supports(string) bool { return true }
+
+// fixedStager reports every file staged to a fixed remote location.
+type fixedStager struct{ loc string }
+
+func (fixedStager) StageIn(context.Context, string, string, staging.StageOptions) error { return nil }
+func (s fixedStager) StageOut(context.Context, string, string, staging.StageOptions) (string, error) {
+	return s.loc, nil
+}
+func (fixedStager) Supports(string) bool { return true }
+
+// TestLegacyStageOutFailureKeepsData: when stage-out fails on the legacy path,
+// the local location must be reported (so the guard retains the only copy)
+// rather than the output being silently dropped and the dir deleted.
+func TestLegacyStageOutFailureKeepsData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	workDir := t.TempDir()
+	w := &Worker{
+		client:  NewClient(srv.URL, nil),
+		runtime: NewBareRuntime(),
+		stager:  failingStager{},
+		workDir: workDir,
+		active:  newActiveTaskSet(),
+		logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	task := &model.Task{ID: "task_so", Inputs: map[string]any{
+		"_base_command": []any{"sh", "-c", "echo data > out.txt"},
+		"_output_globs": map[string]any{"out": "out.txt"},
+	}}
+	if err := w.executeTask(context.Background(), task); err != nil {
+		t.Fatalf("executeTask: %v", err)
+	}
+
+	outFile := filepath.Join(workDir, "task_so", "out.txt")
+	if _, err := os.Stat(outFile); err != nil {
+		t.Fatalf("only copy of output was deleted after failed stage-out: %v", err)
+	}
+}
+
+// TestStageOutputValueStripsStalePath: once an output is staged to a different
+// location, the stale local path/dirname must be dropped so server-side
+// consumers resolve via the staged location; in-place stage-out keeps them.
+func TestStageOutputValueStripsStalePath(t *testing.T) {
+	w := &Worker{
+		logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+	task := &model.Task{ID: "task_sp"}
+
+	t.Run("moved output loses stale path", func(t *testing.T) {
+		val := map[string]any{
+			"class":   "File",
+			"path":    "/work/task_sp/out.txt",
+			"dirname": "/work/task_sp",
+		}
+		got := w.stageOutputValue(context.Background(), val, task,
+			fixedStager{loc: "file:///shared/task_sp/out.txt"}, "").(map[string]any)
+
+		if got["location"] != "file:///shared/task_sp/out.txt" {
+			t.Errorf("location = %v", got["location"])
+		}
+		if _, ok := got["path"]; ok {
+			t.Error("stale path survived staging to a different location")
+		}
+		if _, ok := got["dirname"]; ok {
+			t.Error("stale dirname survived staging to a different location")
+		}
+	})
+
+	t.Run("in-place output keeps path", func(t *testing.T) {
+		val := map[string]any{
+			"class": "File",
+			"path":  "/work/task_sp/out.txt",
+		}
+		got := w.stageOutputValue(context.Background(), val, task,
+			fixedStager{loc: "file:///work/task_sp/out.txt"}, "").(map[string]any)
+
+		if got["path"] != "/work/task_sp/out.txt" {
+			t.Errorf("in-place path was stripped: %v", got["path"])
 		}
 	})
 }

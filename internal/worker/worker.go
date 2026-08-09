@@ -508,7 +508,7 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 }
 
 // cleanupTaskDir removes a completed task's working directories (the task dir
-// and its cwltool "_tmp" sibling). Called only after a SUCCESS result was
+// and its "_tmp" / "_staging" siblings). Called only after a SUCCESS result was
 // accepted by the server — FAILED and SKIPPED (cancelled) tasks deliberately
 // never reach it, so their directories stay around for debugging. The
 // directories are also kept when --keep-task-dirs is set, when the task
@@ -535,7 +535,7 @@ func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 		return
 	}
 	removed := true
-	for _, d := range []string{taskDir, taskDir + "_tmp"} {
+	for _, d := range []string{taskDir, taskDir + "_tmp", taskDir + "_staging"} {
 		if err := os.RemoveAll(d); err != nil {
 			w.logger.Warn("cleanup task dir", "dir", d, "error", err)
 			removed = false
@@ -856,11 +856,17 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		// Stage-out matched files.
 		var staged []string
 		for _, m := range matches {
+			if abs, err := filepath.Abs(m); err == nil {
+				m = abs
+			}
 			opts := execution.StageOptions{}
 			loc, err := w.stager.StageOut(ctx, m, task.ID, opts)
 			if err != nil {
-				w.logger.Warn("stage-out failed", "file", m, "error", err)
-				continue
+				// Report the local location instead of dropping the output:
+				// the file in the task dir is the only copy, and referencing
+				// it keeps cleanupTaskDir from deleting it.
+				w.logger.Warn("stage-out failed, reporting local location", "file", m, "error", err)
+				loc = cwl.BuildLocation(cwl.SchemeFile, m)
 			}
 			staged = append(staged, loc)
 		}
@@ -917,6 +923,15 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, 
 				if err == nil {
 					w.logger.Debug("staged file", "file", filepath.Base(path), "location", loc)
 					val["location"] = loc
+					// If the output actually moved (not an in-place file://
+					// URI), drop the stale local path/dirname so server-side
+					// consumers (loadContents, local-executor steps) resolve
+					// via the staged location instead of a path inside a task
+					// dir that cleanupTaskDir may delete.
+					if loc != cwl.BuildLocation(cwl.SchemeFile, path) {
+						delete(val, "path")
+						delete(val, "dirname")
+					}
 				} else {
 					w.logger.Warn("stage-out failed", "path", path, "error", err)
 				}
