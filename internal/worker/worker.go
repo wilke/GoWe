@@ -509,15 +509,21 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 
 // cleanupTaskDir removes a completed task's working directories (the task dir
 // and its cwltool "_tmp" sibling). Called only after a SUCCESS result was
-// accepted by the server. The directories are kept when --keep-task-dirs is set,
-// and when any reported output still resolves into the task dir — which happens
-// with in-place stage-out (e.g. FileStager "local" mode) or when a StageOut
-// failed and left the local path; deleting the dir then would destroy outputs
-// that downstream tasks reference.
-func (w *Worker) cleanupTaskDir(taskID string, outputs map[string]any) {
+// accepted by the server. The directories are kept when --keep-task-dirs is
+// set, when the task belongs to a debug submission (RuntimeHints.Debug, from
+// `gowe submit --debug`), and when any reported output still resolves into the
+// task dir — which happens with in-place stage-out (e.g. FileStager "local"
+// mode) or when a StageOut failed and left the local path; deleting the dir
+// then would destroy outputs that downstream tasks reference.
+func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 	if w.keepTaskDirs {
 		return
 	}
+	if task.RuntimeHints != nil && task.RuntimeHints.Debug {
+		w.logger.Debug("keeping task dir: debug submission", "task_id", task.ID)
+		return
+	}
+	taskID := task.ID
 	taskDir := filepath.Join(w.workDir, taskID)
 	if abs, err := filepath.Abs(taskDir); err == nil {
 		taskDir = abs
@@ -775,7 +781,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}); err != nil {
 		return err
 	}
-	w.cleanupTaskDir(task.ID, stagedOutputs)
+	w.cleanupTaskDir(task, stagedOutputs)
 	return nil
 }
 
@@ -876,7 +882,7 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		return err
 	}
 	if state == model.TaskStateSuccess {
-		w.cleanupTaskDir(task.ID, outputs)
+		w.cleanupTaskDir(task, outputs)
 	}
 	return nil
 }

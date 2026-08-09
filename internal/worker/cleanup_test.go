@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/me/gowe/pkg/model"
 )
 
 func TestOutputsReferenceDir(t *testing.T) {
@@ -168,7 +170,7 @@ func TestCleanupTaskDir(t *testing.T) {
 		taskDir, tmpDir := mkTaskDirs(t, workDir, "task_1")
 		w := newWorker(workDir, false)
 
-		w.cleanupTaskDir("task_1", map[string]any{
+		w.cleanupTaskDir(&model.Task{ID: "task_1"}, map[string]any{
 			"out": map[string]any{"class": "File", "location": "file:///shared/task_1/out.txt"},
 		})
 
@@ -184,7 +186,7 @@ func TestCleanupTaskDir(t *testing.T) {
 		taskDir, _ := mkTaskDirs(t, workDir, "task_2")
 		w := newWorker(workDir, false)
 
-		w.cleanupTaskDir("task_2", map[string]any{
+		w.cleanupTaskDir(&model.Task{ID: "task_2"}, map[string]any{
 			"out": map[string]any{"class": "File", "location": "file://" + filepath.Join(taskDir, "out.txt")},
 		})
 
@@ -198,12 +200,29 @@ func TestCleanupTaskDir(t *testing.T) {
 		taskDir, _ := mkTaskDirs(t, workDir, "task_3")
 		w := newWorker(workDir, true)
 
-		w.cleanupTaskDir("task_3", map[string]any{
+		w.cleanupTaskDir(&model.Task{ID: "task_3"}, map[string]any{
 			"out": map[string]any{"class": "File", "location": "file:///shared/task_3/out.txt"},
 		})
 
 		if _, err := os.Stat(taskDir); err != nil {
 			t.Errorf("task dir was deleted despite keep-task-dirs: %v", err)
+		}
+	})
+
+	t.Run("keeps dir for debug submission", func(t *testing.T) {
+		workDir := t.TempDir()
+		taskDir, _ := mkTaskDirs(t, workDir, "task_5")
+		w := newWorker(workDir, false)
+
+		w.cleanupTaskDir(&model.Task{
+			ID:           "task_5",
+			RuntimeHints: &model.RuntimeHints{Debug: true},
+		}, map[string]any{
+			"out": map[string]any{"class": "File", "location": "file:///shared/task_5/out.txt"},
+		})
+
+		if _, err := os.Stat(taskDir); err != nil {
+			t.Errorf("task dir was deleted despite debug submission: %v", err)
 		}
 	})
 
@@ -221,7 +240,7 @@ func TestCleanupTaskDir(t *testing.T) {
 		}
 
 		w := newWorker(workDir, false)
-		w.cleanupTaskDir("task_4", map[string]any{
+		w.cleanupTaskDir(&model.Task{ID: "task_4"}, map[string]any{
 			"out": map[string]any{"class": "File", "location": "file:///shared/task_4/out.txt"},
 		})
 
