@@ -605,6 +605,9 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		whereClauses = append(whereClauses, "submitted_by = ?")
 		countArgs = append(countArgs, opts.SubmittedBy)
 	}
+	if opts.ExcludeChildren {
+		whereClauses = append(whereClauses, "(parent_task_id = '' OR parent_task_id IS NULL)")
+	}
 
 	whereSQL := ""
 	if len(whereClauses) > 0 {
@@ -640,7 +643,7 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 }
 
 // submissionListColumns is the column set scanned by scanSubmissionRows.
-const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, output_destination, output_state`
+const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state`
 
 // scanSubmissionRows scans submissionListColumns rows, skipping (with an error
 // log) rows that fail token decryption or JSON/timestamp parsing so one corrupt
@@ -657,7 +660,7 @@ func (s *SQLiteStore) scanSubmissionRows(rows *sql.Rows) ([]*model.Submission, e
 		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 			&inputsJSON, &outputsJSON, &labelsJSON,
 			&sub.SubmittedBy, &createdAt, &completedAt,
-			&sub.UserToken, &tokenExpiry, &sub.AuthProvider,
+			&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID,
 			&sub.OutputDestination, &sub.OutputState); err != nil {
 			return nil, err
 		}

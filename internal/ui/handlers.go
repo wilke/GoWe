@@ -197,13 +197,14 @@ func (ui *UI) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 		slog.Error("dashboard: failed to list workflows", "error", err)
 	}
 
-	// Get recent submissions.
-	submissions, _, err := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 5})
+	// Get recent submissions (top-level only; scatter children would flood the list).
+	submissions, _, err := ui.store.ListSubmissions(r.Context(), model.ListOptions{Limit: 5, ExcludeChildren: true})
 	if err != nil {
 		slog.Error("dashboard: failed to list submissions", "error", err)
 	}
 
 	// Count submissions by state for the last 24 hours.
+	// Note: CountSubmissionsByState is global — counts include child submissions.
 	since24h := time.Now().UTC().Add(-24 * time.Hour)
 	stats24h, err := ui.store.CountSubmissionsByState(r.Context(), since24h, "")
 	if err != nil {
@@ -385,6 +386,8 @@ func (ui *UI) HandleSubmissionList(w http.ResponseWriter, r *http.Request) {
 	if sess != nil && !sess.IsAdmin() {
 		opts.SubmittedBy = sess.Username
 	}
+	// Hide child submissions (scatter/sub-workflow fan-out) from the list view.
+	opts.ExcludeChildren = true
 
 	// View mode: "cards" (default) or "table".
 	viewMode := r.URL.Query().Get("view")
@@ -500,11 +503,14 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 	// Compute task summary
 	sub.TaskSummary = model.ComputeTaskSummary(sub.Tasks)
 
-	// Calculate queue position if pending
-	if sub.State == model.SubmissionStatePending {
+	// Calculate queue position if pending. Child submissions (scatter items)
+	// are excluded from the pending list this searches, so a position would
+	// never match — skip them; their scheduling is driven by the parent.
+	if sub.State == model.SubmissionStatePending && sub.ParentTaskID == "" {
 		pendingSubs, _, err := ui.store.ListSubmissions(r.Context(), model.ListOptions{
-			State: "PENDING",
-			Limit: 1000,
+			State:           "PENDING",
+			Limit:           1000,
+			ExcludeChildren: true, // queue position counts top-level submissions only
 		})
 		if err != nil {
 			slog.Error("submission detail: failed to list pending submissions for queue position", "error", err)
@@ -816,6 +822,8 @@ func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	opts := ui.parseListOptions(r)
 	opts.Limit = 10000 // Export up to 10k records
+	// Export is deliberately global: it includes child submissions (scatter
+	// items), unlike the list view, so exported data is complete.
 
 	// Non-admin users only export their own submissions.
 	if sess != nil && !sess.IsAdmin() {
@@ -1179,6 +1187,7 @@ func (ui *UI) HandleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// All-time stats (for Running/Pending which are live states).
+	// Note: CountSubmissionsByState is global — counts include child submissions.
 	allStats, err := ui.store.CountSubmissionsByState(r.Context(), time.Time{}, "")
 	if err != nil {
 		slog.Error("admin stats: failed to count submissions by state", "error", err)

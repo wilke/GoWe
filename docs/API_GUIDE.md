@@ -485,6 +485,23 @@ Response (HTTP 201):
 
 ## 7. Monitor Job Status
 
+### List Submissions
+
+```
+GET /api/v1/submissions?state=RUNNING&limit=20&offset=0
+```
+
+Standard list parameters (`limit`, `offset`, `state`, `search`, `workflow_id`,
+`date_start`, `date_end`, `sort`, `dir`) plus:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `include_children` | `false` | Child submissions — those spawned by a parent's scatter/sub-workflow step (`parent_task_id` set) — are excluded from the rows and the pagination total by default. Pass `include_children=true` to list them too. Children remain individually reachable via `GET /api/v1/submissions/{id}` and via their parent regardless of this flag. |
+
+Each returned submission carries `parent_task_id` (empty for top-level
+submissions), so callers using `include_children=true` can tell parents and
+children apart.
+
 ### Poll Submission State
 
 ```
