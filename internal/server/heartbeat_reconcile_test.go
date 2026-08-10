@@ -110,6 +110,42 @@ func TestWorkerHeartbeat_ReturnsCancelTasks(t *testing.T) {
 	}
 }
 
+// T7: a worker running tasks that belong to a CANCELLED child submission is
+// told to kill them. Cancelling the PARENT fans out to descendants
+// synchronously in the handler (no scheduler runs in testServer), so the
+// worker's next heartbeat reporting the child's task gets it back in
+// cancel_tasks — the kill signal reaches workers for descendants too.
+func TestWorkerHeartbeat_ReturnsCancelTasksForChildSubmission(t *testing.T) {
+	srv := testServer()
+	workerID := registerTestWorker(t, srv)
+	wfID, parentID := createTestSubmission(t, srv)
+	_, childID := seedSubworkflowChild(t, srv, wfID, parentID, "hb_child")
+	seedRunningWorkerTask(t, srv, childID, "task_child_running", workerID, time.Minute)
+
+	// Cancel the PARENT via the API — cancellation reaches the child only
+	// through the handler's synchronous fan-out.
+	req := httptest.NewRequest("PUT", "/api/v1/submissions/"+parentID+"/cancel", nil)
+	cw := httptest.NewRecorder()
+	srv.ServeHTTP(cw, req)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("cancel parent: status=%d, body=%s", cw.Code, cw.Body.String())
+	}
+	child, err := srv.store.GetSubmission(context.Background(), childID)
+	if err != nil || child == nil || child.State != model.SubmissionStateCancelled {
+		t.Fatalf("child submission state = %v (err=%v), want CANCELLED", child, err)
+	}
+
+	// Worker heartbeats, still reporting the child's task as running.
+	_, env := doPut(t, srv, "/api/v1/workers/"+workerID+"/heartbeat", `{"running_tasks":["task_child_running"]}`)
+	var data heartbeatResp
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("decode heartbeat data: %v", err)
+	}
+	if len(data.CancelTasks) != 1 || data.CancelTasks[0] != "task_child_running" {
+		t.Fatalf("cancel_tasks = %v, want [task_child_running]", data.CancelTasks)
+	}
+}
+
 // An empty heartbeat body must still succeed (backward compatibility).
 func TestWorkerHeartbeat_EmptyBodyStillWorks(t *testing.T) {
 	srv := testServer()
