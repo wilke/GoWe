@@ -68,7 +68,9 @@ Submission  (PENDING → RUNNING → COMPLETED/FAILED/CANCELLED)
        └─ Task  (PENDING → SCHEDULED → QUEUED → RUNNING → SUCCESS/FAILED)
 ```
 
-Scatter steps produce N StepInstances, each with its own Tasks. The scheduler advances these through 6 phases each tick: (1) advance WAITING→READY when deps met, (2) dispatch READY→create Tasks, (3) retry FAILED tasks, (4) poll in-flight async tasks, (5) advance step instances, (6) finalize submissions.
+A scatter step produces ONE StepInstance owning N Tasks (one per combination, carrying ScatterIndex; outputs merge back in index order). The scheduler advances these through 6 phases each tick: (1) advance WAITING→READY when deps met, (2) dispatch READY→create Tasks, (3) retry FAILED tasks, (4) poll in-flight async tasks, (5) advance step instances, (6) finalize submissions.
+
+Sub-workflow steps are never executed inline: each (scatter combination of a) sub-workflow step gets a persisted proxy task (`executor_type: subworkflow`, RUNNING from birth, `MaxRetries: 0`, `Job` = resolved child inputs) paired 1:1 with a child submission (`parent_task_id` = proxy id) that flows through the same tick machinery. pollInFlight advances the proxy from the child's state (child CANCELLED → proxy FAILED), repairs missing children after a crash, and reconciles cancels one nesting level per tick; the cancel handler also fans out to descendants synchronously. See SPECIFICATION.md §7.4 and ADR-0011.
 
 ### Executor Registry
 

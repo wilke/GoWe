@@ -1,6 +1,6 @@
 # GoWe Specification
 
-> **Status**: Living specification · **Version**: draft-7 (2026-07-07)
+> **Status**: Living specification · **Version**: draft-8 (2026-08-09)
 > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
 > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
 > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
@@ -48,7 +48,7 @@ These terms are normative. Code, docs, and API responses MUST use them consisten
 | **Tool** | A reusable single operation. CWL `class: CommandLineTool` or `ExpressionTool`. The unit of reuse. |
 | **Step** | One node in a Workflow's DAG; binds a Tool (or sub-Workflow) to input sources. Not executable alone. |
 | **Submission** (a.k.a. **Run**) | One execution of a Workflow with concrete input values. Top-level tracking entity. |
-| **StepInstance** | One runtime instance of a Step within a Submission. A scatter Step yields **N** StepInstances. |
+| **StepInstance** | One runtime instance of a Step within a Submission. A scatter Step yields **one** StepInstance owning N Tasks (§7.2). |
 | **Task** | A concrete, schedulable unit of work bound to resolved inputs and assigned to an Executor. |
 | **Executor** | A pluggable backend that knows *how* to run a Task in one environment. |
 | **Scheduler** | The engine loop that advances the model, resolves dependencies, dispatches, retries, and finalizes. |
@@ -164,8 +164,8 @@ transitions MUST be rejected (`pkg/model`). Rationale: [ADR-0003](docs/adr/0003-
 
 ```
 Submission                       one run of a workflow
-  └── StepInstance               one per step; scatter ⇒ N
-        └── Task                 concrete work unit
+  └── StepInstance               one per step
+        └── Task                 concrete work unit; scatter ⇒ N (one per combination)
 ```
 
 ### 6.1 Submission states
@@ -209,7 +209,8 @@ with `FAILED → RETRYING → QUEUED` while retries remain.
 | SKIPPED | Conditional skip (`when` false), **or** cancellation of a non-terminal Task when its Submission is cancelled. |
 
 > Worker-bound tasks MAY transition directly `PENDING → QUEUED`, bypassing `SCHEDULED`, so
-> they are immediately available for checkout.
+> they are immediately available for checkout. Sub-workflow proxy tasks (§7.4) are created
+> directly in `RUNNING` and never pass through `QUEUED`.
 
 ### 6.4 State propagation
 
@@ -230,7 +231,7 @@ phases in order; a phase that errors MUST NOT silently skip later ticks. Referen
 | 1.5 | (Server mode) Pre-stage workspace inputs for PENDING submissions. |
 | 2 | Dispatch `READY` StepInstances: resolve inputs, create Tasks, submit to executors. |
 | 2.5 | Re-submit `RETRYING` tasks. |
-| 3 | Poll `QUEUED`/`RUNNING` tasks on async executors for status. |
+| 3 | Poll `QUEUED`/`RUNNING` tasks on async executors for status; advance sub-workflow proxy tasks from their child submission's state (§7.4). |
 | 3.5 | Detect stuck `QUEUED` worker tasks (progress-based) and recover them. |
 | 4 | Advance `DISPATCHED`/`RUNNING` StepInstances when all their Tasks are terminal. |
 | 5 | Finalize submissions whose StepInstances are all terminal. |
@@ -245,14 +246,110 @@ StepInstance level.
 
 ### 7.2 Scatter
 
-A scatter Step MUST expand into N StepInstances according to its `scatterMethod`. Each
-StepInstance owns its own Tasks and advances independently.
+A scatter Step over a CommandLineTool or sub-workflow expands into exactly **one**
+StepInstance owning **N Tasks** — one per scatter combination according to its
+`scatterMethod` — each Task carrying its combination's `ScatterIndex`. At dispatch the
+StepInstance records `ScatterCount`, and — while Tasks remain in flight —
+`ScatterMethod` and (for `nested_crossproduct`) `ScatterDims`. Scatter over an
+ExpressionTool is executed inline by the scheduler and produces no Task rows: the
+StepInstance completes at dispatch, and the when-skip rule below does not apply to it.
+Reference: `dispatchScatterStep` and `advanceSteps` in `internal/scheduler/loop.go`.
+
+- The StepInstance MUST NOT complete until every distinct `ScatterIndex` in
+  `[0, ScatterCount)` has a terminal Task. Merged outputs MUST be sized by `ScatterCount`,
+  never by task-row count, so duplicate task rows for an index neither hang nor oversize
+  the result.
+- Outputs MUST be merged in `ScatterIndex` order (re-nested per `ScatterDims` for
+  `nested_crossproduct`), regardless of completion order.
+- A combination whose `when` evaluates false yields a terminal `SUCCESS` Task with null
+  outputs, keeping the index set complete.
+- An empty scatter (N = 0) MUST complete the StepInstance immediately with empty merged
+  outputs; it MUST NOT be left `DISPATCHED` with zero Tasks.
+- A `SKIPPED` Task in the set — which arises only from cancellation — MUST make the
+  StepInstance `SKIPPED`, never `COMPLETED`: completing over it would emit an output array
+  with null holes under a cancelled Submission.
 
 ### 7.3 Retry
 
 On Task `FAILED`, the scheduler MUST transition it to `RETRYING` and re-queue it if and only
 if retry attempts remain per the task's retry policy; otherwise the failure propagates to the
 StepInstance and Submission.
+
+Re-queueing MUST claim the task with a compare-and-set `RETRYING → SCHEDULED` so that a
+concurrent cancellation (`SKIPPED`) is never overwritten; a failed claim leaves the task
+alone. A `SCHEDULED` task observed at the start of the retry phase is a stranded claim from
+a crash mid-resubmit and MUST be swept back to `RETRYING` before claiming.
+
+### 7.4 Sub-workflow steps (proxy tasks and child submissions)
+
+A Step whose `run` is a `Workflow` MUST NOT be executed inline on the scheduler goroutine.
+Reference: `dispatchSubWorkflowStep`, `dispatchScatterSubWorkflow`, and
+`pollSubworkflowTask` in `internal/scheduler/loop.go`; rationale:
+[ADR-0011](docs/adr/0011-scatter-subworkflow-proxy-tasks.md).
+
+**Proxy tasks.** Dispatch creates one **proxy Task** per scatter combination (a non-scatter
+sub-workflow is the N = 1 case, `ScatterIndex` −1). A proxy MUST have:
+
+- `ExecutorType: subworkflow` — a scheduler-internal type, never a registered backend
+  (§8.1);
+- state `RUNNING` from creation — never `QUEUED`, so worker checkout, the stuck detector,
+  and requeue/reconcile (which all filter on `executor_type = 'worker'`) never see it;
+- `MaxRetries: 0` — a `FAILED` proxy MUST NOT re-enter the retry cycle (§7.3), which would
+  erase the child's error;
+- `Job` holding the fully-resolved child inputs for its combination.
+
+**Child submissions.** Each proxy pairs 1:1 with a **child Submission**
+(`ParentTaskID` = proxy task id) built from the sub-workflow graph. Children are ordinary
+Submissions: the same tick machinery schedules their steps and tasks, workers pull their
+work, and nesting recurses naturally. A child MUST NOT inherit the parent's
+`OutputDestination` (the parent stages the gathered outputs after fan-in); it inherits the
+parent's routing/debug labels with `parent_task` overwritten per nesting level.
+
+**Durability.** All proxy Tasks and the StepInstance's `READY → DISPATCHED` transition MUST
+be persisted in a single transaction; child submissions are created afterwards,
+idempotently per proxy. A crash before the transaction leaves the step `READY` for a clean
+re-dispatch with no duplicates; a crash after it leaves `RUNNING` proxies whose missing
+children the poll phase MUST repair by recreating them from the proxy's persisted `Job` —
+never by re-running scatter combination, `valueFrom`, or `when` JavaScript. A restarted
+server therefore re-attaches to in-flight children rather than re-executing them.
+
+**Advancement and fan-in.** Phase 3 advances each `RUNNING` proxy from its child's state:
+child `COMPLETED` ⇒ proxy `SUCCESS` carrying the child's outputs; child `FAILED` **or
+`CANCELLED`** ⇒ proxy `FAILED` with the child's error in `Stderr`. A cancelled child MUST
+surface as a `FAILED` proxy, not `SKIPPED`: fan-in counts only `FAILED` as failure, and a
+`SKIPPED` proxy would let the parent complete with a null hole in the gathered array. The
+StepInstance then fans in through the ordinary `ScatterIndex` merge (§7.2). All proxy
+and Submission terminalizations on these paths MUST be guarded compare-and-set writes so
+a concurrent cancellation is never overwritten; StepInstance writes rely on the single
+scheduler goroutine, with cancel-side step writes touching only non-terminal rows and
+the reconciliation skip re-reading state before writing.
+
+**Cancellation.** Two cooperating mechanisms:
+
+1. *Synchronous handler fan-out.* The cancel endpoint walks the submission's subworkflow
+   proxies and cancels every non-terminal descendant child (any nesting depth) at
+   cancel-accept time, reporting the count as `children_cancelled`, so workers see the kill
+   on their next heartbeat even if the scheduler is slow or stopped. A proxy is retired
+   `SKIPPED` only once all of its children are verifiably terminal; a childless proxy
+   (mid-dispatch) MUST be left `RUNNING` so the scheduler's reconciliation stays armed for
+   a child created after the walk.
+2. *Per-tick scheduler reconciliation (backstop).* A `RUNNING` proxy whose own Submission
+   or StepInstance is terminal MUST cancel its child (if any), retire itself `SKIPPED`, and
+   conditionally `SKIP` its step. `CancelNonTerminalTasks` MUST exclude subworkflow proxies
+   so this path stays reachable; nested sub-workflows therefore cascade one nesting level
+   per tick with no explicit recursion.
+
+Under either path, a `SKIPPED` proxy in a step's task set yields a `SKIPPED` StepInstance
+(§7.2), never a `COMPLETED` one.
+
+**Deletion.** `DELETE /submissions/{id}` MUST be refused with `409 Conflict` while any
+descendant child submission is active: deleting the rows would delete the proxies — the
+scheduler's only handle for cascading a cancel to the children. Cancel first, let the
+cascade finish, then delete.
+
+**Failure.** Child-submission creation failure (e.g. a refused plaintext token, §13.5) is
+not retryable: the proxy goes `FAILED` with the reason in `Stderr` and the step fails
+outright.
 
 ---
 
@@ -271,6 +368,10 @@ Every backend MUST implement `Submit`, `Status`, `Cancel`, and `Logs`
 | `apptainer` | sync | Apptainer/Singularity container (`.sif`, `--nv`, binds). |
 | `worker` | async | queuing for a remote pull-worker (§9). |
 | `bvbrc` | async | BV-BRC JSON-RPC `start_app` + `query_tasks` polling ([ADR-0007](docs/adr/0007-generic-bvbrc-executor-over-operators.md)). |
+
+`subworkflow` is **not** a backend: it is a scheduler-internal `ExecutorType` marking
+sub-workflow proxy tasks (§7.4). It MUST NOT be registered in the executor registry, and
+the scheduler MUST NOT consult the registry for tasks carrying it.
 
 ### 8.2 Selection order (first match wins)
 
