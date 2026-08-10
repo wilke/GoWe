@@ -207,11 +207,18 @@ func seedSubworkflowChild(t *testing.T, srv *Server, wfID, parentSubID, suffix s
 	if err := srv.store.CreateTask(ctx, proxy); err != nil {
 		t.Fatalf("seed proxy task: %v", err)
 	}
+	// The scheduler copies the parent's owner onto child submissions
+	// (subworkflow dispatch); mirror that so owner-filtered listings see both.
+	parentSub, err := srv.store.GetSubmission(ctx, parentSubID)
+	if err != nil || parentSub == nil {
+		t.Fatalf("seed child: load parent submission: %v", err)
+	}
 	child := &model.Submission{
 		ID:           "sub_child_" + suffix,
 		WorkflowID:   wfID,
 		State:        model.SubmissionStateRunning,
 		Inputs:       map[string]any{},
+		SubmittedBy:  parentSub.SubmittedBy,
 		ParentTaskID: proxy.ID,
 		CreatedAt:    time.Now().UTC(),
 	}
@@ -995,6 +1002,47 @@ func TestListSubmissions(t *testing.T) {
 	env = doGet(t, srv, "/api/v1/submissions/")
 	if env.Pagination.Total != 1 {
 		t.Errorf("total = %d, want 1", env.Pagination.Total)
+	}
+}
+
+// Child submissions (scatter/sub-workflow fan-out) are hidden from the list
+// endpoint by default and only appear with include_children=true.
+func TestListSubmissions_ExcludeChildrenByDefault(t *testing.T) {
+	srv := testServer()
+	wfID, parentSubID := createTestSubmission(t, srv)
+	_, childSubID := seedSubworkflowChild(t, srv, wfID, parentSubID, "list")
+
+	listIDs := func(env envelope) map[string]bool {
+		t.Helper()
+		var subs []map[string]any
+		if err := json.Unmarshal(env.Data, &subs); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		ids := make(map[string]bool, len(subs))
+		for _, s := range subs {
+			ids[s["id"].(string)] = true
+		}
+		return ids
+	}
+
+	// Default: child hidden from rows and total.
+	env := doGet(t, srv, "/api/v1/submissions/")
+	if env.Pagination.Total != 1 {
+		t.Errorf("default total = %d, want 1 (child excluded)", env.Pagination.Total)
+	}
+	ids := listIDs(env)
+	if !ids[parentSubID] || ids[childSubID] {
+		t.Errorf("default list ids = %v, want parent only", ids)
+	}
+
+	// include_children=true: both visible.
+	env = doGet(t, srv, "/api/v1/submissions/?include_children=true")
+	if env.Pagination.Total != 2 {
+		t.Errorf("include_children total = %d, want 2", env.Pagination.Total)
+	}
+	ids = listIDs(env)
+	if !ids[parentSubID] || !ids[childSubID] {
+		t.Errorf("include_children list ids = %v, want parent and child", ids)
 	}
 }
 

@@ -37,6 +37,12 @@ type ListOptions struct {
 	SubmittedBy string   // Filter submissions by owner (empty = no filter)
 	SortBy      string   // Optional column to sort by (validated per-query)
 	SortDir     string   // Sort direction: "asc" or "desc" (default: "desc")
+	// ExcludeChildren omits child submissions (those spawned by a parent's
+	// sub-workflow proxy task, i.e. parent_task_id set) from submission
+	// listings. User-facing lists set this so scatter fan-out does not flood
+	// the view; the scheduler must leave it unset because children need
+	// scheduling like any other submission.
+	ExcludeChildren bool
 }
 
 // DefaultListOptions returns sensible defaults.

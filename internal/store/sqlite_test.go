@@ -580,6 +580,67 @@ func TestListSubmissions_StateFilter(t *testing.T) {
 	}
 }
 
+func TestListSubmissions_ExcludeChildren(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	parent := sampleSubmission(wf.ID)
+	st.CreateSubmission(ctx, parent)
+
+	// Two child submissions spawned by a sub-workflow proxy task.
+	for _, id := range []string{"sub_child-1", "sub_child-2"} {
+		child := sampleSubmission(wf.ID)
+		child.ID = id
+		child.ParentTaskID = "task_proxy-1"
+		if err := st.CreateSubmission(ctx, child); err != nil {
+			t.Fatalf("create child %s: %v", id, err)
+		}
+	}
+
+	t.Run("default includes children", func(t *testing.T) {
+		subs, total, err := st.ListSubmissions(ctx, model.DefaultListOptions())
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if total != 3 {
+			t.Errorf("total = %d, want 3 (parent + 2 children)", total)
+		}
+		if len(subs) != 3 {
+			t.Errorf("len = %d, want 3", len(subs))
+		}
+		// ParentTaskID must be populated in list results so callers can
+		// identify children.
+		byID := map[string]string{}
+		for _, s := range subs {
+			byID[s.ID] = s.ParentTaskID
+		}
+		if byID[parent.ID] != "" {
+			t.Errorf("parent ParentTaskID = %q, want empty", byID[parent.ID])
+		}
+		if byID["sub_child-1"] != "task_proxy-1" || byID["sub_child-2"] != "task_proxy-1" {
+			t.Errorf("child ParentTaskID not populated: %v", byID)
+		}
+	})
+
+	t.Run("exclude children", func(t *testing.T) {
+		opts := model.DefaultListOptions()
+		opts.ExcludeChildren = true
+		subs, total, err := st.ListSubmissions(ctx, opts)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if total != 1 {
+			t.Errorf("total = %d, want 1 (children excluded from count)", total)
+		}
+		if len(subs) != 1 || subs[0].ID != parent.ID {
+			t.Errorf("expected only parent submission, got %d rows", len(subs))
+		}
+	})
+}
+
 func TestUpdateSubmission(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()

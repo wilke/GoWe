@@ -239,6 +239,9 @@ func (l *Loop) listSubmissionsByState(ctx context.Context, state string) ([]*mod
 		// created_at ASC keeps the page walk stable under concurrent inserts
 		// (new rows land after the current position); the seen-map dedupes the
 		// residual boundary shifts from concurrent removals.
+		// ExcludeChildren must stay unset here: child submissions (scatter /
+		// sub-workflow fan-out) are scheduled through this walk like any other
+		// submission and would deadlock if hidden.
 		subs, total, err := l.store.ListSubmissions(ctx, model.ListOptions{
 			State: state, Limit: model.MaxListLimit, Offset: offset,
 			SortBy: "created_at", SortDir: "asc",

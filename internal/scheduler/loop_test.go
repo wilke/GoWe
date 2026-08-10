@@ -525,6 +525,62 @@ func TestTick_EmptyTick(t *testing.T) {
 	}
 }
 
+// TestListSubmissionsByState_IncludesChildren guards the scheduler's view of
+// the submission table: child submissions (spawned by sub-workflow proxy
+// tasks, ParentTaskID set) are hidden from user-facing listings via
+// ListOptions.ExcludeChildren, but the scheduler must keep seeing them —
+// they need scheduling like any other submission. If someone "helpfully"
+// sets ExcludeChildren in listSubmissionsByState, children would never run.
+func TestListSubmissionsByState_IncludesChildren(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wf := &model.Workflow{
+		ID:         "wf_" + uuid.New().String(),
+		Name:       "test-workflow",
+		CWLVersion: "v1.2",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	parent := &model.Submission{
+		ID:         "sub_parent",
+		WorkflowID: wf.ID,
+		State:      model.SubmissionStatePending,
+		Inputs:     map[string]any{},
+		CreatedAt:  now,
+	}
+	child := &model.Submission{
+		ID:           "sub_child",
+		WorkflowID:   wf.ID,
+		State:        model.SubmissionStatePending,
+		Inputs:       map[string]any{},
+		ParentTaskID: "task_proxy-1",
+		CreatedAt:    now,
+	}
+	for _, sub := range []*model.Submission{parent, child} {
+		if err := st.CreateSubmission(ctx, sub); err != nil {
+			t.Fatalf("CreateSubmission %s: %v", sub.ID, err)
+		}
+	}
+
+	subs, err := sched.listSubmissionsByState(ctx, "PENDING")
+	if err != nil {
+		t.Fatalf("listSubmissionsByState: %v", err)
+	}
+	got := make(map[string]bool, len(subs))
+	for _, s := range subs {
+		got[s.ID] = true
+	}
+	if !got["sub_parent"] || !got["sub_child"] {
+		t.Errorf("listSubmissionsByState = %v, want both parent and child (children must remain schedulable)", got)
+	}
+}
+
 // TestStart_StopsOnContextCancel verifies that Start returns when its context
 // is cancelled.
 func TestStart_StopsOnContextCancel(t *testing.T) {

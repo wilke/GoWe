@@ -161,6 +161,11 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 
 	opts := parseListOptions(r)
 
+	// Child submissions (scatter/sub-workflow fan-out) are hidden by default
+	// so a 64-shard run does not flood the listing; pass include_children=true
+	// to see them.
+	opts.ExcludeChildren = r.URL.Query().Get("include_children") != "true"
+
 	// Non-admin users only see their own submissions.
 	userCtx := UserFromContext(r.Context())
 	if userCtx != nil && !userCtx.User.IsAdmin() {
