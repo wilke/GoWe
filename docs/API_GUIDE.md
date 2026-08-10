@@ -608,6 +608,11 @@ PUT /api/v1/submissions/{id}/cancel
 `children_cancelled` counts descendant sub-workflow submissions (scatter
 children, at any nesting depth) cancelled synchronously at cancel-accept time.
 
+Deletion is separate from cancellation: `DELETE /api/v1/submissions/{id}`
+permanently removes a submission and returns `409 Conflict` while any descendant
+child submission is still active — cancel first and wait for the cascade to
+finish. Deleting also requires an authenticated (non-anonymous) owner or admin.
+
 ---
 
 ## 9. Check System Health

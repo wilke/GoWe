@@ -278,7 +278,7 @@ Submission  (PENDING → RUNNING → COMPLETED / FAILED / CANCELLED)
        └─ Task  (PENDING → SCHEDULED → QUEUED → RUNNING → SUCCESS / FAILED)
 ```
 
-Scatter steps produce N StepInstances, each with its own Tasks. The scheduler advances these through 6 phases each tick: (1) advance WAITING→READY when deps met, (2) dispatch READY→create Tasks, (3) retry FAILED tasks, (4) poll in-flight async tasks, (5) advance step instances, (6) finalize submissions.
+A scatter step produces one StepInstance owning N Tasks (one per combination, merged back in ScatterIndex order); sub-workflow steps run as child submissions paired 1:1 with `subworkflow` proxy tasks (see [SPECIFICATION.md](SPECIFICATION.md) §7.4). The scheduler advances these through 6 phases each tick: (1) advance WAITING→READY when deps met, (2) dispatch READY→create Tasks, (3) retry FAILED tasks, (4) poll in-flight async tasks, (5) advance step instances, (6) finalize submissions.
 
 ### Executor Selection
 

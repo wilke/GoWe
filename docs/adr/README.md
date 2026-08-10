@@ -30,6 +30,7 @@ recorded before or as they are made.
 | [0008](0008-dataset-affinity-and-staging-modes.md) | Route by dataset affinity; stage data by mode | Accepted |
 | [0009](0009-delegated-identity-and-optional-worker-keys.md) | Delegate identity to external providers; gate workers with optional shared keys | Accepted |
 | [0010](0010-scoped-worker-token-injection.md) | Scope automatic delegated-token injection to operator-trusted worker groups | Accepted |
+| [0011](0011-scatter-subworkflow-proxy-tasks.md) | Run sub-workflow steps through proxy tasks paired with child submissions | Accepted |
 
 ## Writing a new ADR
 
