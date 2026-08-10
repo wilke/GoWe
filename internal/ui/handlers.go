@@ -703,6 +703,10 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 }
 
 // HandleSubmissionCancel cancels a running submission (HTMX).
+//
+// Note: unlike the API cancel handler, this path performs no synchronous
+// fan-out to sub-workflow child submissions — the scheduler's reconciliation
+// cascade cancels them one nesting level per tick (correct, slightly slower).
 func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	id := ui.pathParam(r, "id")

@@ -582,10 +582,14 @@ PUT /api/v1/submissions/{id}/cancel
     "state": "CANCELLED",
     "steps_cancelled": 2,
     "tasks_cancelled": 3,
-    "tasks_already_completed": 2
+    "tasks_already_completed": 2,
+    "children_cancelled": 4
   }
 }
 ```
+
+`children_cancelled` counts descendant sub-workflow submissions (scatter
+children, at any nesting depth) cancelled synchronously at cancel-accept time.
 
 ---
 

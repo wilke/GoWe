@@ -17,6 +17,13 @@
 #        submission of the parent's proxy tasks reaches CANCELLED (not
 #        RUNNING, not COMPLETED-as-orphan) within ~5 s of the parent going
 #        CANCELLED, and holds no active tasks.
+#   AC5: cancel DURING the sleeps — 20-item run cancelled while step-a
+#        sleep tasks are in flight on both workers: the cancel handler's
+#        synchronous fan-out cancels all children at cancel-accept time
+#        (children_cancelled=20 in the response), each worker kills its
+#        in-flight task after the next heartbeat ("cancelling task on
+#        server request" in the worker log), those tasks end SKIPPED, and
+#        parent + all children are CANCELLED.
 #
 # Environment: builds via apptainer golang:1.24 (Go is not installed
 # natively). Server on :8095 (NEVER :8091 — production), all state in /tmp.
@@ -398,19 +405,21 @@ AC3_OK="$(python3 -c "print(1 if float('$CANCEL_ELAPSED') <= 15.0 else 0)")"
 # that were COMPLETED, or RUNNING (race window), at the cancel instant may end
 # COMPLETED. No child may sit in PENDING/RUNNING, and no child may hold an
 # active task (PENDING/SCHEDULED/QUEUED/RUNNING).
-db_children() { # -> JSON [{id,state}] of P3's proxy-task children, from the DB
-    sqlite3 -json "file:$DB?mode=ro" \
+db_children() { # db_children <parent-id> -> JSON [{id,state}] of its proxy-task children, from the DB
+    local rows
+    rows="$(sqlite3 -json "file:$DB?mode=ro" \
         "SELECT s.id, s.state FROM submissions s
          JOIN tasks t ON s.parent_task_id = t.id
-         WHERE t.submission_id = '$P3' AND t.executor_type = 'subworkflow'
-         ORDER BY s.id;" 2>/dev/null || echo "[]"
+         WHERE t.submission_id = '$1' AND t.executor_type = 'subworkflow'
+         ORDER BY s.id;" 2>/dev/null)"
+    [ -n "$rows" ] && echo "$rows" || echo "[]"
 }
 DB_CASCADE_ELAPSED=""
 T_DB="$(now_s)"
 DB_CH="[]"
 DB_BAD="[]"
 for i in $(seq 1 14); do   # 14 x 0.5 s = 7 s hard ceiling, budget 5 s below
-    DB_CH="$(db_children)"
+    DB_CH="$(db_children "$P3")"
     DB_N="$(echo "$DB_CH" | jq 'length')"
     # Violations: any non-terminal child, or any child terminal in a state
     # other than CANCELLED without being in the allowed-COMPLETED set.
@@ -461,6 +470,125 @@ done
 FINAL_DIST="$(echo "$CH3" | jq -c 'group_by(.state) | map({(.[0].state): length}) | add')"
 pass "AC3: parent CANCELLED ${CANCEL_ELAPSED}s after cancel and stayed CANCELLED; children final states: $FINAL_DIST"
 
+# ===================================== AC5: cancel during in-flight sleeps ==
+
+echo ""
+echo "== AC5: 20-item run, cancel while step-a sleeps are in flight =="
+P4="$(submit "$WORK/scatter-sub.cwl" "$WORK/inputs20.yml")" || fail "AC5 submit failed"
+[ -n "$P4" ] || fail "AC5: could not parse submission id"
+echo "   parent submission: $P4"
+
+# Wait for the 20 proxy tasks / children to exist.
+IDS4="[]"
+for i in $(seq 1 30); do
+    IDS4="$(proxy_task_ids "$P4")"
+    [ "$(echo "$IDS4" | jq 'length')" = "20" ] && break
+    sleep 1
+done
+[ "$(echo "$IDS4" | jq 'length')" = "20" ] || fail "AC5: expected 20 proxy tasks, got $(echo "$IDS4" | jq 'length')"
+
+# Wait until BOTH workers have a child sleep task in flight (RUNNING worker
+# tasks in the DB, freshly started — each has ~10 s of sleep left, ample for
+# the 500 ms heartbeat to deliver the kill).
+ac5_running() { # -> JSON [id] of RUNNING worker tasks in P4's children
+    local rows
+    rows="$(sqlite3 -json "file:$DB?mode=ro" \
+        "SELECT ct.id FROM tasks ct
+         WHERE ct.submission_id IN (
+            SELECT s.id FROM submissions s
+            JOIN tasks t ON s.parent_task_id = t.id
+            WHERE t.submission_id = '$P4' AND t.executor_type = 'subworkflow')
+         AND ct.state = 'RUNNING' ORDER BY ct.id;" 2>/dev/null)"
+    [ -n "$rows" ] || rows="[]"
+    echo "$rows" | jq -c '[.[].id]'
+}
+RUNNING_IDS="[]"
+for i in $(seq 1 100); do
+    RUNNING_IDS="$(ac5_running)"
+    [ "$(echo "$RUNNING_IDS" | jq 'length')" -ge 2 ] && break
+    sleep 0.3
+done
+[ "$(echo "$RUNNING_IDS" | jq 'length')" -ge 2 ] \
+    || fail "AC5: never saw 2 in-flight child sleep tasks (got $RUNNING_IDS)"
+echo "   in-flight sleep tasks at cancel: $RUNNING_IDS"
+
+# Snapshot worker log lengths so we only credit kill lines logged AFTER this
+# cancel (AC3's cancel already produced some).
+W1_LINES="$(wc -l < /tmp/gowe164-w1.log)"
+W2_LINES="$(wc -l < /tmp/gowe164-w2.log)"
+
+echo "   cancelling parent $P4 mid-sleep"
+AC5_RESP="$(api -X PUT "$BASE/submissions/$P4/cancel")" || fail "AC5: cancel request failed"
+AC5_CHILDREN_CANCELLED="$(echo "$AC5_RESP" | jq -r '.data.children_cancelled')"
+[ "$AC5_CHILDREN_CANCELLED" = "20" ] \
+    || fail "AC5: cancel response children_cancelled = '$AC5_CHILDREN_CANCELLED', want 20 (synchronous handler fan-out)"
+pass "AC5: cancel response reported children_cancelled=20 (synchronous fan-out)"
+
+# (iii-a) All 20 children CANCELLED in the DB immediately (handler is
+# synchronous; small grace for the read).
+AC5_CH="[]"
+for i in $(seq 1 6); do
+    AC5_CH="$(db_children "$P4")"
+    AC5_NOT_CANCELLED="$(echo "$AC5_CH" | jq -c '[.[] | select(.state != "CANCELLED")]')"
+    [ "$(echo "$AC5_CH" | jq 'length')" = "20" ] && [ "$AC5_NOT_CANCELLED" = "[]" ] && break
+    sleep 0.5
+done
+[ "$(echo "$AC5_CH" | jq 'length')" = "20" ] && [ "$AC5_NOT_CANCELLED" = "[]" ] \
+    || fail "AC5: children not all CANCELLED right after cancel: $AC5_NOT_CANCELLED"
+pass "AC5: all 20 children CANCELLED in DB at cancel-accept time"
+
+# (i) Each worker log shows it killed its in-flight task after a heartbeat.
+# Worker log line (internal/worker/worker.go): "cancelling task on server request"
+KILL_MSG="cancelling task on server request"
+AC5_KILLED=""
+for i in $(seq 1 24); do   # 24 x 0.5 s = 12 s (heartbeat is 500 ms)
+    K1="$(tail -n "+$((W1_LINES + 1))" /tmp/gowe164-w1.log | grep -c "$KILL_MSG" || true)"
+    K2="$(tail -n "+$((W2_LINES + 1))" /tmp/gowe164-w2.log | grep -c "$KILL_MSG" || true)"
+    if [ "${K1:-0}" -ge 1 ] && [ "${K2:-0}" -ge 1 ]; then AC5_KILLED=1; break; fi
+    sleep 0.5
+done
+[ -n "$AC5_KILLED" ] || fail "AC5: workers did not log '$KILL_MSG' after cancel (w1: ${K1:-0}, w2: ${K2:-0})"
+KILLED_IDS="$( { tail -n "+$((W1_LINES + 1))" /tmp/gowe164-w1.log;
+                tail -n "+$((W2_LINES + 1))" /tmp/gowe164-w2.log; } \
+    | grep "$KILL_MSG" | sed 's/.*task_id=\([^ ]*\).*/\1/' | sort -u | jq -R . | jq -cs .)"
+echo "   worker-killed task ids: $KILLED_IDS"
+# Every task that was in flight at the cancel instant must have been killed.
+MISSED="$(echo "$RUNNING_IDS" | jq -c --argjson k "$KILLED_IDS" '[.[] | select(. as $i | $k | index($i) == null)]')"
+[ "$MISSED" = "[]" ] || fail "AC5: in-flight tasks never killed by their worker: $MISSED"
+pass "AC5: both workers killed their in-flight sleep task on heartbeat ($KILLED_IDS)"
+
+# (ii) The killed tasks end SKIPPED in the DB.
+RUNNING_IDS_SQL="$(echo "$RUNNING_IDS" | jq -r 'map("\u0027" + . + "\u0027") | join(",")')"
+AC5_NONSKIPPED="[]"
+for i in $(seq 1 20); do
+    AC5_NONSKIPPED="$(sqlite3 -json "file:$DB?mode=ro" \
+        "SELECT id, state FROM tasks
+         WHERE id IN ($RUNNING_IDS_SQL) AND state != 'SKIPPED';" 2>/dev/null)"
+    { [ -z "$AC5_NONSKIPPED" ] || [ "$AC5_NONSKIPPED" = "[]" ]; } && break
+    sleep 0.5
+done
+[ -z "$AC5_NONSKIPPED" ] || [ "$AC5_NONSKIPPED" = "[]" ] \
+    || fail "AC5: killed tasks did not end SKIPPED: $AC5_NONSKIPPED"
+pass "AC5: killed in-flight tasks ended SKIPPED"
+
+# (iii-b) Parent CANCELLED and STAYS CANCELLED; children stay CANCELLED; no
+# active tasks remain anywhere under the parent.
+sleep 3
+AC5_PARENT="$(sub_state "$P4")"
+[ "$AC5_PARENT" = "CANCELLED" ] || fail "AC5: parent state = '$AC5_PARENT' after settle, want CANCELLED"
+AC5_CH="$(db_children "$P4")"
+AC5_NOT_CANCELLED="$(echo "$AC5_CH" | jq -c '[.[] | select(.state != "CANCELLED")]')"
+[ "$AC5_NOT_CANCELLED" = "[]" ] || fail "AC5: children left non-CANCELLED after settle: $AC5_NOT_CANCELLED"
+AC5_ACTIVE="$(sqlite3 -json "file:$DB?mode=ro" \
+    "SELECT ct.id, ct.state, ct.submission_id FROM tasks ct
+     WHERE ct.submission_id IN (
+        SELECT s.id FROM submissions s
+        JOIN tasks t ON s.parent_task_id = t.id
+        WHERE t.submission_id = '$P4' AND t.executor_type = 'subworkflow')
+     AND ct.state IN ('PENDING','SCHEDULED','QUEUED','RUNNING');" 2>/dev/null)"
+[ -z "$AC5_ACTIVE" ] || [ "$AC5_ACTIVE" = "[]" ] || fail "AC5: children still hold active tasks: $AC5_ACTIVE"
+pass "AC5: parent + all 20 children CANCELLED and stable, no active child tasks"
+
 echo ""
 echo "ALL ACCEPTANCE CRITERIA PASSED"
 echo "  AC1 wall: ${AC1_WALL}s (< 60 s), overlapping pairs: $OVERLAPS"
@@ -468,4 +596,5 @@ echo "  AC2 dispatch latency: ${AC2_ELAPSED}s"
 echo "  AC3 cancel-to-terminal: ${CANCEL_ELAPSED}s"
 echo "  AC3-DB cascade-to-CANCELLED (all 20 children, in DB): ${DB_CASCADE_ELAPSED}s"
 echo "  AC4 output order: a b c d e f"
+echo "  AC5 cancel-during-sleep: children_cancelled=20 at accept, workers killed $KILLED_IDS"
 exit 0

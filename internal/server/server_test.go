@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/executor"
@@ -183,6 +184,41 @@ func createTestSubmissionWithTasks(t *testing.T, srv *Server) (string, string) {
 	}
 
 	return wfID, subID
+}
+
+// seedSubworkflowChild creates a RUNNING subworkflow proxy task on
+// parentSubID and a RUNNING child submission linked to it via ParentTaskID
+// (emulating the scheduler's sub-workflow dispatch), returning
+// (proxyTaskID, childSubmissionID).
+func seedSubworkflowChild(t *testing.T, srv *Server, wfID, parentSubID, suffix string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	proxy := &model.Task{
+		ID:           "task_proxy_" + suffix,
+		SubmissionID: parentSubID,
+		StepID:       "work",
+		State:        model.TaskStateRunning,
+		ExecutorType: model.ExecutorTypeSubworkflow,
+		Inputs:       map[string]any{},
+		Outputs:      map[string]any{},
+		Job:          map[string]any{},
+		ScatterIndex: -1,
+	}
+	if err := srv.store.CreateTask(ctx, proxy); err != nil {
+		t.Fatalf("seed proxy task: %v", err)
+	}
+	child := &model.Submission{
+		ID:           "sub_child_" + suffix,
+		WorkflowID:   wfID,
+		State:        model.SubmissionStateRunning,
+		Inputs:       map[string]any{},
+		ParentTaskID: proxy.ID,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := srv.store.CreateSubmission(ctx, child); err != nil {
+		t.Fatalf("seed child submission: %v", err)
+	}
+	return proxy.ID, child.ID
 }
 
 // --- Discovery & Health (unchanged) ---
@@ -1010,6 +1046,84 @@ func TestCancelSubmission(t *testing.T) {
 	stepsCancelled, _ := data["steps_cancelled"].(float64)
 	if stepsCancelled != 2 {
 		t.Errorf("steps_cancelled = %v, want 2", data["steps_cancelled"])
+	}
+	// No sub-workflows involved: fan-out cancels nothing.
+	if cc, ok := data["children_cancelled"].(float64); !ok || cc != 0 {
+		t.Errorf("children_cancelled = %v, want 0", data["children_cancelled"])
+	}
+}
+
+// Cancelling a parent whose subworkflow proxy tasks spawned child (and
+// grandchild) submissions must cancel the whole descendant tree synchronously
+// in the handler — no scheduler tick involved (testServer runs none). The
+// proxies are retired SKIPPED and the descendants' in-flight worker tasks are
+// SKIPPED so workers get the kill signal on their next heartbeat.
+func TestCancelSubmission_FanOutCancelsDescendants(t *testing.T) {
+	srv := testServer()
+	wfID, parentID := createTestSubmission(t, srv)
+
+	childProxyID, childID := seedSubworkflowChild(t, srv, wfID, parentID, "child")
+	grandProxyID, grandchildID := seedSubworkflowChild(t, srv, wfID, childID, "grandchild")
+
+	// An in-flight worker task on each descendant.
+	seedRunningWorkerTask(t, srv, childID, "task_child_work", "w1", time.Minute)
+	seedRunningWorkerTask(t, srv, grandchildID, "task_grandchild_work", "w1", time.Minute)
+
+	req := httptest.NewRequest("PUT", "/api/v1/submissions/"+parentID+"/cancel", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	var env envelope
+	json.Unmarshal(w.Body.Bytes(), &env)
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	if data["state"] != "CANCELLED" {
+		t.Errorf("state = %v, want CANCELLED", data["state"])
+	}
+	if cc, ok := data["children_cancelled"].(float64); !ok || cc != 2 {
+		t.Errorf("children_cancelled = %v, want 2", data["children_cancelled"])
+	}
+
+	ctx := context.Background()
+	for _, id := range []string{childID, grandchildID} {
+		sub, err := srv.store.GetSubmission(ctx, id)
+		if err != nil || sub == nil {
+			t.Fatalf("get descendant %s: %v", id, err)
+		}
+		if sub.State != model.SubmissionStateCancelled {
+			t.Errorf("descendant %s state = %s, want CANCELLED (immediately, no scheduler)", id, sub.State)
+		}
+		if sub.CompletedAt == nil {
+			t.Errorf("descendant %s has no completed_at", id)
+		}
+	}
+	for _, id := range []string{childProxyID, grandProxyID} {
+		task, err := srv.store.GetTask(ctx, id)
+		if err != nil || task == nil {
+			t.Fatalf("get proxy %s: %v", id, err)
+		}
+		if task.State != model.TaskStateSkipped {
+			t.Errorf("proxy %s state = %s, want SKIPPED", id, task.State)
+		}
+	}
+	for _, id := range []string{"task_child_work", "task_grandchild_work"} {
+		task, err := srv.store.GetTask(ctx, id)
+		if err != nil || task == nil {
+			t.Fatalf("get worker task %s: %v", id, err)
+		}
+		if task.State != model.TaskStateSkipped {
+			t.Errorf("descendant worker task %s state = %s, want SKIPPED", id, task.State)
+		}
+	}
+
+	// Idempotent against the scheduler-side cascade: re-running the fan-out
+	// (as a concurrent scheduler tick would) cancels nothing further and
+	// leaves every state as-is.
+	if n := srv.cancelDescendantSubmissions(ctx, parentID, time.Now().UTC(), map[string]bool{}); n != 0 {
+		t.Errorf("second fan-out cancelled %d children, want 0 (idempotency)", n)
 	}
 }
 
