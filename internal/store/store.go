@@ -23,6 +23,17 @@ type Store interface {
 	GetSubmission(ctx context.Context, id string) (*model.Submission, error)
 	ListSubmissions(ctx context.Context, opts model.ListOptions) ([]*model.Submission, int, error)
 	UpdateSubmission(ctx context.Context, sub *model.Submission) error
+	// FinalizeSubmission is UpdateSubmission guarded by a compare-and-set:
+	// the write is skipped (applied=false, no error) when the submission is
+	// already terminal.
+	FinalizeSubmission(ctx context.Context, sub *model.Submission) (bool, error)
+	// ActivateSubmission moves a submission PENDING→RUNNING; applied=false
+	// (no error) when it is no longer PENDING.
+	ActivateSubmission(ctx context.Context, id string) (bool, error)
+	// ListSubmissionsAwaitingOutputStaging returns COMPLETED submissions with
+	// an output destination and no recorded delivery outcome (SQL-filtered so
+	// the post-stage phase's cost is bounded by pending deliveries).
+	ListSubmissionsAwaitingOutputStaging(ctx context.Context) ([]*model.Submission, error)
 	DeleteSubmission(ctx context.Context, id string) error
 	UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error
 	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)
@@ -44,6 +55,9 @@ type Store interface {
 	ListTasksBySubmissionPaged(ctx context.Context, submissionID string, opts model.ListOptions) ([]*model.Task, int, error)
 	ListTasksByStepInstance(ctx context.Context, stepInstanceID string) ([]*model.Task, error)
 	UpdateTask(ctx context.Context, task *model.Task) error
+	// TerminalizeTask is UpdateTask guarded by a compare-and-set: the write is
+	// skipped (applied=false, no error) when the task is already terminal.
+	TerminalizeTask(ctx context.Context, task *model.Task) (bool, error)
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 	GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error)

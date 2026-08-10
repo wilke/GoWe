@@ -30,7 +30,7 @@ func (l *Loop) SetWorkspaceStager(ws wsStagerInterface) {
 // rewrites them to file:// locations, and updates the submission in the store.
 func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]bool) error {
 	// Find PENDING submissions that may have ws:// inputs.
-	subs, _, err := l.store.ListSubmissions(ctx, model.ListOptions{State: "PENDING", Limit: 100})
+	subs, err := l.listSubmissionsByState(ctx, "PENDING")
 	if err != nil {
 		return fmt.Errorf("list pending submissions: %w", err)
 	}
@@ -104,10 +104,12 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 // poststageWorkspaceOutputs uploads outputs for completed submissions that have
 // an OutputDestination, updates output locations to ws:// URIs, and marks delivery.
 func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[string]bool) error {
-	// Find COMPLETED submissions with output_destination that haven't been uploaded yet.
-	subs, _, err := l.store.ListSubmissions(ctx, model.ListOptions{State: "COMPLETED", Limit: 100})
+	// SQL-filtered: COMPLETED + destination set + no delivery outcome yet, so
+	// the per-tick cost is bounded by pending deliveries rather than every
+	// COMPLETED submission in the database.
+	subs, err := l.store.ListSubmissionsAwaitingOutputStaging(ctx)
 	if err != nil {
-		return fmt.Errorf("list completed submissions: %w", err)
+		return fmt.Errorf("list submissions awaiting output staging: %w", err)
 	}
 
 	for _, sub := range subs {

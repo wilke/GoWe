@@ -192,6 +192,76 @@ func (l *Loop) updateSubmission(ctx context.Context, sub *model.Submission) erro
 	return err
 }
 
+// finalizeSubmissionCAS persists a terminal submission update via
+// compare-and-set (skipped when the submission is already terminal, e.g. a
+// concurrent cancel won) and invalidates the tick cache. Returns whether the
+// write was applied.
+func (l *Loop) finalizeSubmissionCAS(ctx context.Context, sub *model.Submission) (bool, error) {
+	applied, err := l.store.FinalizeSubmission(ctx, sub)
+	if err == nil && l.cache != nil {
+		l.cache.invalidateSubmission(sub.ID)
+	}
+	return applied, err
+}
+
+// activateSubmissionCAS moves a submission PENDING→RUNNING via compare-and-set
+// (skipped when it is no longer PENDING) and invalidates the tick cache.
+// Returns whether the write was applied.
+func (l *Loop) activateSubmissionCAS(ctx context.Context, id string) (bool, error) {
+	applied, err := l.store.ActivateSubmission(ctx, id)
+	if err == nil && l.cache != nil {
+		l.cache.invalidateSubmission(id)
+	}
+	return applied, err
+}
+
+// maxSubmissionListPages caps the pagination walk in listSubmissionsByState
+// (10,000 submissions per state per tick) so a store bug that keeps returning
+// full pages cannot spin the scheduler forever.
+const maxSubmissionListPages = 100
+
+// listSubmissionsByState collects every submission in the given state by
+// paging through the store before any processing. A single Limit-100 page
+// starves older rows: the default created_at DESC ordering returns the newest
+// rows first, so anything beyond the first page would never be visited.
+// Callers process the collected list only after the walk completes, because
+// processing mutates submission states and would shift subsequent pages.
+func (l *Loop) listSubmissionsByState(ctx context.Context, state string) ([]*model.Submission, error) {
+	var all []*model.Submission
+	seen := make(map[string]bool)
+	for page := 0; ; page++ {
+		if page >= maxSubmissionListPages {
+			l.logger.Warn("submission list pagination cap reached; processing partial list",
+				"state", state, "pages", maxSubmissionListPages, "collected", len(all))
+			return all, nil
+		}
+		offset := page * model.MaxListLimit
+		// created_at ASC keeps the page walk stable under concurrent inserts
+		// (new rows land after the current position); the seen-map dedupes the
+		// residual boundary shifts from concurrent removals.
+		subs, total, err := l.store.ListSubmissions(ctx, model.ListOptions{
+			State: state, Limit: model.MaxListLimit, Offset: offset,
+			SortBy: "created_at", SortDir: "asc",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list %s submissions (offset %d): %w", state, offset, err)
+		}
+		for _, sub := range subs {
+			if seen[sub.ID] {
+				continue
+			}
+			seen[sub.ID] = true
+			all = append(all, sub)
+		}
+		// Drive the walk by the row count, not the page length: the store
+		// skips corrupt/undecryptable rows AFTER the SQL LIMIT, so a short
+		// page does not mean the end of the result set.
+		if offset+model.MaxListLimit >= total {
+			return all, nil
+		}
+	}
+}
+
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
@@ -1491,6 +1561,20 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				task.Stderr = stderr
 				scrubTaskToken(task)
 				l.logger.Info("task completed (poll)", "task_id", task.ID, "state", newState)
+
+				// CAS write: a concurrent cancel may have already terminalized
+				// this task (SKIPPED); the poll result must not overwrite it.
+				applied, err := l.store.TerminalizeTask(ctx, task)
+				if err != nil {
+					l.logger.Error("terminalize polled task", "task_id", task.ID, "error", err)
+					continue
+				}
+				if !applied {
+					l.logger.Info("task reached a terminal state concurrently, leaving as-is",
+						"task_id", task.ID, "polled_state", newState)
+				}
+				affected[task.SubmissionID] = true
+				continue
 			}
 
 			if err := l.store.UpdateTask(ctx, task); err != nil {
@@ -1812,7 +1896,7 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool) error {
 	// Check RUNNING and PENDING submissions.
 	for _, state := range []string{"RUNNING", "PENDING"} {
-		subs, _, err := l.store.ListSubmissions(ctx, model.ListOptions{State: state, Limit: 100})
+		subs, err := l.listSubmissionsByState(ctx, state)
 		if err != nil {
 			l.logger.Error("list submissions for finalize", "state", state, "error", err)
 			continue
@@ -1889,16 +1973,19 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 			}
 			now := time.Now().UTC()
 			sub.CompletedAt = &now
-			if err := l.updateSubmission(ctx, sub); err != nil {
+			if applied, err := l.finalizeSubmissionCAS(ctx, sub); err != nil {
 				l.logger.Error("finalize submission", "submission_id", subID, "error", err)
+			} else if !applied {
+				// Lost the race to a concurrent terminal write (e.g. a
+				// cancel): leave the winning state alone.
+				l.logger.Info("finalize skipped: submission already terminal", "submission_id", subID)
 			} else {
 				l.logger.Info("submission finalized", "submission_id", subID, "state", sub.State)
 			}
 		} else if (anyActive || anyFailed) && sub.State == model.SubmissionStatePending {
-			sub.State = model.SubmissionStateRunning
-			if err := l.updateSubmission(ctx, sub); err != nil {
+			if applied, err := l.activateSubmissionCAS(ctx, sub.ID); err != nil {
 				l.logger.Error("activate submission", "submission_id", subID, "error", err)
-			} else {
+			} else if applied {
 				l.logger.Info("submission running", "submission_id", subID)
 			}
 		}

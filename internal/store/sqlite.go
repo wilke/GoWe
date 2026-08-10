@@ -591,7 +591,7 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	}, "created_at DESC")
 
 	// List query with pagination.
-	listQuery := `SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, output_destination, output_state
+	listQuery := `SELECT ` + submissionListColumns + `
 		FROM submissions` + whereSQL + ` ORDER BY ` + orderSQL + ` LIMIT ? OFFSET ?`
 	listArgs := append(countArgs, opts.Limit, opts.Offset)
 
@@ -601,6 +601,17 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	}
 	defer rows.Close()
 
+	subs, err := s.scanSubmissionRows(rows)
+	return subs, total, err
+}
+
+// submissionListColumns is the column set scanned by scanSubmissionRows.
+const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, output_destination, output_state`
+
+// scanSubmissionRows scans submissionListColumns rows, skipping (with an error
+// log) rows that fail token decryption or JSON/timestamp parsing so one corrupt
+// row cannot hide the rest of the result set.
+func (s *SQLiteStore) scanSubmissionRows(rows *sql.Rows) ([]*model.Submission, error) {
 	var subs []*model.Submission
 	for rows.Next() {
 		var sub model.Submission
@@ -614,10 +625,11 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 			&sub.SubmittedBy, &createdAt, &completedAt,
 			&sub.UserToken, &tokenExpiry, &sub.AuthProvider,
 			&sub.OutputDestination, &sub.OutputState); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 
 		sub.State = model.SubmissionState(state)
+		var err error
 		if sub.UserToken, err = s.decryptToken(sub.UserToken, submissionTokenAAD(sub.ID)); err != nil {
 			slog.Error("skipping submission row with undecryptable token", "id", sub.ID, "error", err)
 			continue
@@ -652,7 +664,28 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 
 		subs = append(subs, &sub)
 	}
-	return subs, total, rows.Err()
+	return subs, rows.Err()
+}
+
+// ListSubmissionsAwaitingOutputStaging returns COMPLETED submissions that have
+// an output destination and no recorded delivery outcome — the exact set the
+// scheduler's post-stage phase must process. Filtering in SQL keeps the
+// per-tick cost bounded by pending deliveries instead of every COMPLETED
+// submission in the database.
+func (s *SQLiteStore) ListSubmissionsAwaitingOutputStaging(ctx context.Context) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_awaiting_output_staging", "table", "submissions")
+
+	query := `SELECT ` + submissionListColumns + `
+		FROM submissions
+		WHERE state = 'COMPLETED' AND output_destination != '' AND (output_state = '' OR output_state IS NULL)
+		ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanSubmissionRows(rows)
 }
 
 func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Time, submittedBy string) (map[string]int, error) {
@@ -692,16 +725,18 @@ func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Ti
 	return counts, rows.Err()
 }
 
-func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submission) error {
-	s.logger.Debug("sql", "op", "update", "table", "submissions", "id", sub.ID)
-
+// execSubmissionUpdate marshals the mutable submission columns and runs the
+// shared UPDATE with the given WHERE clause, returning the number of rows
+// affected. It is the single write path behind UpdateSubmission and
+// FinalizeSubmission so both persist the same field set.
+func (s *SQLiteStore) execSubmissionUpdate(ctx context.Context, sub *model.Submission, where string, whereArgs ...any) (int64, error) {
 	outputsJSON, err := json.Marshal(sub.Outputs)
 	if err != nil {
-		return fmt.Errorf("marshal outputs: %w", err)
+		return 0, fmt.Errorf("marshal outputs: %w", err)
 	}
 	labelsJSON, err := json.Marshal(sub.Labels)
 	if err != nil {
-		return fmt.Errorf("marshal labels: %w", err)
+		return 0, fmt.Errorf("marshal labels: %w", err)
 	}
 
 	errorJSON := ""
@@ -713,22 +748,70 @@ func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submissio
 
 	var completedAt *string
 	if sub.CompletedAt != nil {
-		s := sub.CompletedAt.Format(time.RFC3339Nano)
-		completedAt = &s
+		v := sub.CompletedAt.Format(time.RFC3339Nano)
+		completedAt = &v
 	}
 
+	args := append([]any{
+		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON,
+		completedAt, sub.OutputDestination, sub.OutputState,
+	}, whereArgs...)
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=? WHERE id=?`,
-		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON, completedAt, sub.OutputDestination, sub.OutputState, sub.ID,
+		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=?`+where,
+		args...,
 	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
+func (s *SQLiteStore) UpdateSubmission(ctx context.Context, sub *model.Submission) error {
+	s.logger.Debug("sql", "op", "update", "table", "submissions", "id", sub.ID)
+
+	n, err := s.execSubmissionUpdate(ctx, sub, ` WHERE id=?`, sub.ID)
 	if err != nil {
 		return err
 	}
-	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("submission %s not found", sub.ID)
 	}
 	return nil
+}
+
+// FinalizeSubmission writes the same field set as UpdateSubmission, but only
+// while the submission is still active (compare-and-set): a row already in a
+// terminal state (CANCELLED, COMPLETED, FAILED) is left untouched. Returns
+// applied=false (no error) when the guard rejected the write, so callers can
+// re-read and observe the winning state.
+func (s *SQLiteStore) FinalizeSubmission(ctx context.Context, sub *model.Submission) (bool, error) {
+	s.logger.Debug("sql", "op", "finalize", "table", "submissions", "id", sub.ID)
+
+	n, err := s.execSubmissionUpdate(ctx, sub, ` WHERE id=? AND state NOT IN (?, ?, ?)`,
+		sub.ID,
+		string(model.SubmissionStateCancelled), string(model.SubmissionStateCompleted), string(model.SubmissionStateFailed))
+	if err != nil {
+		return false, fmt.Errorf("finalize submission %s: %w", sub.ID, err)
+	}
+	return n > 0, nil
+}
+
+// ActivateSubmission moves a submission from PENDING to RUNNING
+// (compare-and-set). Returns applied=false (no error) when the submission is
+// no longer PENDING — e.g. it was cancelled mid-tick — so the activation
+// cannot resurrect a terminal submission.
+func (s *SQLiteStore) ActivateSubmission(ctx context.Context, id string) (bool, error) {
+	s.logger.Debug("sql", "op", "activate", "table", "submissions", "id", id)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE submissions SET state=? WHERE id=? AND state=?`,
+		string(model.SubmissionStateRunning), id, string(model.SubmissionStatePending))
+	if err != nil {
+		return false, fmt.Errorf("activate submission %s: %w", id, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
 }
 
 func (s *SQLiteStore) DeleteSubmission(ctx context.Context, id string) error {
@@ -1239,9 +1322,12 @@ func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceI
 	return s.scanTasks(rows)
 }
 
-func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
-	s.logger.Debug("sql", "op", "update", "table", "tasks", "id", task.ID)
-
+// execTaskUpdate marshals the mutable task columns (encrypting any embedded
+// HTTP bearer token via marshalRuntimeHints) and runs the shared UPDATE with
+// the given WHERE clause, returning the number of rows affected. It is the
+// single write path behind UpdateTask and TerminalizeTask so both persist the
+// same field set.
+func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, where string, whereArgs ...any) (int64, error) {
 	// Sanitize NaN/Inf values before marshaling (Go's encoding/json rejects them).
 	sanitizeFloats(task.Outputs)
 	sanitizeFloats(task.Tool)
@@ -1249,19 +1335,19 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 
 	outputsJSON, err := json.Marshal(task.Outputs)
 	if err != nil {
-		return fmt.Errorf("marshal outputs: %w", err)
+		return 0, fmt.Errorf("marshal outputs: %w", err)
 	}
 	toolJSON, err := json.Marshal(task.Tool)
 	if err != nil {
-		return fmt.Errorf("marshal tool: %w", err)
+		return 0, fmt.Errorf("marshal tool: %w", err)
 	}
 	jobJSON, err := json.Marshal(task.Job)
 	if err != nil {
-		return fmt.Errorf("marshal job: %w", err)
+		return 0, fmt.Errorf("marshal job: %w", err)
 	}
 	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var startedAt, completedAt *string
@@ -1274,27 +1360,56 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
 		completedAt = &v
 	}
 
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
-		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
-		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
-		 step_instance_id=?, scatter_index=? WHERE id=?`,
+	args := append([]any{
 		string(task.State), string(task.ExecutorType), task.ExternalID,
 		string(outputsJSON), task.Priority, task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.StepInstanceID, task.ScatterIndex,
-		task.ID,
+	}, whereArgs...)
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
+		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
+		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
+		 step_instance_id=?, scatter_index=?`+where,
+		args...,
 	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
+func (s *SQLiteStore) UpdateTask(ctx context.Context, task *model.Task) error {
+	s.logger.Debug("sql", "op", "update", "table", "tasks", "id", task.ID)
+
+	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=?`, task.ID)
 	if err != nil {
 		return err
 	}
-	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("task %s not found", task.ID)
 	}
 	return nil
+}
+
+// TerminalizeTask writes the same field set as UpdateTask, but only while the
+// task is not already terminal (SUCCESS, FAILED, SKIPPED) — compare-and-set,
+// so a concurrent terminal write (e.g. a cancel that SKIPPED the task) is
+// never overwritten. Returns applied=false (no error) when the guard rejected
+// the write, so callers can re-read and observe the winning state.
+func (s *SQLiteStore) TerminalizeTask(ctx context.Context, task *model.Task) (bool, error) {
+	s.logger.Debug("sql", "op", "terminalize", "table", "tasks", "id", task.ID)
+
+	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=? AND state NOT IN (?, ?, ?)`,
+		task.ID,
+		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped))
+	if err != nil {
+		return false, fmt.Errorf("terminalize task %s: %w", task.ID, err)
+	}
+	return n > 0, nil
 }
 
 func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error) {
