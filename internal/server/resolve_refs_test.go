@@ -43,7 +43,11 @@ func (m *mockStore) ListSubmissions(context.Context, model.ListOptions) ([]*mode
 	return nil, 0, nil
 }
 func (m *mockStore) UpdateSubmission(context.Context, *model.Submission) error { return nil }
-func (m *mockStore) DeleteSubmission(context.Context, string) error            { return nil }
+func (m *mockStore) FinalizeSubmission(context.Context, *model.Submission) (bool, error) {
+	return true, nil
+}
+func (m *mockStore) ActivateSubmission(context.Context, string) (bool, error) { return true, nil }
+func (m *mockStore) DeleteSubmission(context.Context, string) error           { return nil }
 func (m *mockStore) UpdateSubmissionInputs(context.Context, string, map[string]any) error {
 	return nil
 }
@@ -83,7 +87,11 @@ func (m *mockStore) ListTasksBySubmissionPaged(context.Context, string, model.Li
 func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.Task, error) {
 	return nil, nil
 }
-func (m *mockStore) UpdateTask(context.Context, *model.Task) error { return nil }
+func (m *mockStore) UpdateTask(context.Context, *model.Task) error              { return nil }
+func (m *mockStore) TerminalizeTask(context.Context, *model.Task) (bool, error) { return true, nil }
+func (m *mockStore) ListSubmissionsAwaitingOutputStaging(context.Context) ([]*model.Submission, error) {
+	return nil, nil
+}
 func (m *mockStore) GetTasksByState(context.Context, model.TaskState) ([]*model.Task, error) {
 	return nil, nil
 }

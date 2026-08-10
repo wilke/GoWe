@@ -1220,7 +1220,7 @@ func TestGroupAutoInjectsToken(t *testing.T) {
 		{"bvbrc", true},
 		{"esmfold", true},
 		{"default", false},
-		{"", false},      // empty group resolves to "default"
+		{"", false}, // empty group resolves to "default"
 		{"random", false},
 	}
 	for _, c := range cases {
