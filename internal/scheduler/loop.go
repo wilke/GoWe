@@ -852,7 +852,12 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 	return l.updateStepInstance(ctx, si)
 }
 
-// dispatchSubWorkflowStep handles a non-scatter sub-workflow step.
+// dispatchSubWorkflowStep handles a non-scatter sub-workflow step without
+// blocking the tick loop: it persists a single proxy task (ExecutorType
+// "subworkflow", RUNNING from birth) paired 1:1 with a child submission that
+// flows through the normal tick machinery. pollInFlight advances the proxy
+// from the child's state, and fan-in is the ordinary single-task path in
+// advanceSteps.
 func (l *Loop) dispatchSubWorkflowStep(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
 	step *model.Step, wf *model.Workflow, sub *model.Submission,
 	mergedInputs map[string]any, tasksByStep map[string]*model.Task,
@@ -870,45 +875,35 @@ func (l *Loop) dispatchSubWorkflowStep(ctx context.Context, si *model.StepInstan
 		return fmt.Errorf("sub-workflow %q not found", step.ToolRef)
 	}
 
-	// Create a temporary task for the child submission linkage.
-	parentTask := &model.Task{
-		ID:             "task_" + uuid.New().String(),
-		SubmissionID:   si.SubmissionID,
-		StepID:         si.StepID,
-		StepInstanceID: si.ID,
-		Tool:           tmpTask.Tool,
-		Job:            tmpTask.Job,
-		RuntimeHints:   tmpTask.RuntimeHints,
-	}
+	task := l.createSubworkflowProxyTask(si, tmpTask, step, sub, tmpTask.Job, -1)
 
-	childSub, err := l.createChildSubmission(ctx, parentTask, subGraph, tmpTask.Job, sub, wf)
+	// Persist the proxy and the DISPATCHED step in ONE transaction: a crash
+	// can never leave a DISPATCHED step without its task (or vice versa) —
+	// either both land, or the step stays READY and is re-dispatched. [F4]
+	si.State = model.StepStateDispatched
+	if err := l.store.CreateTasksAndDispatchStep(ctx, []*model.Task{task}, si); err != nil {
+		return fmt.Errorf("persist sub-workflow dispatch: %w", err)
+	}
+	l.cache.invalidateSteps(si.SubmissionID)
+
+	childSub, err := l.createChildSubmission(ctx, task, subGraph, task.Job, sub, wf)
 	if err != nil {
-		now := time.Now().UTC()
-		si.State = model.StepStateFailed
-		si.CompletedAt = &now
-		return l.updateStepInstance(ctx, si)
+		// Child creation is not retryable (e.g. plaintext-token refusal):
+		// surface the error on the proxy and fail the step outright. [F11]
+		l.failSubworkflowProxy(ctx, task, si, fmt.Sprintf("create child submission: %v", err))
+		return nil
 	}
 
-	if err := l.executeChildSubmission(ctx, childSub); err != nil {
-		now := time.Now().UTC()
-		si.State = model.StepStateFailed
-		si.CompletedAt = &now
-		return l.updateStepInstance(ctx, si)
-	}
-
-	now := time.Now().UTC()
-	if childSub.State == model.SubmissionStateCompleted {
-		si.State = model.StepStateCompleted
-		si.Outputs = childSub.Outputs
-	} else {
-		si.State = model.StepStateFailed
-	}
-	si.CompletedAt = &now
-
-	return l.updateStepInstance(ctx, si)
+	l.reconcileDispatchWithCancel(ctx, sub.ID, si.ID, []*model.Task{task}, []*model.Submission{childSub})
+	return nil
 }
 
-// dispatchScatterSubWorkflow handles scatter over a sub-workflow.
+// dispatchScatterSubWorkflow handles scatter over a sub-workflow without
+// blocking the tick loop: every scatter combination gets one persisted proxy
+// task (RUNNING, Job=combo, MaxRetries=0) paired 1:1 with a child submission
+// that flows through the normal tick machinery. The step fans in through the
+// ordinary ScatterIndex merge in advanceSteps once pollInFlight has advanced
+// every proxy from its child's state.
 func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
 	step *model.Step, wf *model.Workflow, sub *model.Submission,
 	mergedInputs map[string]any, tasksByStep map[string]*model.Task,
@@ -971,61 +966,230 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 		}
 	}
 
-	parentTask := &model.Task{
-		ID:             "task_" + uuid.New().String(),
-		SubmissionID:   si.SubmissionID,
-		StepID:         si.StepID,
-		StepInstanceID: si.ID,
+	// Empty scatter completes inline with empty merged outputs: advanceSteps
+	// skips zero-task steps, so a DISPATCHED empty scatter would hang
+	// forever. [M1]
+	if len(combinations) == 0 {
+		si.Outputs = l.mergeScatterOutputs(nil, step, method, scatterArrays)
+		now := time.Now().UTC()
+		si.State = model.StepStateCompleted
+		si.CompletedAt = &now
+		l.logger.Info("scatter sub-workflow completed (empty scatter)", "si_id", si.ID)
+		return l.updateStepInstance(ctx, si)
 	}
 
-	var results []map[string]any
+	// Build all proxy tasks up front. When-skipped combinations become
+	// terminal SUCCESS tasks with null outputs — exactly like plain scatter —
+	// so the ScatterIndex fan-in still sees a full index set.
+	tasks := make([]*model.Task, 0, len(combinations))
+	childless := make(map[string]bool) // task IDs of when-skipped combos: no child
 	for i, combo := range combinations {
 		if step.When != "" {
 			shouldRun, err := l.evaluateWhenForScatterIterationFromSteps(step, combo, mergedInputs, stepOutputs)
 			if err != nil {
-				l.logger.Warn("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+				// CWL spec: non-boolean 'when' expressions must fail the step.
+				now := time.Now().UTC()
+				si.State = model.StepStateFailed
+				si.CompletedAt = &now
+				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+				return l.updateStepInstance(ctx, si)
 			} else if !shouldRun {
 				nullOutputs := make(map[string]any)
 				for _, outID := range step.Out {
 					nullOutputs[outID] = nil
 				}
-				results = append(results, nullOutputs)
+				now := time.Now().UTC()
+				task := l.createTaskFromStep(si, tmpTask, step, sub, model.ExecutorTypeSubworkflow, i)
+				task.Outputs = nullOutputs
+				task.State = model.TaskStateSuccess
+				task.CompletedAt = &now
+				task.Job = combo
+				task.Inputs = combo
+				task.MaxRetries = 0
+				tasks = append(tasks, task)
+				childless[task.ID] = true
 				continue
 			}
 		}
-
-		childSub, err := l.createChildSubmission(ctx, parentTask, subGraph, combo, sub, wf)
-		if err != nil {
-			now := time.Now().UTC()
-			si.State = model.StepStateFailed
-			si.CompletedAt = &now
-			return l.updateStepInstance(ctx, si)
-		}
-
-		if err := l.executeChildSubmission(ctx, childSub); err != nil {
-			now := time.Now().UTC()
-			si.State = model.StepStateFailed
-			si.CompletedAt = &now
-			return l.updateStepInstance(ctx, si)
-		}
-
-		if childSub.State != model.SubmissionStateCompleted {
-			now := time.Now().UTC()
-			si.State = model.StepStateFailed
-			si.CompletedAt = &now
-			return l.updateStepInstance(ctx, si)
-		}
-
-		results = append(results, childSub.Outputs)
+		tasks = append(tasks, l.createSubworkflowProxyTask(si, tmpTask, step, sub, combo, i))
 	}
 
-	si.Outputs = l.mergeScatterOutputs(results, step, method, scatterArrays)
-	now := time.Now().UTC()
-	si.State = model.StepStateCompleted
-	si.CompletedAt = &now
-	l.logger.Info("scatter sub-workflow completed", "si_id", si.ID, "iterations", len(combinations))
+	// Persist all proxies and the DISPATCHED step in ONE transaction — a
+	// crash mid-dispatch leaves the step READY with zero tasks, so the next
+	// tick re-dispatches cleanly with no duplicates. [F4]
+	si.State = model.StepStateDispatched
+	si.ScatterCount = len(combinations)
+	si.ScatterMethod = method
+	if method == "nested_crossproduct" && len(step.Scatter) > 1 {
+		si.ScatterDims = make([]int, len(step.Scatter))
+		for i, name := range step.Scatter {
+			si.ScatterDims[i] = len(scatterArrays[name])
+		}
+	}
+	if err := l.store.CreateTasksAndDispatchStep(ctx, tasks, si); err != nil {
+		return fmt.Errorf("persist scatter sub-workflow dispatch: %w", err)
+	}
+	l.cache.invalidateSteps(si.SubmissionID)
 
-	return l.updateStepInstance(ctx, si)
+	// Create the child submissions outside the transaction (idempotent per
+	// proxy: a crash between the transaction and any child creation is
+	// repaired by pollInFlight from the persisted task.Job).
+	children := make([]*model.Submission, 0, len(tasks))
+	for _, task := range tasks {
+		if childless[task.ID] {
+			continue
+		}
+		childSub, err := l.createChildSubmission(ctx, task, subGraph, task.Job, sub, wf)
+		if err != nil {
+			// Not retryable (e.g. plaintext-token refusal): fail the step
+			// outright. Already-created siblings keep running until
+			// pollInFlight's reconciliation cancels them against the
+			// now-terminal step. [F11]
+			l.failSubworkflowProxy(ctx, task, si, fmt.Sprintf("create child submission: %v", err))
+			return nil
+		}
+		children = append(children, childSub)
+	}
+
+	l.reconcileDispatchWithCancel(ctx, sub.ID, si.ID, tasks, children)
+
+	l.logger.Info("scatter sub-workflow dispatched",
+		"si_id", si.ID, "iterations", len(combinations), "children", len(children))
+	return nil
+}
+
+// createSubworkflowProxyTask builds the persisted proxy task that pairs 1:1
+// with a child submission. Proxies are RUNNING from birth — never QUEUED, so
+// CheckoutTask, the stuck detector, and requeue/reconcile (which all filter
+// on executor_type='worker') never see them — and carry the fully-resolved
+// child inputs in Job, so recovery can recreate the child without re-running
+// scatter combination or valueFrom/when JavaScript. MaxRetries is pinned to
+// 0: a FAILED proxy must never cycle through resubmitRetrying, which would
+// erase the child's error. [F8]
+func (l *Loop) createSubworkflowProxyTask(si *model.StepInstance, tmpTask *model.Task, step *model.Step,
+	sub *model.Submission, job map[string]any, scatterIndex int) *model.Task {
+
+	task := l.createTaskFromStep(si, tmpTask, step, sub, model.ExecutorTypeSubworkflow, scatterIndex)
+	now := time.Now().UTC()
+	task.State = model.TaskStateRunning
+	task.StartedAt = &now
+	task.Job = job
+	task.Inputs = job
+	task.MaxRetries = 0
+	// No addUserToken: the proxy never executes, so a token at rest on a
+	// long-lived RUNNING row is pure exposure, and propagating the parent's
+	// OutputDestination here would contradict the child-level drop. [F6]
+	return task
+}
+
+// failSubworkflowProxy records a non-retryable sub-workflow dispatch failure:
+// the proxy task goes FAILED with the reason in Stderr (so
+// buildSubmissionError surfaces it) and the step instance is failed. [F11]
+func (l *Loop) failSubworkflowProxy(ctx context.Context, task *model.Task, si *model.StepInstance, reason string) {
+	now := time.Now().UTC()
+	task.State = model.TaskStateFailed
+	task.Stderr = reason
+	task.CompletedAt = &now
+	if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+		l.logger.Error("fail subworkflow proxy", "task_id", task.ID, "error", err)
+	}
+	si.State = model.StepStateFailed
+	si.CompletedAt = &now
+	if err := l.updateStepInstance(ctx, si); err != nil {
+		l.logger.Error("fail subworkflow step", "si_id", si.ID, "error", err)
+	}
+	l.logger.Error("sub-workflow dispatch failed", "si_id", si.ID, "task_id", task.ID, "reason", reason)
+}
+
+// reconcileDispatchWithCancel closes the cancel-during-dispatch race: the
+// cancel handler's CancelNonTerminalSteps/Tasks fan-out may have run between
+// this step's READY read and the dispatch transaction, in which case the
+// transaction's DISPATCHED write clobbered the handler's SKIPPED and the
+// proxies/children were created after the handler's snapshot. Re-read the
+// parent; if it went terminal, cancel the created children, SKIP the proxy
+// tasks, and conditionally re-SKIP the step. pollInFlight's reconciliation is
+// the per-tick backstop for anything this misses. [F2,M2]
+func (l *Loop) reconcileDispatchWithCancel(ctx context.Context, subID, siID string,
+	tasks []*model.Task, children []*model.Submission) {
+
+	// Fresh read (not tickCache): the whole point is to observe a cancel that
+	// landed after this tick's snapshot.
+	fresh, err := l.store.GetSubmission(ctx, subID)
+	if err != nil || fresh == nil {
+		l.logger.Error("re-read submission after dispatch", "submission_id", subID, "error", err)
+		return
+	}
+	if !fresh.State.IsTerminal() {
+		return
+	}
+	l.logger.Info("submission went terminal during sub-workflow dispatch; undoing fan-out",
+		"submission_id", subID, "si_id", siID, "state", fresh.State)
+	for _, child := range children {
+		l.cancelChildSubmission(ctx, child)
+	}
+	now := time.Now().UTC()
+	for _, task := range tasks {
+		task.State = model.TaskStateSkipped
+		task.CompletedAt = &now
+		// CAS: when-skipped synthetic SUCCESS tasks are already terminal and
+		// stay as they are.
+		if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+			l.logger.Error("skip proxy task after cancel", "task_id", task.ID, "error", err)
+		}
+	}
+	l.skipStepInstanceIfActive(ctx, siID)
+}
+
+// cancelChildSubmission cancels an active child submission and skips its
+// steps and tasks, mirroring the server's cancel handler. The CAS finalize
+// leaves a concurrently-terminalized child alone; the step/task writes only
+// touch non-terminal rows either way, so a worker can never check out
+// orphaned child work.
+//
+// Nested sub-workflows cascade one level per tick with no explicit recursion:
+// CancelNonTerminalTasks excludes the child's own subworkflow proxies, so they
+// stay RUNNING here — next tick pollSubworkflowTask observes their (now
+// CANCELLED) submission, cancels the grandchildren, and SKIPs those proxies.
+func (l *Loop) cancelChildSubmission(ctx context.Context, child *model.Submission) {
+	now := time.Now().UTC()
+	child.State = model.SubmissionStateCancelled
+	child.CompletedAt = &now
+	if _, err := l.finalizeSubmissionCAS(ctx, child); err != nil {
+		l.logger.Error("cancel child submission", "child_id", child.ID, "error", err)
+		return
+	}
+	if _, err := l.store.CancelNonTerminalSteps(ctx, child.ID, now); err != nil {
+		l.logger.Error("cancel child steps", "child_id", child.ID, "error", err)
+	}
+	if _, err := l.store.CancelNonTerminalTasks(ctx, child.ID, now); err != nil {
+		l.logger.Error("cancel child tasks", "child_id", child.ID, "error", err)
+	}
+	l.logger.Info("child submission cancelled", "child_id", child.ID)
+}
+
+// skipStepInstanceIfActive re-reads a step instance and marks it SKIPPED
+// unless a concurrent writer already made it terminal. This is the
+// "conditionally re-SKIP" half of the cancel-during-dispatch defense: the
+// dispatch transaction may have clobbered the cancel handler's SKIPPED with
+// DISPATCHED, and the cancel handler may crash between its submission and
+// step writes. [F2,M2]
+func (l *Loop) skipStepInstanceIfActive(ctx context.Context, siID string) {
+	si, err := l.store.GetStepInstance(ctx, siID)
+	if err != nil || si == nil {
+		l.logger.Error("re-read step instance for skip", "si_id", siID, "error", err)
+		return
+	}
+	if si.State.IsTerminal() {
+		return
+	}
+	now := time.Now().UTC()
+	si.State = model.StepStateSkipped
+	si.CompletedAt = &now
+	if err := l.updateStepInstance(ctx, si); err != nil {
+		l.logger.Error("skip step instance", "si_id", siID, "error", err)
+		return
+	}
+	l.logger.Info("step instance skipped (cancel reconciliation)", "si_id", siID)
 }
 
 // createTaskFromStep creates a new Task linked to a StepInstance.
@@ -1346,6 +1510,9 @@ func scrubTaskToken(task *model.Task) {
 }
 
 // submitAndUpdateTask submits a task to its executor and updates its state.
+// The final persist is a guarded write: a concurrent HTTP cancel may have
+// already terminalized (SKIPPED) the task, and the submit outcome must not
+// resurrect it under a cancelled submission.
 func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	exec, err := l.registry.Get(task.ExecutorType)
 	if err != nil {
@@ -1353,7 +1520,7 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		task.State = model.TaskStateFailed
 		task.Stderr = err.Error()
 		task.CompletedAt = &now
-		l.store.UpdateTask(ctx, task)
+		l.persistSubmitOutcome(ctx, task)
 		return
 	}
 
@@ -1395,7 +1562,22 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		}
 	}
 
-	l.store.UpdateTask(ctx, task)
+	l.persistSubmitOutcome(ctx, task)
+}
+
+// persistSubmitOutcome writes a submit result without overwriting a state a
+// concurrent cancel already made terminal (TerminalizeTask's guard fits both
+// the QUEUED and FAILED outcomes: write only while the row is non-terminal).
+func (l *Loop) persistSubmitOutcome(ctx context.Context, task *model.Task) {
+	applied, err := l.store.TerminalizeTask(ctx, task)
+	if err != nil {
+		l.logger.Error("persist submit outcome", "task_id", task.ID, "error", err)
+		return
+	}
+	if !applied {
+		l.logger.Info("task reached a terminal state concurrently, submit outcome discarded",
+			"task_id", task.ID, "outcome_state", task.State)
+	}
 }
 
 // mergeScatterOutputs merges scatter results into arrays with proper nesting.
@@ -1500,14 +1682,49 @@ func (l *Loop) evaluateWhenForScatterIterationFromSteps(step *model.Step, iterIn
 	return evaluator.EvaluateBool(step.When, evalCtx)
 }
 
-// resubmitRetrying re-submits RETRYING tasks to their executor.
+// resubmitRetrying re-submits RETRYING tasks to their executor. Each task is
+// first CLAIMED with a RETRYING→SCHEDULED CAS: a concurrent cancel may have
+// SKIPPED the task since the snapshot above was taken, and re-submitting it
+// would resurrect a terminal task; applied=false means someone else moved the
+// task and this loop must leave it alone.
 func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) error {
+	// Reclaim stranded claims first: a crash between the RETRYING→SCHEDULED
+	// claim below and the submit persist leaves a SCHEDULED row that no other
+	// phase scans. The scheduler is single-goroutine, so any SCHEDULED task
+	// observed at the start of this phase is such a stranded claim — sweep it
+	// back to RETRYING so the normal path below reclaims it this tick.
+	stranded, err := l.store.GetTasksByState(ctx, model.TaskStateScheduled)
+	if err != nil {
+		return err
+	}
+	for _, task := range stranded {
+		applied, err := l.store.CASTaskState(ctx, task.ID, model.TaskStateScheduled, model.TaskStateRetrying)
+		if err != nil {
+			l.logger.Error("reclaim stranded scheduled task", "task_id", task.ID, "error", err)
+			continue
+		}
+		if applied {
+			l.logger.Warn("reclaimed stranded SCHEDULED task (crash mid-resubmit)", "task_id", task.ID)
+		}
+	}
+
 	retrying, err := l.store.GetTasksByState(ctx, model.TaskStateRetrying)
 	if err != nil {
 		return err
 	}
 
 	for _, task := range retrying {
+		applied, err := l.store.CASTaskState(ctx, task.ID, model.TaskStateRetrying, model.TaskStateScheduled)
+		if err != nil {
+			l.logger.Error("claim retrying task", "task_id", task.ID, "error", err)
+			continue
+		}
+		if !applied {
+			l.logger.Info("retry resubmit skipped: task no longer RETRYING", "task_id", task.ID)
+			continue
+		}
+
+		task.State = model.TaskStateScheduled
 		task.RetryCount++
 		task.ExitCode = nil
 		task.Stdout = ""
@@ -1532,6 +1749,13 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 		}
 
 		for _, task := range tasks {
+			// Sub-workflow proxy tasks pair 1:1 with child submissions and
+			// advance from the child's state, not from an executor backend —
+			// intercept them before the registry lookup. [F8]
+			if task.ExecutorType == model.ExecutorTypeSubworkflow {
+				l.pollSubworkflowTask(ctx, task, affected)
+				continue
+			}
 			exec, err := l.registry.Get(task.ExecutorType)
 			if err != nil {
 				l.logger.Error("get executor for poll", "task_id", task.ID, "error", err)
@@ -1586,6 +1810,178 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 	}
 
 	return nil
+}
+
+// pollSubworkflowTask advances an in-flight sub-workflow proxy task from its
+// child submission's state:
+//
+//	(a) reconciliation — the proxy's own submission or step instance is
+//	    already terminal: cancel the child, retire the proxy as SKIPPED, and
+//	    conditionally SKIP the step. This is the ONLY path that cancels a
+//	    proxy: CancelNonTerminalTasks deliberately excludes subworkflow
+//	    proxies so a parent cancel leaves them RUNNING (in this scan) until
+//	    the cascade has reached their children — nested sub-workflows thus
+//	    cancel one level per tick with no explicit recursion [F2,M2]
+//	(b) repair — no child exists (crash between the dispatch transaction and
+//	    child creation): recreate it deterministically from task.Job [F4]
+//	(c) advancement — child COMPLETED → proxy SUCCESS with the child's
+//	    outputs; child FAILED or CANCELLED → proxy FAILED with the child's
+//	    error in Stderr. CANCELLED maps to FAILED (not SKIPPED) because
+//	    advanceSteps sets anyFailed only for FAILED tasks — a SKIPPED proxy
+//	    would let the parent COMPLETE with a null hole in the gathered
+//	    array. [F1,F9]
+//
+// All child reads go through GetChildSubmissions, which is uncached — the
+// tickCache could hold a pre-cancel snapshot. [F11]
+func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affected map[string]bool) {
+	// Fresh reads (not tickCache): reconciliation exists to observe cancels
+	// that landed after this tick's cache was primed.
+	sub, err := l.store.GetSubmission(ctx, task.SubmissionID)
+	if err != nil {
+		l.logger.Error("get submission for subworkflow poll", "task_id", task.ID, "error", err)
+		return
+	}
+	si, err := l.store.GetStepInstance(ctx, task.StepInstanceID)
+	if err != nil {
+		l.logger.Error("get step instance for subworkflow poll", "task_id", task.ID, "error", err)
+		return
+	}
+
+	// (a) Reconciliation.
+	if sub == nil || sub.State.IsTerminal() || si == nil || si.State.IsTerminal() {
+		children, err := l.store.GetChildSubmissions(ctx, task.ID)
+		if err != nil {
+			// Strict scan: a corrupt child row surfaces as an error. Skip the
+			// task this tick (no terminalization) — the proxy stays RUNNING
+			// and is retried next tick.
+			l.logger.Error("list children for subworkflow reconcile", "task_id", task.ID, "error", err)
+			return
+		}
+		for _, child := range children {
+			if !child.State.IsTerminal() {
+				l.cancelChildSubmission(ctx, child)
+			}
+		}
+		now := time.Now().UTC()
+		task.State = model.TaskStateSkipped
+		task.CompletedAt = &now
+		if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+			l.logger.Error("skip orphaned subworkflow proxy", "task_id", task.ID, "error", err)
+			return
+		}
+		if si != nil && !si.State.IsTerminal() {
+			l.skipStepInstanceIfActive(ctx, si.ID)
+		}
+		l.logger.Info("subworkflow proxy reconciled (parent terminal)",
+			"task_id", task.ID, "submission_id", task.SubmissionID)
+		affected[task.SubmissionID] = true
+		return
+	}
+
+	children, err := l.store.GetChildSubmissions(ctx, task.ID)
+	if err != nil {
+		// Strict scan: "child exists but its row is corrupt" surfaces as an
+		// error, NOT as an empty list — running the repair below on it would
+		// create a duplicate child. Skip the task this tick.
+		l.logger.Error("list children for subworkflow poll", "task_id", task.ID, "error", err)
+		return
+	}
+
+	// (b) Repair.
+	if len(children) == 0 {
+		l.repairSubworkflowChild(ctx, task, sub, si, affected)
+		return
+	}
+
+	// (c) Advancement.
+	child := children[0]
+	switch child.State {
+	case model.SubmissionStateCompleted:
+		task.State = model.TaskStateSuccess
+		task.Outputs = child.Outputs
+	case model.SubmissionStateFailed:
+		task.State = model.TaskStateFailed
+		task.Stderr = formatChildError(child)
+	case model.SubmissionStateCancelled:
+		task.State = model.TaskStateFailed
+		task.Stderr = fmt.Sprintf("child submission %s cancelled", child.ID)
+	default:
+		return // Child still in flight — poll again next tick.
+	}
+	now := time.Now().UTC()
+	task.CompletedAt = &now
+	// CAS write: a concurrent cancel may have already terminalized this proxy
+	// (SKIPPED); the child's result must not overwrite it. [F3]
+	applied, err := l.store.TerminalizeTask(ctx, task)
+	if err != nil {
+		l.logger.Error("terminalize subworkflow proxy", "task_id", task.ID, "error", err)
+		return
+	}
+	if !applied {
+		l.logger.Info("subworkflow proxy reached a terminal state concurrently, leaving as-is",
+			"task_id", task.ID)
+	} else {
+		l.logger.Info("subworkflow proxy advanced",
+			"task_id", task.ID, "state", task.State, "child_id", child.ID)
+	}
+	affected[task.SubmissionID] = true
+}
+
+// repairSubworkflowChild recreates a missing child submission from its
+// persisted proxy: the dispatch crashed after the task transaction but before
+// child creation. task.Job already holds the fully-resolved combination, so
+// the repair re-parses the sub-workflow graph but never re-runs scatter
+// combination or valueFrom/when JavaScript (deterministic recovery). [F4]
+func (l *Loop) repairSubworkflowChild(ctx context.Context, task *model.Task,
+	sub *model.Submission, si *model.StepInstance, affected map[string]bool) {
+
+	fail := func(reason string) {
+		// Same policy as dispatch-time child-creation failure. [F11]
+		l.failSubworkflowProxy(ctx, task, si, reason)
+		affected[task.SubmissionID] = true
+	}
+
+	wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
+	if err != nil || wf == nil {
+		l.logger.Error("get workflow for subworkflow repair", "task_id", task.ID, "error", err)
+		return
+	}
+	step := findStep(wf, task.StepID)
+	if step == nil {
+		fail(fmt.Sprintf("repair child submission: step %s not found in workflow %s", task.StepID, wf.ID))
+		return
+	}
+	graphDoc, err := parser.New(l.logger).ParseGraph([]byte(wf.RawCWL))
+	if err != nil {
+		fail(fmt.Sprintf("repair child submission: parse parent CWL: %v", err))
+		return
+	}
+	subGraph := graphDoc.SubWorkflows[step.ToolRef]
+	if subGraph == nil {
+		fail(fmt.Sprintf("repair child submission: sub-workflow %q not found", step.ToolRef))
+		return
+	}
+	child, err := l.createChildSubmission(ctx, task, subGraph, task.Job, sub, wf)
+	if err != nil {
+		fail(fmt.Sprintf("repair child submission: %v", err))
+		return
+	}
+	l.logger.Info("subworkflow child repaired", "task_id", task.ID, "child_id", child.ID)
+	affected[task.SubmissionID] = true
+}
+
+// formatChildError renders a failed child submission's error for the proxy
+// task's Stderr, so the parent's buildSubmissionError surfaces the child's
+// failure detail. [F9]
+func formatChildError(child *model.Submission) string {
+	if child.Error == nil {
+		return fmt.Sprintf("child submission %s failed", child.ID)
+	}
+	msg := fmt.Sprintf("child submission %s failed: %s: %s", child.ID, child.Error.Code, child.Error.Message)
+	if child.Error.Context != nil && child.Error.Context.Stderr != "" {
+		msg += "\n" + child.Error.Context.Stderr
+	}
+	return msg
 }
 
 // detectStuckTasks identifies classes of QUEUED worker tasks making zero progress.
@@ -1814,6 +2210,7 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 			allTerminal := true
 			anyFailed := false
 			anyRunning := false
+			anySkipped := false
 			for _, t := range tasks {
 				if t.State == model.TaskStateFailed && t.RetryCount < t.MaxRetries {
 					// Task will be retried — treat as non-terminal.
@@ -1828,6 +2225,29 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 				}
 				if t.State == model.TaskStateFailed {
 					anyFailed = true
+				}
+				if t.State == model.TaskStateSkipped {
+					anySkipped = true
+				}
+			}
+
+			if allTerminal && si.ScatterCount > 0 {
+				// Scatter fan-in requires the full index set: a crash during
+				// legacy serial task creation can leave fewer task rows than
+				// ScatterCount, and completing over the gap would emit an
+				// undersized output array. Duplicate rows (same index twice)
+				// are harmless — the results slice below is sized by
+				// ScatterCount, never len(tasks). [F5]
+				distinct := make(map[int]bool)
+				for _, t := range tasks {
+					if t.ScatterIndex >= 0 && t.ScatterIndex < si.ScatterCount {
+						distinct[t.ScatterIndex] = true
+					}
+				}
+				if len(distinct) < si.ScatterCount {
+					l.logger.Warn("scatter fan-in waiting: incomplete task index set",
+						"si_id", si.ID, "have", len(distinct), "want", si.ScatterCount)
+					continue
 				}
 			}
 
@@ -1847,6 +2267,15 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 			now := time.Now().UTC()
 			if anyFailed {
 				si.State = model.StepStateFailed
+			} else if anySkipped {
+				// SKIPPED tasks arise only from cancellation
+				// (CancelNonTerminalTasks or subworkflow reconciliation) —
+				// when-skip synthetics are terminal SUCCESS, never SKIPPED.
+				// Completing over a SKIPPED task would produce a COMPLETED
+				// step under a cancelled submission (with null holes, for
+				// scatter). Mirror the cancel and skip the step, scatter or
+				// not. [M2]
+				si.State = model.StepStateSkipped
 			} else {
 				si.State = model.StepStateCompleted
 
@@ -1860,7 +2289,7 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 						if wf != nil {
 							step := findStep(wf, si.StepID)
 							if step != nil {
-								results := make([]map[string]any, len(tasks))
+								results := make([]map[string]any, si.ScatterCount)
 								for _, t := range tasks {
 									if t.ScatterIndex >= 0 && t.ScatterIndex < len(results) {
 										results[t.ScatterIndex] = t.Outputs
@@ -2073,9 +2502,16 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 		if task.RetryCount >= task.MaxRetries {
 			continue
 		}
-		task.State = model.TaskStateRetrying
-		if err := l.store.UpdateTask(ctx, task); err != nil {
+		// CAS write: only flip FAILED→RETRYING while the task is still FAILED
+		// — a concurrent cancel may have SKIPPED it since the list above was
+		// taken, and a retry must not resurrect a terminal task.
+		applied, err := l.store.CASTaskState(ctx, task.ID, model.TaskStateFailed, model.TaskStateRetrying)
+		if err != nil {
 			l.logger.Error("mark retrying", "task_id", task.ID, "error", err)
+			continue
+		}
+		if !applied {
+			l.logger.Info("retry skipped: task no longer FAILED", "task_id", task.ID)
 			continue
 		}
 		l.logger.Info("task marked for retry", "task_id", task.ID, "retry_count", task.RetryCount, "max_retries", task.MaxRetries)

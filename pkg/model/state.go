@@ -106,4 +106,7 @@ const (
 	ExecutorTypeContainer ExecutorType = "container"
 	ExecutorTypeApptainer ExecutorType = "apptainer"
 	ExecutorTypeWorker    ExecutorType = "worker"
+	// ExecutorTypeSubworkflow marks scheduler-internal proxy tasks that pair
+	// 1:1 with child submissions; it is never a registered executor backend.
+	ExecutorTypeSubworkflow ExecutorType = "subworkflow"
 )

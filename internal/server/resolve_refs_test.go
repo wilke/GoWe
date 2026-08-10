@@ -36,6 +36,9 @@ func (m *mockStore) UpdateWorkflow(context.Context, *model.Workflow) error { ret
 func (m *mockStore) DeleteWorkflow(context.Context, string) error          { return nil }
 
 func (m *mockStore) CreateSubmission(context.Context, *model.Submission) error { return nil }
+func (m *mockStore) CreateSubmissionWithSteps(context.Context, *model.Submission, []*model.StepInstance) error {
+	return nil
+}
 func (m *mockStore) GetSubmission(context.Context, string) (*model.Submission, error) {
 	return nil, nil
 }
@@ -76,7 +79,10 @@ func (m *mockStore) CancelNonTerminalSteps(context.Context, string, time.Time) (
 	return 0, nil
 }
 
-func (m *mockStore) CreateTask(context.Context, *model.Task) error        { return nil }
+func (m *mockStore) CreateTask(context.Context, *model.Task) error { return nil }
+func (m *mockStore) CreateTasksAndDispatchStep(context.Context, []*model.Task, *model.StepInstance) error {
+	return nil
+}
 func (m *mockStore) GetTask(context.Context, string) (*model.Task, error) { return nil, nil }
 func (m *mockStore) ListTasksBySubmission(context.Context, string) ([]*model.Task, error) {
 	return nil, nil
@@ -89,6 +95,9 @@ func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.T
 }
 func (m *mockStore) UpdateTask(context.Context, *model.Task) error              { return nil }
 func (m *mockStore) TerminalizeTask(context.Context, *model.Task) (bool, error) { return true, nil }
+func (m *mockStore) CASTaskState(context.Context, string, model.TaskState, model.TaskState) (bool, error) {
+	return true, nil
+}
 func (m *mockStore) ListSubmissionsAwaitingOutputStaging(context.Context) ([]*model.Submission, error) {
 	return nil, nil
 }
