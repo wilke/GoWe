@@ -422,7 +422,14 @@ func (s *SQLiteStore) DeleteWorkflow(ctx context.Context, id string) error {
 
 func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submission) error {
 	s.logger.Debug("sql", "op", "insert", "table", "submissions", "id", sub.ID)
+	return s.insertSubmission(ctx, s.db, sub)
+}
 
+// insertSubmission marshals the submission (including token encryption) and
+// runs the shared INSERT on the given execer. It is the single insert path
+// behind CreateSubmission and CreateSubmissionWithSteps so both persist the
+// same field set.
+func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *model.Submission) error {
 	inputsJSON, err := json.Marshal(sub.Inputs)
 	if err != nil {
 		return fmt.Errorf("marshal inputs: %w", err)
@@ -455,7 +462,7 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 		return err
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	_, err = ex.ExecContext(ctx,
 		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
@@ -465,6 +472,33 @@ func (s *SQLiteStore) CreateSubmission(ctx context.Context, sub *model.Submissio
 		sub.OutputDestination, sub.OutputState,
 	)
 	return err
+}
+
+// CreateSubmissionWithSteps creates a submission and all its step instances in
+// ONE transaction (all-or-nothing): a crash or a bad step insert mid-batch can
+// never leave a submission row without its step instances — the zero-step
+// window that would let the scheduler's finalize phase complete an empty child
+// submission. Token encryption follows the CreateSubmission path via the
+// shared insertSubmission helper.
+func (s *SQLiteStore) CreateSubmissionWithSteps(ctx context.Context, sub *model.Submission, steps []*model.StepInstance) error {
+	s.logger.Debug("sql", "op", "insert_with_steps", "table", "submissions", "id", sub.ID, "steps", len(steps))
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.insertSubmission(ctx, tx, sub); err != nil {
+		return fmt.Errorf("insert submission %s: %w", sub.ID, err)
+	}
+	for _, si := range steps {
+		if err := s.insertStepInstance(ctx, tx, si); err != nil {
+			return fmt.Errorf("insert step instance %s: %w", si.ID, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Submission, error) {
@@ -868,11 +902,17 @@ func (s *SQLiteStore) UpdateSubmissionInputs(ctx context.Context, id string, inp
 	return nil
 }
 
+// GetChildSubmissions returns every submission whose parent_task_id matches
+// the given proxy task. The scan is deliberately STRICT (unlike the lenient
+// scanSubmissionRows): a corrupt row must surface as an error, never be
+// silently skipped — the scheduler treats "no children" as a crash window and
+// repairs it by creating a new child, so converting "child exists but is
+// unreadable" into "no child" would create a duplicate child submission.
 func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error) {
 	s.logger.Debug("sql", "op", "list_children", "table", "submissions", "parent_task_id", parentTaskID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id, error
 		 FROM submissions WHERE parent_task_id = ? ORDER BY created_at`, parentTaskID)
 	if err != nil {
 		return nil, err
@@ -882,38 +922,40 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 	var subs []*model.Submission
 	for rows.Next() {
 		var sub model.Submission
-		var inputsJSON, outputsJSON, labelsJSON string
+		var inputsJSON, outputsJSON, labelsJSON, errorJSON string
 		var state, createdAt string
 		var completedAt *string
 
 		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 			&inputsJSON, &outputsJSON, &labelsJSON,
-			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID); err != nil {
+			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID, &errorJSON); err != nil {
 			return nil, err
 		}
 
 		sub.State = model.SubmissionState(state)
+		if errorJSON != "" {
+			var subErr model.SubmissionError
+			if err := unmarshalJSON(errorJSON, &subErr, "error"); err != nil {
+				return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+			}
+			sub.Error = &subErr
+		}
 		if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
-			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
-			continue
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 		}
 		if err := unmarshalJSON(outputsJSON, &sub.Outputs, "outputs"); err != nil {
-			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
-			continue
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 		}
 		if err := unmarshalJSON(labelsJSON, &sub.Labels, "labels"); err != nil {
-			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
-			continue
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 		}
 		if sub.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
-			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
-			continue
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 		}
 		if completedAt != nil {
 			t, err := parseTimeOrZero(*completedAt)
 			if err != nil {
-				slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
-				continue
+				return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 			}
 			sub.CompletedAt = &t
 		}
@@ -927,7 +969,14 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 
 func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInstance) error {
 	s.logger.Debug("sql", "op", "insert", "table", "step_instances", "id", si.ID)
+	return s.insertStepInstance(ctx, s.db, si)
+}
 
+// insertStepInstance marshals the step instance and runs the shared INSERT on
+// the given execer. It is the single insert path behind CreateStepInstance,
+// BatchCreateStepInstances, and CreateSubmissionWithSteps so all persist the
+// same field set.
+func (s *SQLiteStore) insertStepInstance(ctx context.Context, ex execer, si *model.StepInstance) error {
 	outputsJSON, err := json.Marshal(si.Outputs)
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
@@ -944,7 +993,7 @@ func (s *SQLiteStore) CreateStepInstance(ctx context.Context, si *model.StepInst
 		return fmt.Errorf("marshal scatter_dims: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	_, err = ex.ExecContext(ctx,
 		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		si.ID, si.SubmissionID, si.StepID, string(si.State),
@@ -967,37 +1016,8 @@ func (s *SQLiteStore) BatchCreateStepInstances(ctx context.Context, steps []*mod
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare: %w", err)
-	}
-	defer stmt.Close()
-
 	for _, si := range steps {
-		outputsJSON, err := json.Marshal(si.Outputs)
-		if err != nil {
-			return fmt.Errorf("marshal outputs: %w", err)
-		}
-
-		var completedAt *string
-		if si.CompletedAt != nil {
-			v := si.CompletedAt.Format(time.RFC3339Nano)
-			completedAt = &v
-		}
-
-		scatterDimsJSON, err := json.Marshal(si.ScatterDims)
-		if err != nil {
-			return fmt.Errorf("marshal scatter_dims: %w", err)
-		}
-
-		_, err = stmt.ExecContext(ctx,
-			si.ID, si.SubmissionID, si.StepID, string(si.State),
-			si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON),
-			si.CreatedAt.Format(time.RFC3339Nano), completedAt,
-		)
-		if err != nil {
+		if err := s.insertStepInstance(ctx, tx, si); err != nil {
 			return fmt.Errorf("insert step instance %s: %w", si.ID, err)
 		}
 	}
@@ -1049,7 +1069,14 @@ func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.St
 
 func (s *SQLiteStore) UpdateStepInstance(ctx context.Context, si *model.StepInstance) error {
 	s.logger.Debug("sql", "op", "update", "table", "step_instances", "id", si.ID)
+	return s.execStepInstanceUpdate(ctx, s.db, si)
+}
 
+// execStepInstanceUpdate marshals the mutable step-instance columns and runs
+// the shared UPDATE on the given execer. It is the single write path behind
+// UpdateStepInstance and CreateTasksAndDispatchStep so both persist the same
+// field set.
+func (s *SQLiteStore) execStepInstanceUpdate(ctx context.Context, ex execer, si *model.StepInstance) error {
 	outputsJSON, err := json.Marshal(si.Outputs)
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
@@ -1066,7 +1093,7 @@ func (s *SQLiteStore) UpdateStepInstance(ctx context.Context, si *model.StepInst
 		return fmt.Errorf("marshal scatter_dims: %w", err)
 	}
 
-	result, err := s.db.ExecContext(ctx,
+	result, err := ex.ExecContext(ctx,
 		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, completed_at=? WHERE id=?`,
 		string(si.State), si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), completedAt, si.ID,
 	)
@@ -1173,9 +1200,22 @@ func (s *SQLiteStore) scanStepInstances(rows *sql.Rows) ([]*model.StepInstance, 
 
 // --- Task operations ---
 
+// execer abstracts *sql.DB and *sql.Tx so shared write helpers can run
+// standalone or inside a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	s.logger.Debug("sql", "op", "insert", "table", "tasks", "id", task.ID)
+	return s.insertTask(ctx, s.db, task)
+}
 
+// insertTask marshals the task (including runtime-hint encryption) and runs
+// the shared INSERT on the given execer. It is the single insert path behind
+// CreateTask and CreateTasksAndDispatchStep so both persist the same field
+// set.
+func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Task) error {
 	inputsJSON, err := json.Marshal(task.Inputs)
 	if err != nil {
 		return fmt.Errorf("marshal inputs: %w", err)
@@ -1211,7 +1251,7 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 		completedAt = &s
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	_, err = ex.ExecContext(ctx,
 		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 		 stdout, stderr, exit_code, created_at, started_at, completed_at,
@@ -1227,6 +1267,33 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 		task.ScatterIndex,
 	)
 	return err
+}
+
+// CreateTasksAndDispatchStep creates every task of a dispatched step and
+// persists the step instance's new state in ONE transaction: either all task
+// rows and the step update land, or none do. A crash (or a bad task) mid-batch
+// can therefore never leave a DISPATCHED step with a partial task set — the
+// step stays READY and the dispatch is cleanly retried next tick.
+func (s *SQLiteStore) CreateTasksAndDispatchStep(ctx context.Context, tasks []*model.Task, si *model.StepInstance) error {
+	s.logger.Debug("sql", "op", "create_tasks_dispatch_step", "table", "tasks", "count", len(tasks), "step_instance_id", si.ID)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, task := range tasks {
+		if err := s.insertTask(ctx, tx, task); err != nil {
+			return fmt.Errorf("insert task %s: %w", task.ID, err)
+		}
+	}
+
+	if err := s.execStepInstanceUpdate(ctx, tx, si); err != nil {
+		return fmt.Errorf("update step_instance %s: %w", si.ID, err)
+	}
+
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, error) {
@@ -1412,6 +1479,25 @@ func (s *SQLiteStore) TerminalizeTask(ctx context.Context, task *model.Task) (bo
 	return n > 0, nil
 }
 
+// CASTaskState moves a task from one exact state to another (compare-and-set).
+// Returns applied=false (no error) when the task is no longer in the `from`
+// state — e.g. a concurrent cancel SKIPPED it — so a stale snapshot can never
+// resurrect a terminal task (retry marking FAILED→RETRYING, retry claiming
+// RETRYING→SCHEDULED). Only the state column is written; any bookkeeping
+// happens in the caller after a successful claim.
+func (s *SQLiteStore) CASTaskState(ctx context.Context, id string, from, to model.TaskState) (bool, error) {
+	s.logger.Debug("sql", "op", "cas_state", "table", "tasks", "id", id, "from", from, "to", to)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET state=? WHERE id=? AND state=?`,
+		string(to), id, string(from))
+	if err != nil {
+		return false, fmt.Errorf("cas task %s state %s->%s: %w", id, from, to, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
 func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "list_by_state", "table", "tasks", "state", state)
 
@@ -1449,16 +1535,22 @@ func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	return s.scanTasks(rows)
 }
 
+// CancelNonTerminalTasks SKIPs every non-terminal task of a submission EXCEPT
+// sub-workflow proxy tasks (executor_type='subworkflow'): proxies are cancelled
+// by the scheduler's per-tick reconciliation (pollSubworkflowTask), which is
+// the only path that also cancels the proxy's child submission — skipping a
+// proxy here would remove it from the RUNNING scan and orphan its child.
 func (s *SQLiteStore) CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error) {
 	s.logger.Debug("sql", "op", "cancel_non_terminal_tasks", "submission_id", submissionID)
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks
 		 SET state = ?, completed_at = ?
-		 WHERE submission_id = ? AND state NOT IN (?, ?, ?)`,
+		 WHERE submission_id = ? AND state NOT IN (?, ?, ?) AND executor_type != ?`,
 		string(model.TaskStateSkipped), completedAt.Format(time.RFC3339Nano),
 		submissionID,
-		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped))
+		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped),
+		string(model.ExecutorTypeSubworkflow))
 	if err != nil {
 		return 0, fmt.Errorf("cancel non-terminal tasks: %w", err)
 	}

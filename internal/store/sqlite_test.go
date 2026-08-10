@@ -1708,12 +1708,24 @@ func TestCancelNonTerminalTasks(t *testing.T) {
 		}
 	}
 
+	// A RUNNING sub-workflow proxy must be EXCLUDED: it is cancelled by the
+	// scheduler's reconciliation (which also cancels its child submission),
+	// so it must stay in the RUNNING scan.
+	proxy := sampleTask(sub.ID)
+	proxy.ID = "task_subwf_proxy"
+	proxy.State = model.TaskStateRunning
+	proxy.ExecutorType = model.ExecutorTypeSubworkflow
+	if err := st.CreateTask(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+
 	cancelled, err := st.CancelNonTerminalTasks(ctx, sub.ID, cancelTime)
 	if err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 
-	// 4 non-terminal (PENDING, SCHEDULED, QUEUED, RUNNING) should be cancelled.
+	// 4 non-terminal (PENDING, SCHEDULED, QUEUED, RUNNING) should be cancelled;
+	// the subworkflow proxy is not among them.
 	if cancelled != 4 {
 		t.Errorf("cancelled = %d, want 4", cancelled)
 	}
@@ -1733,6 +1745,10 @@ func TestCancelNonTerminalTasks(t *testing.T) {
 		if stateMap[id] != model.TaskStateSkipped {
 			t.Errorf("%s state = %q, want SKIPPED", id, stateMap[id])
 		}
+	}
+	// The subworkflow proxy stays RUNNING for the scheduler to reconcile.
+	if stateMap["task_subwf_proxy"] != model.TaskStateRunning {
+		t.Errorf("task_subwf_proxy state = %q, want RUNNING (excluded from cancel fan-out)", stateMap["task_subwf_proxy"])
 	}
 	// Terminal states should be unchanged.
 	if stateMap["task_success"] != model.TaskStateSuccess {

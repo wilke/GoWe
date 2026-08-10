@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -337,11 +338,17 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 		s.store.UpdateWorker(r.Context(), worker)
 	}
 
+	// task.ExitCode is *int: log the value (or "<nil>") rather than the
+	// pointer address.
+	exitCode := "<nil>"
+	if task.ExitCode != nil {
+		exitCode = strconv.Itoa(*task.ExitCode)
+	}
 	s.logger.Info("task completed by worker",
 		"task_id", task.ID,
 		"worker_id", workerID,
 		"state", task.State,
-		"exit_code", task.ExitCode,
+		"exit_code", exitCode,
 	)
 
 	respondOK(w, reqID, map[string]any{"task_id": task.ID, "state": task.State})

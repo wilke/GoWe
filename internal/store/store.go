@@ -20,6 +20,11 @@ type Store interface {
 
 	// Submission CRUD
 	CreateSubmission(ctx context.Context, sub *model.Submission) error
+	// CreateSubmissionWithSteps creates a submission and all its step
+	// instances in a single transaction (all-or-nothing): a failure mid-batch
+	// leaves no submission row behind, closing the zero-step crash window in
+	// child-submission creation.
+	CreateSubmissionWithSteps(ctx context.Context, sub *model.Submission, steps []*model.StepInstance) error
 	GetSubmission(ctx context.Context, id string) (*model.Submission, error)
 	ListSubmissions(ctx context.Context, opts model.ListOptions) ([]*model.Submission, int, error)
 	UpdateSubmission(ctx context.Context, sub *model.Submission) error
@@ -50,6 +55,11 @@ type Store interface {
 
 	// Task operations
 	CreateTask(ctx context.Context, task *model.Task) error
+	// CreateTasksAndDispatchStep creates every task of a dispatched step and
+	// persists the step instance's new state in a single transaction
+	// (all-or-nothing): a failure mid-batch leaves no tasks behind and the
+	// step instance untouched.
+	CreateTasksAndDispatchStep(ctx context.Context, tasks []*model.Task, si *model.StepInstance) error
 	GetTask(ctx context.Context, id string) (*model.Task, error)
 	ListTasksBySubmission(ctx context.Context, submissionID string) ([]*model.Task, error)
 	ListTasksBySubmissionPaged(ctx context.Context, submissionID string, opts model.ListOptions) ([]*model.Task, int, error)
@@ -58,9 +68,18 @@ type Store interface {
 	// TerminalizeTask is UpdateTask guarded by a compare-and-set: the write is
 	// skipped (applied=false, no error) when the task is already terminal.
 	TerminalizeTask(ctx context.Context, task *model.Task) (bool, error)
+	// CASTaskState moves a task `from`→`to` only while it is still exactly in
+	// `from`; applied=false (no error) otherwise, so a stale snapshot can
+	// never overwrite a concurrent terminal write (e.g. a cancel that SKIPPED
+	// the task). Used for retry marking (FAILED→RETRYING) and retry claiming
+	// (RETRYING→SCHEDULED).
+	CASTaskState(ctx context.Context, id string, from, to model.TaskState) (bool, error)
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 	GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error)
+	// CancelNonTerminalTasks SKIPs a submission's non-terminal tasks EXCEPT
+	// sub-workflow proxies: those are cancelled by the scheduler's per-tick
+	// reconciliation so the cancel cascade reaches their child submissions.
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
 	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
 	ResetFailedSteps(ctx context.Context, submissionID string) (int, error)

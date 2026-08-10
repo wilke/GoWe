@@ -301,6 +301,43 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// hasActiveChildSubmissions reports whether any child submission spawned by the
+// given submission's subworkflow proxy tasks (recursively, any depth) is still
+// non-terminal. The visited set guards against cycles.
+func (s *Server) hasActiveChildSubmissions(ctx context.Context, submissionID string, visited map[string]bool) (bool, error) {
+	if visited[submissionID] {
+		return false, nil
+	}
+	visited[submissionID] = true
+
+	tasks, err := s.store.ListTasksBySubmission(ctx, submissionID)
+	if err != nil {
+		return false, fmt.Errorf("list tasks for %s: %w", submissionID, err)
+	}
+	for _, task := range tasks {
+		if task.ExecutorType != model.ExecutorTypeSubworkflow {
+			continue
+		}
+		children, err := s.store.GetChildSubmissions(ctx, task.ID)
+		if err != nil {
+			return false, fmt.Errorf("list children of task %s: %w", task.ID, err)
+		}
+		for _, child := range children {
+			if !child.State.IsTerminal() {
+				return true, nil
+			}
+			active, err := s.hasActiveChildSubmissions(ctx, child.ID, visited)
+			if err != nil {
+				return false, err
+			}
+			if active {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
@@ -332,6 +369,22 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 	if !requireSubmissionAccess(sub, userCtx) {
 		respondError(w, reqID, http.StatusForbidden, &model.APIError{
 			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
+		return
+	}
+
+	// Deleting the rows would also delete any subworkflow proxy tasks — the
+	// scheduler's only handle for cascading a cancel to child submissions. If
+	// active children exist (at any nesting depth), refuse: cancel first and
+	// let the cascade finish, then delete.
+	if active, err := s.hasActiveChildSubmissions(r.Context(), id, map[string]bool{}); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	} else if active {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "submission has active child submissions; cancel it and wait for them to finish before deleting",
 		})
 		return
 	}
