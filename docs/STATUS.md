@@ -1,20 +1,57 @@
 # GoWe Project Status
 
-Last updated: 2026-06-16
+Last updated: 2026-08-26
 
 ## Production Deployment
 
 | Item | Value |
 |------|-------|
-| Host | `coconut` |
-| Binary | `ba3bc5e` (dev tag `ba3bc5e-prod-20260616-131431`) — `main` tip |
-| Branch | `main` (PR #115 and this session's PRs #119/#121/#122/#124/#125/#126 all merged) |
-| Server | Port 8091, `--default-executor worker`, `--workspace-staging server` |
-| Workers | 4 total: `cpu-worker-1`, `cpu-worker-2` (no GPU) + `worker-1` (GPU 1), `worker-2` (GPU 2) |
-| GPUs | H200 NVL, IDs 1-2 used by `worker-1`/`worker-2`; GPU 0 reserved |
+| Host | `coconut` (8× NVIDIA H200 NVL) |
+| Binary | **v0.15.0** — tagged [GitHub release](https://github.com/wilke/GoWe/releases/tag/v0.15.0) (`linux_amd64` archives); installed as `bin/<name>-v0.15.0` with the `bin/gowe`, `gowe-server`, `gowe-worker`, `cwl-runner` symlinks pointing at them. Previous release binaries (`*-v0.14.0`, `*-v0.13.2`) retained for rollback |
+| Branch | `main` at `b3d51d1` (release 0.15.0; PRs #165–#170, #174, #177–#180 merged) |
+| Server | Port 8091: `--db /scout/wf/gowe/gowe.db --default-executor worker --scheduler-poll 1s --upload-backend local --upload-local-dir /scout/wf/gowe/uploads --upload-download-dirs ... --admins ... --workspace-staging server --token-key-file /scout/wf/gowe/token.key --redeliver-source-dirs /scout/wf/data` |
+| Workers | 9 total, all reporting `version 0.15.0`: `cpu-worker-1`, `cpu-worker-2` (default group, apptainer, no GPU); `worker-1` (GPU 1), `worker-2` (GPU 2) (default group, apptainer); `ragstack-cpu-1` (group `ragstack-cpu`, `--runtime none`); `ragstack-oa-1..4` (group `ragstack`, apptainer, `--extra-bind /rag`, `--env-file /scout/wf/gowe/ragstack-worker-env.env --secret-file /scout/wf/gowe/ragstack-worker-secrets.env`) |
+| GPUs | 8× H200 NVL on the host; IDs 1-2 used by `worker-1`/`worker-2`; GPU 0 reserved; 3-7 free |
 | URL | https://gowe.software-smithy.org |
 
-> Redeployed 2026-06-16 from `ba3bc5e` (all 5 processes + 4 symlinks consistent). Rollback binary `gowe-server-772f1ab-prod-*` retained in `bin/`. Exact launch commands captured from `/proc` at deploy time (server flags above; workers use `--runtime apptainer --poll 500ms --image-dir /scout/containers --pre-stage-dir /local_databases --extra-bind /scout/data --secret-file ... --env-file ... --workspace-stager`, GPU workers add `--gpu --gpu-id N`).
+> Redeployed 2026-08-26 from the v0.15.0 release (server restarted first, then all 9 workers;
+> `GET /api/v1/workers` shows every worker at `0.15.0`). Launch commands captured from `/proc`
+> at deploy time: the server flags above are the live cmdline — `scripts/start-server.sh` does
+> **not** yet pass `--redeliver-source-dirs`, so a script restart must add it. Default-group
+> workers use `--runtime apptainer --poll 500ms --image-dir /scout/containers --pre-stage-dir
+> /local_databases --extra-bind /scout/data --stage-out file:///scout/wf/data --secret-file
+> /scout/wf/gowe/secrets.env --env-file /scout/wf/gowe/worker-env.env --workspace-stager`;
+> GPU workers add `--gpu --gpu-id N`. Release-based deploy procedure:
+> [`PRODUCTION.md`](PRODUCTION.md#deploying-a-release).
+
+### Recent changes — 0.15.0 (2026-08-26)
+
+Full list in [`CHANGELOG.md`](../CHANGELOG.md); operator notes in [`upgrading.md`](upgrading.md).
+
+- **Scatter over sub-workflows is non-blocking and cancellable** — persisted `subworkflow`
+  proxy tasks paired 1:1 with child submissions ([#167](https://github.com/wilke/GoWe/pull/167),
+  [ADR-0011](adr/0011-scatter-subworkflow-proxy-tasks.md)); CAS submission finalize/activate
+  and bounded list pagination ([#165](https://github.com/wilke/GoWe/pull/165)); synchronous
+  cancel fan-out to all descendants ([#168](https://github.com/wilke/GoWe/pull/168)); child
+  submissions hidden from listings unless `include_children=true`
+  ([#169](https://github.com/wilke/GoWe/pull/169)); spec §7.4 + upgrade guide
+  ([#170](https://github.com/wilke/GoWe/pull/170)).
+- **Workspace stage-out no longer corrupts binary files** — bytes go through Shock upload
+  nodes instead of `Workspace.create`'s inline JSON field; `ObjectMeta` slot layout fixed
+  ([#174](https://github.com/wilke/GoWe/pull/174), issues #171/#172). Uploads are streamed
+  with exact `Content-Length`, verified against the Shock reply and `update_auto_meta`, and
+  placeholders are cleaned up on failure ([#177](https://github.com/wilke/GoWe/pull/177)).
+  Recorded Workspace fixtures and Python/TypeScript MCP parity
+  ([#178](https://github.com/wilke/GoWe/pull/178)). The web UI uses a typed Workspace client
+  under the session token only, with seekable uploads and the `--upload-max-size` cap
+  ([#179](https://github.com/wilke/GoWe/pull/179)).
+- **Admin output recovery** — `POST /api/v1/admin/submissions/{id}/verify-outputs` and
+  `.../redeliver`, `gowe admin verify-outputs|redeliver`, server `--redeliver-source-dirs`
+  ([#180](https://github.com/wilke/GoWe/pull/180)). Production had 36 `delivered` + 5
+  `upload_failed` submissions with pre-#174 outputs to verify/re-deliver.
+- Since 0.14.0 (deployed for the first time here): workers delete task directories after
+  SUCCESS; retention via `gowe submit --debug` or worker `--keep-task-dirs`
+  ([#158](https://github.com/wilke/GoWe/pull/158)).
 
 ### Start/Stop
 

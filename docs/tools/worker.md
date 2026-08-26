@@ -922,15 +922,19 @@ apptainer pull docker://ubuntu:22.04
 
 ### Work directory full
 
-Workers automatically delete a task's working directory (and its `_tmp`
-sibling) once the server accepts the task's SUCCESS result. Directories are
-retained when:
+Workers automatically delete a task's working directory (and its `_tmp` and
+`_staging` siblings) once the server accepts the task's SUCCESS result.
+Directories are retained when:
 
 - the task **failed** or was cancelled (kept for debugging)
 - the submission was run with `gowe submit --debug`
 - the worker runs with `--keep-task-dirs`
 - outputs are staged in place (`--stage-out local`), where downstream tasks
   read directly from the task directory
+
+Staged copies in a shared stage-out directory (`--stage-out file:///...`) or in
+Shock are not cleaned by the worker; submission-level retention of those
+intermediates is tracked in [#159](https://github.com/wilke/GoWe/issues/159).
 
 Clean up retained directories manually:
 ```bash

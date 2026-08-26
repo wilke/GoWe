@@ -93,6 +93,8 @@ else
     fi
     chmod 600 "$TOKEN_KEY_FILE" 2>/dev/null || true
     TOKEN_FLAGS=(--token-key-file "$TOKEN_KEY_FILE")
+    # REDELIVER_SOURCE_DIRS: roots the admin re-delivery endpoint may read originals
+    # from (the workers' --stage-out dir). Required for `gowe admin redeliver`.
 fi
 
 ./bin/gowe-server \
@@ -108,6 +110,7 @@ fi
     --log-level "$LOG_LEVEL" \
     --admins "$ADMINS" \
     --workspace-staging server \
+    --redeliver-source-dirs "${REDELIVER_SOURCE_DIRS:-/scout/wf/data}" \
     > "$LOG_DIR/server.log" 2>&1 &
 echo $! > "$PID_DIR/server.pid"
 echo "  server  PID=$(cat "$PID_DIR/server.pid")  port=${GOWE_PORT}"

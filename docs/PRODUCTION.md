@@ -38,12 +38,12 @@ GoWe production setup on `coconut`, an 8x NVIDIA H200 NVL workstation.
     │   ├── pids/              # PID files for start/stop scripts
     │   ├── uploads/           # File upload storage (local backend)
     │   ├── workdir/           # Per-worker working directories
+    │   │   ├── cpu-worker-1/      # task dirs are deleted after SUCCESS (see --keep-task-dirs)
     │   │   ├── worker-1/
-    │   │   ├── worker-2/
-    │   │   ├── worker-3/
-    │   │   └── worker-gpu/
-    │   └── secrets.env        # HuggingFace tokens (mode 600)
-    └── data/                  # Staged output files
+    │   │   └── ragstack-oa-1/
+    │   ├── secrets.env        # HuggingFace tokens (mode 600)
+    │   └── token.key          # Token-encryption key (--token-key-file, mode 600)
+    └── data/                  # Staged output files (also the --redeliver-source-dirs allowlist)
 
 /local_databases/              # Pre-staged reference datasets
 ├── alphafold/                 # AlphaFold model weights + databases
@@ -231,9 +231,72 @@ GPU 0 is reserved for interactive/other use. The start script assigns workers to
 
 Up to 7 GPU workers can run simultaneously (GPUs 1-7).
 
-## Building Binaries
+## Deploying a Release
 
-Go is not installed natively. All builds run through Apptainer:
+Production runs **tagged releases**, not local builds. Each `vX.Y.Z` tag is built by
+GoReleaser into per-binary archives named `<binary>_<X.Y.Z>_linux_amd64.tar.gz` (plus
+`checksums.txt`) on the [GitHub release](https://github.com/wilke/GoWe/releases). Binaries
+live in `bin/` as `<name>-vX.Y.Z`; the unversioned names (`gowe`, `gowe-server`,
+`gowe-worker`, `cwl-runner`) are symlinks, so rolling back is repointing four links.
+
+```bash
+cd /scout/Experiments/GoWe
+VER=0.15.0
+
+# 1. Download the linux_amd64 archives and install them as versioned binaries
+mkdir -p /tmp/gowe-release-$VER && cd /tmp/gowe-release-$VER
+gh release download v$VER --repo wilke/GoWe --pattern '*_linux_amd64.tar.gz' --pattern checksums.txt
+sha256sum -c --ignore-missing checksums.txt
+for b in gowe gowe-server gowe-worker cwl-runner; do
+  tar -xzf "${b}_${VER}_linux_amd64.tar.gz" "$b"
+  install -m 755 "$b" /scout/Experiments/GoWe/bin/${b}-v$VER
+done
+
+# 2. Repoint the symlinks
+cd /scout/Experiments/GoWe/bin
+for b in gowe gowe-server gowe-worker cwl-runner; do ln -sfn "${b}-v$VER" "$b"; done
+ls -l gowe gowe-server gowe-worker cwl-runner
+
+# 3. Restart the server first, then the workers
+cd /scout/Experiments/GoWe
+SERVER_PID=$(pgrep -f "gowe-server --addr :8091")
+tr '\0' ' ' < /proc/$SERVER_PID/cmdline > /tmp/server_cmdline   # keep the exact flags
+kill -TERM $SERVER_PID && sleep 3
+nohup $(cat /tmp/server_cmdline) > /scout/wf/gowe/logs/server-v$VER.log 2>&1 &
+until curl -sf http://localhost:8091/api/v1/health > /dev/null; do sleep 1; done
+# then SIGTERM each gowe-worker (it finishes its current task) and relaunch it with its
+# previous cmdline — capture it from /proc the same way; per-worker flags are in docs/STATUS.md
+
+# 4. Verify: every worker registers with the new version
+curl -s http://localhost:8091/api/v1/workers | python3 -c \
+  "import sys,json; [print(w['name'], w['state'], w.get('version')) for w in json.load(sys.stdin)['data']]"
+```
+
+Restart the server before the workers: the server owns the schema migrations and the API
+surface. A restarted worker re-registers on start; any task it was running is requeued by
+the server (it no longer appears in the worker's heartbeat) and re-dispatched from scratch.
+
+### Server flags added in 0.15.0
+
+| Flag | Purpose |
+|------|---------|
+| `--redeliver-source-dirs <dir>[,<dir>]` | Allowlist of local directories the admin re-delivery endpoint may read staged originals from — the shared stage-out directory (`/scout/wf/data` here). Without it `redeliver` refuses every local re-upload. The live server passes it; `scripts/start-server.sh` does not yet. |
+| `--workspace-url` | Now also configures the web UI's workspace browser/uploads, which run under the logged-in user's session token only (no server service-account fallback). |
+| `--upload-max-size` | Now also caps web UI workspace uploads (`413` when exceeded; default 1 GB). |
+
+### Recovering Workspace outputs delivered before 0.15.0
+
+Every binary output post-staged to a BV-BRC Workspace by a pre-0.15.0 server is corrupt in
+the stored copy (issue #172). After deploying 0.15.0 with `--redeliver-source-dirs
+/scout/wf/data`, run `gowe admin verify-outputs --all --output-state delivered,upload_failed`,
+then `gowe admin redeliver <id> --dry-run` and `gowe admin redeliver <id>` per affected
+submission. Procedure, requirements, and limits:
+[`upgrading.md`](upgrading.md#admin-recovery-of-workspace-outputs-180).
+
+## Building Binaries (development builds)
+
+Go is not installed natively. All builds run through Apptainer. Dev builds are for testing
+against a scratch database; production is deployed from releases (above).
 
 ```bash
 # Build all binaries with version tags
