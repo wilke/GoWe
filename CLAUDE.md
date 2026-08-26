@@ -138,6 +138,16 @@ SQLite with `modernc.org/sqlite` (pure Go, no CGO). Schema in `internal/store/mi
 - Integration tests use build tags (`-tags=integration`)
 - `go.sum` is auto-generated; only edit `go.mod` manually
 
+## Agent Workflow (Claude Code)
+
+- Use **Fable** for planning and reviews; choose an appropriate (often cheaper) model
+  for implementation.
+- Use subagents where appropriate: fan out independent implementation pieces, and run
+  adversarial review lenses in parallel before opening a PR (see the #164 plan on the
+  issue tracker for the pattern: map → plan → review → implement → verify).
+- Go is not installed natively — build and test through the `build` / `test` skills
+  (Apptainer `golang:1.24`).
+
 ## Branching, Commits & Releases
 
 Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
