@@ -648,6 +648,177 @@ No auth required:
 
 ---
 
+## 10. Admin: Verify and Re-deliver Workspace Outputs
+
+Both endpoints require the **admin** role (`401` unauthenticated, `403` for a
+non-admin) and a server with BV-BRC Workspace staging available
+(`503 workspace staging not configured` otherwise). They act on behalf of the
+submission's owner using the token stored with the submission — the admin's
+own token is never used, because it has no write permission in another user's
+workspace home. A missing or expired stored token yields `409 Conflict` with an
+explanatory message; the owner must re-submit.
+
+Only submissions whose delivery already ran to an outcome are accepted:
+`output_state` must be `delivered` or `upload_failed` (`409` for anything else,
+including `uploading` while the scheduler is still delivering), and the
+submission must be terminal.
+
+Every output `File` of the submission **and of its descendant sub-workflow
+child submissions** is examined, at any nesting depth (arrays, records,
+`Directory` listings). `secondaryFiles` are not examined — the scheduler's
+stage-out never delivers them on their own, so they are neither expected in
+the workspace nor reported.
+
+### Verify outputs (read-only)
+
+```
+POST /api/v1/admin/submissions/{id}/verify-outputs
+```
+
+Downloads each `ws://` output through `Workspace.get_download_url` and streams
+it through SHA-1, comparing the result to the `checksum` (`sha1$<hex>`) and
+`size` the worker recorded **before** upload. The workspace's own `ObjectSize`
+is never trusted. Outputs that still carry a `file://` location on a submission
+with an output destination are reported as *not delivered*. Nothing is written.
+
+```json
+{
+  "data": {
+    "submission_id": "sub_abc",
+    "state": "COMPLETED",
+    "output_state": "delivered",
+    "submissions": ["sub_abc", "sub_child1"],
+    "files": [
+      {
+        "submission_id": "sub_abc",
+        "location": "ws:///user@bvbrc/home/results/chunks.jsonl.gz",
+        "expected_checksum": "sha1$3f786850e387550fdab836ed7e6dc881de23001b",
+        "actual_checksum":   "sha1$89e6c98d92887913cadf06b2adb97f26cde4849b",
+        "expected_size": 1048576,
+        "actual_size": 1572864,
+        "ok": false,
+        "error": "checksum mismatch"
+      }
+    ],
+    "summary": { "total": 1, "ok": 0, "mismatched": 1, "errors": 0 }
+  }
+}
+```
+
+`summary.mismatched` counts files that downloaded but differ; `summary.errors`
+counts files that could not be compared (missing object, no recorded checksum,
+not delivered, download failure) — see each file's `error`. A `total` of `0`
+means no deliverable output was found at all (for example a submission with
+no `File` outputs); such a submission is never marked delivered by re-delivery.
+
+Optional fields (`expected_checksum`, `actual_checksum`, `error`, `action`,
+`source`, `dry_run`, `updated`, `state_restored`, `manifest_uploaded`,
+`manifest_error`, and the extra summary counters) are omitted when empty.
+
+Each verification download waits at most 5 minutes for response headers and
+1 hour end to end.
+
+### Re-deliver outputs
+
+```
+POST /api/v1/admin/submissions/{id}/redeliver
+POST /api/v1/admin/submissions/{id}/redeliver?dry_run=true
+```
+
+Runs the verification above, then for every file that does **not** verify:
+
+1. locates the local original by **checksum + size** among the output `File`
+   objects recorded on the submission's tasks (and its children's tasks) —
+   `file://<stage-out-dir>/<task-id>/<name>`; basenames are not used because
+   scatter shards share them;
+2. admits the candidate only if it resolves (symlinks followed) under one of
+   the server's `--redeliver-source-dirs`, is a regular file, and has the
+   recorded size — FIFOs, devices, directories and wrong-size files are
+   skipped without being opened; with no `--redeliver-source-dirs` configured
+   local recovery is refused and reported per file;
+3. checks the original's SHA-1 against the recorded checksum;
+4. re-uploads it through the verified streaming Shock path to the **same**
+   workspace path (overwrite) — or, for a never-uploaded `file://` output,
+   under the submission's output destination. The target path must lie inside
+   the submission's output destination;
+5. downloads and re-verifies it, rewriting the output's `location` if it
+   changed.
+
+Only when **every** file verifies is `output_state` set to `delivered`; a
+submission the scheduler had marked `FAILED` with error code
+`OUTPUT_STAGING_FAILED` is then restored to `COMPLETED` (`state_restored:
+true`). Whenever the submission row is written, the output manifest
+`_gowe_outputs.json` in the destination is rewritten to match
+(`manifest_uploaded: true`, or `manifest_error` if that non-fatal step failed).
+Nothing is ever deleted.
+
+Writes are compare-and-set against the `state`/`output_state` the request
+loaded: if the submission changed meanwhile the response is `409 … changed
+concurrently` and nothing is written. Only one re-delivery per submission runs
+at a time (`409 re-delivery in progress`); the lock is in-memory, the row is
+never marked `uploading`.
+
+The response has the same shape as verification plus per-file `action` and
+`source`, and extra summary counters:
+
+| `action`            | Meaning |
+|---------------------|---------|
+| `verified`          | already matched; nothing done |
+| `reuploaded`        | re-uploaded from `source` and re-verified OK |
+| `would_reupload`    | dry run: original found at `source`, nothing changed |
+| `original_missing`  | no admissible local file with that checksum+size (the `error` lists why each candidate was rejected) |
+| `failed`            | not recoverable or the attempt failed — no recorded checksum, basename of the original differs from the workspace object, target path outside the destination, upload error, or the re-verification after upload did not match (`error` begins with `re-verify after upload`) |
+
+```json
+{
+  "data": {
+    "submission_id": "sub_abc",
+    "state": "COMPLETED",
+    "output_state": "delivered",
+    "updated": true,
+    "state_restored": true,
+    "manifest_uploaded": true,
+    "submissions": ["sub_abc"],
+    "files": [
+      {
+        "submission_id": "sub_abc",
+        "location": "ws:///user@bvbrc/home/results/chunks.jsonl.gz",
+        "expected_checksum": "sha1$3f78…",
+        "actual_checksum":   "sha1$3f78…",
+        "expected_size": 1048576,
+        "actual_size": 1048576,
+        "ok": true,
+        "action": "reuploaded",
+        "source": "/shared/stage-out/task_7f3a/chunks.jsonl.gz"
+      }
+    ],
+    "summary": { "total": 1, "ok": 1, "mismatched": 0, "errors": 0, "reuploaded": 1 }
+  }
+}
+```
+
+### Finding affected submissions
+
+`GET /api/v1/submissions/` accepts `output_state=<state>[,<state>...]`
+(lowercase: `delivered`, `upload_failed`, `skipped`, `uploading`), combinable
+with `date_start=YYYY-MM-DD`; children are excluded by default.
+
+### CLI
+
+```bash
+gowe admin verify-outputs sub_abc                       # one submission
+gowe admin verify-outputs --all --since 2026-06-01      # every delivered/upload_failed submission
+gowe admin verify-outputs --all --output-state delivered --json
+gowe admin redeliver sub_abc --dry-run                  # plan only
+gowe admin redeliver sub_abc                            # repair
+```
+
+The commands exit non-zero when any output fails verification or re-delivery.
+The server is started with `--redeliver-source-dirs /path/to/stage-out` to
+allow re-uploads from the shared stage-out directory.
+
+---
+
 ## Complete MCP Server Example
 
 Here's a minimal MCP tool that submits a job and polls for completion. This shows the typical flow an MCP server would implement:

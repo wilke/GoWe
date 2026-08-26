@@ -50,7 +50,10 @@ func (m *mockStore) FinalizeSubmission(context.Context, *model.Submission) (bool
 	return true, nil
 }
 func (m *mockStore) ActivateSubmission(context.Context, string) (bool, error) { return true, nil }
-func (m *mockStore) DeleteSubmission(context.Context, string) error           { return nil }
+func (m *mockStore) UpdateSubmissionIfState(context.Context, *model.Submission, model.SubmissionState, string) (bool, error) {
+	return true, nil
+}
+func (m *mockStore) DeleteSubmission(context.Context, string) error { return nil }
 func (m *mockStore) UpdateSubmissionInputs(context.Context, string, map[string]any) error {
 	return nil
 }

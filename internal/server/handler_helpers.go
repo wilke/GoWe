@@ -51,6 +51,9 @@ func parseListOptions(r *http.Request) model.ListOptions {
 	opts.DateStart = q.Get("date_start")
 	opts.DateEnd = q.Get("date_end")
 	opts.WorkflowID = q.Get("workflow_id")
+	// Output delivery state is lowercase ("delivered", "upload_failed") and
+	// may be a comma-separated list; never upper-cased like State.
+	opts.OutputState = strings.TrimSpace(q.Get("output_state"))
 
 	if labels := q["label"]; len(labels) > 0 {
 		opts.Labels = labels

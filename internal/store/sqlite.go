@@ -608,6 +608,14 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	if opts.ExcludeChildren {
 		whereClauses = append(whereClauses, "(parent_task_id = '' OR parent_task_id IS NULL)")
 	}
+	if states := opts.OutputStates(); len(states) > 0 {
+		placeholders := make([]string, len(states))
+		for i, st := range states {
+			placeholders[i] = "?"
+			countArgs = append(countArgs, st)
+		}
+		whereClauses = append(whereClauses, "output_state IN ("+strings.Join(placeholders, ",")+")")
+	}
 
 	whereSQL := ""
 	if len(whereClauses) > 0 {
@@ -830,6 +838,20 @@ func (s *SQLiteStore) FinalizeSubmission(ctx context.Context, sub *model.Submiss
 		string(model.SubmissionStateCancelled), string(model.SubmissionStateCompleted), string(model.SubmissionStateFailed))
 	if err != nil {
 		return false, fmt.Errorf("finalize submission %s: %w", sub.ID, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateSubmissionIfState writes the submission only while the row still
+// carries the expected (state, output_state) pair — see store.Store.
+func (s *SQLiteStore) UpdateSubmissionIfState(ctx context.Context, sub *model.Submission, expectState model.SubmissionState, expectOutputState string) (bool, error) {
+	s.logger.Debug("sql", "op", "update_if_state", "table", "submissions", "id", sub.ID,
+		"expect_state", expectState, "expect_output_state", expectOutputState)
+
+	n, err := s.execSubmissionUpdate(ctx, sub, ` WHERE id=? AND state=? AND output_state=?`,
+		sub.ID, string(expectState), expectOutputState)
+	if err != nil {
+		return false, fmt.Errorf("update submission %s if state: %w", sub.ID, err)
 	}
 	return n > 0, nil
 }

@@ -32,6 +32,12 @@ type Store interface {
 	// the write is skipped (applied=false, no error) when the submission is
 	// already terminal.
 	FinalizeSubmission(ctx context.Context, sub *model.Submission) (bool, error)
+	// UpdateSubmissionIfState is UpdateSubmission guarded by a compare-and-set
+	// on (state, output_state): the write is skipped (applied=false, no
+	// error) unless the row still holds exactly expectState and
+	// expectOutputState, so a caller that loaded the submission earlier can
+	// never overwrite a concurrent transition.
+	UpdateSubmissionIfState(ctx context.Context, sub *model.Submission, expectState model.SubmissionState, expectOutputState string) (bool, error)
 	// ActivateSubmission moves a submission PENDING→RUNNING; applied=false
 	// (no error) when it is no longer PENDING.
 	ActivateSubmission(ctx context.Context, id string) (bool, error)

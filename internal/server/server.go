@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +17,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/ui"
+	"github.com/me/gowe/pkg/staging"
 )
 
 // Server is the GoWe REST API server.
@@ -27,17 +30,26 @@ type Server struct {
 	validator        *parser.Validator
 	store            store.Store
 	scheduler        scheduler.Scheduler
-	registry         *executor.Registry      // optional; used by dry-run to check executor availability
-	bvbrcCaller      bvbrc.RPCCaller         // optional; AppService caller, nil when no BV-BRC token
-	workspaceURL     string                  // optional; BV-BRC Workspace endpoint for the UI (empty = production)
-	uiUploadMaxSize  int64                   // optional; cap on UI workspace upload bodies (0 = ui default)
-	testApps         []map[string]any        // optional; static app list for testing without BV-BRC
-	ui               *ui.UI                  // UI handler for web interface
-	adminConfig      *AdminConfig            // optional; admin role configuration
-	anonConfig       *AnonymousConfig        // optional; anonymous access configuration
-	workerKeyConfig  *WorkerKeyConfig        // optional; static worker keys (file/env)
-	workerAuth       *WorkerKeyAuthenticator // validates static + DB-backed worker keys
-	fileUploadConfig *FileUploadConfig       // optional; file upload proxy configuration
+	registry         *executor.Registry       // optional; used by dry-run to check executor availability
+	bvbrcCaller      bvbrc.RPCCaller          // optional; AppService caller, nil when no BV-BRC token
+	workspaceURL     string                   // optional; BV-BRC Workspace endpoint for the UI (empty = production)
+	uiUploadMaxSize  int64                    // optional; cap on UI workspace upload bodies (0 = ui default)
+	testApps         []map[string]any         // optional; static app list for testing without BV-BRC
+	ui               *ui.UI                   // UI handler for web interface
+	adminConfig      *AdminConfig             // optional; admin role configuration
+	anonConfig       *AnonymousConfig         // optional; anonymous access configuration
+	workerKeyConfig  *WorkerKeyConfig         // optional; static worker keys (file/env)
+	workerAuth       *WorkerKeyAuthenticator  // validates static + DB-backed worker keys
+	fileUploadConfig *FileUploadConfig        // optional; file upload proxy configuration
+	wsStager         *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+
+	// redeliverSourceDirs is the allowlist of local directories the admin
+	// re-delivery endpoint may read originals from; empty refuses file://
+	// recovery entirely.
+	redeliverSourceDirs []string
+	// redeliverLocks holds one entry per submission with a re-delivery in
+	// flight (in-memory: a crash never leaves a stuck marker behind).
+	redeliverLocks sync.Map
 }
 
 // Option configures optional Server dependencies.
@@ -72,6 +84,29 @@ func WithWorkspaceURL(url string) Option {
 func WithUIUploadMaxSize(n int64) Option {
 	return func(s *Server) {
 		s.uiUploadMaxSize = n
+	}
+}
+
+// WithWorkspaceStager sets the BV-BRC Workspace stager used by the admin
+// output verification and re-delivery endpoints. Without it those endpoints
+// answer 503.
+func WithWorkspaceStager(ws *staging.WorkspaceStager) Option {
+	return func(s *Server) {
+		s.wsStager = ws
+	}
+}
+
+// WithRedeliverSourceDirs sets the directories the admin re-delivery endpoint
+// may read local originals from (symlinks resolved, segment-aware prefix).
+// Without it, re-delivery never opens a local file.
+func WithRedeliverSourceDirs(dirs []string) Option {
+	return func(s *Server) {
+		s.redeliverSourceDirs = nil
+		for _, d := range dirs {
+			if d = strings.TrimSpace(d); d != "" {
+				s.redeliverSourceDirs = append(s.redeliverSourceDirs, d)
+			}
+		}
 	}
 }
 
@@ -307,6 +342,10 @@ func (s *Server) routes() {
 				r.Use(requireAdmin(s.logger))
 				r.Get("/tasks/active", s.handleListActiveTasks)
 				r.Put("/tasks/{tid}/priority", s.handleSetTaskPriority)
+				r.Route("/submissions/{id}", func(r chi.Router) {
+					r.Post("/verify-outputs", s.handleAdminVerifyOutputs)
+					r.Post("/redeliver", s.handleAdminRedeliverOutputs)
+				})
 				r.Get("/users", s.handleListUsers)
 				r.Route("/users/{username}", func(r chi.Router) {
 					r.Put("/role", s.handleSetUserRole)

@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -200,29 +199,12 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 }
 
 // uploadOutputManifest writes the submission outputs as a JSON manifest file
-// to the workspace destination. This gives users a machine-readable record of
-// what each output file represents (workflow output IDs, types, ws:// locations).
+// to the workspace destination (see staging.UploadOutputManifest, shared with
+// the admin re-delivery endpoint).
 func (l *Loop) uploadOutputManifest(ctx context.Context, stager *staging.WorkspaceStager, sub *model.Submission, baseDest string) error {
-	manifest := map[string]any{
-		"submission_id": sub.ID,
-		"workflow_id":   sub.WorkflowID,
-		"workflow_name": sub.WorkflowName,
-		"state":         string(sub.State),
-		"outputs":       sub.Outputs,
-	}
-	if sub.CompletedAt != nil {
-		manifest["completed_at"] = sub.CompletedAt.Format(time.RFC3339)
-	}
-
-	data, err := json.MarshalIndent(manifest, "", "  ")
+	destPath, err := staging.UploadOutputManifest(ctx, stager, sub, baseDest)
 	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
-	}
-
-	destPath := strings.TrimRight(baseDest, "/") + "/_gowe_outputs.json"
-	_, err = stager.UploadContent(ctx, destPath, string(data), staging.StageOptions{})
-	if err != nil {
-		return fmt.Errorf("upload manifest: %w", err)
+		return err
 	}
 
 	l.logger.Info("uploaded output manifest",
