@@ -114,6 +114,16 @@ type Server struct {
 	// the client treats as retryable.
 	Intercept func(method string, params json.RawMessage) (status int, body string)
 
+	// RPCError, when set, is consulted after Intercept and before the method
+	// is dispatched; a non-zero code makes the fake answer with that JSON-RPC
+	// error (for example -32401 for a permission failure) instead.
+	RPCError func(method string, params json.RawMessage) (code int, message string)
+
+	// LsReply, when set, replaces the Workspace.ls result for the requested
+	// paths whenever it returns ok — for instance an empty map, which the real
+	// service can emit for a directory it knows but has nothing to list.
+	LsReply func(paths []string) (result map[string][][]any, ok bool)
+
 	// HoldShockBody, when set and returning a non-nil channel for a node,
 	// makes the Shock PUT handler accept the request headers and then never
 	// read the body: it blocks until the channel is closed, stores nothing,
@@ -264,11 +274,15 @@ func writeResult(w http.ResponseWriter, result any) {
 }
 
 func writeError(w http.ResponseWriter, msg string) {
+	writeErrorCode(w, -32603, msg)
+}
+
+func writeErrorCode(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id": "1", "version": "1.1",
-		"error": rpcError{Name: "JSONRPCError", Code: -32603, Message: msg},
+		"error": rpcError{Name: "JSONRPCError", Code: code, Message: msg},
 	})
 }
 
@@ -295,6 +309,13 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, body)
+			return
+		}
+	}
+
+	if s.RPCError != nil {
+		if code, msg := s.RPCError(req.Method, params); code != 0 {
+			writeErrorCode(w, code, msg)
 			return
 		}
 	}
@@ -421,6 +442,13 @@ func (s *Server) rpcLs(w http.ResponseWriter, raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		writeError(w, "bad params: "+err.Error())
 		return
+	}
+
+	if s.LsReply != nil {
+		if result, ok := s.LsReply(p.Paths); ok {
+			writeResult(w, result)
+			return
+		}
 	}
 
 	s.mu.Lock()

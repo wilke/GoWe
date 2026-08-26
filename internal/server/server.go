@@ -29,7 +29,8 @@ type Server struct {
 	scheduler        scheduler.Scheduler
 	registry         *executor.Registry      // optional; used by dry-run to check executor availability
 	bvbrcCaller      bvbrc.RPCCaller         // optional; AppService caller, nil when no BV-BRC token
-	workspaceCaller  bvbrc.RPCCaller         // optional; Workspace service caller
+	workspaceURL     string                  // optional; BV-BRC Workspace endpoint for the UI (empty = production)
+	uiUploadMaxSize  int64                   // optional; cap on UI workspace upload bodies (0 = ui default)
 	testApps         []map[string]any        // optional; static app list for testing without BV-BRC
 	ui               *ui.UI                  // UI handler for web interface
 	adminConfig      *AdminConfig            // optional; admin role configuration
@@ -56,10 +57,21 @@ func WithExecutorRegistry(reg *executor.Registry) Option {
 	}
 }
 
-// WithWorkspaceCaller sets the BV-BRC Workspace service caller.
-func WithWorkspaceCaller(caller bvbrc.RPCCaller) Option {
+// WithWorkspaceURL sets the BV-BRC Workspace service endpoint the web UI
+// uses for browsing and uploads. Every UI workspace call runs under the
+// logged-in user's own token; there is no server-side service-account
+// caller. Empty selects production.
+func WithWorkspaceURL(url string) Option {
 	return func(s *Server) {
-		s.workspaceCaller = caller
+		s.workspaceURL = url
+	}
+}
+
+// WithUIUploadMaxSize caps the request body of web UI workspace uploads, in
+// bytes. Zero keeps the UI's default (1 GB).
+func WithUIUploadMaxSize(n int64) Option {
+	return func(s *Server) {
+		s.uiUploadMaxSize = n
 	}
 }
 
@@ -118,12 +130,11 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	s.ui = ui.New(st, logger, ui.Config{
 		SecureCookies:       cfg.SecureCookies || cfg.TLSEnabled(),
 		TrustForwardedProto: cfg.BehindProxy,
+		WorkspaceURL:        s.workspaceURL,
+		UploadMaxSize:       s.uiUploadMaxSize,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)
-	}
-	if s.workspaceCaller != nil {
-		s.ui.WithWorkspaceCaller(s.workspaceCaller)
 	}
 	if s.adminConfig != nil {
 		s.ui.WithAdminChecker(s.adminConfig)
