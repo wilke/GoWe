@@ -32,6 +32,7 @@ gowe-server [flags]
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
 | `--workspace-url` | `""` | BV-BRC Workspace service URL for server-side staging and the web UI workspace browser/uploads, which always run under the logged-in user's own token (default: production) |
+| `--redeliver-source-dirs` | `""` | Comma-separated directories the admin re-delivery endpoint may read staged originals from (typically the shared stage-out directory; symlinks resolved). Empty refuses local re-upload |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
@@ -935,6 +936,38 @@ Permanently revoke (delete) a key. Use this for a compromised worker — other w
 curl -X DELETE http://localhost:8080/api/v1/admin/worker-keys/wk_1f2e... \
   -H "Authorization: $ADMIN_TOKEN"
 ```
+
+#### `POST /api/v1/admin/submissions/{id}/verify-outputs`
+
+Download every `ws://` output of a delivered (or `upload_failed`) submission,
+including sub-workflow children, and compare it to the SHA-1 checksum and size
+the worker recorded before upload. Read-only; acts with the submission's stored
+token. Answers `503` when Workspace staging is not available and `409` when the
+submission is not `delivered`/`upload_failed`, not terminal, or its stored
+token is missing or expired.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/submissions/sub_abc/verify-outputs \
+  -H "Authorization: $ADMIN_TOKEN"
+```
+
+#### `POST /api/v1/admin/submissions/{id}/redeliver`
+
+Re-upload every output that fails verification from its local original,
+matched by checksum+size among the submission's task outputs and read only
+from under `--redeliver-source-dirs`; then re-verify, rewrite the output
+manifest, and mark the submission `delivered` (restoring `COMPLETED` for an
+`OUTPUT_STAGING_FAILED` failure) once every output verifies. `?dry_run=true`
+reports the plan without changing anything. One re-delivery per submission at
+a time (`409`); writes are compare-and-set (`409` on a concurrent change).
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/admin/submissions/sub_abc/redeliver?dry_run=true" \
+  -H "Authorization: $ADMIN_TOKEN"
+```
+
+Request/response details: [API_GUIDE.md §10](../API_GUIDE.md#10-admin-verify-and-re-deliver-workspace-outputs).
+CLI: `gowe admin verify-outputs`, `gowe admin redeliver`.
 
 ## Graceful Shutdown
 

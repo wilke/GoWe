@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Response is the standard API response envelope.
 type Response struct {
@@ -43,6 +46,22 @@ type ListOptions struct {
 	// the view; the scheduler must leave it unset because children need
 	// scheduling like any other submission.
 	ExcludeChildren bool
+	// OutputState filters submissions by output delivery state ("delivered",
+	// "upload_failed", ...). A comma-separated list matches any of the given
+	// states. Empty means no filter.
+	OutputState string
+}
+
+// OutputStates splits the OutputState filter into its individual values,
+// trimming whitespace and dropping empties.
+func (o ListOptions) OutputStates() []string {
+	var out []string
+	for _, v := range strings.Split(o.OutputState, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // DefaultListOptions returns sensible defaults.

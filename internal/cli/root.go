@@ -58,6 +58,7 @@ func NewRootCmd() *cobra.Command {
 		newAppsCmd(),
 		newRunCmd(),
 		newBundleCmd(),
+		newAdminCmd(),
 	)
 
 	return root

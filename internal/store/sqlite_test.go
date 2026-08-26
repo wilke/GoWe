@@ -1822,3 +1822,167 @@ func TestCancelNonTerminalTasks(t *testing.T) {
 		t.Errorf("task_skipped state = %q, want SKIPPED", stateMap["task_skipped"])
 	}
 }
+
+func TestListSubmissions_OutputStateFilter(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	seed := func(id, outputState string) {
+		sub := sampleSubmission(wf.ID)
+		sub.ID = id
+		sub.State = model.SubmissionStateCompleted
+		sub.OutputDestination = "ws:///user@bvbrc/home/results"
+		sub.OutputState = outputState
+		if err := st.CreateSubmission(ctx, sub); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	seed("sub_delivered-1", "delivered")
+	seed("sub_delivered-2", "delivered")
+	seed("sub_failed-1", "upload_failed")
+	seed("sub_skipped-1", "skipped")
+	seed("sub_none-1", "")
+
+	ids := func(subs []*model.Submission) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range subs {
+			out[s.ID] = true
+		}
+		return out
+	}
+
+	tests := []struct {
+		name        string
+		outputState string
+		wantTotal   int
+		wantIDs     []string
+	}{
+		{"no filter", "", 5, nil},
+		{"delivered", "delivered", 2, []string{"sub_delivered-1", "sub_delivered-2"}},
+		{"upload_failed", "upload_failed", 1, []string{"sub_failed-1"}},
+		{"comma list", "delivered,upload_failed", 3, []string{"sub_delivered-1", "sub_delivered-2", "sub_failed-1"}},
+		{"comma list with spaces", " delivered , upload_failed ", 3, []string{"sub_delivered-1", "sub_delivered-2", "sub_failed-1"}},
+		{"unknown state", "bogus", 0, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := model.DefaultListOptions()
+			opts.OutputState = tt.outputState
+			subs, total, err := st.ListSubmissions(ctx, opts)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if total != tt.wantTotal {
+				t.Errorf("total = %d, want %d", total, tt.wantTotal)
+			}
+			if len(subs) != tt.wantTotal {
+				t.Errorf("len = %d, want %d", len(subs), tt.wantTotal)
+			}
+			got := ids(subs)
+			for _, id := range tt.wantIDs {
+				if !got[id] {
+					t.Errorf("missing %s in results %v", id, got)
+				}
+			}
+			// OutputState must round-trip in list results.
+			for _, s := range subs {
+				if tt.outputState != "" && !strings.Contains(tt.outputState, s.OutputState) {
+					t.Errorf("submission %s has output_state %q, not in filter %q", s.ID, s.OutputState, tt.outputState)
+				}
+			}
+		})
+	}
+
+	t.Run("combines with state and exclude_children", func(t *testing.T) {
+		child := sampleSubmission(wf.ID)
+		child.ID = "sub_child-delivered"
+		child.State = model.SubmissionStateCompleted
+		child.OutputState = "delivered"
+		child.ParentTaskID = "task_proxy-1"
+		if err := st.CreateSubmission(ctx, child); err != nil {
+			t.Fatalf("create child: %v", err)
+		}
+		opts := model.DefaultListOptions()
+		opts.OutputState = "delivered"
+		opts.State = "COMPLETED"
+		opts.ExcludeChildren = true
+		_, total, err := st.ListSubmissions(ctx, opts)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if total != 2 {
+			t.Errorf("total = %d, want 2 (children excluded)", total)
+		}
+	})
+}
+
+func TestUpdateSubmissionIfState(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	st.CreateWorkflow(ctx, wf)
+
+	sub := sampleSubmission(wf.ID)
+	sub.State = model.SubmissionStateFailed
+	sub.OutputState = "upload_failed"
+	sub.OutputDestination = "ws:///user@bvbrc/home/results"
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	tests := []struct {
+		name              string
+		expectState       model.SubmissionState
+		expectOutputState string
+		wantApplied       bool
+	}{
+		{"state differs", model.SubmissionStateCompleted, "upload_failed", false},
+		{"output_state differs", model.SubmissionStateFailed, "delivered", false},
+		{"both differ", model.SubmissionStateRunning, "", false},
+		{"matches", model.SubmissionStateFailed, "upload_failed", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cur, err := st.GetSubmission(ctx, sub.ID)
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			cur.State = model.SubmissionStateCompleted
+			cur.OutputState = "delivered"
+			cur.Outputs = map[string]any{"written_by": tt.name}
+
+			applied, err := st.UpdateSubmissionIfState(ctx, cur, tt.expectState, tt.expectOutputState)
+			if err != nil {
+				t.Fatalf("update if state: %v", err)
+			}
+			if applied != tt.wantApplied {
+				t.Fatalf("applied = %v, want %v", applied, tt.wantApplied)
+			}
+
+			after, _ := st.GetSubmission(ctx, sub.ID)
+			if !tt.wantApplied {
+				// Row untouched.
+				if after.State != model.SubmissionStateFailed || after.OutputState != "upload_failed" || len(after.Outputs) != 0 {
+					t.Errorf("row changed on applied=false: state=%s output_state=%s outputs=%v", after.State, after.OutputState, after.Outputs)
+				}
+				return
+			}
+			if after.State != model.SubmissionStateCompleted || after.OutputState != "delivered" || after.Outputs["written_by"] != tt.name {
+				t.Errorf("row not written: state=%s output_state=%s outputs=%v", after.State, after.OutputState, after.Outputs)
+			}
+		})
+	}
+
+	t.Run("unknown id", func(t *testing.T) {
+		ghost := sampleSubmission(wf.ID)
+		ghost.ID = "sub_ghost"
+		applied, err := st.UpdateSubmissionIfState(ctx, ghost, model.SubmissionStatePending, "")
+		if err != nil || applied {
+			t.Errorf("applied=%v err=%v, want false/nil", applied, err)
+		}
+	})
+}

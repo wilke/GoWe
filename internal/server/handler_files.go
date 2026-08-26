@@ -365,7 +365,18 @@ func (s *Server) serveDirectoryListing(w http.ResponseWriter, reqID string, dirP
 
 // isPathAllowed checks if a file path is under one of the allowed download directories.
 func (s *Server) isPathAllowed(filePath string) bool {
-	if s.fileUploadConfig == nil || len(s.fileUploadConfig.AllowedDownloadDirs) == 0 {
+	if s.fileUploadConfig == nil {
+		return false
+	}
+	return pathUnderAny(filePath, s.fileUploadConfig.AllowedDownloadDirs)
+}
+
+// pathUnderAny reports whether filePath, with symlinks resolved, lies under
+// one of dirs (also symlink-resolved; prefix + separator check, so a sibling
+// with a shared name prefix never matches). An empty dirs allows nothing;
+// a path that does not exist is never allowed.
+func pathUnderAny(filePath string, dirs []string) bool {
+	if len(dirs) == 0 {
 		return false
 	}
 
@@ -374,7 +385,7 @@ func (s *Server) isPathAllowed(filePath string) bool {
 		return false
 	}
 	cleanPath := filepath.Clean(resolved)
-	for _, dir := range s.fileUploadConfig.AllowedDownloadDirs {
+	for _, dir := range dirs {
 		resolvedDir, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			continue

@@ -51,6 +51,7 @@ func main() {
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
 	workspaceStaging := flag.String("workspace-staging", "", "Workspace staging mode: 'server' (pre/post-stage ws:// on server) or empty (passthrough to workers)")
 	wsStagingURL := flag.String("workspace-url", "", "BV-BRC Workspace service URL for server-side staging and the web UI workspace browser (default: production)")
+	redeliverSourceDirs := flag.String("redeliver-source-dirs", "", "Comma-separated directories the admin re-delivery endpoint may read staged originals from (e.g. the shared stage-out dir); empty refuses local re-upload")
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
@@ -362,14 +363,23 @@ func main() {
 	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 
-	// Configure server-side workspace staging if requested.
+	// One Workspace stager serves both the scheduler (server-side pre/post
+	// staging, only in "server" mode) and the admin output verification /
+	// re-delivery endpoints (always: they act with each submission's stored
+	// token, so verifying a single submission works in any staging mode).
+	wsStager := staging.NewWorkspaceStager(staging.WorkspaceConfig{
+		WorkspaceURL: *wsStagingURL,
+		Timeout:      5 * time.Minute,
+		MaxRetries:   3,
+	}, logger)
+	serverOpts = append(serverOpts, server.WithWorkspaceStager(wsStager))
+	if *redeliverSourceDirs != "" {
+		dirs := strings.Split(*redeliverSourceDirs, ",")
+		serverOpts = append(serverOpts, server.WithRedeliverSourceDirs(dirs))
+		logger.Info("admin re-delivery source directories", "dirs", dirs)
+	}
 	if *workspaceStaging == "server" {
-		wsCfg := staging.WorkspaceConfig{
-			WorkspaceURL: *wsStagingURL,
-			Timeout:      5 * time.Minute,
-			MaxRetries:   3,
-		}
-		sched.SetWorkspaceStager(staging.NewWorkspaceStager(wsCfg, logger))
+		sched.SetWorkspaceStager(wsStager)
 		logger.Info("server-side workspace staging enabled")
 	}
 
