@@ -97,8 +97,9 @@ server-side staging phases in [`internal/scheduler/workspace.go`](../internal/sc
   downloads `ws://` inputs to local `file://` (via `WorkspaceGetDownloadURL` + HTTP GET with
   OAuth) and rewrites the input locations so a container step can read them.
 - **Phase 5.5 post-stage** — `poststageWorkspaceOutputs` (`scheduler/workspace.go:106–198`)
-  uploads local `file://` outputs back to `ws://` (via `ensureDir` + `WorkspaceUpload`) and
-  writes a `_gowe_outputs.json` manifest.
+  uploads local `file://` outputs back to `ws://` (via `ensureDir` + `WorkspaceUploadFile`,
+  which creates the object as a Shock upload node and PUTs the raw bytes to it) and writes a
+  `_gowe_outputs.json` manifest.
 
 Enabled with `--workspace-staging server --workspace-url <url>` (`cmd/server/main.go:41–42`).
 
@@ -109,8 +110,17 @@ The stager itself is complete — `StageIn` (`workspace.go:83`), `StageOut` (`wo
 ### Client surface
 
 [`pkg/bvbrc/workspace.go`](../pkg/bvbrc/workspace.go) implements `WorkspaceLs`, `Get`,
-`Create`, `CreateFolder`, `Upload`, `Delete`, `Copy`, `Move`, `SetPermissions`,
-`ListPermissions`, and `GetDownloadURL`. [`pkg/bvbrc/appservice.go`](../pkg/bvbrc/appservice.go)
+`Create`, `CreateFolder`, `UploadFile`, `Delete`, `Copy`, `Move`, `SetPermissions`,
+`ListPermissions`, and `GetDownloadURL`.
+
+`WorkspaceUploadFile` is the **only** upload entry point, and it always goes through Shock:
+`Workspace.create` with `createUploadNodes` and `overwrite`, then a multipart `PUT` of the
+raw bytes to the Shock URL in `ObjectMeta[11]`, with `Authorization: OAuth <token>` — the
+protocol `scripts/ws-create.pl` implements. The inline `Content` field of `Workspace.create`
+is reserved for folders and upload-node placeholders (`null`); routing file bytes through it
+corrupted every binary output, because it is a JSON string and `encoding/json` replaces every
+byte that is not valid UTF-8 with U+FFFD. That was issue #172; there is a regression test
+pinning it in `pkg/bvbrc/workspace_test.go`. [`pkg/bvbrc/appservice.go`](../pkg/bvbrc/appservice.go)
 implements `enumerate_apps`, `query_app_description`, `start_app`, `query_tasks`,
 `query_task_details`, `kill_task`, `query_app_log`, and more.
 
@@ -145,7 +155,7 @@ Beyond the verification gap, these edges only surface against real infrastructur
 | Edge | Detail | Location |
 |------|--------|----------|
 | **Wildcard globs unresolved (fallback)** | When an app does not populate `output_files` **and** an output is a wildcard (`*.fasta`), the glob fallback deliberately skips it — resolving it would require a `WorkspaceLs` of the result folder, which the fallback does not do. The primary `output_files` path is unaffected. | `bvbrc.go:316` |
-| **Whole-file-in-memory staging** | `StageOut` does `os.ReadFile` and uploads the entire content as a string — memory-bound for multi-GB genomics files. | `workspace.go:156` |
+| **Whole-file-in-memory staging** | `StageOut` does `os.ReadFile` and buffers the multipart body in memory — memory-bound for multi-GB genomics files. Streaming with a computed `Content-Length` is the fix, but Shock is not verified to accept a chunked body, so it needs a live service to land. | `workspace.go:156` |
 | **No recursive directory download** | `StageIn` is single-file; a `ws://` `Directory` output that a local step needs is not recursively listed and downloaded. | `workspace.go:83` |
 | **No submit-time schema validation** | `query_app_description` exists but is not called; bad params fail at BV-BRC, not pre-flight. | `bvbrc.go:95` |
 

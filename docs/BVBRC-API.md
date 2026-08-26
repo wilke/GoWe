@@ -796,7 +796,7 @@ Each object spec is an array:
 }
 ```
 
-**Example - Upload a small file**:
+**Example - inline text content** (⚠️ text only):
 
 ```json
 {
@@ -818,9 +818,15 @@ Each object spec is an array:
 }
 ```
 
-#### `Workspace.create` (for upload nodes - large files)
+> **Never send file bytes through this field.** The content slot is a JSON string, so any
+> byte that is not valid UTF-8 is replaced with U+FFFD by every conforming JSON encoder —
+> three bytes replacing one — and the object is stored corrupted, with no error anywhere.
+> Text survives, binaries do not, so the damage is silent (issue #172). Upload **all**
+> file content through Shock, as below and as `scripts/ws-create.pl` does.
 
-For large files, create an upload node first, then upload to Shock:
+#### `Workspace.create` (for upload nodes — the binary-safe upload path)
+
+Create an upload node first, then PUT the bytes to Shock:
 
 ```json
 {
@@ -841,37 +847,49 @@ For large files, create an upload node first, then upload to Shock:
 }
 ```
 
-**Response** includes a Shock node URL for upload:
+**Response** carries the full Shock node URL in ObjectMeta slot `[11]`:
 
 ```json
 {
     "result": [[
         [
-            "/user@patricbrc.org/home/large_file.fastq.gz",
+            "large_file.fastq.gz",
             "reads",
-            "user@patricbrc.org",
+            "/user@patricbrc.org/home/",
             "2026-02-09T10:00:00Z",
             "uuid-here",
             "user@patricbrc.org",
-            12345,
+            0,
             {},
             {},
-            "shock",
-            "shock-node-id-here"
+            "o",
+            "n",
+            "https://<shock-host>/services/shock_api/node/<shock-node-id>"
         ]
     ]]
 }
 ```
 
-Then upload the file to Shock:
+Slot `[11]` is already a complete URL — use it verbatim rather than rebuilding one from a
+node id, and do not read slot `[10]`, which is the global permission letter (issue #171).
+
+Then PUT the file to that URL, exactly as `scripts/ws-create.pl` does:
 
 ```
-PUT https://p3.theseed.org/services/shock_api/node/<shock-node-id>
-Authorization: <token>
+PUT <slot [11] URL>
+Authorization: OAuth <token>
 Content-Type: multipart/form-data
 
-[file data]
+--boundary
+Content-Disposition: form-data; name="upload"; filename="large_file.fastq.gz"
+
+[raw file bytes]
+--boundary--
 ```
+
+The multipart field name must be `upload`, the method must be `PUT`, and the
+`Authorization` header uses the `OAuth` scheme (unlike the JSON-RPC endpoint, which accepts
+a bare token).
 
 #### `Workspace.get`
 
@@ -900,28 +918,45 @@ Retrieve workspace objects.
 
 **Response format**:
 
-Each object is returned as a tuple array:
+`Workspace.get` returns a list of `[ObjectMeta, ObjectData]` **pairs** — the metadata
+tuple and the object's content, not the metadata tuple alone. Unwrap the pair first,
+then parse its element `[0]` with the ObjectMeta layout below.
+
+`ObjectMeta` is the tuple defined by the Workspace module's own `Workspace.spec`:
 
 ```
-[path, type, owner, creation_time, id, owner_id, size, user_metadata, auto_metadata, shock_ref, shock_node]
+[ObjectName, ObjectType, FullObjectPath, creation_time, ObjectID, object_owner,
+ ObjectSize, UserMetadata, AutoMetadata, user_permission, global_permission,
+ shockurl, error]
 ```
 
 Index mapping:
 
 | Index | Field | Type | Description |
 |-------|-------|------|-------------|
-| 0 | path | string | Full workspace path |
-| 1 | type | string | Object type |
-| 2 | owner | string | Object owner |
+| 0 | ObjectName | string | Object name, without directory prefix |
+| 1 | ObjectType | string | Object type |
+| 2 | FullObjectPath | string | Containing directory, with a trailing `/` |
 | 3 | creation_time | string | ISO 8601 creation timestamp |
-| 4 | id | string | Object UUID |
-| 5 | owner_id | string | Owner identifier |
-| 6 | size | integer | File size in bytes |
-| 7 | user_metadata | object | User-defined metadata |
-| 8 | auto_metadata | object | Auto-generated metadata |
-| 9 | shock_ref | string | Shock reference type ("shock" or "inline") |
-| 10 | shock_node | string | Shock node ID (if applicable) |
-| 11 | data | string | File content (if not metadata_only and inline) |
+| 4 | ObjectID | string | Object UUID |
+| 5 | object_owner | string | Owner username |
+| 6 | ObjectSize | integer | File size in bytes (or child count for a directory) |
+| 7 | UserMetadata | object | User-defined metadata |
+| 8 | AutoMetadata | object | Auto-generated metadata |
+| 9 | user_permission | string | Calling user's permission: `o`, `w`, `r`, `n` |
+| 10 | global_permission | string | Workspace's global permission |
+| 11 | shockurl | string | Full URL of the backing Shock node, if any |
+| 12 | error | string | Per-object error, if any |
+
+Two things this table used to get wrong, and they cost real data (issues #171, #172):
+
+- **The full path is `[2] + [0]`**, not `[0]`. Slot `[2]` is the containing directory
+  with a trailing slash; the service's own clients concatenate the two.
+- **The Shock URL is slot `[11]`**, not `[10]`. Slots `[9]` and `[10]` are permission
+  letters, so code that PUT file bytes to `[10]` was addressing a permission string.
+
+The service's implementation (`_generate_object_meta`) emits the **first 12 slots** and
+omits the trailing `error`, so parsers must tolerate a 12-element tuple.
 
 #### `Workspace.ls`
 
@@ -1345,9 +1380,6 @@ type WorkspaceObject struct {
     // ID is the unique object identifier (UUID).
     ID string `json:"id"`
 
-    // OwnerID is the owner's identifier.
-    OwnerID string `json:"owner_id"`
-
     // Size is the file size in bytes.
     Size int64 `json:"size"`
 
@@ -1357,13 +1389,20 @@ type WorkspaceObject struct {
     // AutoMetadata contains system-generated metadata.
     AutoMetadata map[string]string `json:"auto_metadata"`
 
-    // ShockRef indicates storage type ("shock" for Shock-stored, "inline" for small files).
-    ShockRef string `json:"shock_ref,omitempty"`
+    // UserPermission is the calling user's permission on the owning workspace.
+    UserPermission string `json:"user_permission,omitempty"`
 
-    // ShockNodeID is the Shock node identifier for large files.
-    ShockNodeID string `json:"shock_node_id,omitempty"`
+    // GlobalPermission is the owning workspace's global permission.
+    GlobalPermission string `json:"global_permission,omitempty"`
 
-    // Data contains inline file content (for small files retrieved with metadata_only=false).
+    // ShockURL is the full URL of the backing Shock node, if any. This is the
+    // URL that file bytes are PUT to when uploading.
+    ShockURL string `json:"shock_url,omitempty"`
+
+    // Error is set when the service reported a per-object error.
+    Error string `json:"error,omitempty"`
+
+    // Data holds the ObjectData half of a Workspace.get [meta, data] pair.
     Data string `json:"data,omitempty"`
 }
 
@@ -1378,11 +1417,11 @@ type WorkspacePermission struct {
 
 // WorkspaceObjectMeta is the tuple representation returned by workspace API calls.
 // The API returns arrays of arrays, not named objects.
-// Index mapping:
-//   [0] = path, [1] = type, [2] = owner, [3] = creation_time, [4] = id,
-//   [5] = owner_id, [6] = size, [7] = user_meta, [8] = auto_meta,
-//   [9] = shock_ref, [10] = shock_node
-type WorkspaceObjectMeta [11]interface{}
+// Index mapping (Workspace.spec ObjectMeta; the service emits the first 12):
+//   [0] = name, [1] = type, [2] = directory path, [3] = creation_time,
+//   [4] = id, [5] = owner, [6] = size, [7] = user_meta, [8] = auto_meta,
+//   [9] = user_permission, [10] = global_permission, [11] = shockurl, [12] = error
+type WorkspaceObjectMeta [13]interface{}
 ```
 
 ### Client Configuration Types
@@ -1955,35 +1994,15 @@ func main() {
 
 ```go
 // UploadFile uploads a file to the BV-BRC workspace.
-// For small files (< 10MB), inline upload is used.
-// For large files, Shock upload is used.
+// All content goes through Shock, whatever its size: Workspace.create's inline
+// content slot is a JSON string and mangles every non-UTF-8 byte (issue #172).
 func (c *Client) UploadFile(localPath, wsPath, objType string) error {
     data, err := os.ReadFile(localPath)
     if err != nil {
         return fmt.Errorf("reading file: %w", err)
     }
 
-    const maxInlineSize = 10 * 1024 * 1024 // 10 MB
-
-    if len(data) < maxInlineSize {
-        // Inline upload for small files
-        resp, err := c.CallWorkspace(
-            "Workspace.create",
-            map[string]interface{}{
-                "objects": [][]interface{}{
-                    {wsPath, objType, map[string]string{}, string(data)},
-                },
-                "overwrite": true,
-            },
-        )
-        if err != nil {
-            return fmt.Errorf("workspace create: %w", err)
-        }
-        _ = resp
-        return nil
-    }
-
-    // Large file: create upload node, then upload to Shock
+    // Create the destination as an upload node.
     resp, err := c.CallWorkspace(
         "Workspace.create",
         map[string]interface{}{
@@ -1991,29 +2010,29 @@ func (c *Client) UploadFile(localPath, wsPath, objType string) error {
                 {wsPath, objType, map[string]string{}, nil},
             },
             "createUploadNodes": true,
+            "overwrite":         true,
         },
     )
     if err != nil {
         return fmt.Errorf("creating upload node: %w", err)
     }
 
-    // Parse response to get Shock node ID
+    // Parse the response for the Shock URL: ObjectMeta slot [11].
     var results [][][]interface{}
     if err := json.Unmarshal(resp.Result, &results); err != nil {
         return fmt.Errorf("parsing upload node response: %w", err)
     }
 
-    if len(results) == 0 || len(results[0]) == 0 || len(results[0][0]) < 11 {
+    if len(results) == 0 || len(results[0]) == 0 || len(results[0][0]) < 12 {
         return fmt.Errorf("unexpected upload node response format")
     }
 
-    shockNodeID, ok := results[0][0][10].(string)
-    if !ok || shockNodeID == "" {
-        return fmt.Errorf("no Shock node ID in response")
+    shockURL, ok := results[0][0][11].(string)
+    if !ok || shockURL == "" {
+        return fmt.Errorf("no Shock upload URL in response")
     }
 
-    // Upload to Shock
-    shockURL := fmt.Sprintf("%s/node/%s", c.config.ShockURL, shockNodeID)
+    // Slot [11] is a complete URL; PUT the bytes to it.
     return c.uploadToShock(shockURL, localPath, data)
 }
 
@@ -2361,6 +2380,7 @@ The Data API supports Resource Query Language (RQL) for querying. Common operato
 | "Token expired" | Token past expiry date | Obtain new token |
 | "Workspace path not found" | Invalid workspace path | Verify path format: `/user@patricbrc.org/...` |
 | Upload fails | File too large for inline | Use Shock upload (createUploadNodes) |
+| Stored file larger than the original, checksum mismatch | File bytes were sent through `Workspace.create`'s inline JSON content slot, which replaces every non-UTF-8 byte with U+FFFD | Upload through Shock (`createUploadNodes`); the stored copy is unrecoverable and must be re-uploaded |
 
 ### Debugging Tips
 

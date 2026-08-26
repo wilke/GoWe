@@ -1570,70 +1570,53 @@ func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 		"type", objType,
 	)
 
-	// For small files (< 10MB), use inline upload.
-	// For larger files, we'd need to use Shock upload (createUploadNodes).
-	const inlineLimit = 10 * 1024 * 1024 // 10MB
-
-	if len(data) < inlineLimit {
-		// Inline upload.
-		result, err := caller.Call(r.Context(), "Workspace.create", []any{
-			map[string]any{
-				"objects": [][]any{
-					{destPath, objType, nil, data},
-				},
-				"overwrite": true,
+	// Every upload goes through Shock, whatever its size. The inline branch this
+	// replaced handed Workspace.create a []byte in a JSON string slot, which
+	// encoding/json base64-encodes — and inline content is UTF-8-only anyway, so
+	// there is no size below which routing bytes through JSON is correct
+	// (issues #172, #171).
+	//
+	// Step 1: create the destination as an upload node.
+	result, err := caller.Call(r.Context(), "Workspace.create", []any{
+		map[string]any{
+			"objects": [][]any{
+				{destPath, objType, nil, nil},
 			},
-		})
-		if err != nil {
-			ui.logger.Error("workspace upload failed", "path", destPath, "error", err)
-			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
-			return
-		}
-		ui.logger.Debug("workspace upload response", "result", string(result))
-	} else {
-		// Large file - need Shock upload.
-		// First, create an upload node.
-		result, err := caller.Call(r.Context(), "Workspace.create", []any{
-			map[string]any{
-				"objects": [][]any{
-					{destPath, objType, nil, nil},
-				},
-				"createUploadNodes": true,
-				"overwrite":         true,
-			},
-		})
-		if err != nil {
-			ui.logger.Error("workspace create upload node failed", "path", destPath, "error", err)
-			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
-			return
-		}
+			"createUploadNodes": true,
+			"overwrite":         true,
+		},
+	})
+	if err != nil {
+		ui.logger.Error("workspace create upload node failed", "path", destPath, "error", err)
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
 
-		// Parse response to get Shock node ID.
-		var createResp [][][]any
-		if err := json.Unmarshal(result, &createResp); err != nil {
-			ui.logger.Error("workspace parse upload node failed", "error", err)
-			http.Error(w, `{"error": "Failed to parse upload node response"}`, http.StatusInternalServerError)
-			return
-		}
+	// Step 2: pull the Shock URL out of the returned ObjectMeta tuple. Per
+	// Workspace.spec it is slot [11] — slot [10] is the global permission string.
+	var createResp [][][]any
+	if err := json.Unmarshal(result, &createResp); err != nil {
+		ui.logger.Error("workspace parse upload node failed", "error", err)
+		http.Error(w, `{"error": "Failed to parse upload node response"}`, http.StatusInternalServerError)
+		return
+	}
 
-		if len(createResp) == 0 || len(createResp[0]) == 0 || len(createResp[0][0]) < 11 {
-			http.Error(w, `{"error": "Invalid upload node response"}`, http.StatusInternalServerError)
-			return
-		}
+	if len(createResp) == 0 || len(createResp[0]) == 0 || len(createResp[0][0]) < 12 {
+		http.Error(w, `{"error": "Invalid upload node response"}`, http.StatusInternalServerError)
+		return
+	}
 
-		shockNodeID, ok := createResp[0][0][10].(string)
-		if !ok || shockNodeID == "" {
-			http.Error(w, `{"error": "No Shock node ID in response"}`, http.StatusInternalServerError)
-			return
-		}
+	shockURL, ok := createResp[0][0][11].(string)
+	if !ok || shockURL == "" {
+		http.Error(w, `{"error": "No Shock upload URL in response"}`, http.StatusInternalServerError)
+		return
+	}
 
-		// Upload to Shock.
-		shockURL := "https://p3.theseed.org/services/shock_api/node/" + shockNodeID
-		if err := ui.uploadToShock(r.Context(), shockURL, filename, data, sess.Token); err != nil {
-			ui.logger.Error("shock upload failed", "url", shockURL, "error", err)
-			http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
-			return
-		}
+	// Step 3: PUT the raw bytes to the Shock node.
+	if err := ui.uploadToShock(r.Context(), shockURL, filename, data, sess.Token); err != nil {
+		ui.logger.Error("shock upload failed", "error", err)
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		return
 	}
 
 	// Return success with the workspace path.
@@ -1675,6 +1658,12 @@ func (ui *UI) uploadToShock(ctx context.Context, shockURL, filename string, data
 		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	// Shock wants the OAuth scheme, as scripts/ws-create.pl sends it. (The
+	// Workspace JSON-RPC endpoint accepts a bare token; Shock is not the same
+	// service.)
+	if !strings.HasPrefix(token, "OAuth ") {
+		token = "OAuth " + token
+	}
 	req.Header.Set("Authorization", token)
 
 	resp, err := http.DefaultClient.Do(req)

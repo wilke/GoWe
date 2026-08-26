@@ -1,9 +1,15 @@
 package bvbrc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"path"
+	"strings"
 	"time"
 )
 
@@ -91,7 +97,9 @@ func (c *Client) WorkspaceGet(ctx context.Context, input WorkspaceGetInput) ([]W
 		return nil, err
 	}
 
-	// Result is [[[obj_tuple], ...]]
+	// Workspace.spec: get(...) returns (list<tuple<ObjectMeta,ObjectData>>).
+	// Wrapped in the JSON-RPC result array, that is [[[meta, data], ...]] — each
+	// entry is a two-element pair, *not* the metadata tuple itself (issue #171).
 	var rawResult [][][]any
 	if err := json.Unmarshal(resp.Result, &rawResult); err != nil {
 		return nil, WrapError("WorkspaceGet", fmt.Errorf("unmarshaling result: %w", err))
@@ -102,8 +110,8 @@ func (c *Client) WorkspaceGet(ctx context.Context, input WorkspaceGetInput) ([]W
 	}
 
 	objects := make([]WorkspaceObject, 0, len(rawResult[0]))
-	for _, tuple := range rawResult[0] {
-		obj, err := parseWorkspaceObjectTuple(tuple)
+	for _, entry := range rawResult[0] {
+		obj, err := parseWorkspaceGetEntry(entry)
 		if err != nil {
 			continue
 		}
@@ -111,6 +119,33 @@ func (c *Client) WorkspaceGet(ctx context.Context, input WorkspaceGetInput) ([]W
 	}
 
 	return objects, nil
+}
+
+// parseWorkspaceGetEntry parses one [ObjectMeta, ObjectData] pair as returned by
+// Workspace.get. The data half is optional: metadata_only requests and older
+// deployments may return a bare metadata tuple, which is accepted as well.
+func parseWorkspaceGetEntry(entry []any) (WorkspaceObject, error) {
+	if len(entry) == 0 {
+		return WorkspaceObject{}, fmt.Errorf("empty get entry")
+	}
+
+	meta, ok := entry[0].([]any)
+	if !ok {
+		// Not a [meta, data] pair — treat the entry itself as the metadata tuple.
+		return parseWorkspaceObjectTuple(entry)
+	}
+
+	obj, err := parseWorkspaceObjectTuple(meta)
+	if err != nil {
+		return obj, err
+	}
+	if len(entry) > 1 {
+		if s, ok := entry[1].(string); ok {
+			obj.Data = s
+		}
+	}
+
+	return obj, nil
 }
 
 // WorkspaceCreateInput contains parameters for creating workspace objects.
@@ -188,14 +223,91 @@ func (c *Client) WorkspaceCreateFolder(ctx context.Context, path string) (*Works
 	})
 }
 
-// WorkspaceUpload uploads content to the workspace.
-func (c *Client) WorkspaceUpload(ctx context.Context, path, content string, objType WorkspaceObjectType) (*WorkspaceObject, error) {
-	return c.WorkspaceCreate(ctx, WorkspaceCreateInput{
-		Path:      path,
-		Type:      objType,
-		Content:   &content,
-		Overwrite: true,
+// WorkspaceUploadFile uploads file bytes to the workspace, binary-safe.
+//
+// It follows the service's own upload protocol, the one implemented by
+// scripts/ws-create.pl --useshock and used by the BV-BRC clients:
+//
+//  1. Workspace.create the destination with createUploadNodes set, which
+//     allocates a Shock node and returns its URL in ObjectMeta slot [11];
+//  2. PUT the raw bytes to that URL as multipart form field "upload", with
+//     an "Authorization: OAuth <token>" header.
+//
+// Do not be tempted back to Workspace.create's inline Content field: it is a
+// JSON string, and encoding/json replaces every byte that is not valid UTF-8
+// with U+FFFD (3 bytes for 1), silently destroying every binary file that goes
+// through it. That was issue #172.
+func (c *Client) WorkspaceUploadFile(ctx context.Context, wsPath string, data []byte, objType WorkspaceObjectType) (*WorkspaceObject, error) {
+	obj, err := c.WorkspaceCreate(ctx, WorkspaceCreateInput{
+		Path:              wsPath,
+		Type:              objType,
+		Overwrite:         true,
+		CreateUploadNodes: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	if obj.ShockURL == "" {
+		// Never fall back to the inline path: for a binary payload that would
+		// silently store corrupt bytes. Fail loudly instead.
+		return nil, NewError("WorkspaceUploadFile",
+			fmt.Sprintf("no Shock upload URL returned for %s (ObjectMeta slot 11 empty)", wsPath))
+	}
+
+	if err := c.shockUpload(ctx, obj.ShockURL, path.Base(wsPath), data); err != nil {
+		return nil, WrapError("WorkspaceUploadFile", err)
+	}
+
+	return obj, nil
+}
+
+// shockUpload PUTs data to a Shock node URL as multipart form field "upload".
+// Mirrors scripts/ws-create.pl: a multipart/form-data body sent with the PUT
+// method and an "OAuth <token>" Authorization header.
+func (c *Client) shockUpload(ctx context.Context, shockURL, filename string, data []byte) error {
+	if filename == "" {
+		filename = "upload"
+	}
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("upload", filename)
+	if err != nil {
+		return fmt.Errorf("building multipart body: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("building multipart body: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("building multipart body: %w", err)
+	}
+
+	// bytes.Reader gives the request a known Content-Length; Shock is not
+	// verified to accept a chunked body.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shockURL, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		return fmt.Errorf("creating Shock request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if c.config.Token != "" {
+		req.Header.Set("Authorization", "OAuth "+c.config.Token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("Shock upload request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	// Drain so the connection can be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+
+	return nil
 }
 
 // WorkspaceDeleteInput contains parameters for deleting workspace objects.
@@ -423,8 +535,20 @@ func (c *Client) WorkspaceGetDownloadURL(ctx context.Context, paths []string) (m
 	return result, nil
 }
 
-// parseWorkspaceObjectTuple parses a workspace object tuple into a WorkspaceObject.
-// Tuple format: [path, type, owner, creation_time, id, owner_id, size, user_meta, auto_meta, shock_ref, shock_node, ?data]
+// parseWorkspaceObjectTuple parses a Workspace ObjectMeta tuple into a WorkspaceObject.
+//
+// The layout is the ObjectMeta typedef in the Workspace module's Workspace.spec:
+//
+//	[ObjectName, ObjectType, FullObjectPath, creation_time, ObjectID, object_owner,
+//	 ObjectSize, UserMetadata, AutoMetadata, user_permission, global_permission,
+//	 shockurl, error]
+//
+// The spec declares 13 slots but WorkspaceImpl.pm's _generate_object_meta returns
+// the first 12 (no error slot), so every slot past 8 is optional here.
+//
+// Note in particular that shockurl is slot [11], not [10]: [9] and [10] are the
+// user and global permission strings ("o", "w", "r", "n"). Reading [10] as a Shock
+// reference yields a permission letter — see issue #171.
 func parseWorkspaceObjectTuple(tuple []any) (WorkspaceObject, error) {
 	obj := WorkspaceObject{}
 
@@ -432,19 +556,21 @@ func parseWorkspaceObjectTuple(tuple []any) (WorkspaceObject, error) {
 		return obj, fmt.Errorf("tuple too short: %d elements", len(tuple))
 	}
 
-	// Index 0: path
+	// Index 0: ObjectName
 	if s, ok := tuple[0].(string); ok {
-		obj.Path = s
+		obj.Name = s
 	}
 
-	// Index 1: type
+	// Index 1: ObjectType
 	if s, ok := tuple[1].(string); ok {
 		obj.Type = WorkspaceObjectType(s)
 	}
 
-	// Index 2: owner
+	// Index 2: FullObjectPath — emitted as the containing directory with a
+	// trailing slash; the service's own clients form the object path as
+	// tuple[2] . tuple[0] (FileListing.pm, WorkspaceClientExt.pm).
 	if s, ok := tuple[2].(string); ok {
-		obj.Owner = s
+		obj.Path = joinWorkspacePath(s, obj.Name)
 	}
 
 	// Index 3: creation_time
@@ -454,17 +580,17 @@ func parseWorkspaceObjectTuple(tuple []any) (WorkspaceObject, error) {
 		}
 	}
 
-	// Index 4: id
+	// Index 4: ObjectID
 	if s, ok := tuple[4].(string); ok {
 		obj.ID = s
 	}
 
-	// Index 5: owner_id
+	// Index 5: object_owner
 	if s, ok := tuple[5].(string); ok {
-		obj.OwnerID = s
+		obj.Owner = s
 	}
 
-	// Index 6: size
+	// Index 6: ObjectSize
 	switch v := tuple[6].(type) {
 	case float64:
 		obj.Size = int64(v)
@@ -474,7 +600,7 @@ func parseWorkspaceObjectTuple(tuple []any) (WorkspaceObject, error) {
 		obj.Size = int64(v)
 	}
 
-	// Index 7: user_metadata
+	// Index 7: UserMetadata
 	if m, ok := tuple[7].(map[string]any); ok {
 		obj.UserMetadata = make(map[string]string)
 		for k, v := range m {
@@ -484,7 +610,7 @@ func parseWorkspaceObjectTuple(tuple []any) (WorkspaceObject, error) {
 		}
 	}
 
-	// Index 8: auto_metadata
+	// Index 8: AutoMetadata
 	if m, ok := tuple[8].(map[string]any); ok {
 		obj.AutoMetadata = make(map[string]string)
 		for k, v := range m {
@@ -494,26 +620,49 @@ func parseWorkspaceObjectTuple(tuple []any) (WorkspaceObject, error) {
 		}
 	}
 
-	// Index 9: shock_ref (if present)
+	// Index 9: user_permission
 	if len(tuple) > 9 {
 		if s, ok := tuple[9].(string); ok {
-			obj.ShockRef = s
+			obj.UserPermission = s
 		}
 	}
 
-	// Index 10: shock_node (if present)
+	// Index 10: global_permission
 	if len(tuple) > 10 {
 		if s, ok := tuple[10].(string); ok {
-			obj.ShockNodeID = s
+			obj.GlobalPermission = s
 		}
 	}
 
-	// Index 11: data (if present and not metadata_only)
+	// Index 11: shockurl
 	if len(tuple) > 11 {
 		if s, ok := tuple[11].(string); ok {
-			obj.Data = s
+			obj.ShockURL = s
+		}
+	}
+
+	// Index 12: error
+	if len(tuple) > 12 {
+		if s, ok := tuple[12].(string); ok {
+			obj.Error = s
 		}
 	}
 
 	return obj, nil
+}
+
+// joinWorkspacePath joins the directory slot of an ObjectMeta tuple with the
+// object name. The service emits the directory with a trailing slash; tolerate
+// its absence.
+func joinWorkspacePath(dir, name string) string {
+	switch {
+	case name == "":
+		return dir
+	case dir == "":
+		return name
+	case strings.HasSuffix(dir, "/"):
+		return dir + name
+	default:
+		return dir + "/" + name
+	}
 }

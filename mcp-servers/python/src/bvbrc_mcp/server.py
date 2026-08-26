@@ -59,7 +59,11 @@ TOOLS = [
     ),
     Tool(
         name="workspace_upload",
-        description="Upload file content to the BV-BRC workspace",
+        description=(
+            "Upload TEXT content to the BV-BRC workspace. The content travels in a "
+            "JSON string, so it must be valid UTF-8; binary files uploaded this way "
+            "are silently corrupted (issue #172) and must go through Shock instead."
+        ),
         inputSchema={
             "type": "object",
             "properties": {

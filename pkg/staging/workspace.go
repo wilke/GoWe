@@ -169,7 +169,7 @@ func (s *WorkspaceStager) StageOut(ctx context.Context, srcPath string, taskID s
 			}
 		}
 
-		err := s.upload(ctx, destPath, string(data), token)
+		err := s.upload(ctx, destPath, data, token)
 		if err == nil {
 			return "ws://" + destPath, nil
 		}
@@ -269,7 +269,7 @@ func (s *WorkspaceStager) UploadContent(ctx context.Context, destPath string, co
 			}
 		}
 
-		err := s.upload(ctx, destPath, content, token)
+		err := s.upload(ctx, destPath, []byte(content), token)
 		if err == nil {
 			return "ws://" + destPath, nil
 		}
@@ -282,7 +282,13 @@ func (s *WorkspaceStager) UploadContent(ctx context.Context, destPath string, co
 }
 
 // upload creates/overwrites a file in the workspace.
-func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, content string, token string) error {
+//
+// The bytes travel through Shock (Workspace.create with createUploadNodes, then a
+// multipart PUT to the returned node URL), never through Workspace.create's inline
+// JSON string field — that field runs the content through encoding/json, which
+// replaces every byte that is not valid UTF-8 with U+FFFD and silently corrupts
+// every binary output. See issue #172 and bvbrc.Client.WorkspaceUploadFile.
+func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, data []byte, token string) error {
 	bvbrcCfg := bvbrc.Config{
 		WorkspaceURL: s.config.WorkspaceURL,
 		Token:        token,
@@ -290,7 +296,7 @@ func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, content str
 	}
 	wsClient := bvbrc.NewClient(bvbrcCfg, s.logger)
 
-	_, err := wsClient.WorkspaceUpload(ctx, wsPath, content, bvbrc.WorkspaceTypeUnspecified)
+	_, err := wsClient.WorkspaceUploadFile(ctx, wsPath, data, bvbrc.WorkspaceTypeUnspecified)
 	if err != nil {
 		return fmt.Errorf("upload to %s: %w", wsPath, err)
 	}
