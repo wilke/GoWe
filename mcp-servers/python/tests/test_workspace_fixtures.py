@@ -41,7 +41,6 @@ FIXTURES = [
     "update_auto_meta.json",
     "create_inline.json",
     "create_upload_node.json",
-    "shock_put_reply.json",
 ]
 
 

@@ -346,13 +346,8 @@ func TestFixture_GetDownloadURL_Shape(t *testing.T) {
 	// Pin the recorded wire shape: the JSON-RPC result wraps ONE flat list of
 	// URLs in input order, with JSON null for a folder. Parsing through the
 	// typed client is covered where WorkspaceGetDownloadURL is fixed; here we
-	// only assert the shape callers must expect.
-	//
-	// TODO(rebase onto fix/workspace-upload-verify): add
-	// TestFixture_WorkspaceGetDownloadURL replaying get_download_url.json through
-	// client.WorkspaceGetDownloadURL and asserting
-	// {inline: <url>, shock: <url>, folder: ""}. It cannot be pre-written here:
-	// main's implementation maps raw[i][0] and would fail on this fixture.
+	// only assert the shape callers must expect; the typed parse is
+	// TestFixture_WorkspaceGetDownloadURL.
 	raw, err := os.ReadFile(filepath.Join("testdata", "workspace", "get_download_url.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -376,6 +371,41 @@ func TestFixture_GetDownloadURL_Shape(t *testing.T) {
 	}
 	if urls[2] != nil {
 		t.Errorf("urls[2] = %q, want null for a folder", *urls[2])
+	}
+}
+
+func TestFixture_WorkspaceGetDownloadURL(t *testing.T) {
+	// The typed client maps the flat list back onto the requested paths in
+	// order: both objects get their URL, the folder's null becomes "" (present
+	// in the map, so callers can tell "asked, no URL" from "not asked").
+	client, call := newReplayClient(t, "get_download_url.json")
+
+	paths := []string{fixtureInline, fixtureShock, fixtureFolder}
+	got, err := client.WorkspaceGetDownloadURL(context.Background(), paths)
+	if err != nil {
+		t.Fatalf("WorkspaceGetDownloadURL: %v", err)
+	}
+	if call.Method != "Workspace.get_download_url" {
+		t.Errorf("method = %q", call.Method)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3: %v", len(got), got)
+	}
+
+	inline, ok := got[fixtureInline]
+	if !ok || inline == "" || path.Base(inline) != "inline.txt" {
+		t.Errorf("inline = %q (present=%v), want a download URL ending in inline.txt", inline, ok)
+	}
+	shock, ok := got[fixtureShock]
+	if !ok || shock == "" || path.Base(shock) != "shock.txt" {
+		t.Errorf("shock = %q (present=%v), want a download URL ending in shock.txt", shock, ok)
+	}
+	if inline == shock {
+		t.Errorf("inline and shock URLs are identical: %q — positional mapping is off", inline)
+	}
+	folder, ok := got[fixtureFolder]
+	if !ok || folder != "" {
+		t.Errorf("folder = %q (present=%v), want \"\" (null → no URL)", folder, ok)
 	}
 }
 

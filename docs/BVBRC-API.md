@@ -893,7 +893,7 @@ a bare token). The part must carry a non-empty `filename=`: the service reads th
 from the node's `file.name`/`file.size`, and a part without a filename is treated as "not
 uploaded yet", leaving `ObjectSize` at 0 forever. Shock answers the PUT with an envelope
 `{"status": 200, "data": {"id", "file": {"name", "size", "checksum": {"md5"}}, ...},
-"error": null}` (recorded in `pkg/bvbrc/testdata/workspace/shock_put_reply.json`); check
+"error": null}` (recorded in `pkg/bvbrc/testdata/shock-put-reply.json`); check
 `data.file.size` against what you sent. After the PUT, call
 `Workspace.update_auto_meta {"objects": [path]}` — it forces the Workspace to re-read the
 node and returns the refreshed ObjectMeta, whose `[6]` is the size actually stored

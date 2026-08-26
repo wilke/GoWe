@@ -216,7 +216,6 @@ test("fixtures contain no token material", () => {
     "update_auto_meta.json",
     "create_inline.json",
     "create_upload_node.json",
-    "shock_put_reply.json",
   ]) {
     const text = readFileSync(new URL(name, FIXTURE_DIR), "utf-8");
     assert.doesNotMatch(text, /un=|tokenid=|expiry=|sig=/, `${name} carries no token fields`);

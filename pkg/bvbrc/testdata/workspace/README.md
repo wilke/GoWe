@@ -17,12 +17,15 @@ that is not in the files.
 |------|------|---------------|
 | `create_inline.json` | `Workspace.create` of `inline.txt` with inline content `"hello\n"` | 12-slot ObjectMeta, size 6, empty `[11]` |
 | `create_upload_node.json` | `Workspace.create` of `shock.txt` with `createUploadNodes:1, overwrite:1` | `[11]` is the Shock node URL, size 0 (nothing PUT yet) |
-| `shock_put_reply.json` | Shock reply to the multipart `PUT` of 12 bytes to that node | `{status, data:{file:{size, checksum.md5}}, error}` envelope |
 | `update_auto_meta.json` | `Workspace.update_auto_meta` `{objects:[shock.txt]}` | refreshed ObjectMeta with the stored size in `[6]` |
 | `ls.json` | `Workspace.ls` `{paths:[folder]}` | `[{folder: [tuple, tuple]}]`, `[2]` is the directory with a trailing slash |
 | `get.json` | `Workspace.get` `{objects:[inline.txt, shock.txt]}` | `[[[meta, data], ...]]` pairs; data is the text for the inline object and the **Shock URL** for the Shock-backed one |
 | `get_metadata_only.json` | same with `metadata_only:1` | pairs with no data half |
 | `get_download_url.json` | `Workspace.get_download_url` `{objects:[inline.txt, shock.txt, folder]}` | one flat list in input order, `null` for the folder |
+
+The Shock reply to the multipart `PUT` itself (`{status, data:{file:{size,
+checksum.md5}}, error}`) is recorded separately by the upload integration test as
+`../shock-put-reply.json` and pinned by `TestShockPutReply_RecordedFixture`.
 
 ## Capture procedure
 
@@ -54,7 +57,7 @@ rpc Workspace.create "{\"objects\":[[\"$FOLDER/shock.txt\",\"txt\",{},null]],\"c
 NODE_URL="$(jq -r '.[0][0][11]' create_upload_node.json)"
 printf 'hello shock\n' > shock.txt
 curl -sS -f -X PUT "$NODE_URL" -H "Authorization: OAuth $TOKEN" \
-  -F "upload=@shock.txt;filename=shock.txt" | jq . > shock_put_reply.json
+  -F "upload=@shock.txt;filename=shock.txt" >/dev/null
 rpc Workspace.update_auto_meta "{\"objects\":[\"$FOLDER/shock.txt\"]}" > update_auto_meta.json
 
 # Captures.
