@@ -20,7 +20,7 @@
   }
   @media (prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
   *{box-sizing:border-box}
-  body{margin:0}
+  body{margin:0;background:#F4F4F1;color:#1C1C18}
   .page{background:var(--paper); color:var(--ink); font-family:var(--serif);
     -webkit-font-smoothing:antialiased; line-height:1.5;
     padding:clamp(22px,4vw,60px) clamp(16px,4vw,44px) 90px;}
@@ -288,7 +288,7 @@
 <div class="wrap">
 
   <header>
-    <div class="eyebrow">GoWe · Architecture Dossier</div>
+    <div class="eyebrow">GoWe · Architecture Dossier · v0.15.0 · 2026-08-26</div>
     <h1>Parsing, Scheduling&nbsp;&amp; Placement</h1>
     <p class="lede">A per-layer deep dive into the CWL&nbsp;v1.2 workflow engine — how a
       workflow parses into a DAG, ticks through a scheduler, and lands on one of five
@@ -422,7 +422,7 @@
             </div>
           </div>
           <div class="card track">
-            <div class="track-lab"><b>StepInstance</b><code>step_instance.go</code><span class="lvl">Level 2 · per step · scatter = N</span></div>
+            <div class="track-lab"><b>StepInstance</b><code>step_instance.go</code><span class="lvl">Level 2 · per step · scatter = 1 instance, N indexed tasks</span></div>
             <div class="states">
               <span class="st wait">WAITING</span><span class="arw">→</span>
               <span class="st ready">READY</span><span class="arw">→</span>
@@ -444,8 +444,16 @@
               <span class="st wait">PENDING</span><span class="arw dash">╌╌╌╌╌►</span><span class="st flight">QUEUED</span>
               <span class="note">worker-bound tasks skip <code>SCHEDULED</code> and enqueue directly for checkout</span>
             </div>
+            <div class="shortcut">
+              <span class="st run">RUNNING</span><span class="arw dash">╌╌╌╌╌►</span><span class="fork"><span class="st ok">SUCCESS</span><span class="st bad">FAILED</span></span>
+              <span class="note"><b>proxy task</b> (<code>executor_type: subworkflow</code>) — born <code>RUNNING</code>, never queued; paired 1:1 with a <b>child Submission</b> (<code>parent_task_id</code>) and advanced from the child's terminal state. A cancelled child surfaces as <code>FAILED</code>, never <code>SKIPPED</code>.</span>
+            </div>
           </div>
         </div>
+        <p class="snote"><b>Sub-workflows are submissions.</b> A scatter over a sub-workflow creates one proxy
+          task per combination and one child submission each; children flow through the same tick as
+          top-level runs and the parent fans in by <code>ScatterIndex</code>. Nothing executes inline in the
+          scheduler any more (<code>docs/adr/0011</code>).</p>
       </section>
 
       <section id="s3">
@@ -456,13 +464,17 @@
             <li><span class="k">1</span><span class="t"><b>Advance waiting</b> — <code>WAITING → READY</code> once every dependency is met.
               <p>1.5 · pre-stage workspace inputs for pending submissions (server mode).</p></span></li>
             <li><span class="k">2</span><span class="t"><b>Dispatch</b> — resolve inputs, create <code>Task</code>s, submit to executors.
-              <p>2.5 · re-submit <code>RETRYING</code> tasks.</p></span></li>
+              <p>Sub-workflow steps: all proxy tasks + the <code>DISPATCHED</code> transition in one transaction, then one child submission per task — non-blocking.</p>
+              <p>2.5 · re-submit <code>RETRYING</code> tasks (claimed by compare-and-set; a concurrent cancel wins).</p></span></li>
             <li><span class="k">3</span><span class="t"><b>Poll</b> — query <code>QUEUED</code>/<code>RUNNING</code> async tasks for status.
+              <p>Proxy tasks advance from their child's state instead; a proxy whose parent was cancelled cancels its child (one nesting level per tick), and a proxy without a child re-creates it from <code>task.Job</code> after a crash.</p>
               <p>3.5 · detect stuck queued worker tasks by progress.</p></span></li>
           </ol>
           <ol class="ladder card">
-            <li><span class="k">4</span><span class="t"><b>Advance steps</b> — move <code>DISPATCHED</code>/<code>RUNNING</code> instances forward when all their tasks are terminal.</span></li>
+            <li><span class="k">4</span><span class="t"><b>Advance steps</b> — move <code>DISPATCHED</code>/<code>RUNNING</code> instances forward when all their tasks are terminal.
+              <p>Scatter fan-in waits for the full <code>ScatterIndex</code> set; any <code>SKIPPED</code> task makes the step <code>SKIPPED</code>, never <code>COMPLETED</code>.</p></span></li>
             <li><span class="k">5</span><span class="t"><b>Finalize</b> — settle submissions once every step instance is terminal.
+              <p>Terminal writes are compare-and-set — the loop never overwrites a submission a concurrent cancel already settled.</p>
               <p>5.5 · post-stage outputs to the workspace (server mode).</p></span></li>
             <li><span class="k">6</span><span class="t"><b>Retries</b> — send newly-<code>FAILED</code> tasks to <code>RETRYING</code> while attempts remain.</span></li>
           </ol>
@@ -507,8 +519,11 @@
             <div class="lp">Stages outputs, then posts status and the final result back to the server.</div>
             <span class="lep">PUT …/status · PUT …/complete</span></div>
           <div class="lstep"><div class="ln">04 · heartbeat</div><div class="lt">Stay alive</div>
-            <div class="lp">Periodic heartbeat keeps the worker registered; the scheduler flags stalled claims.</div>
+            <div class="lp">Periodic heartbeat keeps the worker registered, carries cancel signals back, and lets the scheduler flag stalled claims.</div>
             <span class="lep">PUT /workers/{id}/heartbeat</span></div>
+          <div class="lstep"><div class="ln">05 · cleanup</div><div class="lt">Forget it</div>
+            <div class="lp">Once the server accepts a <code>SUCCESS</code>, the task directory is deleted. Kept for failed or cancelled tasks, <code>gowe submit --debug</code> jobs, <code>--keep-task-dirs</code> workers, and outputs staged in place.</div>
+            <span class="lep">internal/worker · cleanupTaskDir</span></div>
         </div></div>
         <p class="snote">Dataset affinity: <code>prestage</code> = require a match · <code>cache</code> = prefer one.
           Container capability and worker group must match before a task is handed out.</p>
@@ -562,7 +577,7 @@
               <div class="pt"><span class="glyph" style="background:var(--accent-wash);color:var(--accent-deep)">◆</span>Server</div>
               <div class="pk">auth middleware · store</div>
               <div class="pd">Validates the token, applies roles, persists the run. No passwords at rest.</div>
-              <ul><li>roles: user · admin · anon</li><li>worker-key registry</li><li>user_token in submissions</li></ul>
+              <ul><li>roles: user · admin · anon</li><li>per-worker keys (hashed)</li><li>user_token encrypted at rest</li></ul>
             </div>
             <div class="link"><div class="ll">worker-key + task</div><div class="bar"></div><div class="lw">may carry deleg. token</div></div>
             <div class="proc zone">
@@ -575,13 +590,15 @@
           <p class="noreturn">◀ &nbsp;<b>Return path carries results only</b> — injected secrets and container env never flow back to the server.</p>
         </div>
 
-        <div class="callout warn">
-          <b>Current-state caveats.</b> The design is sound, but a few things are worth knowing before
-          production: the submitter's BV-BRC token is persisted <b>plaintext</b> in
-          <code>submissions.user_token</code> (SQLite); the worker key is a <b>shared</b> secret with no
-          per-worker rotation; and server TLS is <b>not enforced by default</b>
-          (<code>Secure:false</code>, a standing TODO) — front the server with a TLS terminator. Anonymous
-          access is opt-in and should always be scoped with <code>--anonymous-executors</code>.
+        <div class="callout">
+          <b>Hardened since the first edition.</b> Provider tokens are encrypted at rest
+          (AES-256-GCM, bound to their row; <code>--token-key-file</code> / <code>GOWE_TOKEN_KEY</code> — a
+          server without a key refuses to persist tokens unless <code>--allow-plaintext-tokens</code>);
+          worker keys are per-worker, hashed, and admin-issued; the server terminates TLS natively when
+          configured. Two identity rules were added in 0.15: user Workspace operations from the UI use the
+          <b>session's own token</b> only — the server never acts on user data with a service account — and
+          admin output recovery re-uploads with the <b>stored submission token</b>, never the admin's.
+          Anonymous access remains opt-in and should be scoped with <code>--anonymous-executors</code>.
         </div>
       </section>
 
@@ -721,17 +738,37 @@
             <tr><td class="pkg">shock://</td><td><code>shock.go</code></td>
               <td class="role">Shock data service — <code>shock://host/node/{id}</code>.</td><td><span class="spill def">defined</span></td></tr>
             <tr><td class="pkg">ws://</td><td><code>workspace.go</code></td>
-              <td class="role">BV-BRC Workspace — the default for BV-BRC runs.</td><td><span class="spill def">defined</span></td></tr>
+              <td class="role">BV-BRC Workspace — the default for BV-BRC runs. Uploads go through Shock upload nodes and are verified.</td><td><span class="spill def">defined</span></td></tr>
             <tr><td class="pkg">s3://</td><td><code>s3.go</code></td>
-              <td class="role">S3-compatible object storage.</td><td><span class="spill plan">planned</span></td></tr>
+              <td class="role">S3-compatible object storage (<code>--s3-*</code> worker flags).</td><td><span class="spill def">defined</span></td></tr>
           </tbody>
         </table></div>
         <p class="snote"><b>Why <code>ws://</code> is "defined", not "supported".</b> The BV-BRC path is
           built end to end — submit, poll, output mapping, and server-side pre/post-staging — but it
           can't run in the conformance suite (it needs a live BV-BRC service and a real token), and it
-          carries edges only visible against real infrastructure: wildcard-glob outputs, large-file
-          streaming, and recursive directory download. Full round-trip in
+          carries edges only visible against real infrastructure: wildcard-glob outputs and recursive
+          directory download. Large-file streaming landed in 0.15 (below). Full round-trip in
           <code>docs/BVBRC-Workspace-Deep-Dive.md</code>.</p>
+
+        <div class="card subcard" style="margin-top:20px">
+          <div class="eyebrow">Verified Workspace uploads · 0.15</div>
+          <p class="snote" style="margin-top:10px">Before 0.15 the stager pushed file bytes through a JSON
+            string field, which silently rewrote every non-UTF-8 byte — every gzip and binary output landed
+            corrupt while reporting <code>delivered</code>. Stage-out now follows the Workspace's own client
+            protocol and verifies what was stored:</p>
+<pre><span class="c"># one output file</span>
+<span class="k">Workspace.create</span>   <span class="v">createUploadNodes + overwrite</span>   <span class="c">→ Shock node URL (slot 11)</span>
+<span class="k">PUT</span> <span class="v">&lt;node&gt;</span>            multipart <span class="v">upload</span>, exact Content-Length, <span class="v">OAuth &lt;token&gt;</span>, stall watchdog
+<span class="k">verify</span>             Shock reply: error · status · <span class="v">file.size</span> · md5 when present
+<span class="k">Workspace.update_auto_meta</span>  reply size <span class="v">MUST</span> equal the bytes sent
+<span class="c"># any failure after create → placeholder deleted (only if still ours) → caller retries with a fresh node</span></pre>
+          <p class="snote" style="margin-top:10px"><b>Recovery.</b> Workers record each output's size and
+            <code>sha1</code> before upload, and keep the originals in their stage-out directory. Admins can
+            audit and repair delivered runs: <code>gowe admin verify-outputs</code> downloads and re-hashes;
+            <code>gowe admin redeliver</code> re-uploads mismatches from originals matched by
+            checksum + size (server flag <code>--redeliver-source-dirs</code>), re-verifies, and rewrites the
+            manifest — compare-and-set, never destructive.</p>
+        </div>
 
         <div class="cols" style="margin-top:20px">
           <div class="card subcard">
@@ -766,7 +803,7 @@ gowe submit workflow.cwl <span class="k">--inputs</span> <span class="v">job.yam
   </div>
 
   <footer class="foot">
-    <span>GoWe · CWL v1.2 workflow engine · Go</span>
+    <span>GoWe · CWL v1.2 workflow engine · Go · dossier refreshed for v0.15.0</span>
     <span>parser → scheduler → executor · <a href="https://github.com/wilke/GoWe">github.com/wilke/GoWe</a></span>
   </footer>
 

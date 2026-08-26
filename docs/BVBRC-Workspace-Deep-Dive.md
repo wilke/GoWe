@@ -169,7 +169,7 @@ Beyond the verification gap, these edges only surface against real infrastructur
 | Edge | Detail | Location |
 |------|--------|----------|
 | **Wildcard globs unresolved (fallback)** | When an app does not populate `output_files` **and** an output is a wildcard (`*.fasta`), the glob fallback deliberately skips it — resolving it would require a `WorkspaceLs` of the result folder, which the fallback does not do. The primary `output_files` path is unaffected. | `bvbrc.go:316` |
-| **Whole-file-in-memory staging** | `StageOut` does `os.ReadFile` and buffers the multipart body in memory — memory-bound for multi-GB genomics files. Streaming with a computed `Content-Length` is the fix, but Shock is not verified to accept a chunked body, so it needs a live service to land. | `workspace.go:156` |
+| ~~**Whole-file-in-memory staging**~~ (resolved, PR #177) | `StageOut` now streams the file from disk through `WorkspaceUploadReader` with an exact `Content-Length` (never chunked), a progress watchdog, and size/md5 verification against the Shock reply; verified against the live service by the `pkg/bvbrc` integration tests. See [`SPECIFICATION.md`](../SPECIFICATION.md) §10.6. | `pkg/staging/workspace.go` `uploadFile` |
 | **No recursive directory download** | `StageIn` is single-file; a `ws://` `Directory` output that a local step needs is not recursively listed and downloaded. | `workspace.go:83` |
 | **No submit-time schema validation** | `query_app_description` exists but is not called; bad params fail at BV-BRC, not pre-flight. | `bvbrc.go:95` |
 

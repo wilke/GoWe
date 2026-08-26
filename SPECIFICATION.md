@@ -1,6 +1,6 @@
 # GoWe Specification
 
-> **Status**: Living specification · **Version**: draft-8 (2026-08-09)
+> **Status**: Living specification · **Version**: draft-9 (2026-08-26)
 > **Applies to**: GoWe server, worker, CLI, and `cwl-runner`
 > **Companion documents**: [`docs/adr/`](docs/adr/) (why), [`docs/cwl-hints.md`](docs/cwl-hints.md)
 > (hint reference), [`docs/GoWe-Vocabulary.md`](docs/GoWe-Vocabulary.md) (concepts),
@@ -473,10 +473,12 @@ Staging supports **copy**, **symlink**, and **reference** modes.
 
 > **`ws://` (BV-BRC Workspace)** is *defined* — implemented end to end (submission, output
 > mapping, the stager, and server-side pre/post-staging) but not CI-verified, since it requires
-> a live BV-BRC service and a real user token. See
+> a live BV-BRC service and a real user token. Stage-out follows the upload protocol in §10.6
+> (streamed, size- and md5-verified; validated against the live service by the
+> `-tags=integration` tests in `pkg/bvbrc`, not by CI). See
 > [`docs/BVBRC-Workspace-Deep-Dive.md`](docs/BVBRC-Workspace-Deep-Dive.md) for the full
-> submission/result round-trip and the specific gaps (wildcard-glob resolution, large-file
-> streaming, recursive directory download).
+> submission/result round-trip and the remaining gaps (wildcard-glob resolution in the BV-BRC
+> output fallback, recursive `Directory` download on stage-in).
 
 ### 10.3 Server-side staging and upload proxy
 
@@ -505,6 +507,48 @@ inputs. They are declared with the `gowe:ResourceData` hint (§5.2) and matched 
 affinity (§9.2): `prestage` requires a worker advertising the dataset, `cache` prefers one.
 Workers advertise datasets via `--pre-stage-dir` or `--dataset id=path`.
 
+### 10.6 Workspace upload protocol
+
+Every file GoWe writes to a BV-BRC Workspace — scheduler post-staging, the CLI's
+`--workspace-upload`, the web UI's workspace upload, the `_gowe_outputs.json` manifest, and
+admin re-delivery — MUST go through the Workspace service's own Shock-backed upload protocol
+(`pkg/bvbrc.Client.WorkspaceUploadReader`). File bytes MUST NOT be placed in the inline
+`Content` field of `Workspace.create`: it is a JSON string, and JSON encoding replaces every
+byte that is not valid UTF-8 with U+FFFD, silently corrupting binary data (issue #172). The
+only exception is a **zero-byte** payload, which MAY be stored as an empty inline text object.
+
+An upload of `size` bytes proceeds as follows; each step MUST succeed before the next:
+
+1. **Create** — `Workspace.create` the destination path with `createUploadNodes` and
+   `overwrite` set and no inline content. The service allocates a Shock node and returns its
+   URL in `ObjectMeta` slot 11 (`shockurl`; the object's directory is slot 2 and its name
+   slot 0 — parsers MUST tolerate the 12-slot tuple the service emits). Overwrite is
+   destructive-first: the previous object is gone once this call has started. The reply's
+   `ObjectID` is recorded. An empty or malformed node URL is a hard error, never a fallback
+   to inline content.
+2. **Upload** — `PUT` the bytes to that URL as multipart form field `upload` with a
+   non-empty filename, under an `Authorization: OAuth <token>` header, with an exact
+   `Content-Length` (never chunked transfer encoding). A node's file is immutable, so a
+   failed PUT MUST NOT be retried against the same node; a retry starts again at step 1 with
+   a fresh reader. The PUT SHOULD be bounded by a progress watchdog (default 5 min without a
+   byte read or a reply) rather than a total timeout.
+3. **Verify the Shock reply** — the envelope MUST report no error and a success status, the
+   stored `data.file.size` MUST equal `size`, and when the reply carries an md5 checksum it
+   MUST equal the md5 of the bytes sent.
+4. **Refresh metadata** — `Workspace.update_auto_meta` on the object. The returned
+   `ObjectMeta` MUST carry the `ObjectID` recorded in step 1 (a different ID means a
+   concurrent writer replaced the object; the upload MUST fail without deleting anything)
+   and MUST echo `size` as the object size. The refreshed metadata is the result.
+
+On any failure after step 1 the implementation MUST attempt to delete the placeholder object
+it created, guarded by `ObjectID` so that an object written concurrently by another writer
+(e.g. a scatter sibling sharing a path) is never deleted. A placeholder whose create reply
+carried no ID is left in place and the error reported.
+
+Callers own retries: the stager retries the whole sequence per attempt with a fresh reader,
+while transient JSON-RPC failures inside steps 1 and 4 are retried at the RPC level so a good
+PUT is not thrown away.
+
 ---
 
 ## 11. Persistence (normative)
@@ -529,11 +573,11 @@ middleware; worker endpoints via `X-Worker-Key`; admin endpoints require the adm
 |-------|--------------------------|
 | Health | `GET /health` |
 | Workflows | `GET/POST /workflows`, `GET/PUT/DELETE /workflows/{id}`, `GET …/inputs`, `GET …/outputs`, `POST …/validate` |
-| Submissions | `GET/POST /submissions`, `GET /submissions/{id}`, `DELETE /submissions/{id}`, `PUT …/cancel`, `PUT …/retry`, `GET …/tasks`, `GET …/tasks/{tid}/logs` |
+| Submissions | `GET/POST /submissions` (list excludes child submissions unless `include_children=true`), `GET /submissions/{id}`, `DELETE /submissions/{id}`, `PUT …/cancel`, `PUT …/retry`, `GET …/tasks`, `GET …/tasks/{tid}/logs` |
 | Workers | `POST /workers`, `GET /workers`, `GET /workers/{id}/work`, `PUT /workers/{id}/heartbeat`, `PUT …/tasks/{tid}/status`, `PUT …/tasks/{tid}/complete`, `DELETE /workers/{id}` |
 | BV-BRC proxy | `GET /apps`, `GET /apps/{id}`, `GET /apps/{id}/cwl-tool`, `GET /workspace`, file up/download |
 | Streaming | `GET /sse/submissions/{id}` (server-sent events) |
-| Admin | `GET /admin/tasks/active`, `PUT /admin/tasks/{tid}/priority`, user/role and label management |
+| Admin | `GET /admin/tasks/active`, `PUT /admin/tasks/{tid}/priority`, `POST /admin/submissions/{id}/verify-outputs`, `POST /admin/submissions/{id}/redeliver[?dry_run=true]` (§10.6, §13.5), worker-key, user/role and label management |
 
 The full route table is defined in `internal/server/`.
 
@@ -633,6 +677,13 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   therefore cannot expose the credential in stored logs.
 - Response bodies MUST NOT expose stored tokens: submission token fields are serialized with
   `json:"-"`.
+- Web UI workspace operations (browse, list, upload) MUST run under the session's own
+  provider token; the server's service-account token MUST NOT be used to read or write a
+  user's Workspace data, and a session without a token MUST be refused (`401` / redirect to
+  login) rather than served under another identity.
+- Admin output verification and re-delivery (§12) MUST act with the submission's stored
+  token only — never the administrator's own token — and MUST refuse (`409`) when that token
+  is missing or expired; the token is never logged or returned.
 - Provider tokens MUST be encrypted at rest. A server-held key (`GOWE_TOKEN_KEY`, or
   `--token-key-file`) enables AES-256-GCM envelope encryption of the submitter's token in
   `submissions.user_token` and of any bearer credential embedded in `tasks.runtime_hints`.

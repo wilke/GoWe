@@ -8,6 +8,9 @@ A CWL v1.2 workflow engine written in Go. GoWe parses Common Workflow Language d
 - **Multiple executor backends** — local processes, Docker/Apptainer containers, distributed workers, BV-BRC remote jobs
 - **Distributed execution** — pull-based worker pools with group routing, dataset affinity, and GPU scheduling
 - **Async scheduler** — tick-based with dependency resolution, scatter/gather, retry logic, and three-level state machines
+- **Non-blocking scatter over sub-workflows** — each scatter combination runs as a child submission paired with a proxy task; children run in parallel, survive restarts, and cancel cascades to every nesting level
+- **Automatic task-directory cleanup** — workers delete a task's working data after success; retain per job with `gowe submit --debug` or per worker with `--keep-task-dirs`
+- **Verified Workspace uploads + admin recovery** — BV-BRC Workspace stage-out streams through Shock upload nodes with size/md5 verification; `gowe admin verify-outputs` / `redeliver` audit and repair delivered outputs
 - **Web UI** — dashboard, submission management, real-time SSE updates, workflow browsing
 - **REST API** — JSON endpoints for workflows, submissions, tasks, workers, and file management
 - **CLI client** — `gowe` command for login, submit, status, logs, cancel, and more
@@ -308,6 +311,7 @@ Commands:
   cancel    Cancel a submission
   logs      Fetch task/submission logs
   apps      List/query BV-BRC apps
+  admin     Verify / re-deliver Workspace outputs (admin role)
 
 Flags:
   --server      Server URL (default http://localhost:8080)
@@ -327,6 +331,18 @@ gowe run --server http://localhost:8080 workflow.cwl job.json
 ```
 
 Flags: `--outdir`, `--no-upload`, `--timeout` (default 5m), `-q/--quiet`.
+
+### Submit and admin flags
+
+```bash
+gowe submit workflow.cwl -i job.json --debug        # workers keep this job's task dirs
+gowe submit workflow.cwl -i job.json --group gpu    # target a worker group
+gowe submit workflow.cwl -i job.json --workspace-upload --workspace-url https://p3.theseed.org/services/Workspace
+
+gowe admin verify-outputs sub_abc                   # read-only checksum audit of ws:// outputs
+gowe admin verify-outputs --all --output-state delivered,upload_failed
+gowe admin redeliver sub_abc --dry-run              # plan a repair; drop --dry-run to run it
+```
 
 ## API
 
@@ -355,10 +371,11 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `DELETE` | `/workflows/{id}` | Delete workflow |
 | `POST` | `/workflows/{id}/validate` | Validate workflow |
 | **Submissions** | | |
-| `GET` | `/submissions` | List submissions (`?workflow_id=&state=&search=&sort=&limit=&offset=`) |
+| `GET` | `/submissions` | List submissions (`?workflow_id=&state=&output_state=&search=&sort=&limit=&offset=`; child submissions of scatter/sub-workflow steps are hidden unless `include_children=true`) |
 | `POST` | `/submissions` | Create submission (`workflow_id` accepts ID or name; `?dry_run=true` for validation) |
 | `GET` | `/submissions/{id}` | Get submission |
-| `PUT` | `/submissions/{id}/cancel` | Cancel submission |
+| `PUT` | `/submissions/{id}/cancel` | Cancel submission (cascades to child submissions; returns `children_cancelled`) |
+| `DELETE` | `/submissions/{id}` | Delete submission (`409` while child submissions are active) |
 | `GET` | `/submissions/{id}/tasks` | List tasks |
 | `GET` | `/submissions/{id}/tasks/{tid}` | Get task |
 | `GET` | `/submissions/{id}/tasks/{tid}/logs` | Task logs |
@@ -380,6 +397,8 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | **Admin** | | |
 | `GET` | `/admin/users` | List users |
 | `PUT` | `/admin/users/{username}/role` | Set user role |
+| `POST` | `/admin/submissions/{id}/verify-outputs` | Verify delivered `ws://` outputs against recorded checksums (read-only) |
+| `POST` | `/admin/submissions/{id}/redeliver` | Re-upload outputs that fail verification from local originals (`?dry_run=true` to plan) |
 
 ## Configuration
 
@@ -401,6 +420,11 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `--upload-backend` | `""` | `shock`, `s3`, or `local` |
 | `--upload-local-dir` | `""` | Local directory for file uploads |
 | `--upload-download-dirs` | `""` | Directories allowed for downloads |
+| `--upload-max-size` | `1073741824` | Max upload size in bytes for the file proxy and web UI workspace uploads |
+| `--workspace-staging` | `""` | `server` to pre/post-stage `ws://` inputs and outputs on the server |
+| `--workspace-url` | `""` | BV-BRC Workspace URL for server-side staging and the web UI (default: production) |
+| `--redeliver-source-dirs` | `""` | Directories the admin `redeliver` endpoint may read staged originals from (empty refuses re-upload) |
+| `--token-key-file` | `""` | File holding the token-encryption key (or `GOWE_TOKEN_KEY`) |
 
 ### Worker Flags
 
@@ -422,12 +446,15 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `--gpu-id` | `""` | Specific GPU device IDs |
 | `--secret` | `""` | Secret env var `NAME=value` (repeatable, never sent to server) |
 | `--secret-file` | `""` | Load secrets from file |
+| `--keep-task-dirs` | `false` | Retain task working directories after success (failed tasks are always kept) |
 
 ### Environment Variables
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
 | `GOWE_ADMINS` | Server | Comma-separated admin usernames |
+| `GOWE_TOKEN_KEY` | Server | Token-encryption key (32 bytes, base64/hex); `--token-key-file` overrides |
+| `GOWE_WORKSPACE_URL` | CLI | BV-BRC Workspace URL for `gowe submit --workspace-upload` |
 | `BVBRC_TOKEN` | Server | BV-BRC authentication token |
 | `AWS_ACCESS_KEY_ID` | Server/Worker | S3 access key |
 | `AWS_SECRET_ACCESS_KEY` | Server/Worker | S3 secret key |

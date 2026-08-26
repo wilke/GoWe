@@ -69,6 +69,9 @@ gowe submit --workflow <id-or-name> [flags]
 - `--output-destination` - Target URI for uploading outputs (e.g., `ws:///user@bvbrc/home/results/`)
 - `--group` - Target worker group for task scheduling
 - `--no-upload` - Disable file upload; assume files are accessible on workers
+- `--workspace-upload` - Upload input files to the BV-BRC Workspace instead of the server (for the `bvbrc` executor)
+- `--workspace-url` - Workspace service URL for `--workspace-upload` (or `GOWE_WORKSPACE_URL`; default: production)
+- `--debug` - Debug mode for this submission: workers keep its task working directories instead of deleting them after success (distinct from the global `--debug` logging flag)
 - `--dry-run` - Validate without executing
 
 **Examples:**
@@ -94,6 +97,9 @@ gowe submit pipeline.cwl -i inputs.yaml --group gpu-workers
 
 # Validate without running
 gowe submit pipeline.cwl -i inputs.yaml --dry-run
+
+# Keep every task's working directory on the workers for troubleshooting
+gowe submit pipeline.cwl -i inputs.yaml --debug
 ```
 
 **Input file format (YAML):**
@@ -357,6 +363,44 @@ Parameters:
   output_path        folder    Required   Output folder
   output_file        string    Required   Output filename prefix
 ```
+
+### admin
+
+Administrative operations; the caller must hold the **admin** role.
+
+```bash
+gowe admin verify-outputs <submission_id> | --all [--output-state delivered,upload_failed] [--since YYYY-MM-DD] [--json]
+gowe admin redeliver <submission_id> [--dry-run] [--json]
+```
+
+**verify-outputs** (read-only) downloads every `ws://` output of a submission — including
+sub-workflow child submissions — and compares it to the SHA-1 checksum and size the worker
+recorded before upload. `--all` verifies every submission whose `output_state` matches
+`--output-state` (default `delivered,upload_failed`), optionally created on/after `--since`.
+
+**redeliver** re-uploads each output that fails verification from its local original (found
+by checksum+size among the task outputs, read only from the server's
+`--redeliver-source-dirs`), re-verifies it, rewrites the output manifest, and marks the
+submission `delivered` once every output verifies. `--dry-run` reports the plan
+(`would_reupload` / `original_missing`) without changing anything. Nothing is ever deleted.
+
+Both act with the submission's **stored** token (the admin's own token has no write access
+to another user's workspace) and exit non-zero when any output fails. Server-side errors:
+`503` when workspace staging is not configured, `409` when the submission is not terminal,
+its `output_state` is not `delivered`/`upload_failed`, its stored token is missing or
+expired, or another re-delivery of it is in progress.
+
+```bash
+gowe admin verify-outputs sub_abc
+gowe admin verify-outputs --all --since 2026-06-01 --json > verify.json
+gowe admin redeliver sub_abc --dry-run
+gowe admin redeliver sub_abc
+```
+
+See [API_GUIDE.md §10](../API_GUIDE.md#10-admin-verify-and-re-deliver-workspace-outputs) and
+[upgrading.md](../upgrading.md) for the post-0.15.0 recovery procedure.
+
+---
 
 ## Tutorial: Complete Workflow Submission
 
