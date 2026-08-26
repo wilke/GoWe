@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/me/gowe/internal/bundle"
@@ -240,7 +242,13 @@ func uploadInputsToWorkspace(inputs map[string]any, token, workspaceURL string) 
 	}, wsLogger)
 
 	destFolder := "/" + tokenInfo.Username + "/home/.gowe-inputs"
-	ctx := context.Background()
+
+	// Ctrl-C / SIGTERM cancel the uploads through this context rather than
+	// killing the process outright, so an interrupted upload still gets to
+	// delete its placeholder (that cleanup detaches from the cancellation and
+	// bounds itself).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Ensure destination folder exists. An existing folder is expected; any
 	// other failure surfaces again as an upload error, so log and continue.

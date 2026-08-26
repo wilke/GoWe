@@ -245,3 +245,53 @@ func TestWorkspaceUploadContent_GoesThroughShock(t *testing.T) {
 		t.Errorf("content was sent inline via Workspace.create for %v", inline)
 	}
 }
+
+// TestWorkspaceStageOut_RPCRetryAfterGoodPut: a transient failure of the
+// metadata refresh that follows a successful Shock PUT is retried at the
+// JSON-RPC level by the client. The file must not be streamed a second time.
+func TestWorkspaceStageOut_RPCRetryAfterGoodPut(t *testing.T) {
+	payload := allBytesRepeated(4)
+	src := writeTemp(t, "out.bin", payload)
+
+	f := bvbrctest.New(t)
+	failed := false
+	f.Intercept = func(method string, _ json.RawMessage) (int, string) {
+		if method == "Workspace.update_auto_meta" && !failed {
+			failed = true
+			return http.StatusInternalServerError, "upstream unavailable"
+		}
+		return 0, ""
+	}
+	stager := NewWorkspaceStager(WorkspaceConfig{
+		WorkspaceURL: f.WorkspaceURL(),
+		Token:        "un=tester",
+		MaxRetries:   3,
+	}, nil)
+
+	const dest = "/tester@bvbrc/home/results/out.bin"
+	loc, err := stager.StageOut(context.Background(), src, "task-1", StageOptions{
+		Metadata: map[string]string{"destination": "/tester@bvbrc/home/results"},
+	})
+	if err != nil {
+		t.Fatalf("StageOut: %v", err)
+	}
+	if loc != "ws://"+dest {
+		t.Errorf("location = %q", loc)
+	}
+
+	if n := len(f.Puts()); n != 1 {
+		t.Fatalf("Shock PUTs = %d, want exactly 1: the RPC hiccup must not force a re-upload", n)
+	}
+	if n := len(f.CallsTo("Workspace.update_auto_meta")); n != 2 {
+		t.Errorf("update_auto_meta calls = %d, want 2 (one failed, one retried)", n)
+	}
+	if n := len(f.CallsTo("Workspace.delete")); n != 0 {
+		t.Errorf("Workspace.delete calls = %d, want 0", n)
+	}
+	if got := sha256.Sum256(f.Bytes(dest)); got != sha256.Sum256(payload) {
+		t.Error("stored bytes differ from the payload")
+	}
+	if obj := f.Object(dest); obj == nil || obj.Size != int64(len(payload)) {
+		t.Errorf("workspace object = %+v, want size %d", obj, len(payload))
+	}
+}

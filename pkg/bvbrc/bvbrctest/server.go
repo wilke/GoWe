@@ -38,6 +38,7 @@ import (
 // Object is one stored workspace object.
 type Object struct {
 	Path     string
+	ID       string // ObjectID (slot [4]); assigned by the fake when empty
 	Type     string
 	Content  string // inline content (text objects)
 	NodeID   string // backing Shock node, empty for inline objects
@@ -104,12 +105,30 @@ type Server struct {
 	// the object at path; recorded is the size Shock stored for its node.
 	AutoMetaSize func(path string, recorded int64) int64
 
-	mu      sync.Mutex
-	objects map[string]*Object
-	nodes   map[string]*Node
-	calls   []Call
-	puts    []ShockPut
-	seq     int
+	// Intercept, when set, runs before every JSON-RPC call is dispatched,
+	// after it has been recorded and with the fake unlocked, so it may use
+	// Put and the accessors to change the stored state between two steps of
+	// a protocol (for example to stand in for a concurrent writer). Returning
+	// a non-zero status short-circuits the call with that HTTP status and
+	// body, which injects a transport-level failure such as a bare 500 that
+	// the client treats as retryable.
+	Intercept func(method string, params json.RawMessage) (status int, body string)
+
+	// HoldShockBody, when set and returning a non-nil channel for a node,
+	// makes the Shock PUT handler accept the request headers and then never
+	// read the body: it blocks until the channel is closed, stores nothing,
+	// and replies 500. It simulates a Shock that stops draining the socket.
+	// Held handlers that have returned are counted by HeldReturned.
+	HoldShockBody func(nodeID string) <-chan struct{}
+
+	mu           sync.Mutex
+	objects      map[string]*Object
+	nodes        map[string]*Node
+	calls        []Call
+	puts         []ShockPut
+	seq          int
+	objSeq       int
+	heldReturned int
 }
 
 // New starts a fake and registers its shutdown with t.
@@ -192,12 +211,30 @@ func (s *Server) Bytes(path string) []byte {
 	return append([]byte(nil), n.Body...)
 }
 
-// Put stores an object directly, bypassing the protocol (test setup).
+// Put stores an object directly, bypassing the protocol (test setup, or a
+// stand-in for another writer). An empty ID gets a fresh one.
 func (s *Server) Put(obj Object) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := obj
+	if cp.ID == "" {
+		cp.ID = s.nextObjectIDLocked()
+	}
 	s.objects[obj.Path] = &cp
+}
+
+// HeldReturned reports how many Shock handlers parked by HoldShockBody have
+// returned, which proves the client side gave up on the request.
+func (s *Server) HeldReturned() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.heldReturned
+}
+
+// nextObjectIDLocked mints a distinct ObjectID. Callers hold s.mu.
+func (s *Server) nextObjectIDLocked() string {
+	s.objSeq++
+	return fmt.Sprintf("00000000-0000-0000-0000-%012d", s.objSeq)
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +289,15 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls = append(s.calls, Call{Method: req.Method, Params: params})
 	s.mu.Unlock()
+
+	if s.Intercept != nil {
+		if status, body := s.Intercept(req.Method, params); status != 0 {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+			return
+		}
+	}
 
 	switch req.Method {
 	case "Workspace.create":
@@ -311,7 +357,7 @@ func (s *Server) rpcCreate(w http.ResponseWriter, raw json.RawMessage) {
 		// binding) is gone before the new one is created.
 		delete(s.objects, path)
 
-		obj := &Object{Path: path, Type: typ, Metadata: meta}
+		obj := &Object{Path: path, ID: s.nextObjectIDLocked(), Type: typ, Metadata: meta}
 		if c, ok := content.(string); ok {
 			obj.Content = c
 			obj.Size = int64(len(c))
@@ -505,18 +551,18 @@ func (s *Server) metaLocked(obj *Object, shockURL string, explicitURL bool) []an
 		auto["is_folder"] = "1"
 	}
 	return []any{
-		name,                                   // 0 ObjectName
-		obj.Type,                               // 1 ObjectType
-		dir,                                    // 2 FullObjectPath (directory, trailing /)
-		"2026-08-20T12:00:00Z",                 // 3 creation_time
-		"11111111-2222-3333-4444-555555555555", // 4 ObjectID
-		"tester@bvbrc",                         // 5 object_owner
-		obj.Size,                               // 6 ObjectSize
-		meta,                                   // 7 UserMetadata
-		auto,                                   // 8 AutoMetadata
-		"o",                                    // 9 user_permission
-		"n",                                    // 10 global_permission
-		shockURL,                               // 11 shockurl
+		name,                   // 0 ObjectName
+		obj.Type,               // 1 ObjectType
+		dir,                    // 2 FullObjectPath (directory, trailing /)
+		"2026-08-20T12:00:00Z", // 3 creation_time
+		obj.ID,                 // 4 ObjectID
+		"tester@bvbrc",         // 5 object_owner
+		obj.Size,               // 6 ObjectSize
+		meta,                   // 7 UserMetadata
+		auto,                   // 8 AutoMetadata
+		"o",                    // 9 user_permission
+		"n",                    // 10 global_permission
+		shockURL,               // 11 shockurl
 	}
 }
 
@@ -543,6 +589,22 @@ func (s *Server) handleShock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad content type: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	if s.HoldShockBody != nil {
+		if release := s.HoldShockBody(id); release != nil {
+			// Headers are in; the body is never read. Note that Go's server
+			// only notices a client disconnect once the body has been
+			// consumed, so this must be released by the test, not by the
+			// request context.
+			<-release
+			s.mu.Lock()
+			s.heldReturned++
+			s.mu.Unlock()
+			http.Error(w, `{"status":500,"error":["upload abandoned"],"data":null}`, http.StatusInternalServerError)
+			return
+		}
+	}
+
 	raw := &countingReader{r: r.Body}
 	part, err := multipart.NewReader(raw, params["boundary"]).NextPart()
 	if err != nil {

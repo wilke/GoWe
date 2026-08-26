@@ -270,11 +270,17 @@ func (s *WorkspaceStager) UploadContent(ctx context.Context, destPath string, co
 }
 
 // newClient builds a Workspace client for one operation with the given token.
+// The client retries transient JSON-RPC failures itself (MaxRetries with the
+// package default backoff), so a hiccup on the metadata refresh that follows
+// a good Shock PUT is retried at the RPC level rather than by throwing the
+// upload away and streaming the whole file again.
 func (s *WorkspaceStager) newClient(token string) *bvbrc.Client {
 	return bvbrc.NewClient(bvbrc.Config{
 		WorkspaceURL: s.config.WorkspaceURL,
 		Token:        token,
 		Timeout:      s.config.Timeout,
+		MaxRetries:   s.config.MaxRetries,
+		RetryDelay:   bvbrc.DefaultRetryDelay,
 	}, s.logger)
 }
 

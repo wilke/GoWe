@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -18,8 +19,10 @@ type Client struct {
 	httpClient *http.Client
 	// uploadClient carries Shock file PUTs. It has no total request timeout —
 	// a multi-GB upload cannot be bounded per request — so the caller's
-	// context is the only deadline; the transport still times out on a stalled
-	// response header or an idle connection.
+	// context and the per-upload progress watchdog (Config.UploadStallTimeout)
+	// are the only deadlines; the transport still times out on a stalled
+	// response header or an idle connection. Every client shares one
+	// transport (see uploadTransport); the OAuth header is set per request.
 	uploadClient *http.Client
 	config       Config
 	logger       *slog.Logger
@@ -40,22 +43,33 @@ func NewClient(config Config, logger *slog.Logger) *Client {
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
-		uploadClient: &http.Client{Transport: newUploadTransport()},
+		uploadClient: &http.Client{Transport: uploadTransport()},
 		config:       config,
 		logger:       logger.With("component", "bvbrc-client"),
 	}
 }
 
-// newUploadTransport derives the Shock upload transport from the default one.
-func newUploadTransport() *http.Transport {
-	tr, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
-	}
-	tr = tr.Clone()
-	tr.ResponseHeaderTimeout = uploadResponseHeaderTimeout
-	tr.IdleConnTimeout = 90 * time.Second
-	return tr
+var (
+	uploadTransportOnce   sync.Once
+	sharedUploadTransport *http.Transport
+)
+
+// uploadTransport returns the process-wide Shock upload transport, derived
+// once from the default transport. Sharing it lets every client (the stager
+// builds one per operation) reuse the same connection pool instead of each
+// owning an idle-connection set of its own.
+func uploadTransport() *http.Transport {
+	uploadTransportOnce.Do(func() {
+		tr, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		}
+		tr = tr.Clone()
+		tr.ResponseHeaderTimeout = uploadResponseHeaderTimeout
+		tr.IdleConnTimeout = 90 * time.Second
+		sharedUploadTransport = tr
+	})
+	return sharedUploadTransport
 }
 
 // Token returns the current authentication token.

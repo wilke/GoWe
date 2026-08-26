@@ -252,13 +252,23 @@ func recordShockPutReply(t *testing.T, ctx context.Context, c *bvbrc.Client, des
 	part.Write(payload)
 	mw.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, obj.ShockURL, bytes.NewReader(body.Bytes()))
+	// The body is deliberately non-replayable (a MultiReader hides the
+	// bytes.Reader, so net/http sets no GetBody) and goes through the
+	// library's own upload client: the exchange recorded here is the one the
+	// client performs, including the fact that a PUT can never be silently
+	// re-sent to a node whose file is already set (P6).
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, obj.ShockURL,
+		io.NopCloser(io.MultiReader(bytes.NewReader(body.Bytes()))))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if req.GetBody != nil {
+		t.Fatal("request body is replayable; the recorded exchange must use a one-shot body")
+	}
+	req.ContentLength = int64(body.Len())
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Authorization", "OAuth "+c.Token())
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := bvbrc.UploadHTTPClient(c).Do(req)
 	if err != nil {
 		t.Fatalf("PUT %s: %v", obj.ShockURL, err)
 	}

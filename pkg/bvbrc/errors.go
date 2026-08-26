@@ -76,9 +76,14 @@ type Error struct {
 	Err error
 }
 
-// Error implements the error interface.
+// Error implements the error interface. A wrapped error whose Message is just
+// its own text (the WrapError case) is printed once, as "op: err", instead of
+// "op: err: err".
 func (e *Error) Error() string {
 	if e.Err != nil {
+		if e.Message == "" || e.Message == e.Err.Error() {
+			return fmt.Sprintf("%s: %v", e.Op, e.Err)
+		}
 		return fmt.Sprintf("%s: %s: %v", e.Op, e.Message, e.Err)
 	}
 	if e.Code != 0 {

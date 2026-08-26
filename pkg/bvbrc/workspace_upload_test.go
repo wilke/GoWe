@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -598,5 +599,241 @@ func TestWorkspaceUpdateAutoMeta(t *testing.T) {
 
 	if _, err := c.WorkspaceUpdateAutoMeta(context.Background(), "/tester@bvbrc/home/out"); err == nil {
 		t.Error("expected an error for a folder path")
+	}
+}
+
+// newClientWithConfig is newClient with extra fields set on the Config.
+func newClientWithConfig(f *bvbrctest.Server, token string, adjust func(*bvbrc.Config)) *bvbrc.Client {
+	cfg := bvbrc.Config{
+		WorkspaceURL: f.WorkspaceURL(),
+		Token:        token,
+		Timeout:      10 * time.Second,
+	}
+	adjust(&cfg)
+	return bvbrc.NewClient(cfg, nil)
+}
+
+// TestWorkspaceUploadReader_ConcurrentWriter models two scatter siblings that
+// share an output folder and a basename: the second writer's Workspace.create
+// (overwrite, destructive-first) replaces the first writer's object between
+// its PUT and its update_auto_meta. The first writer must notice that the
+// object at the path is no longer the one it created, return an error, and
+// delete nothing — the second writer's upload is the one that survives.
+func TestWorkspaceUploadReader_ConcurrentWriter(t *testing.T) {
+	const dest = "/tester@bvbrc/home/out/blob.bin"
+	payload := allBytesPayload()
+	other := bvbrctest.Object{Path: dest, ID: "other-writer-object", Type: "unspecified", NodeID: "node-other", Size: 4096}
+
+	t.Run("replaced before update_auto_meta", func(t *testing.T) {
+		f := bvbrctest.New(t)
+		f.Intercept = func(method string, _ json.RawMessage) (int, string) {
+			if method == "Workspace.update_auto_meta" {
+				f.Put(other)
+			}
+			return 0, ""
+		}
+		c := newClient(f, testToken)
+
+		obj, err := c.WorkspaceUploadReader(context.Background(), dest, "blob.bin",
+			bytes.NewReader(payload), int64(len(payload)), bvbrc.WorkspaceTypeUnspecified)
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if obj != nil {
+			t.Errorf("returned object %+v alongside the error", obj)
+		}
+		if want := "object at " + dest + " was replaced concurrently by another writer"; !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+		if n := len(f.CallsTo("Workspace.delete")); n != 0 {
+			t.Errorf("Workspace.delete calls = %d, want 0: the other writer's object must not be touched", n)
+		}
+		if got := f.Object(dest); got == nil || got.ID != other.ID || got.NodeID != other.NodeID {
+			t.Errorf("object at %s = %+v, want the other writer's object to survive", dest, got)
+		}
+	})
+
+	t.Run("replaced before placeholder delete", func(t *testing.T) {
+		// A verification failure after the PUT triggers the cleanup; by then
+		// another writer owns the path, so the guarded delete must back off.
+		f := bvbrctest.New(t)
+		f.AutoMetaSize = func(_ string, recorded int64) int64 { return recorded + 1 }
+		f.Intercept = func(method string, _ json.RawMessage) (int, string) {
+			if method == "Workspace.get" {
+				f.Put(other)
+			}
+			return 0, ""
+		}
+		c := newClient(f, testToken)
+
+		_, err := c.WorkspaceUploadReader(context.Background(), dest, "blob.bin",
+			bytes.NewReader(payload), int64(len(payload)), bvbrc.WorkspaceTypeUnspecified)
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if n := len(f.CallsTo("Workspace.get")); n != 1 {
+			t.Errorf("Workspace.get calls = %d, want 1 (the identity check before the delete)", n)
+		}
+		if n := len(f.CallsTo("Workspace.delete")); n != 0 {
+			t.Errorf("Workspace.delete calls = %d, want 0: the object now belongs to another writer", n)
+		}
+		if got := f.Object(dest); got == nil || got.ID != other.ID {
+			t.Errorf("object at %s = %+v, want the other writer's object to survive", dest, got)
+		}
+	})
+
+	t.Run("identity check fails", func(t *testing.T) {
+		// When the placeholder cannot even be read, deleting blind is worse
+		// than leaving it: skip the delete.
+		f := bvbrctest.New(t)
+		f.AutoMetaSize = func(_ string, recorded int64) int64 { return recorded + 1 }
+		f.Intercept = func(method string, _ json.RawMessage) (int, string) {
+			if method == "Workspace.get" {
+				return http.StatusBadGateway, "workspace down"
+			}
+			return 0, ""
+		}
+		c := newClient(f, testToken)
+
+		if _, err := c.WorkspaceUploadReader(context.Background(), dest, "blob.bin",
+			bytes.NewReader(payload), int64(len(payload)), bvbrc.WorkspaceTypeUnspecified); err == nil {
+			t.Fatal("expected an error")
+		}
+		if n := len(f.CallsTo("Workspace.delete")); n != 0 {
+			t.Errorf("Workspace.delete calls = %d, want 0 when the identity check fails", n)
+		}
+	})
+
+	t.Run("still ours is deleted", func(t *testing.T) {
+		// The guard must not stop the normal cleanup: with no other writer
+		// the placeholder is read, matched, and deleted.
+		f := bvbrctest.New(t)
+		f.AutoMetaSize = func(_ string, recorded int64) int64 { return recorded + 1 }
+		c := newClient(f, testToken)
+
+		if _, err := c.WorkspaceUploadReader(context.Background(), dest, "blob.bin",
+			bytes.NewReader(payload), int64(len(payload)), bvbrc.WorkspaceTypeUnspecified); err == nil {
+			t.Fatal("expected an error")
+		}
+		if n := len(f.CallsTo("Workspace.delete")); n != 1 {
+			t.Errorf("Workspace.delete calls = %d, want 1", n)
+		}
+		if f.Object(dest) != nil {
+			t.Error("placeholder survived")
+		}
+	})
+}
+
+// TestWorkspaceUploadReader_Stall: a Shock that accepts the headers and then
+// never reads the body must not hang the upload. The progress watchdog cancels
+// the request, the error names the stall, the placeholder is cleaned up
+// (guarded), and the request is really over on both sides.
+func TestWorkspaceUploadReader_Stall(t *testing.T) {
+	const dest = "/tester@bvbrc/home/out/big.bin"
+	const stall = 200 * time.Millisecond
+	payload := randomPayload(3 << 20)
+
+	f := bvbrctest.New(t)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	f.HoldShockBody = func(string) <-chan struct{} { return release }
+	c := newClientWithConfig(f, testToken, func(cfg *bvbrc.Config) { cfg.UploadStallTimeout = stall })
+
+	start := time.Now()
+	_, err := c.WorkspaceUploadReader(context.Background(), dest, "big.bin",
+		bytes.NewReader(payload), int64(len(payload)), bvbrc.WorkspaceTypeUnspecified)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected the stalled upload to fail")
+	}
+	t.Logf("stalled upload gave up after %s: %v", elapsed, err)
+	if elapsed > time.Second {
+		t.Errorf("upload took %s to give up, want about %s", elapsed, stall)
+	}
+	if want := "upload stalled: no progress for " + stall.String(); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to contain %q", err, want)
+	}
+
+	if n := len(f.CallsTo("Workspace.get")); n != 1 {
+		t.Errorf("Workspace.get calls = %d, want 1 (identity check before the delete)", n)
+	}
+	deletes := f.CallsTo("Workspace.delete")
+	if len(deletes) != 1 {
+		t.Fatalf("Workspace.delete calls = %d, want 1 (placeholder cleanup)", len(deletes))
+	}
+	if got := objectsParam(t, deletes[0]); len(got) != 1 || got[0] != dest {
+		t.Errorf("Workspace.delete objects = %v, want [%s]", got, dest)
+	}
+	if f.Object(dest) != nil {
+		t.Error("placeholder survived the stalled upload")
+	}
+
+	// The server side must see the connection go away once released: a
+	// handler that never returns would mean the client still holds it open.
+	releaseOnce.Do(func() { close(release) })
+	deadline := time.Now().Add(2 * time.Second)
+	for f.HeldReturned() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if f.HeldReturned() != 1 {
+		t.Error("the held Shock handler never returned")
+	}
+}
+
+func TestWorkspaceUploadReader_RejectsNegativeSize(t *testing.T) {
+	f := bvbrctest.New(t)
+	c := newClient(f, testToken)
+
+	_, err := c.WorkspaceUploadReader(context.Background(), "/tester@bvbrc/home/out/x", "x",
+		bytes.NewReader(nil), -1, bvbrc.WorkspaceTypeUnspecified)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "negative size -1") {
+		t.Errorf("error = %v, want it to name the negative size", err)
+	}
+	if n := len(f.Calls()); n != 0 {
+		t.Errorf("%d calls reached the service; a negative size must be rejected before any", n)
+	}
+}
+
+// TestWorkspaceUploadReader_CreateReplyWithoutID: a create reply whose
+// ObjectMeta carries no ObjectID leaves nothing to guard a delete with, so the
+// upload stops before the PUT, deletes nothing, and says the placeholder may
+// remain. A usable Shock URL in the same reply must not tempt it onward.
+func TestWorkspaceUploadReader_CreateReplyWithoutID(t *testing.T) {
+	const dest = "/tester@bvbrc/home/out/blob.bin"
+	f := bvbrctest.New(t)
+	f.Intercept = func(method string, _ json.RawMessage) (int, string) {
+		if method != "Workspace.create" {
+			return 0, ""
+		}
+		meta := []any{"blob.bin", "unspecified", "/tester@bvbrc/home/out/", "2026-08-20T12:00:00Z",
+			"", "tester@bvbrc", 0, map[string]any{}, map[string]any{}, "o", "n", f.BaseURL() + "/shock_api/node/node-x"}
+		body, _ := json.Marshal(map[string]any{"id": "1", "version": "1.1", "result": []any{[]any{meta}}})
+		return http.StatusOK, string(body)
+	}
+	c := newClient(f, testToken)
+
+	payload := allBytesPayload()
+	obj, err := c.WorkspaceUploadReader(context.Background(), dest, "blob.bin",
+		bytes.NewReader(payload), int64(len(payload)), bvbrc.WorkspaceTypeUnspecified)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if obj != nil {
+		t.Errorf("returned object %+v alongside the error", obj)
+	}
+	if !strings.Contains(err.Error(), "placeholder may remain at "+dest) {
+		t.Errorf("error = %v, want it to say the placeholder may remain", err)
+	}
+	if n := len(f.Puts()); n != 0 {
+		t.Errorf("Shock PUTs = %d, want 0", n)
+	}
+	for _, method := range []string{"Workspace.get", "Workspace.delete"} {
+		if n := len(f.CallsTo(method)); n != 0 {
+			t.Errorf("%s calls = %d, want 0: without an ID nothing may be deleted", method, n)
+		}
 	}
 }

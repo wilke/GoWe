@@ -1,6 +1,9 @@
 package bvbrc
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -116,5 +119,38 @@ func TestParseWorkspaceGetEntry_BareMetaTuple(t *testing.T) {
 	}
 	if obj.Path != "/tester@bvbrc/home/out/manifest.json" {
 		t.Errorf("Path = %q", obj.Path)
+	}
+}
+
+// TestShockPutReply_RecordedFixture pins the parser to the envelope a real
+// Shock returned (testdata/shock-put-reply.json, recorded by the integration
+// test): the fields the upload verification relies on must decode from it.
+func TestShockPutReply_RecordedFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "shock-put-reply.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var reply shockPutReply
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		t.Fatalf("decoding fixture: %v", err)
+	}
+	if reply.Status != 200 {
+		t.Errorf("Status = %d, want 200", reply.Status)
+	}
+	if len(reply.Error) != 0 {
+		t.Errorf("Error = %v, want none", reply.Error)
+	}
+	if reply.Data.ID == "" {
+		t.Error("Data.ID is empty")
+	}
+	if reply.Data.File.Name != "fixture.gz" {
+		t.Errorf("Data.File.Name = %q, want fixture.gz", reply.Data.File.Name)
+	}
+	if reply.Data.File.Size != 204888 {
+		t.Errorf("Data.File.Size = %d, want 204888", reply.Data.File.Size)
+	}
+	if md5 := reply.Data.File.Checksum["md5"]; len(md5) != 32 {
+		t.Errorf("Data.File.Checksum[md5] = %q, want a 32-hex-digit md5", md5)
 	}
 }
