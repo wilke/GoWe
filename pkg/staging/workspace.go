@@ -152,13 +152,9 @@ func (s *WorkspaceStager) StageOut(ctx context.Context, srcPath string, taskID s
 	filename := filepath.Base(srcPath)
 	destPath := strings.TrimRight(destDir, "/") + "/" + filename
 
-	// Read source file.
-	data, err := os.ReadFile(srcPath)
-	if err != nil {
-		return "", fmt.Errorf("workspace stager: read source: %w", err)
-	}
-
-	// Upload with retries.
+	// Upload with retries. Each attempt re-opens the source and streams it:
+	// the upload verifies what the service stored and a failed attempt deletes
+	// its placeholder, so a fresh attempt always starts from a clean object.
 	var lastErr error
 	for attempt := 0; attempt < s.config.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -169,7 +165,7 @@ func (s *WorkspaceStager) StageOut(ctx context.Context, srcPath string, taskID s
 			}
 		}
 
-		err := s.upload(ctx, destPath, data, token)
+		err := s.uploadFile(ctx, destPath, srcPath, token)
 		if err == nil {
 			return "ws://" + destPath, nil
 		}
@@ -183,15 +179,7 @@ func (s *WorkspaceStager) StageOut(ctx context.Context, srcPath string, taskID s
 
 // download fetches a file from the workspace via the download URL API.
 func (s *WorkspaceStager) download(ctx context.Context, wsPath string, destPath string, token string) error {
-	// Create a BV-BRC client to get the download URL.
-	bvbrcCfg := bvbrc.Config{
-		WorkspaceURL: s.config.WorkspaceURL,
-		Token:        token,
-		Timeout:      s.config.Timeout,
-	}
-	wsClient := bvbrc.NewClient(bvbrcCfg, s.logger)
-
-	urls, err := wsClient.WorkspaceGetDownloadURL(ctx, []string{wsPath})
+	urls, err := s.newClient(token).WorkspaceGetDownloadURL(ctx, []string{wsPath})
 	if err != nil {
 		return fmt.Errorf("get download URL for %s: %w", wsPath, err)
 	}
@@ -281,22 +269,54 @@ func (s *WorkspaceStager) UploadContent(ctx context.Context, destPath string, co
 	return "", fmt.Errorf("workspace stager: upload content failed after %d attempts: %w", s.config.MaxRetries, lastErr)
 }
 
-// upload creates/overwrites a file in the workspace.
+// newClient builds a Workspace client for one operation with the given token.
+// The client retries transient JSON-RPC failures itself (MaxRetries with the
+// package default backoff), so a hiccup on the metadata refresh that follows
+// a good Shock PUT is retried at the RPC level rather than by throwing the
+// upload away and streaming the whole file again.
+func (s *WorkspaceStager) newClient(token string) *bvbrc.Client {
+	return bvbrc.NewClient(bvbrc.Config{
+		WorkspaceURL: s.config.WorkspaceURL,
+		Token:        token,
+		Timeout:      s.config.Timeout,
+		MaxRetries:   s.config.MaxRetries,
+		RetryDelay:   bvbrc.DefaultRetryDelay,
+	}, s.logger)
+}
+
+// uploadFile streams the local file at srcPath into the workspace object at
+// wsPath, verifying the stored size against the local one.
 //
 // The bytes travel through Shock (Workspace.create with createUploadNodes, then a
 // multipart PUT to the returned node URL), never through Workspace.create's inline
 // JSON string field — that field runs the content through encoding/json, which
 // replaces every byte that is not valid UTF-8 with U+FFFD and silently corrupts
-// every binary output. See issue #172 and bvbrc.Client.WorkspaceUploadFile.
-func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, data []byte, token string) error {
-	bvbrcCfg := bvbrc.Config{
-		WorkspaceURL: s.config.WorkspaceURL,
-		Token:        token,
-		Timeout:      s.config.Timeout,
+// every binary output. See issue #172 and bvbrc.Client.WorkspaceUploadReader.
+func (s *WorkspaceStager) uploadFile(ctx context.Context, wsPath, srcPath, token string) error {
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
 	}
-	wsClient := bvbrc.NewClient(bvbrcCfg, s.logger)
+	defer f.Close()
 
-	_, err := wsClient.WorkspaceUploadFile(ctx, wsPath, data, bvbrc.WorkspaceTypeUnspecified)
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat source: %w", err)
+	}
+
+	obj, err := s.newClient(token).WorkspaceUploadReader(ctx, wsPath, filepath.Base(srcPath), f, st.Size(), bvbrc.WorkspaceTypeUnspecified)
+	if err != nil {
+		return fmt.Errorf("upload to %s: %w", wsPath, err)
+	}
+
+	s.logger.Info("workspace upload verified", "path", wsPath, "size", obj.Size)
+	return nil
+}
+
+// upload creates/overwrites a file in the workspace from in-memory bytes
+// (manifests). Routed through the same verified Shock path as uploadFile.
+func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, data []byte, token string) error {
+	_, err := s.newClient(token).WorkspaceUploadFile(ctx, wsPath, data, bvbrc.WorkspaceTypeUnspecified)
 	if err != nil {
 		return fmt.Errorf("upload to %s: %w", wsPath, err)
 	}
@@ -306,19 +326,15 @@ func (s *WorkspaceStager) upload(ctx context.Context, wsPath string, data []byte
 
 // ensureDir creates the destination directory (and any missing ancestors) in the workspace.
 // It walks from the user's home directory down to destDir, creating any missing folders.
-// Already-existing directories are silently skipped (create returns an error that we ignore).
+// Already-existing directories are skipped; other failures are logged and the
+// walk continues, since the subsequent upload reports a missing directory anyway.
 func (s *WorkspaceStager) ensureDir(ctx context.Context, destDir string, token string) error {
 	destDir = strings.TrimRight(destDir, "/")
 	if destDir == "" {
 		return nil
 	}
 
-	bvbrcCfg := bvbrc.Config{
-		WorkspaceURL: s.config.WorkspaceURL,
-		Token:        token,
-		Timeout:      s.config.Timeout,
-	}
-	wsClient := bvbrc.NewClient(bvbrcCfg, s.logger)
+	wsClient := s.newClient(token)
 
 	// Split path into components: /user@bvbrc/home/Reports/1
 	// The first two components (/user@bvbrc/home) always exist, so start from the third.
@@ -331,15 +347,13 @@ func (s *WorkspaceStager) ensureDir(ctx context.Context, destDir string, token s
 	for i := 3; i < len(parts); i++ {
 		dir := strings.Join(parts[:i+1], "/")
 		_, err := wsClient.WorkspaceCreateFolder(ctx, dir)
-		if err != nil {
-			// Ignore errors from folder creation — the workspace API returns various
-			// error messages when a folder already exists ("already exists",
-			// "Object already exists", "no object returned from server").
-			// Since ensureDir is idempotent, log and continue.
-			s.logger.Debug("workspace mkdir ignored error", "path", dir, "error", err)
-			continue
-		} else {
+		switch {
+		case err == nil:
 			s.logger.Info("workspace mkdir created", "path", dir)
+		case bvbrc.IsExistsError(err):
+			s.logger.Debug("workspace mkdir skipped, folder exists", "path", dir)
+		default:
+			s.logger.Warn("workspace mkdir failed", "path", dir, "error", err)
 		}
 	}
 

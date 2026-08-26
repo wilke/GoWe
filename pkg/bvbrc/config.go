@@ -18,6 +18,11 @@ const (
 	DefaultTimeout    = 30 * time.Second
 	DefaultMaxRetries = 3
 	DefaultRetryDelay = 1 * time.Second
+
+	// DefaultUploadStallTimeout is how long a Shock file upload may make no
+	// progress (no byte read from the source, no reply arriving) before it is
+	// abandoned. See Config.UploadStallTimeout.
+	DefaultUploadStallTimeout = 5 * time.Minute
 )
 
 // Config holds all configuration for the BV-BRC API client.
@@ -48,6 +53,14 @@ type Config struct {
 
 	// RetryDelay is the initial delay between retries (exponential backoff applied).
 	RetryDelay time.Duration
+
+	// UploadStallTimeout bounds a Shock file upload by progress rather than by
+	// total duration: the upload is cancelled when this long passes without a
+	// byte being read from the source (or, once the body is sent, without the
+	// reply arriving). A multi-GB upload cannot be given a sensible total
+	// timeout, but a wedged connection must not hang forever. Zero selects
+	// DefaultUploadStallTimeout.
+	UploadStallTimeout time.Duration
 }
 
 // DefaultConfig returns a Config with default production URLs and settings.
@@ -61,6 +74,8 @@ func DefaultConfig() Config {
 		Timeout:       DefaultTimeout,
 		MaxRetries:    DefaultMaxRetries,
 		RetryDelay:    DefaultRetryDelay,
+
+		UploadStallTimeout: DefaultUploadStallTimeout,
 	}
 }
 

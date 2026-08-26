@@ -3,6 +3,7 @@ package bvbrc
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Standard JSON-RPC error codes.
@@ -75,9 +76,14 @@ type Error struct {
 	Err error
 }
 
-// Error implements the error interface.
+// Error implements the error interface. A wrapped error whose Message is just
+// its own text (the WrapError case) is printed once, as "op: err", instead of
+// "op: err: err".
 func (e *Error) Error() string {
 	if e.Err != nil {
+		if e.Message == "" || e.Message == e.Err.Error() {
+			return fmt.Sprintf("%s: %v", e.Op, e.Err)
+		}
 		return fmt.Sprintf("%s: %s: %v", e.Op, e.Message, e.Err)
 	}
 	if e.Code != 0 {
@@ -162,4 +168,16 @@ func IsRetryable(err error) bool {
 		return rpcErr.Code == ErrCodeInternalError
 	}
 	return false
+}
+
+// IsExistsError reports whether a Workspace.create error means the object
+// already exists. The service phrases this several ways ("already exists",
+// "Object already exists"), and creating an existing folder can also come back
+// as an empty result ("no object returned from server").
+func IsExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "no object returned from server")
 }
