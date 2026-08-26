@@ -16,10 +16,19 @@ import (
 // Client provides methods to interact with BV-BRC JSON-RPC services.
 type Client struct {
 	httpClient *http.Client
-	config     Config
-	logger     *slog.Logger
-	requestID  atomic.Int64
+	// uploadClient carries Shock file PUTs. It has no total request timeout —
+	// a multi-GB upload cannot be bounded per request — so the caller's
+	// context is the only deadline; the transport still times out on a stalled
+	// response header or an idle connection.
+	uploadClient *http.Client
+	config       Config
+	logger       *slog.Logger
+	requestID    atomic.Int64
 }
+
+// uploadResponseHeaderTimeout bounds how long the upload client waits for
+// Shock to answer after the body has been sent.
+const uploadResponseHeaderTimeout = 5 * time.Minute
 
 // NewClient creates a new BV-BRC API client with the given configuration.
 func NewClient(config Config, logger *slog.Logger) *Client {
@@ -31,9 +40,22 @@ func NewClient(config Config, logger *slog.Logger) *Client {
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
-		config: config,
-		logger: logger.With("component", "bvbrc-client"),
+		uploadClient: &http.Client{Transport: newUploadTransport()},
+		config:       config,
+		logger:       logger.With("component", "bvbrc-client"),
 	}
+}
+
+// newUploadTransport derives the Shock upload transport from the default one.
+func newUploadTransport() *http.Transport {
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
+	tr = tr.Clone()
+	tr.ResponseHeaderTimeout = uploadResponseHeaderTimeout
+	tr.IdleConnTimeout = 90 * time.Second
+	return tr
 }
 
 // Token returns the current authentication token.

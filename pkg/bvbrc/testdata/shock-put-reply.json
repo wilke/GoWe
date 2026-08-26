@@ -1,0 +1,31 @@
+{
+  "status": 200,
+  "data": {
+    "id": "b57ffd5c-5686-40d1-be61-ebb239a55ec0",
+    "version": "bbd8c2e27815d905e2ce8d6be9672cd1",
+    "file": {
+      "name": "fixture.gz",
+      "size": 204888,
+      "checksum": {
+        "md5": "5e3f355909e4242d44b2c2135e87c03e"
+      },
+      "format": "",
+      "virtual": false,
+      "virtual_parts": []
+    },
+    "attributes": null,
+    "public": false,
+    "indexes": {
+      "size": {
+        "total_units": 1,
+        "average_unit_size": 1048576
+      }
+    },
+    "tags": [],
+    "linkages": [],
+    "created_on": "2026-08-25T20:49:00.939-05:00",
+    "last_modified": "2026-08-25T20:49:01.013357485-05:00",
+    "type": "basic"
+  },
+  "error": null
+}

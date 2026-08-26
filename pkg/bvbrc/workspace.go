@@ -3,14 +3,19 @@ package bvbrc
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // WorkspaceLsInput contains parameters for listing workspace contents.
@@ -156,7 +161,9 @@ type WorkspaceCreateInput struct {
 	// Type is the object type (folder, contigs, reads, etc.).
 	Type WorkspaceObjectType
 
-	// Content is the file content (nil for folders or upload nodes).
+	// Content is inline TEXT content (nil for folders or upload nodes). It is
+	// sent as a JSON string, so it must be valid UTF-8; anything else is
+	// rejected. Binary data must go through WorkspaceUploadReader.
 	Content *string
 
 	// Metadata is user-defined metadata.
@@ -173,6 +180,10 @@ type WorkspaceCreateInput struct {
 func (c *Client) WorkspaceCreate(ctx context.Context, input WorkspaceCreateInput) (*WorkspaceObject, error) {
 	var content any
 	if input.Content != nil {
+		if !utf8.ValidString(*input.Content) {
+			return nil, NewError("WorkspaceCreate",
+				fmt.Sprintf("inline content for %s is not valid UTF-8; binary data must be uploaded with WorkspaceUploadReader", input.Path))
+		}
 		content = *input.Content
 	}
 
@@ -223,21 +234,90 @@ func (c *Client) WorkspaceCreateFolder(ctx context.Context, path string) (*Works
 	})
 }
 
-// WorkspaceUploadFile uploads file bytes to the workspace, binary-safe.
+// WorkspaceUploadFile uploads file bytes to the workspace, binary-safe. It is
+// a convenience wrapper over WorkspaceUploadReader for payloads that are
+// already in memory (manifests, small inputs); stream anything large.
+func (c *Client) WorkspaceUploadFile(ctx context.Context, wsPath string, data []byte, objType WorkspaceObjectType) (*WorkspaceObject, error) {
+	return c.WorkspaceUploadReader(ctx, wsPath, path.Base(wsPath), bytes.NewReader(data), int64(len(data)), objType)
+}
+
+// shockNodeURLRe is the shape of a usable upload node URL. WorkspaceImpl.pm's
+// _create_shock_node never checks its own Shock POST: when that fails the
+// service still creates the object row and hands back "<shock>/node/" with an
+// empty id, which must not be PUT to.
+var shockNodeURLRe = regexp.MustCompile(`^https?://.+/node/[^/]+$`)
+
+// placeholderDeleteTimeout bounds the best-effort cleanup of a failed upload.
+const placeholderDeleteTimeout = 30 * time.Second
+
+// WorkspaceUploadReader streams size bytes from r into the workspace object
+// at wsPath, binary-safe, and verifies what the service recorded before it
+// returns. It is single-attempt: callers own the retry loop and must supply a
+// fresh reader for every attempt.
 //
 // It follows the service's own upload protocol, the one implemented by
 // scripts/ws-create.pl --useshock and used by the BV-BRC clients:
 //
-//  1. Workspace.create the destination with createUploadNodes set, which
-//     allocates a Shock node and returns its URL in ObjectMeta slot [11];
-//  2. PUT the raw bytes to that URL as multipart form field "upload", with
-//     an "Authorization: OAuth <token>" header.
+//  1. Workspace.create the destination with createUploadNodes and overwrite
+//     set. With overwrite the service deletes any existing object FIRST and
+//     then allocates a new object with a new Shock node, whose URL comes back
+//     in ObjectMeta slot [11]. Overwrite is therefore destructive-first: once
+//     this call has started, the previous version of the object is gone.
+//  2. PUT the bytes to that URL as multipart form field "upload" with a
+//     non-empty filename, under an "Authorization: OAuth <token>" header. The
+//     body is streamed with an exact Content-Length (no chunked encoding). A
+//     node's file is immutable, so a PUT is never retried against the same
+//     node; every attempt goes back to step 1.
+//  3. Parse Shock's reply envelope and require that it stored exactly size
+//     bytes (and, when it reports an md5, that it matches the bytes sent).
+//  4. Workspace.update_auto_meta on the object, which makes the service fetch
+//     the node's metadata and record the size; require that the returned
+//     ObjectMeta carries size as well. The returned object is that refreshed
+//     metadata.
 //
-// Do not be tempted back to Workspace.create's inline Content field: it is a
-// JSON string, and encoding/json replaces every byte that is not valid UTF-8
-// with U+FFFD (3 bytes for 1), silently destroying every binary file that goes
-// through it. That was issue #172.
-func (c *Client) WorkspaceUploadFile(ctx context.Context, wsPath string, data []byte, objType WorkspaceObjectType) (*WorkspaceObject, error) {
+// A zero-length payload is stored inline as an empty text object (Shock's
+// handling of an empty multipart upload is unverified) and skips steps 2–4.
+//
+// On any failure after step 1 the freshly created placeholder is deleted on a
+// best-effort basis so a half-written object does not masquerade as a
+// delivered one, and the error is returned.
+//
+// Do not be tempted back to Workspace.create's inline Content field for
+// binary data: it is a JSON string, and encoding/json replaces every byte
+// that is not valid UTF-8 with U+FFFD (3 bytes for 1), silently destroying
+// every binary file that goes through it. That was issue #172.
+func (c *Client) WorkspaceUploadReader(ctx context.Context, wsPath, filename string, r io.Reader, size int64, objType WorkspaceObjectType) (*WorkspaceObject, error) {
+	const op = "WorkspaceUploadReader"
+
+	// The multipart part must carry a real filename: the service's
+	// _update_shock_node treats an empty file name as "not uploaded yet" and
+	// never records the size, so the upload is accepted but reported as 0 bytes
+	// forever. path.Base("") is "." — catch that too.
+	switch filename {
+	case "", ".", "..", "/":
+		return nil, NewError(op, fmt.Sprintf("invalid upload filename %q for %s", filename, wsPath))
+	}
+	if strings.ContainsAny(filename, "/\\") {
+		return nil, NewError(op, fmt.Sprintf("upload filename %q must be a bare name", filename))
+	}
+	if size < 0 {
+		return nil, NewError(op, fmt.Sprintf("negative size %d for %s", size, wsPath))
+	}
+
+	if size == 0 {
+		empty := ""
+		obj, err := c.WorkspaceCreate(ctx, WorkspaceCreateInput{
+			Path:      wsPath,
+			Type:      objType,
+			Content:   &empty,
+			Overwrite: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return obj, nil
+	}
+
 	obj, err := c.WorkspaceCreate(ctx, WorkspaceCreateInput{
 		Path:              wsPath,
 		Type:              objType,
@@ -248,66 +328,197 @@ func (c *Client) WorkspaceUploadFile(ctx context.Context, wsPath string, data []
 		return nil, err
 	}
 
+	fail := func(err error) (*WorkspaceObject, error) {
+		c.deletePlaceholder(ctx, wsPath)
+		return nil, WrapError(op, err)
+	}
+
 	if obj.ShockURL == "" {
 		// Never fall back to the inline path: for a binary payload that would
 		// silently store corrupt bytes. Fail loudly instead.
-		return nil, NewError("WorkspaceUploadFile",
-			fmt.Sprintf("no Shock upload URL returned for %s (ObjectMeta slot 11 empty)", wsPath))
+		return fail(fmt.Errorf("no Shock upload URL returned for %s (ObjectMeta slot 11 empty)", wsPath))
+	}
+	if !shockNodeURLRe.MatchString(obj.ShockURL) {
+		return fail(fmt.Errorf("malformed Shock upload URL %q for %s (the service's node allocation failed)", obj.ShockURL, wsPath))
 	}
 
-	if err := c.shockUpload(ctx, obj.ShockURL, path.Base(wsPath), data); err != nil {
-		return nil, WrapError("WorkspaceUploadFile", err)
+	sentMD5, err := c.shockPut(ctx, obj.ShockURL, filename, r, size)
+	if err != nil {
+		return fail(err)
 	}
 
-	return obj, nil
+	meta, err := c.WorkspaceUpdateAutoMeta(ctx, wsPath)
+	if err != nil {
+		return fail(fmt.Errorf("refreshing object metadata after upload: %w", err))
+	}
+	if meta.Size != size {
+		return fail(fmt.Errorf("Workspace recorded %d bytes for %s, expected %d", meta.Size, wsPath, size))
+	}
+
+	c.logger.Debug("workspace upload verified", "path", wsPath, "size", size, "md5", sentMD5)
+	return meta, nil
 }
 
-// shockUpload PUTs data to a Shock node URL as multipart form field "upload".
-// Mirrors scripts/ws-create.pl: a multipart/form-data body sent with the PUT
-// method and an "OAuth <token>" Authorization header.
-func (c *Client) shockUpload(ctx context.Context, shockURL, filename string, data []byte) error {
-	if filename == "" {
-		filename = "upload"
-	}
+// deletePlaceholder removes the object left behind by a failed upload. It is
+// best-effort and detached from the caller's cancellation so a cancelled upload
+// still gets cleaned up.
+func (c *Client) deletePlaceholder(ctx context.Context, wsPath string) {
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), placeholderDeleteTimeout)
+	defer cancel()
 
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-	part, err := writer.CreateFormFile("upload", filename)
-	if err != nil {
-		return fmt.Errorf("building multipart body: %w", err)
+	if err := c.WorkspaceDelete(dctx, WorkspaceDeleteInput{Objects: []string{wsPath}}); err != nil {
+		c.logger.Warn("could not delete workspace placeholder after failed upload", "path", wsPath, "error", err)
 	}
-	if _, err := part.Write(data); err != nil {
-		return fmt.Errorf("building multipart body: %w", err)
-	}
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("building multipart body: %w", err)
-	}
+}
 
-	// bytes.Reader gives the request a known Content-Length; Shock is not
-	// verified to accept a chunked body.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shockURL, bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		return fmt.Errorf("creating Shock request: %w", err)
+// shockPutReply is the envelope Shock returns for a node file PUT. The error
+// member is null on success and a list of strings otherwise; older servers
+// emitted a single string.
+type shockPutReply struct {
+	Status int         `json:"status"`
+	Error  shockErrors `json:"error"`
+	Data   struct {
+		ID   string `json:"id"`
+		File struct {
+			Name     string            `json:"name"`
+			Size     int64             `json:"size"`
+			Checksum map[string]string `json:"checksum"`
+		} `json:"file"`
+	} `json:"data"`
+}
+
+type shockErrors []string
+
+func (e *shockErrors) UnmarshalJSON(b []byte) error {
+	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
+		*e = nil
+		return nil
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*e = list
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(b, &single); err != nil {
+		return err
+	}
+	*e = []string{single}
+	return nil
+}
+
+// countingWriter tallies bytes and feeds them to an md5 hash.
+type countingWriter struct {
+	n    int64
+	hash hash.Hash
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n += int64(len(p))
+	return w.hash.Write(p)
+}
+
+// shockPut streams size bytes from r to a Shock node URL as multipart form
+// field "upload" and verifies the reply. It returns the md5 of the bytes sent.
+//
+// The body is io.MultiReader(head, TeeReader(r), tail) with the multipart
+// head and tail built ahead of time, so the request carries an exact
+// Content-Length instead of chunked transfer encoding (which the nginx in
+// front of Shock has rejected in the past). net/http fails the request if the
+// reader yields more or fewer bytes than declared, so a file that changed
+// size underneath us cannot be uploaded truncated or padded.
+func (c *Client) shockPut(ctx context.Context, shockURL, filename string, r io.Reader, size int64) (string, error) {
+	var head bytes.Buffer
+	mw := multipart.NewWriter(&head)
+	if _, err := mw.CreateFormFile("upload", filename); err != nil {
+		return "", fmt.Errorf("building multipart header: %w", err)
+	}
+	tail := []byte("\r\n--" + mw.Boundary() + "--\r\n")
+
+	counter := &countingWriter{hash: md5.New()}
+	body := io.MultiReader(&head, io.TeeReader(r, counter), bytes.NewReader(tail))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shockURL, body)
+	if err != nil {
+		return "", fmt.Errorf("creating Shock request: %w", err)
+	}
+	req.ContentLength = int64(head.Len()) + size + int64(len(tail))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if c.config.Token != "" {
 		req.Header.Set("Authorization", "OAuth "+c.config.Token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.uploadClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("Shock upload request: %w", err)
+		return "", fmt.Errorf("Shock upload request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+	if counter.n != size {
+		return "", fmt.Errorf("read %d bytes from source, expected %d", counter.n, size)
 	}
-	// Drain so the connection can be reused.
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 
-	return nil
+	replyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("reading Shock reply: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return "", &HTTPError{StatusCode: resp.StatusCode, Body: string(replyBytes)}
+	}
+
+	var reply shockPutReply
+	if err := json.Unmarshal(replyBytes, &reply); err != nil {
+		return "", fmt.Errorf("parsing Shock reply: %w (body: %.200q)", err, replyBytes)
+	}
+	if len(reply.Error) > 0 {
+		return "", fmt.Errorf("Shock reported an error: %s", strings.Join(reply.Error, "; "))
+	}
+	if reply.Status >= 400 {
+		return "", fmt.Errorf("Shock reported status %d", reply.Status)
+	}
+	if reply.Data.File.Size != size {
+		return "", fmt.Errorf("Shock stored %d bytes, expected %d", reply.Data.File.Size, size)
+	}
+
+	sentMD5 := hex.EncodeToString(counter.hash.Sum(nil))
+	if got := reply.Data.File.Checksum["md5"]; got != "" && !strings.EqualFold(got, sentMD5) {
+		return "", fmt.Errorf("Shock md5 %s does not match sent %s", got, sentMD5)
+	}
+
+	return sentMD5, nil
+}
+
+// WorkspaceUpdateAutoMeta asks the service to refresh the automatic metadata
+// of the object at wsPath and returns the refreshed ObjectMeta. For a
+// Shock-backed object the service fetches the node's metadata and records the
+// stored file size, so the returned Size is authoritative for what the
+// Workspace now believes the object holds. The path must name an object, not
+// a folder.
+func (c *Client) WorkspaceUpdateAutoMeta(ctx context.Context, wsPath string) (*WorkspaceObject, error) {
+	const op = "WorkspaceUpdateAutoMeta"
+
+	resp, err := c.CallWorkspace(ctx, "Workspace.update_auto_meta", map[string]any{
+		"objects": []string{wsPath},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Workspace.spec: update_auto_meta returns list<ObjectMeta>.
+	var rawResult [][][]any
+	if err := json.Unmarshal(resp.Result, &rawResult); err != nil {
+		return nil, WrapError(op, fmt.Errorf("unmarshaling result: %w", err))
+	}
+	if len(rawResult) == 0 || len(rawResult[0]) == 0 {
+		return nil, NewError(op, "no object returned from server")
+	}
+
+	obj, err := parseWorkspaceObjectTuple(rawResult[0][0])
+	if err != nil {
+		return nil, WrapError(op, err)
+	}
+
+	return &obj, nil
 }
 
 // WorkspaceDeleteInput contains parameters for deleting workspace objects.
@@ -518,17 +729,27 @@ func (c *Client) WorkspaceGetDownloadURL(ctx context.Context, paths []string) (m
 		return nil, err
 	}
 
-	// The API returns [[url1], [url2], ...] — an array of single-element arrays,
-	// one per requested path, in the same order.
-	var rawResult [][]string
+	// Workspace.spec: get_download_url returns list<string>, one entry per
+	// requested path in input order, wrapped in the JSON-RPC result array:
+	// [[url1, url2, ...]]. Folders and missing objects come back as JSON null,
+	// which maps to "" — callers treat "" as "no URL".
+	var rawResult [][]*string
 	if err := json.Unmarshal(resp.Result, &rawResult); err != nil {
 		return nil, WrapError("WorkspaceGetDownloadURL", fmt.Errorf("unmarshaling result: %w", err))
 	}
 
 	result := make(map[string]string, len(paths))
-	for i, urls := range rawResult {
-		if i < len(paths) && len(urls) > 0 {
-			result[paths[i]] = urls[0]
+	if len(rawResult) == 0 {
+		return result, nil
+	}
+	for i, url := range rawResult[0] {
+		if i >= len(paths) {
+			break
+		}
+		if url != nil {
+			result[paths[i]] = *url
+		} else {
+			result[paths[i]] = ""
 		}
 	}
 

@@ -4,175 +4,68 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
+
+	"github.com/me/gowe/pkg/bvbrc/bvbrctest"
 )
 
-// fakeWorkspaceService stands in for the Workspace JSON-RPC endpoint and the
-// Shock node it hands out, so the whole stage-out path can be exercised over
-// HTTP without touching a live service.
-type fakeWorkspaceService struct {
-	srv *httptest.Server
-
-	mu sync.Mutex
-	// Uploaded maps workspace destination path -> bytes received by Shock.
-	Uploaded map[string][]byte
-	// InlineContent maps destination path -> content sent inline via
-	// Workspace.create (should stay empty for file stage-out).
-	InlineContent map[string]string
-	// Auth records the Authorization header of the last Shock PUT.
-	Auth string
-	// Method records the HTTP method of the last Shock PUT.
-	Method string
-	// FormField records the multipart field name of the last Shock PUT.
-	FormField string
-
-	nodes map[string]string // node id -> destination path
-	seq   int
-}
-
-func newFakeWorkspaceService(t *testing.T) *fakeWorkspaceService {
-	t.Helper()
-	f := &fakeWorkspaceService{
-		Uploaded:      map[string][]byte{},
-		InlineContent: map[string]string{},
-		nodes:         map[string]string{},
-	}
-	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
-	t.Cleanup(f.srv.Close)
-	return f
-}
-
-func (f *fakeWorkspaceService) handle(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/shock_api/node/") {
-		f.handleShock(w, r)
-		return
-	}
-
-	var req struct {
-		Method string            `json:"method"`
-		Params []json.RawMessage `json:"params"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Method != "Workspace.create" || len(req.Params) == 0 {
-		http.Error(w, "unexpected call "+req.Method, http.StatusNotImplemented)
-		return
-	}
-
-	var params struct {
-		Objects           [][]any `json:"objects"`
-		CreateUploadNodes bool    `json:"createUploadNodes"`
-	}
-	if err := json.Unmarshal(req.Params[0], &params); err != nil || len(params.Objects) == 0 {
-		http.Error(w, "bad params", http.StatusBadRequest)
-		return
-	}
-
-	spec := params.Objects[0]
-	destPath, _ := spec[0].(string)
-	objType, _ := spec[1].(string)
-
-	f.mu.Lock()
-	if len(spec) > 3 {
-		if s, ok := spec[3].(string); ok && s != "" {
-			f.InlineContent[destPath] = s
-		}
-	}
-	shockURL := ""
-	if params.CreateUploadNodes {
-		f.seq++
-		id := "node-" + destPath
-		f.nodes[id] = destPath
-		shockURL = f.srv.URL + "/shock_api/node/" + id
-	}
-	f.mu.Unlock()
-
-	dir, name := destPath, ""
-	if i := strings.LastIndex(destPath, "/"); i >= 0 {
-		dir, name = destPath[:i+1], destPath[i+1:]
-	}
-
-	// 12-slot ObjectMeta, as WorkspaceImpl.pm's _generate_object_meta emits it.
-	meta := []any{
-		name, objType, dir, "2026-08-20T12:00:00Z",
-		"uuid-1", "tester@bvbrc", 0,
-		map[string]any{}, map[string]any{},
-		"o", "n", shockURL,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": "1", "version": "1.1",
-		"result": []any{[][]any{meta}},
-	})
-}
-
-func (f *fakeWorkspaceService) handleShock(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/shock_api/node/")
-
-	_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	part, err := multipart.NewReader(r.Body, params["boundary"]).NextPart()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	body, err := io.ReadAll(part)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	f.mu.Lock()
-	f.Uploaded[f.nodes[id]] = body
-	f.Auth = r.Header.Get("Authorization")
-	f.Method = r.Method
-	f.FormField = part.FormName()
-	f.mu.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":200}`))
-}
-
-func (f *fakeWorkspaceService) bytesAt(path string) []byte {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.Uploaded[path]
-}
-
-// TestWorkspaceStageOut_BinaryRoundTrip is the fix for #172: a stage-out of a
-// payload containing every byte value must land byte-for-byte identical.
-func TestWorkspaceStageOut_BinaryRoundTrip(t *testing.T) {
-	payload := make([]byte, 0, 4096)
-	for rep := 0; rep < 16; rep++ {
+func allBytesRepeated(reps int) []byte {
+	payload := make([]byte, 0, 256*reps)
+	for rep := 0; rep < reps; rep++ {
 		for i := 0; i < 256; i++ {
 			payload = append(payload, byte(i))
 		}
 	}
-	want := sha256.Sum256(payload)
+	return payload
+}
 
-	src := filepath.Join(t.TempDir(), "chunks.jsonl.gz")
+func writeTemp(t *testing.T, name string, payload []byte) string {
+	t.Helper()
+	src := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(src, payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return src
+}
 
-	f := newFakeWorkspaceService(t)
+// inlineContent returns the inline content of every Workspace.create call
+// that carried one, keyed by destination path.
+func inlineContent(t *testing.T, f *bvbrctest.Server) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, c := range f.CallsTo("Workspace.create") {
+		var p struct {
+			Objects [][]any `json:"objects"`
+		}
+		if err := json.Unmarshal(c.Params, &p); err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range p.Objects {
+			if len(spec) > 3 {
+				if s, ok := spec[3].(string); ok && s != "" {
+					path, _ := spec[0].(string)
+					out[path] = s
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestWorkspaceStageOut_BinaryRoundTrip is the fix for #172: a stage-out of a
+// payload containing every byte value must land byte-for-byte identical, and
+// the service must have recorded the size.
+func TestWorkspaceStageOut_BinaryRoundTrip(t *testing.T) {
+	payload := allBytesRepeated(16)
+	want := sha256.Sum256(payload)
+	src := writeTemp(t, "chunks.jsonl.gz", payload)
+
+	f := bvbrctest.New(t)
 	stager := NewWorkspaceStager(WorkspaceConfig{
-		WorkspaceURL: f.srv.URL + "/services/Workspace",
+		WorkspaceURL: f.WorkspaceURL(),
 		Token:        "un=tester|sig=abc",
 	}, nil)
 
@@ -188,24 +81,143 @@ func TestWorkspaceStageOut_BinaryRoundTrip(t *testing.T) {
 		t.Errorf("StageOut location = %q, want %q", loc, "ws://"+dest)
 	}
 
-	stored := f.bytesAt(dest)
+	stored := f.Bytes(dest)
 	if got := sha256.Sum256(stored); got != want {
 		t.Fatalf("sha256 mismatch: stored %d bytes (%x), staged out %d bytes (%x)",
 			len(stored), got, len(payload), want)
 	}
+	if obj := f.Object(dest); obj == nil || obj.Size != int64(len(payload)) {
+		t.Errorf("workspace object = %+v, want size %d recorded", obj, len(payload))
+	}
 
-	if len(f.InlineContent) != 0 {
-		t.Errorf("file bytes were sent inline via Workspace.create for %v; they must go through Shock",
-			mapKeys(f.InlineContent))
+	if inline := inlineContent(t, f); len(inline) != 0 {
+		t.Errorf("file bytes were sent inline via Workspace.create for %v; they must go through Shock", inline)
 	}
-	if f.Method != http.MethodPut {
-		t.Errorf("Shock method = %s, want PUT", f.Method)
+
+	put, ok := f.LastPut()
+	if !ok {
+		t.Fatal("no Shock PUT received")
 	}
-	if f.FormField != "upload" {
-		t.Errorf("Shock multipart field = %q, want \"upload\"", f.FormField)
+	if put.Method != http.MethodPut {
+		t.Errorf("Shock method = %s, want PUT", put.Method)
 	}
-	if f.Auth != "OAuth un=tester|sig=abc" {
-		t.Errorf("Shock Authorization = %q, want \"OAuth <token>\"", f.Auth)
+	if put.FormField != "upload" {
+		t.Errorf("Shock multipart field = %q, want \"upload\"", put.FormField)
+	}
+	if put.Filename != "chunks.jsonl.gz" {
+		t.Errorf("Shock filename = %q, want the source basename", put.Filename)
+	}
+	if put.Authorization != "OAuth un=tester|sig=abc" {
+		t.Errorf("Shock Authorization = %q, want \"OAuth <token>\"", put.Authorization)
+	}
+	if len(put.TransferEncoding) != 0 || put.ContentLength != put.RawLength {
+		t.Errorf("Shock request: Transfer-Encoding %v, Content-Length %d, body %d bytes; want an exact Content-Length",
+			put.TransferEncoding, put.ContentLength, put.RawLength)
+	}
+
+	// The destination folders were created on the way.
+	for _, dir := range []string{"/tester@bvbrc/home/results", "/tester@bvbrc/home/results/1"} {
+		if obj := f.Object(dir); obj == nil || obj.Type != "folder" {
+			t.Errorf("folder %s = %+v, want it created", dir, obj)
+		}
+	}
+
+	// A second stage-out into the same folder hits "already exists" on the
+	// folders and overwrites the object; both must be handled quietly.
+	if _, err := stager.StageOut(context.Background(), src, "task-2", StageOptions{
+		Metadata: map[string]string{"destination": "ws:///tester@bvbrc/home/results/1/"},
+	}); err != nil {
+		t.Fatalf("second StageOut: %v", err)
+	}
+	if got := sha256.Sum256(f.Bytes(dest)); got != want {
+		t.Error("second stage-out did not store the payload")
+	}
+}
+
+// TestWorkspaceStageOut_RetriesAfterShockFailure: a transient Shock failure on
+// the first attempt deletes that attempt's placeholder and the retry starts
+// over with a fresh node (a node's file is immutable, so re-PUTting to the
+// same one is never an option).
+func TestWorkspaceStageOut_RetriesAfterShockFailure(t *testing.T) {
+	payload := allBytesRepeated(4)
+	src := writeTemp(t, "out.bin", payload)
+
+	f := bvbrctest.New(t)
+	failures := 0
+	f.ShockReply = func(bvbrctest.ShockPut) (int, string) {
+		if failures == 0 {
+			failures++
+			return http.StatusInternalServerError, "shock hiccup"
+		}
+		return 0, ""
+	}
+	stager := NewWorkspaceStager(WorkspaceConfig{
+		WorkspaceURL: f.WorkspaceURL(),
+		Token:        "un=tester",
+		MaxRetries:   3,
+	}, nil)
+
+	const dest = "/tester@bvbrc/home/results/out.bin"
+	loc, err := stager.StageOut(context.Background(), src, "task-1", StageOptions{
+		Metadata: map[string]string{"destination": "/tester@bvbrc/home/results"},
+	})
+	if err != nil {
+		t.Fatalf("StageOut: %v", err)
+	}
+	if loc != "ws://"+dest {
+		t.Errorf("location = %q", loc)
+	}
+
+	puts := f.Puts()
+	if len(puts) != 2 {
+		t.Fatalf("Shock PUTs = %d, want 2 (one failed, one retried)", len(puts))
+	}
+	if puts[0].NodeID == puts[1].NodeID {
+		t.Errorf("retry reused node %s; every attempt must get a fresh node", puts[0].NodeID)
+	}
+	if sha256.Sum256(puts[1].Body) != sha256.Sum256(payload) {
+		t.Error("retried PUT did not carry the full payload (the source must be re-opened per attempt)")
+	}
+
+	deletes := f.CallsTo("Workspace.delete")
+	if len(deletes) != 1 {
+		t.Errorf("Workspace.delete calls = %d, want 1 (the failed attempt's placeholder)", len(deletes))
+	}
+	if got := f.Bytes(dest); sha256.Sum256(got) != sha256.Sum256(payload) {
+		t.Errorf("final stored bytes differ from the payload")
+	}
+	if obj := f.Object(dest); obj == nil || obj.Size != int64(len(payload)) {
+		t.Errorf("workspace object = %+v, want size %d", obj, len(payload))
+	}
+}
+
+// TestWorkspaceStageOut_FailsAfterExhaustedRetries: when every attempt fails
+// the stager reports the error and leaves no placeholder behind.
+func TestWorkspaceStageOut_FailsAfterExhaustedRetries(t *testing.T) {
+	src := writeTemp(t, "out.bin", allBytesRepeated(1))
+
+	f := bvbrctest.New(t)
+	f.ShockReply = func(p bvbrctest.ShockPut) (int, string) {
+		// Shock "accepts" but reports a truncated store every time.
+		return http.StatusOK, `{"status":200,"error":null,"data":{"id":"` + p.NodeID + `","file":{"name":"out.bin","size":1}}}`
+	}
+	stager := NewWorkspaceStager(WorkspaceConfig{
+		WorkspaceURL: f.WorkspaceURL(),
+		Token:        "un=tester",
+		MaxRetries:   2,
+	}, nil)
+
+	const dest = "/tester@bvbrc/home/results/out.bin"
+	if _, err := stager.StageOut(context.Background(), src, "task-1", StageOptions{
+		Metadata: map[string]string{"destination": "/tester@bvbrc/home/results"},
+	}); err == nil {
+		t.Fatal("expected StageOut to fail when Shock stores the wrong size")
+	}
+	if n := len(f.Puts()); n != 2 {
+		t.Errorf("Shock PUTs = %d, want 2 attempts", n)
+	}
+	if f.Object(dest) != nil {
+		t.Error("a placeholder survived the failed upload; it would be reported as delivered")
 	}
 }
 
@@ -213,9 +225,9 @@ func TestWorkspaceStageOut_BinaryRoundTrip(t *testing.T) {
 // (_gowe_outputs.json), which is text but is routed identically so no caller is
 // left on the JSON-inline path.
 func TestWorkspaceUploadContent_GoesThroughShock(t *testing.T) {
-	f := newFakeWorkspaceService(t)
+	f := bvbrctest.New(t)
 	stager := NewWorkspaceStager(WorkspaceConfig{
-		WorkspaceURL: f.srv.URL + "/services/Workspace",
+		WorkspaceURL: f.WorkspaceURL(),
 		Token:        "un=tester",
 	}, nil)
 
@@ -226,18 +238,10 @@ func TestWorkspaceUploadContent_GoesThroughShock(t *testing.T) {
 		t.Fatalf("UploadContent: %v", err)
 	}
 
-	if got := string(f.bytesAt(dest)); got != content {
+	if got := string(f.Bytes(dest)); got != content {
 		t.Errorf("stored content = %q, want %q", got, content)
 	}
-	if len(f.InlineContent) != 0 {
-		t.Errorf("content was sent inline via Workspace.create for %v", mapKeys(f.InlineContent))
+	if inline := inlineContent(t, f); len(inline) != 0 {
+		t.Errorf("content was sent inline via Workspace.create for %v", inline)
 	}
-}
-
-func mapKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
 }

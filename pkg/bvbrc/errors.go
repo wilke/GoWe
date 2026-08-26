@@ -3,6 +3,7 @@ package bvbrc
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Standard JSON-RPC error codes.
@@ -162,4 +163,16 @@ func IsRetryable(err error) bool {
 		return rpcErr.Code == ErrCodeInternalError
 	}
 	return false
+}
+
+// IsExistsError reports whether a Workspace.create error means the object
+// already exists. The service phrases this several ways ("already exists",
+// "Object already exists"), and creating an existing folder can also come back
+// as an empty result ("no object returned from server").
+func IsExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "no object returned from server")
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/me/gowe/internal/bundle"
 	"github.com/me/gowe/internal/bvbrc"
@@ -24,6 +25,7 @@ func newSubmitCmd() *cobra.Command {
 	var outputDest string
 	var debug bool
 	var workflowRef string
+	var workspaceURL string
 
 	cmd := &cobra.Command{
 		Use:   "submit [<workflow.cwl>]",
@@ -121,7 +123,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 				if !noUpload {
 					if workspaceUpload {
 						// Upload to BV-BRC workspace.
-						uploaded, err := uploadInputsToWorkspace(inputs, client.Token)
+						uploaded, err := uploadInputsToWorkspace(inputs, client.Token, workspaceURL)
 						if err != nil {
 							return fmt.Errorf("workspace upload: %w", err)
 						}
@@ -191,13 +193,31 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 	cmd.Flags().BoolVar(&debug, "debug", false, "Debug mode: workers keep all task working data for this submission (no cleanup)")
 	cmd.Flags().StringVar(&outputDest, "output-destination", "", "Target URI for uploading outputs (e.g., ws:///user@bvbrc/home/results/)")
 	cmd.Flags().StringVar(&workflowRef, "workflow", "", "Submit using an already-registered workflow (by ID or name)")
+	cmd.Flags().StringVar(&workspaceURL, "workspace-url", defaultWorkspaceURL(), "BV-BRC Workspace service URL for --workspace-upload (or GOWE_WORKSPACE_URL env)")
 	return cmd
 }
+
+// defaultWorkspaceURL returns the Workspace service URL, checking GOWE_WORKSPACE_URL first.
+func defaultWorkspaceURL() string {
+	if u := os.Getenv("GOWE_WORKSPACE_URL"); u != "" {
+		return u
+	}
+	return bvbrcpkg.DefaultWorkspaceURL
+}
+
+// Workspace upload settings for the CLI: the JSON-RPC timeout (file PUTs use
+// the client's dedicated upload transport and are bounded by ctx only), the
+// JSON-RPC retry budget, and the number of end-to-end upload attempts per file.
+const (
+	workspaceRPCTimeout    = 60 * time.Second
+	workspaceRPCRetries    = 3
+	workspaceUploadRetries = 3
+)
 
 // uploadInputsToWorkspace uploads local File inputs to the BV-BRC workspace.
 // Files are uploaded to /user/home/.gowe-inputs/<basename> and the input
 // locations are rewritten to ws:// URIs.
-func uploadInputsToWorkspace(inputs map[string]any, token string) (map[string]any, error) {
+func uploadInputsToWorkspace(inputs map[string]any, token, workspaceURL string) (map[string]any, error) {
 	if token == "" {
 		return nil, fmt.Errorf("BV-BRC token required for workspace upload (run 'gowe login')")
 	}
@@ -206,18 +226,31 @@ func uploadInputsToWorkspace(inputs map[string]any, token string) (map[string]an
 	if tokenInfo.Username == "" {
 		return nil, fmt.Errorf("cannot parse username from token")
 	}
+	if workspaceURL == "" {
+		workspaceURL = bvbrcpkg.DefaultWorkspaceURL
+	}
 
 	wsLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	wsClient := bvbrcpkg.NewClient(bvbrcpkg.Config{
-		WorkspaceURL: bvbrcpkg.DefaultWorkspaceURL,
+		WorkspaceURL: workspaceURL,
 		Token:        token,
+		Timeout:      workspaceRPCTimeout,
+		MaxRetries:   workspaceRPCRetries,
+		RetryDelay:   bvbrcpkg.DefaultRetryDelay,
 	}, wsLogger)
 
 	destFolder := "/" + tokenInfo.Username + "/home/.gowe-inputs"
 	ctx := context.Background()
 
-	// Ensure destination folder exists.
-	wsClient.WorkspaceCreateFolder(ctx, destFolder)
+	// Ensure destination folder exists. An existing folder is expected; any
+	// other failure surfaces again as an upload error, so log and continue.
+	if _, err := wsClient.WorkspaceCreateFolder(ctx, destFolder); err != nil {
+		if bvbrcpkg.IsExistsError(err) {
+			wsLogger.Debug("workspace folder exists", "path", destFolder)
+		} else {
+			wsLogger.Warn("workspace folder create failed", "path", destFolder, "error", err)
+		}
+	}
 
 	result := make(map[string]any)
 	for k, v := range inputs {
@@ -278,17 +311,11 @@ func uploadFileToWorkspace(ctx context.Context, ws *bvbrcpkg.Client, fileObj map
 		return fileObj, nil
 	}
 
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", localPath, err)
-	}
-
 	basename := filepath.Base(localPath)
 	wsPath := destFolder + "/" + basename
 	fmt.Fprintf(os.Stderr, "  Uploading %s → ws://%s\n", basename, wsPath)
 
-	_, err = ws.WorkspaceUploadFile(ctx, wsPath, data, bvbrcpkg.WorkspaceTypeUnspecified)
-	if err != nil {
+	if err := uploadLocalFile(ctx, ws, localPath, wsPath); err != nil {
 		return nil, fmt.Errorf("workspace upload %s: %w", basename, err)
 	}
 
@@ -300,6 +327,45 @@ func uploadFileToWorkspace(ctx context.Context, ws *bvbrcpkg.Client, fileObj map
 	result["path"] = wsPath
 	result["basename"] = basename
 	return result, nil
+}
+
+// uploadLocalFile streams localPath into the workspace object at wsPath,
+// re-opening the file for every attempt: an attempt verifies what the service
+// stored and cleans up after itself, so a retry always starts afresh.
+func uploadLocalFile(ctx context.Context, ws *bvbrcpkg.Client, localPath, wsPath string) error {
+	var lastErr error
+	for attempt := 0; attempt < workspaceUploadRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+
+		err := func() error {
+			f, err := os.Open(localPath)
+			if err != nil {
+				return fmt.Errorf("open %s: %w", localPath, err)
+			}
+			defer f.Close()
+
+			st, err := f.Stat()
+			if err != nil {
+				return fmt.Errorf("stat %s: %w", localPath, err)
+			}
+
+			_, err = ws.WorkspaceUploadReader(ctx, wsPath, filepath.Base(localPath), f, st.Size(), bvbrcpkg.WorkspaceTypeUnspecified)
+			return err
+		}()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		fmt.Fprintf(os.Stderr, "  upload attempt %d failed: %v\n", attempt+1, err)
+	}
+
+	return fmt.Errorf("after %d attempts: %w", workspaceUploadRetries, lastErr)
 }
 
 func printDryRunReport(data map[string]any) error {
