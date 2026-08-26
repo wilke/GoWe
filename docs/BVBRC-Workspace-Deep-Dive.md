@@ -120,7 +120,21 @@ protocol `scripts/ws-create.pl` implements. The inline `Content` field of `Works
 is reserved for folders and upload-node placeholders (`null`); routing file bytes through it
 corrupted every binary output, because it is a JSON string and `encoding/json` replaces every
 byte that is not valid UTF-8 with U+FFFD. That was issue #172; there is a regression test
-pinning it in `pkg/bvbrc/workspace_test.go`. [`pkg/bvbrc/appservice.go`](../pkg/bvbrc/appservice.go)
+pinning it in `pkg/bvbrc/workspace_test.go`.
+
+A consequence worth knowing when reading results back: because **every** staged-out file —
+including plain text such as logs, JSON, TSV — is now Shock-backed, `Workspace.get` on a
+stage-out object no longer returns its content inline. The data half of the `[meta, data]`
+pair is the Shock node URL (the same string as `ObjectMeta[11]`); the bytes must be fetched
+from Shock or via `Workspace.get_download_url`. The recorded pair in
+`pkg/bvbrc/testdata/workspace/get.json` shows both cases side by side: an inline object
+(`data` is `"hello\n"`) and a Shock-backed one (`data` is the node URL). Anything that
+greps a text output by calling `Workspace.get` and reading `data` has to follow the URL.
+The one exception is a **0-byte** stage-out file: the streaming uploader routes size 0
+through the inline text path (`Workspace.create` with `""`), so an empty output has no
+Shock node and `Workspace.get` returns `""` as its data.
+
+[`pkg/bvbrc/appservice.go`](../pkg/bvbrc/appservice.go)
 implements `enumerate_apps`, `query_app_description`, `start_app`, `query_tasks`,
 `query_task_details`, `kill_task`, `query_app_log`, and more.
 

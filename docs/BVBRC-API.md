@@ -889,7 +889,36 @@ Content-Disposition: form-data; name="upload"; filename="large_file.fastq.gz"
 
 The multipart field name must be `upload`, the method must be `PUT`, and the
 `Authorization` header uses the `OAuth` scheme (unlike the JSON-RPC endpoint, which accepts
-a bare token).
+a bare token). The part must carry a non-empty `filename=`: the service reads the size
+from the node's `file.name`/`file.size`, and a part without a filename is treated as "not
+uploaded yet", leaving `ObjectSize` at 0 forever. Shock answers the PUT with an envelope
+`{"status": 200, "data": {"id", "file": {"name", "size", "checksum": {"md5"}}, ...},
+"error": null}` (recorded in `pkg/bvbrc/testdata/shock-put-reply.json`); check
+`data.file.size` against what you sent. After the PUT, call
+`Workspace.update_auto_meta {"objects": [path]}` — it forces the Workspace to re-read the
+node and returns the refreshed ObjectMeta, whose `[6]` is the size actually stored
+(`update_auto_meta.json` in the same directory). Until then `ls`/`get` may still report 0.
+
+**Shock ACL side effects** (from `WorkspaceImpl.pm`; not something GoWe can change):
+
+- `Workspace.create` with `createUploadNodes` grants the **caller** `acl/all` on the new
+  node. Whoever creates the object must be the one who PUTs — creating as a service
+  account and uploading with a user token (or vice versa) fails the ACL check.
+- `Workspace.get` on a Shock-backed object grants the caller `acl/all` on the node when
+  the workspace is private and `acl/read` when it is public — reading an object mutates
+  the node's ACL as a side effect.
+- `Workspace.get_download_url` on a Shock-backed object PUTs `acl/read?users=<caller>`
+  on the node, authenticated with the **service-account** (workspace owner) token, not the
+  caller's (`WorkspaceImpl.pm` ~3093) — so minting a download link also widens the node's
+  read ACL to the caller.
+- The Workspace service **never deletes Shock nodes**. `overwrite: true` deletes the old
+  Workspace object first and allocates a brand-new node, so every overwrite (and every
+  `Workspace.delete`) orphans the previous node in Shock with the caller still in its
+  ACL. Orphaned nodes are a Shock housekeeping matter, not a data-integrity one.
+- Overwrite is therefore destructive-first: after the create call the previous good
+  object is gone, and a failed PUT leaves a 0-byte placeholder pointing at an empty node.
+  A PUT to a node that already holds a file is rejected — retry by re-creating (which
+  allocates a fresh node), never by PUTting to the same node again.
 
 #### `Workspace.get`
 
@@ -943,10 +972,10 @@ Index mapping:
 | 6 | ObjectSize | integer | File size in bytes (or child count for a directory) |
 | 7 | UserMetadata | object | User-defined metadata |
 | 8 | AutoMetadata | object | Auto-generated metadata |
-| 9 | user_permission | string | Calling user's permission: `o`, `w`, `r`, `n` |
-| 10 | global_permission | string | Workspace's global permission |
-| 11 | shockurl | string | Full URL of the backing Shock node, if any |
-| 12 | error | string | Per-object error, if any |
+| 9 | user_permission | string | Calling user's permission letter: `o`, `a`, `w`, `p`, `r`, `n` (see below) |
+| 10 | global_permission | string | Workspace's global permission letter (same alphabet) |
+| 11 | shockurl | string | Full URL of the backing Shock node; `""` for inline objects and folders |
+| 12 | error | string | Per-object error, if any — declared by the spec, never emitted (see below) |
 
 Two things this table used to get wrong, and they cost real data (issues #171, #172):
 
@@ -956,7 +985,34 @@ Two things this table used to get wrong, and they cost real data (issues #171, #
   letters, so code that PUT file bytes to `[10]` was addressing a permission string.
 
 The service's implementation (`_generate_object_meta`) emits the **first 12 slots** and
-omits the trailing `error`, so parsers must tolerate a 12-element tuple.
+omits the trailing `error`, so parsers must tolerate a 12-element tuple: the spec
+declares 13 slots, the implementation emits 12. Every recorded response under
+`pkg/bvbrc/testdata/workspace/` has exactly 12.
+
+Permission letters (slots `[9]`/`[10]`, and `Workspace.set_permissions`): `o` owner,
+`a` admin, `w` write, `r` read, `n` none (the `WorkspacePerm` comment in `Workspace.spec`),
+plus `p` — "published". `p` is a global-permission value only: `WorkspaceImpl.pm`
+rejects it as a per-user permission and lets only the owner or an administrator set it
+globally, and on a published workspace the caller's slot `[9]` also reads `p`. Parsers
+must not assume the four-letter `o/w/r/n` alphabet.
+
+A recorded `Workspace.get` of an inline text object and a Shock-backed object
+(`pkg/bvbrc/testdata/workspace/get.json`) illustrates both the pair layout and the two
+kinds of data half:
+
+```json
+[[
+  [["inline.txt","txt","/user@bvbrc/home/dir/","2026-08-26T01:40:07Z","1161B900-…","user@bvbrc",6,{},{"is_folder":0},"o","n",""],
+   "hello\n"],
+  [["shock.txt","txt","/user@bvbrc/home/dir/","2026-08-26T01:40:07Z","117650F4-…","user@bvbrc",12,{},{"is_folder":0},"o","n",
+    "https://p3.theseed.org/services/shock_api/node/1c66310d-…"],
+   "https://p3.theseed.org/services/shock_api/node/1c66310d-…"]
+]]
+```
+
+For a Shock-backed object the data half is the **Shock node URL, not the bytes**; the
+service never inlines Shock content. Fetch the bytes with `Workspace.get_download_url`
+(below) or a `GET` on the node's `?download` endpoint with `Authorization: OAuth <token>`.
 
 #### `Workspace.ls`
 
@@ -1097,15 +1153,18 @@ Set sharing permissions on workspace objects.
 }
 ```
 
-Permission levels:
+Permission levels (the same alphabet appears in ObjectMeta slots `[9]`/`[10]`):
+- `"n"` - No access (revoke)
 - `"r"` - Read only
 - `"w"` - Read and write
+- `"a"` - Admin
 - `"o"` - Owner (full control)
-- `"n"` - No access (revoke)
+- `"p"` - Published: valid only as `new_global_permission`, and only the workspace owner
+  or an administrator may set it; the service rejects `p` in per-user `permissions`.
 
 #### `Workspace.get_download_url`
 
-Get a download URL for a workspace object.
+Get download URLs for workspace objects.
 
 **Parameters**:
 
@@ -1119,6 +1178,33 @@ Get a download URL for a workspace object.
     }]
 }
 ```
+
+**Response format**: the spec declares `list<string>` — ONE flat list of URLs in the
+same order as the input `objects`, with JSON `null` for entries that have no download
+URL (folders, missing objects). The JSON-RPC envelope wraps that list once, so the wire
+shape is `[[url1, url2, null, ...]]` and the URL for input `i` is `result[0][i]`. It is
+**not** `[[url1], [url2], ...]` and not a path-keyed object. Recorded response
+(`pkg/bvbrc/testdata/workspace/get_download_url.json`, inputs `[inline.txt, shock.txt,
+<folder>]`):
+
+```json
+[[
+  "https://p3.theseed.org/services/WorkspaceDownload/download/4gMMEu-g8RG6pB1AX3qFTA/inline.txt",
+  "https://p3.theseed.org/services/WorkspaceDownload/download/1D4MEu-g8RG6pB1AX3qFTA/shock.txt",
+  null
+]]
+```
+
+Callers should treat `null` (Go: `""`) as "no URL" rather than as an error, and must
+index by position, not by path.
+
+Side effect: for a **Shock-backed** object the service stores the **caller's raw token**
+server-side in its downloads collection, alongside the node URL (`WorkspaceImpl.pm`
+~3078-3095); the later `GET` on the download URL ignores its own `Authorization` header
+and uses the stored token to read the node. For an inline object only the file path is
+recorded, no token. Download records expire after the service's `download-lifetime`
+setting, which defaults to **1 hour** (~3108-3113). Do not hand a download URL for a
+Shock-backed object to a party you would not hand the token to for that window.
 
 ---
 
@@ -2339,7 +2425,8 @@ The Data API supports Resource Query Language (RQL) for querying. Common operato
 4. Poll until completed (AppService.query_tasks)
 5. Submit GenomeAnnotation job using assembly output
 6. Poll until completed
-7. Download results (Workspace.get or get_download_url)
+7. Download results (get_download_url; Workspace.get returns the Shock node URL,
+   not the bytes, for Shock-backed objects)
 ```
 
 ### Workflow 2: Comprehensive Genome Analysis (Single Step)

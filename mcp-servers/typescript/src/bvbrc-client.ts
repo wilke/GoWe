@@ -43,16 +43,46 @@ export interface AppParameter {
   desc?: string;
 }
 
+/**
+ * A parsed Workspace ObjectMeta tuple.
+ *
+ * Layout per the Workspace module's own Workspace.spec:
+ *
+ *   [ObjectName, ObjectType, FullObjectPath, creation_time, ObjectID,
+ *    object_owner, ObjectSize, UserMetadata, AutoMetadata, user_permission,
+ *    global_permission, shockurl, error]
+ *
+ * The spec declares 13 slots; WorkspaceImpl.pm's _generate_object_meta emits
+ * the first 12. shockurl is slot 11 (slots 9 and 10 are permission letters —
+ * issue #171) and the full path is slot 2 (the containing directory, with a
+ * trailing slash) joined with slot 0.
+ */
 export interface WorkspaceObject {
+  /** Full path: directory in slot [2] joined with the name in slot [0]. */
   path: string;
+  /** Object name without the directory prefix (slot [0]). */
+  name: string;
   type: string;
+  /** Owner username (slot [5]). */
   owner: string;
   creation_time: string;
   id: string;
   size: number;
-  user_metadata: Record<string, string>;
-  auto_metadata: Record<string, string>;
-  shock_ref?: string;
+  user_metadata: Record<string, unknown>;
+  auto_metadata: Record<string, unknown>;
+  /** Calling user's permission on the owning workspace: o, w, r, a, p, n (slot [9]). */
+  user_permission?: string;
+  /** Workspace's global permission (slot [10]). */
+  global_permission?: string;
+  /** Full URL of the backing Shock node, when the object is Shock-backed (slot [11]). */
+  shock_url?: string;
+  /** Per-object error (slot [12]); only present on 13-slot tuples. */
+  error?: string;
+  /**
+   * Object content, only from Workspace.get without metadata_only. For an
+   * inline object this is the text itself; for a Shock-backed object it is
+   * the Shock node URL (the service never inlines Shock content).
+   */
   data?: string;
 }
 
@@ -150,9 +180,11 @@ export class BVBRCClient {
     const params: Record<string, unknown> = { objects: paths };
     if (metadataOnly) params.metadata_only = true;
 
+    // Workspace.spec: get(...) returns (list<tuple<ObjectMeta,ObjectData>>) —
+    // each entry is a [meta, data] pair, not the metadata tuple itself.
     const result = await this.callWorkspace("Workspace.get", [params]);
     const raw = (result as unknown[][][])?.[0] || [];
-    return raw.map(parseWorkspaceObject);
+    return raw.map(parseWorkspaceGetEntry);
   }
 
   async workspaceCreate(
@@ -211,10 +243,17 @@ export class BVBRCClient {
     await this.callWorkspace("Workspace.set_permissions", [params]);
   }
 
+  /**
+   * Map each requested path to its download URL. Paths without a URL
+   * (folders, missing objects) are omitted from the result.
+   *
+   * Side effect on the service: the caller's token is persisted server-side
+   * for the lifetime of the download link.
+   */
   async workspaceGetDownloadUrl(paths: string[]): Promise<Record<string, string>> {
     const params = { objects: paths };
     const result = await this.callWorkspace("Workspace.get_download_url", [params]);
-    return (result as Record<string, string>[])?.[0] || {};
+    return parseDownloadUrls(paths, result);
   }
 
   // --- RPC Helpers ---
@@ -293,17 +332,88 @@ function parseTokenUsername(token: string): string {
   return match?.[1] || "";
 }
 
-function parseWorkspaceObject(tuple: unknown[]): WorkspaceObject {
-  return {
-    path: String(tuple[0] || ""),
-    type: String(tuple[1] || ""),
-    owner: String(tuple[2] || ""),
-    creation_time: String(tuple[3] || ""),
-    id: String(tuple[4] || ""),
-    size: Number(tuple[6]) || 0,
-    user_metadata: (tuple[7] as Record<string, string>) || {},
-    auto_metadata: (tuple[8] as Record<string, string>) || {},
-    shock_ref: tuple[9] ? String(tuple[9]) : undefined,
-    data: tuple[11] ? String(tuple[11]) : undefined,
+/**
+ * Parse one Workspace ObjectMeta tuple (see the WorkspaceObject doc comment
+ * for the slot layout). Tolerates both the 12-slot tuples the service emits
+ * and the 13-slot layout the spec declares.
+ */
+export function parseWorkspaceObject(tuple: unknown[]): WorkspaceObject {
+  const slot = (i: number): unknown => (tuple.length > i ? tuple[i] : undefined);
+  const str = (i: number): string | undefined => {
+    const v = slot(i);
+    return v === undefined || v === null || v === "" ? undefined : String(v);
   };
+
+  const name = str(0) ?? "";
+  const directory = str(2) ?? "";
+
+  const obj: WorkspaceObject = {
+    path: joinWorkspacePath(directory, name),
+    name,
+    type: str(1) ?? "",
+    owner: str(5) ?? "",
+    creation_time: str(3) ?? "",
+    id: str(4) ?? "",
+    size: Number(slot(6)) || 0,
+    user_metadata: (slot(7) as Record<string, unknown>) || {},
+    auto_metadata: (slot(8) as Record<string, unknown>) || {},
+  };
+
+  const userPermission = str(9);
+  if (userPermission !== undefined) obj.user_permission = userPermission;
+  const globalPermission = str(10);
+  if (globalPermission !== undefined) obj.global_permission = globalPermission;
+  const shockUrl = str(11);
+  if (shockUrl !== undefined) obj.shock_url = shockUrl;
+  const error = str(12);
+  if (error !== undefined) obj.error = error;
+
+  return obj;
+}
+
+/**
+ * Parse one [ObjectMeta, ObjectData] pair returned by Workspace.get. A bare
+ * metadata tuple (older deployments) is accepted as well. With metadata_only
+ * the pair has no data half, so `data` stays undefined.
+ */
+export function parseWorkspaceGetEntry(entry: unknown[]): WorkspaceObject {
+  if (!Array.isArray(entry) || entry.length === 0) {
+    return parseWorkspaceObject([]);
+  }
+  if (!Array.isArray(entry[0])) {
+    // Not a [meta, data] pair — the entry is the metadata tuple itself.
+    return parseWorkspaceObject(entry);
+  }
+  const obj = parseWorkspaceObject(entry[0] as unknown[]);
+  if (entry.length > 1 && typeof entry[1] === "string") {
+    obj.data = entry[1];
+  }
+  return obj;
+}
+
+/**
+ * Parse the Workspace.get_download_url result: the JSON-RPC result wraps one
+ * flat list of URLs in input order, with null for folders and missing objects
+ * (`[[url1, url2, null, ...]]`). Entries without a URL are omitted.
+ */
+export function parseDownloadUrls(paths: string[], result: unknown): Record<string, string> {
+  const urls = Array.isArray(result) && Array.isArray(result[0]) ? (result[0] as unknown[]) : [];
+  const out: Record<string, string> = {};
+  paths.forEach((path, i) => {
+    const url = urls[i];
+    if (typeof url === "string" && url !== "") {
+      out[path] = url;
+    }
+  });
+  return out;
+}
+
+/**
+ * Join the directory slot of an ObjectMeta tuple with the object name. The
+ * service emits the directory with a trailing slash; tolerate its absence.
+ */
+export function joinWorkspacePath(directory: string, name: string): string {
+  if (!name) return directory;
+  if (!directory) return name;
+  return directory.endsWith("/") ? directory + name : `${directory}/${name}`;
 }

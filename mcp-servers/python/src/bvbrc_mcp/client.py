@@ -268,10 +268,20 @@ class BVBRCClient:
         self._call_workspace("Workspace.set_permissions", [params])
 
     def workspace_get_download_url(self, paths: list[str]) -> dict[str, str]:
-        """Get download URLs."""
+        """Get download URLs, keyed by the requested path.
+
+        ``Workspace.spec`` declares ``get_download_url`` as returning
+        ``list<string>``: ONE flat list of URLs in input order, with ``null``
+        for entries that have no download URL (folders, missing objects). The
+        JSON-RPC envelope wraps it once, so the URL for ``paths[i]`` is
+        ``result[0][i]``. Paths without a URL are omitted from the dict.
+
+        Side effect on the service: the caller's token is persisted
+        server-side for the lifetime of the download link.
+        """
         params = {"objects": paths}
         result = self._call_workspace("Workspace.get_download_url", [params])
-        return result[0] if result else {}
+        return _parse_download_urls(paths, result)
 
     # --- RPC Helpers ---
 
@@ -365,6 +375,17 @@ def _parse_workspace_object(tuple_data: list[Any]) -> WorkspaceObject:
         shock_url=str(slot(11)) if slot(11) else None,
         error=str(slot(12)) if slot(12) else None,
     )
+
+
+def _parse_download_urls(paths: list[str], result: Any) -> dict[str, str]:
+    """Map a ``Workspace.get_download_url`` result (``[[url|None, ...]]``) onto paths."""
+    urls = result[0] if isinstance(result, list) and result and isinstance(result[0], list) else []
+    out: dict[str, str] = {}
+    for i, path in enumerate(paths):
+        url = urls[i] if i < len(urls) else None
+        if isinstance(url, str) and url:
+            out[path] = url
+    return out
 
 
 def _parse_workspace_get_entry(entry: list[Any]) -> WorkspaceObject:
