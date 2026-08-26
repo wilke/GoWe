@@ -48,7 +48,11 @@ class WorkspaceObject:
     size: int
     user_metadata: dict[str, str]
     auto_metadata: dict[str, str]
-    shock_ref: str | None = None
+    name: str = ""
+    user_permission: str | None = None
+    global_permission: str | None = None
+    shock_url: str | None = None
+    error: str | None = None
     data: str | None = None
 
 
@@ -210,7 +214,7 @@ class BVBRCClient:
         result = self._call_workspace("Workspace.get", [params])
         if not result or not result[0]:
             return []
-        return [_parse_workspace_object(t) for t in result[0]]
+        return [_parse_workspace_get_entry(e) for e in result[0]]
 
     def workspace_create(
         self,
@@ -322,16 +326,57 @@ def _load_token() -> str:
 
 
 def _parse_workspace_object(tuple_data: list[Any]) -> WorkspaceObject:
-    """Parse workspace object tuple."""
+    """Parse a Workspace ObjectMeta tuple.
+
+    Layout per the Workspace module's own ``Workspace.spec``::
+
+        [ObjectName, ObjectType, FullObjectPath, creation_time, ObjectID,
+         object_owner, ObjectSize, UserMetadata, AutoMetadata, user_permission,
+         global_permission, shockurl, error]
+
+    The spec declares 13 slots; ``WorkspaceImpl.pm``'s ``_generate_object_meta``
+    emits the first 12. Note that ``shockurl`` is slot 11 — slots 9 and 10 are
+    permission letters (issue #171) — and that the object's full path is slot 2
+    (the containing directory, trailing slash) joined with slot 0.
+    """
+
+    def slot(i: int) -> Any:
+        return tuple_data[i] if len(tuple_data) > i else None
+
+    name = str(slot(0)) if slot(0) else ""
+    directory = str(slot(2)) if slot(2) else ""
+    if directory and name:
+        path = directory + name if directory.endswith("/") else f"{directory}/{name}"
+    else:
+        path = directory or name
+
     return WorkspaceObject(
-        path=str(tuple_data[0]) if len(tuple_data) > 0 else "",
-        type=str(tuple_data[1]) if len(tuple_data) > 1 else "",
-        owner=str(tuple_data[2]) if len(tuple_data) > 2 else "",
-        creation_time=str(tuple_data[3]) if len(tuple_data) > 3 else "",
-        id=str(tuple_data[4]) if len(tuple_data) > 4 else "",
-        size=int(tuple_data[6]) if len(tuple_data) > 6 and tuple_data[6] else 0,
-        user_metadata=tuple_data[7] if len(tuple_data) > 7 else {},
-        auto_metadata=tuple_data[8] if len(tuple_data) > 8 else {},
-        shock_ref=str(tuple_data[9]) if len(tuple_data) > 9 and tuple_data[9] else None,
-        data=str(tuple_data[11]) if len(tuple_data) > 11 and tuple_data[11] else None,
+        path=path,
+        name=name,
+        type=str(slot(1)) if slot(1) else "",
+        owner=str(slot(5)) if slot(5) else "",
+        creation_time=str(slot(3)) if slot(3) else "",
+        id=str(slot(4)) if slot(4) else "",
+        size=int(slot(6)) if slot(6) else 0,
+        user_metadata=slot(7) or {},
+        auto_metadata=slot(8) or {},
+        user_permission=str(slot(9)) if slot(9) else None,
+        global_permission=str(slot(10)) if slot(10) else None,
+        shock_url=str(slot(11)) if slot(11) else None,
+        error=str(slot(12)) if slot(12) else None,
     )
+
+
+def _parse_workspace_get_entry(entry: list[Any]) -> WorkspaceObject:
+    """Parse one ``[ObjectMeta, ObjectData]`` pair returned by ``Workspace.get``.
+
+    ``Workspace.spec`` declares ``get(...) returns (list<tuple<ObjectMeta,ObjectData>>)``
+    — each entry is a pair, not the metadata tuple itself (issue #171). A bare
+    metadata tuple is still accepted.
+    """
+    if entry and isinstance(entry[0], list):
+        obj = _parse_workspace_object(entry[0])
+        if len(entry) > 1 and entry[1]:
+            obj.data = str(entry[1])
+        return obj
+    return _parse_workspace_object(entry)

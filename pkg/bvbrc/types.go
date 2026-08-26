@@ -148,9 +148,26 @@ const (
 )
 
 // WorkspaceObject represents a file or folder in the BV-BRC workspace.
+//
+// It is decoded from the service's ObjectMeta tuple. The authoritative layout is
+// the ObjectMeta typedef in the Workspace module's Workspace.spec (13 slots;
+// _generate_object_meta in WorkspaceImpl.pm emits the first 12, omitting the
+// trailing error slot):
+//
+//	0 ObjectName          6 ObjectSize         12 error
+//	1 ObjectType          7 UserMetadata
+//	2 FullObjectPath      8 AutoMetadata
+//	3 creation_time       9 user_permission
+//	4 ObjectID           10 global_permission
+//	5 object_owner       11 shockurl
 type WorkspaceObject struct {
-	// Path is the full workspace path.
+	// Path is the full workspace path: the directory in slot [2] joined with the
+	// name in slot [0], the way the service's own clients compose it
+	// (FileListing.pm, WorkspaceClientExt.pm).
 	Path string `json:"path"`
+
+	// Name is the object's own name, without the directory prefix.
+	Name string `json:"name"`
 
 	// Type is the object type.
 	Type WorkspaceObjectType `json:"type"`
@@ -164,9 +181,6 @@ type WorkspaceObject struct {
 	// ID is the unique object identifier (UUID).
 	ID string `json:"id"`
 
-	// OwnerID is the owner's identifier.
-	OwnerID string `json:"owner_id"`
-
 	// Size is the file size in bytes.
 	Size int64 `json:"size"`
 
@@ -176,13 +190,23 @@ type WorkspaceObject struct {
 	// AutoMetadata contains system-generated metadata.
 	AutoMetadata map[string]string `json:"auto_metadata"`
 
-	// ShockRef indicates storage type ("shock" or "inline").
-	ShockRef string `json:"shock_ref,omitempty"`
+	// UserPermission is the calling user's permission on the owning workspace
+	// ("o", "w", "r" or "n").
+	UserPermission string `json:"user_permission,omitempty"`
 
-	// ShockNodeID is the Shock node identifier for large files.
-	ShockNodeID string `json:"shock_node_id,omitempty"`
+	// GlobalPermission is the owning workspace's global permission.
+	GlobalPermission string `json:"global_permission,omitempty"`
 
-	// Data contains inline file content (for small files).
+	// ShockURL is the full URL of the backing Shock node. It is set when the
+	// object is Shock-backed, and in particular when the object was just created
+	// as an upload node — that is the URL file bytes must be PUT to.
+	ShockURL string `json:"shock_url,omitempty"`
+
+	// Error is set when the service reported a per-object error.
+	Error string `json:"error,omitempty"`
+
+	// Data holds the object content returned alongside the metadata by
+	// Workspace.get, which yields [ObjectMeta, ObjectData] pairs.
 	Data string `json:"data,omitempty"`
 }
 

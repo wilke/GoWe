@@ -287,7 +287,7 @@ func uploadFileToWorkspace(ctx context.Context, ws *bvbrcpkg.Client, fileObj map
 	wsPath := destFolder + "/" + basename
 	fmt.Fprintf(os.Stderr, "  Uploading %s → ws://%s\n", basename, wsPath)
 
-	_, err = ws.WorkspaceUpload(ctx, wsPath, string(data), bvbrcpkg.WorkspaceTypeUnspecified)
+	_, err = ws.WorkspaceUploadFile(ctx, wsPath, data, bvbrcpkg.WorkspaceTypeUnspecified)
 	if err != nil {
 		return nil, fmt.Errorf("workspace upload %s: %w", basename, err)
 	}
