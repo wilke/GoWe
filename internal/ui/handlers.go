@@ -4,20 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/store"
+	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -28,13 +31,19 @@ type AdminChecker interface {
 
 // UI handles the web user interface.
 type UI struct {
-	store           store.Store
-	sessions        *SessionManager
-	logger          *slog.Logger
-	bvbrcCaller     bvbrc.RPCCaller // AppService caller
-	workspaceCaller bvbrc.RPCCaller // Workspace service caller
-	adminChecker    AdminChecker    // Admin role checker (nil = no admins)
-	startTime       time.Time
+	store        store.Store
+	sessions     *SessionManager
+	logger       *slog.Logger
+	bvbrcCaller  bvbrc.RPCCaller // AppService caller
+	adminChecker AdminChecker    // Admin role checker (nil = no admins)
+	startTime    time.Time
+
+	// workspaceURL is the BV-BRC Workspace JSON-RPC endpoint. Every
+	// workspace operation builds a per-request client against it with the
+	// session's token; see workspaceClient.
+	workspaceURL string
+	// uploadMaxSize caps the request body of a workspace upload.
+	uploadMaxSize int64
 
 	// Session cookie hardening.
 	secureCookies       bool // Always set the Secure attribute on session cookies
@@ -52,10 +61,28 @@ type Config struct {
 	// behind a trusted reverse proxy that sets this header, since a client can
 	// otherwise spoof it.
 	TrustForwardedProto bool
+	// WorkspaceURL is the BV-BRC Workspace service endpoint used by the
+	// workspace browser, the file picker and uploads. Empty selects
+	// production.
+	WorkspaceURL string
+	// UploadMaxSize is the largest workspace upload request body accepted,
+	// in bytes. Zero selects DefaultUploadMaxSize.
+	UploadMaxSize int64
 }
+
+// DefaultUploadMaxSize is the workspace upload cap when none is configured.
+const DefaultUploadMaxSize int64 = 1 << 30
 
 // New creates a new UI handler.
 func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
+	workspaceURL := cfg.WorkspaceURL
+	if workspaceURL == "" {
+		workspaceURL = bvbrcpkg.DefaultWorkspaceURL
+	}
+	uploadMaxSize := cfg.UploadMaxSize
+	if uploadMaxSize <= 0 {
+		uploadMaxSize = DefaultUploadMaxSize
+	}
 	return &UI{
 		store:               st,
 		sessions:            NewSessionManager(st),
@@ -63,6 +90,8 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		startTime:           time.Now(),
 		secureCookies:       cfg.SecureCookies,
 		trustForwardedProto: cfg.TrustForwardedProto,
+		workspaceURL:        workspaceURL,
+		uploadMaxSize:       uploadMaxSize,
 	}
 }
 
@@ -95,11 +124,6 @@ func (ui *UI) secureCookie(r *http.Request) bool {
 // WithBVBRCCaller sets the BV-BRC RPC caller for AppService operations.
 func (ui *UI) WithBVBRCCaller(caller bvbrc.RPCCaller) {
 	ui.bvbrcCaller = caller
-}
-
-// WithWorkspaceCaller sets the BV-BRC RPC caller for Workspace operations.
-func (ui *UI) WithWorkspaceCaller(caller bvbrc.RPCCaller) {
-	ui.workspaceCaller = caller
 }
 
 // WithAdminChecker sets the admin role checker.
@@ -1369,77 +1393,111 @@ func (ui *UI) HandleAdminLabelDelete(w http.ResponseWriter, r *http.Request) {
 
 // --- Workspace Handlers ---
 
-// getWorkspaceCaller returns a workspace caller, using the session token if no global caller is configured.
-func (ui *UI) getWorkspaceCaller(sess *model.Session) bvbrc.RPCCaller {
-	if ui.workspaceCaller != nil {
-		return ui.workspaceCaller
+// Workspace client settings for user-facing operations. Listings and the
+// JSON-RPC halves of an upload are short calls; the Shock PUT itself is
+// carried by the client's dedicated upload transport and bounded only by the
+// request context.
+const (
+	workspaceRPCTimeout    = 60 * time.Second
+	workspaceRPCRetries    = 3
+	workspaceUploadRetries = 3
+
+	// workspaceUploadMemory is the in-memory budget for parsing an upload
+	// form; parts beyond it spill to temporary files instead of RAM.
+	workspaceUploadMemory = 32 << 20
+)
+
+// errNoWorkspaceSession is returned when a workspace operation has no BV-BRC
+// token to act under.
+var errNoWorkspaceSession = errors.New("workspace access requires a BV-BRC login")
+
+// workspaceClient returns a typed Workspace client acting as the session's
+// user. Workspace operations always run under the SESSION token: the object
+// is created, PUT to Shock, and refreshed as the same identity, so ACLs on the
+// Workspace row and on the Shock node agree. There is deliberately no
+// service-account fallback — an object created by the service account inside
+// a user's home but written with the user's token is exactly the ACL mismatch
+// this replaced — so a session without a token cannot use the workspace.
+func (ui *UI) workspaceClient(sess *model.Session) (*bvbrcpkg.Client, error) {
+	if sess == nil || sess.Token == "" {
+		return nil, errNoWorkspaceSession
 	}
-	// Create a caller using the session token.
-	if sess != nil && sess.Token != "" {
-		cfg := bvbrc.ClientConfig{
-			AppServiceURL: "https://p3.theseed.org/services/Workspace",
-			Token:         sess.Token,
+	return bvbrcpkg.NewClient(bvbrcpkg.Config{
+		WorkspaceURL: ui.workspaceURL,
+		Token:        sess.Token,
+		Timeout:      workspaceRPCTimeout,
+		MaxRetries:   workspaceRPCRetries,
+		RetryDelay:   bvbrcpkg.DefaultRetryDelay,
+	}, ui.logger), nil
+}
+
+// workspaceHome is the default browsing root for a session.
+func workspaceHome(sess *model.Session) string {
+	return "/" + sess.Username + "/home"
+}
+
+// listWorkspaceDir lists one workspace directory and returns its entries. The
+// service keys its reply by the path it was given; tolerate a trailing slash
+// on either side.
+func listWorkspaceDir(ctx context.Context, client *bvbrcpkg.Client, dir string) ([]bvbrcpkg.WorkspaceObject, error) {
+	result, err := client.WorkspaceLs(ctx, bvbrcpkg.WorkspaceLsInput{Paths: []string{dir}})
+	if err != nil {
+		return nil, err
+	}
+
+	if items, ok := result[dir]; ok {
+		return items, nil
+	}
+	trimmed := strings.TrimSuffix(dir, "/")
+	if items, ok := result[trimmed]; ok {
+		return items, nil
+	}
+	if items, ok := result[trimmed+"/"]; ok {
+		return items, nil
+	}
+	if len(result) == 0 {
+		// The service answers with an empty map for a directory it knows
+		// but has nothing to report for; that is an empty listing.
+		return []bvbrcpkg.WorkspaceObject{}, nil
+	}
+	if len(result) == 1 {
+		// Single-path request: whatever key the service used is our listing.
+		for _, items := range result {
+			return items, nil
 		}
-		return bvbrc.NewHTTPRPCCaller(cfg, ui.logger)
 	}
-	return nil
+	return nil, fmt.Errorf("workspace listing for path %q not found in response", dir)
+}
+
+// writeJSONError writes a JSON error body the UI's JavaScript understands.
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // HandleWorkspaceAPI returns workspace listing as JSON (for file picker modal).
 func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	caller := ui.getWorkspaceCaller(sess)
-	if caller == nil {
-		http.Error(w, `{"error": "Workspace not configured - please log in"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/" + sess.Username + "/home"
-	}
-
-	result, err := caller.Call(r.Context(), "Workspace.ls", []any{
-		map[string]any{"paths": []string{path}},
-	})
+	client, err := ui.workspaceClient(sess)
 	if err != nil {
-		ui.logger.Error("workspace API ls failed", "path", path, "error", err)
-		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	// Parse workspace response.
-	var outer []map[string]json.RawMessage
-	if err := json.Unmarshal(result, &outer); err != nil || len(outer) == 0 {
-		http.Error(w, `{"error": "Failed to parse workspace response"}`, http.StatusInternalServerError)
+	wsPath := r.URL.Query().Get("path")
+	if wsPath == "" {
+		wsPath = workspaceHome(sess)
+	}
+
+	items, err := listWorkspaceDir(r.Context(), client, wsPath)
+	if err != nil {
+		ui.logger.Error("workspace API ls failed", "path", wsPath, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	var items [][]any
-	// Select the listing corresponding to the requested path.
-	var listing json.RawMessage
-	if v, ok := outer[0][path]; ok {
-		listing = v
-	} else {
-		trimmed := strings.TrimSuffix(path, "/")
-		if trimmed != path {
-			if v, ok := outer[0][trimmed]; ok {
-				listing = v
-			}
-		}
-	}
-
-	if listing == nil {
-		http.Error(w, fmt.Sprintf(`{"error": "Workspace listing for path %q not found in response"}`, path), http.StatusInternalServerError)
-		return
-	}
-
-	if err := json.Unmarshal(listing, &items); err != nil {
-		http.Error(w, `{"error": "Failed to parse workspace listing"}`, http.StatusInternalServerError)
-		return
-	}
-	// Convert to structured response.
 	type wsItem struct {
 		Path     string `json:"path"`
 		Name     string `json:"name"`
@@ -1452,174 +1510,126 @@ func (ui *UI) HandleWorkspaceAPI(w http.ResponseWriter, r *http.Request) {
 		Path  string   `json:"path"`
 		Items []wsItem `json:"items"`
 	}{
-		Path:  path,
+		Path:  wsPath,
 		Items: make([]wsItem, 0, len(items)),
 	}
 
-	for _, item := range items {
-		if len(item) < 2 {
-			continue
-		}
-		itemPath, ok := item[0].(string)
-		if !ok {
-			continue
-		}
-		itemType, ok := item[1].(string)
-		if !ok {
-			continue
-		}
-		var itemSize int64
-		if len(item) > 6 {
-			if size, ok := item[6].(float64); ok {
-				itemSize = int64(size)
-			}
-		}
-
-		// Extract name from path.
-		// The workspace API may return full paths or just names.
-		// Ensure we have a full path.
-		name := itemPath
-		fullPath := itemPath
-		if strings.Contains(itemPath, "/") {
-			// Already a full path - extract name from it
-			parts := strings.Split(strings.TrimSuffix(itemPath, "/"), "/")
-			name = parts[len(parts)-1]
-		} else {
-			// Just a name - construct full path from current directory
-			fullPath = strings.TrimSuffix(path, "/") + "/" + itemPath
-		}
-
-		isFolder := itemType == "folder" || itemType == "modelfolder"
-
+	for _, obj := range items {
 		response.Items = append(response.Items, wsItem{
-			Path:     fullPath,
-			Name:     name,
-			Type:     itemType,
-			Size:     itemSize,
-			IsFolder: isFolder,
+			Path:     obj.Path,
+			Name:     obj.Name,
+			Type:     string(obj.Type),
+			Size:     obj.Size,
+			IsFolder: isWorkspaceFolder(obj.Type),
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// isWorkspaceFolder reports whether an object type is browsed as a directory.
+func isWorkspaceFolder(t bvbrcpkg.WorkspaceObjectType) bool {
+	return t == bvbrcpkg.WorkspaceTypeFolder || t == "modelfolder"
+}
+
+// workspaceObjectTypeFor picks the Workspace object type from a file name.
+func workspaceObjectTypeFor(filename string) bvbrcpkg.WorkspaceObjectType {
+	lower := strings.ToLower(filename)
+	switch {
+	case strings.HasSuffix(lower, ".fasta") || strings.HasSuffix(lower, ".fa") || strings.HasSuffix(lower, ".fna"):
+		return "contigs"
+	case strings.HasSuffix(lower, ".fastq") || strings.HasSuffix(lower, ".fq"):
+		return "reads"
+	case strings.HasSuffix(lower, ".fastq.gz") || strings.HasSuffix(lower, ".fq.gz"):
+		return "reads"
+	case strings.HasSuffix(lower, ".gff") || strings.HasSuffix(lower, ".gff3"):
+		return "gff"
+	case strings.HasSuffix(lower, ".gbk") || strings.HasSuffix(lower, ".genbank"):
+		return "genbank"
+	case strings.HasSuffix(lower, ".csv"):
+		return "csv"
+	case strings.HasSuffix(lower, ".tsv") || strings.HasSuffix(lower, ".txt"):
+		return "txt"
+	}
+	return bvbrcpkg.WorkspaceTypeUnspecified
 }
 
 // HandleWorkspaceUpload handles file upload to BV-BRC workspace.
+//
+// The upload form is parsed with a bounded memory budget — larger parts spill
+// to a temporary file — and the part is streamed to the workspace under the
+// session's token with an exact Content-Length. Every attempt rewinds the part
+// and starts afresh, because WorkspaceUploadReader verifies what the service
+// stored and cleans up after itself on failure.
 func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	caller := ui.getWorkspaceCaller(sess)
-	if caller == nil {
-		http.Error(w, `{"error": "Workspace not configured - please log in"}`, http.StatusServiceUnavailable)
+	client, err := ui.workspaceClient(sess)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 
-	// Parse multipart form (max 100MB).
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+	// Cap the whole request body; the cap surfaces as *http.MaxBytesError
+	// from the form parser.
+	r.Body = http.MaxBytesReader(w, r.Body, ui.uploadMaxSize)
+	if err := r.ParseMultipartForm(workspaceUploadMemory); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("upload exceeds the %d byte limit", ui.uploadMaxSize))
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, `{"error": "No file provided"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "No file provided")
 		return
 	}
 	defer file.Close()
 
-	// Get destination folder.
-	destFolder := r.FormValue("folder")
-	if destFolder == "" {
-		destFolder = "/" + sess.Username + "/home"
+	// Browsers send a bare name, but never trust it: the object name must not
+	// carry directory components.
+	filename := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
+	switch filename {
+	case "", ".", "..", "/":
+		writeJSONError(w, http.StatusBadRequest, "Invalid file name")
+		return
 	}
-
-	// Read file content.
-	data, err := io.ReadAll(file)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+	if strings.ContainsFunc(filename, unicode.IsControl) {
+		writeJSONError(w, http.StatusBadRequest, "Invalid file name: control characters are not allowed")
 		return
 	}
 
-	filename := header.Filename
-	destPath := strings.TrimSuffix(destFolder, "/") + "/" + filename
-
-	// Determine object type based on extension.
-	objType := "unspecified"
-	lower := strings.ToLower(filename)
-	switch {
-	case strings.HasSuffix(lower, ".fasta") || strings.HasSuffix(lower, ".fa") || strings.HasSuffix(lower, ".fna"):
-		objType = "contigs"
-	case strings.HasSuffix(lower, ".fastq") || strings.HasSuffix(lower, ".fq"):
-		objType = "reads"
-	case strings.HasSuffix(lower, ".fastq.gz") || strings.HasSuffix(lower, ".fq.gz"):
-		objType = "reads"
-	case strings.HasSuffix(lower, ".gff") || strings.HasSuffix(lower, ".gff3"):
-		objType = "gff"
-	case strings.HasSuffix(lower, ".gbk") || strings.HasSuffix(lower, ".genbank"):
-		objType = "genbank"
-	case strings.HasSuffix(lower, ".csv"):
-		objType = "csv"
-	case strings.HasSuffix(lower, ".tsv") || strings.HasSuffix(lower, ".txt"):
-		objType = "txt"
+	destFolder := r.FormValue("folder")
+	if destFolder == "" {
+		destFolder = workspaceHome(sess)
 	}
+	destPath := strings.TrimSuffix(destFolder, "/") + "/" + filename
+	objType := workspaceObjectTypeFor(filename)
 
 	ui.logger.Info("uploading file to workspace",
 		"filename", filename,
 		"destPath", destPath,
-		"size", len(data),
+		"size", header.Size,
 		"type", objType,
+		"user", sess.Username,
 	)
 
-	// Every upload goes through Shock, whatever its size. The inline branch this
-	// replaced handed Workspace.create a []byte in a JSON string slot, which
-	// encoding/json base64-encodes — and inline content is UTF-8-only anyway, so
-	// there is no size below which routing bytes through JSON is correct
-	// (issues #172, #171).
-	//
-	// Step 1: create the destination as an upload node.
-	result, err := caller.Call(r.Context(), "Workspace.create", []any{
-		map[string]any{
-			"objects": [][]any{
-				{destPath, objType, nil, nil},
-			},
-			"createUploadNodes": true,
-			"overwrite":         true,
-		},
-	})
+	obj, err := uploadWorkspaceFile(r.Context(), client, destPath, filename, file, header.Size, objType)
 	if err != nil {
-		ui.logger.Error("workspace create upload node failed", "path", destPath, "error", err)
-		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
+		ui.logger.Error("workspace upload failed", "path", destPath, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Step 2: pull the Shock URL out of the returned ObjectMeta tuple. Per
-	// Workspace.spec it is slot [11] — slot [10] is the global permission string.
-	var createResp [][][]any
-	if err := json.Unmarshal(result, &createResp); err != nil {
-		ui.logger.Error("workspace parse upload node failed", "error", err)
-		http.Error(w, `{"error": "Failed to parse upload node response"}`, http.StatusInternalServerError)
-		return
-	}
-
-	if len(createResp) == 0 || len(createResp[0]) == 0 || len(createResp[0][0]) < 12 {
-		http.Error(w, `{"error": "Invalid upload node response"}`, http.StatusInternalServerError)
-		return
-	}
-
-	shockURL, ok := createResp[0][0][11].(string)
-	if !ok || shockURL == "" {
-		http.Error(w, `{"error": "No Shock upload URL in response"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Step 3: PUT the raw bytes to the Shock node.
-	if err := ui.uploadToShock(r.Context(), shockURL, filename, data, sess.Token); err != nil {
-		ui.logger.Error("shock upload failed", "error", err)
-		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-
-	// Return success with the workspace path.
 	response := struct {
 		Path string `json:"path"`
 		Name string `json:"name"`
@@ -1628,119 +1638,92 @@ func (ui *UI) HandleWorkspaceUpload(w http.ResponseWriter, r *http.Request) {
 	}{
 		Path: destPath,
 		Name: filename,
-		Type: objType,
-		Size: int64(len(data)),
+		Type: string(objType),
+		Size: obj.Size,
+	}
+	if obj.Path != "" {
+		response.Path = obj.Path
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
-// uploadToShock uploads file data to a Shock node.
-func (ui *UI) uploadToShock(ctx context.Context, shockURL, filename string, data []byte, token string) error {
-	// Create multipart form.
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
+// uploadWorkspaceFile streams file into the workspace object at wsPath,
+// rewinding the reader for every attempt.
+func uploadWorkspaceFile(ctx context.Context, client *bvbrcpkg.Client, wsPath, filename string, file io.ReadSeeker, size int64, objType bvbrcpkg.WorkspaceObjectType) (*bvbrcpkg.WorkspaceObject, error) {
+	var lastErr error
+	for attempt := 0; attempt < workspaceUploadRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
 
-	part, err := writer.CreateFormFile("upload", filename)
-	if err != nil {
-		return err
-	}
-	if _, err = part.Write(data); err != nil {
-		return err
-	}
-	if err = writer.Close(); err != nil {
-		return err
-	}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("rewinding upload: %w", err)
+		}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shockURL, &buf)
-	if err != nil {
-		return err
+		obj, err := client.WorkspaceUploadReader(ctx, wsPath, filename, file, size, objType)
+		if err == nil {
+			return obj, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || permanentUploadError(err) {
+			return nil, err
+		}
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	// Shock wants the OAuth scheme, as scripts/ws-create.pl sends it. (The
-	// Workspace JSON-RPC endpoint accepts a bare token; Shock is not the same
-	// service.)
-	if !strings.HasPrefix(token, "OAuth ") {
-		token = "OAuth " + token
-	}
-	req.Header.Set("Authorization", token)
+	return nil, fmt.Errorf("after %d attempts: %w", workspaceUploadRetries, lastErr)
+}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+// permanentUploadError reports whether an upload failure is deterministic —
+// an auth/permission refusal or a coded service error the client library
+// itself would not retry — so another attempt cannot help. The gate is
+// deliberately narrow: WorkspaceUploadReader wraps its verification failures
+// (size and md5 mismatches, a bad Shock reply) in a code-less Error, and
+// those must still be retried.
+func permanentUploadError(err error) bool {
+	if bvbrcpkg.IsAuthError(err) {
+		return true
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("shock upload failed (HTTP %d): %s", resp.StatusCode, body)
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if be, ok := e.(*bvbrcpkg.Error); ok && be.Code != 0 && !bvbrcpkg.IsRetryable(be) {
+			return true
+		}
 	}
-
-	return nil
+	return false
 }
 
 // HandleWorkspace renders the workspace browser.
 func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 
-	caller := ui.getWorkspaceCaller(sess)
-	if caller == nil {
-		ui.renderError(w, "BV-BRC Workspace not configured - please log in", nil)
+	client, err := ui.workspaceClient(sess)
+	if err != nil {
+		// The browser page needs a BV-BRC login; send the user there.
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		path = "/" + sess.Username + "/home"
+	wsPath := r.URL.Query().Get("path")
+	if wsPath == "" {
+		wsPath = workspaceHome(sess)
 	}
 
-	// Call workspace list using the Workspace service.
-	ui.logger.Debug("workspace ls request", "path", path)
-	result, err := caller.Call(r.Context(), "Workspace.ls", []any{
-		map[string]any{"paths": []string{path}},
-	})
+	ui.logger.Debug("workspace ls request", "path", wsPath)
+	items, err := listWorkspaceDir(r.Context(), client, wsPath)
 	if err != nil {
-		ui.logger.Error("workspace ls failed", "path", path, "error", err)
+		ui.logger.Error("workspace ls failed", "path", wsPath, "error", err)
 		ui.renderError(w, "Failed to list workspace", err)
 		return
-	}
-
-	ui.logger.Debug("workspace ls response", "raw", string(result))
-
-	// Response format: [{"/path": [[item], [item], ...]}]
-	var outer []map[string]json.RawMessage
-	if err := json.Unmarshal(result, &outer); err != nil || len(outer) == 0 {
-		ui.logger.Error("workspace parse failed", "error", err, "response", string(result))
-		ui.renderError(w, "Failed to parse workspace response", err)
-		return
-	}
-
-	// Extract items for the requested path.
-	var items [][]any
-	var foundKey string
-	for key := range outer[0] {
-		foundKey = key
-		break
-	}
-	ui.logger.Debug("workspace response keys", "requestedPath", path, "foundKey", foundKey)
-
-	if listing, ok := outer[0][path]; ok {
-		json.Unmarshal(listing, &items)
-	} else if listing, ok := outer[0][strings.TrimSuffix(path, "/")]; ok {
-		json.Unmarshal(listing, &items)
-	} else if len(outer[0]) > 0 {
-		// Use whatever key is in the response
-		for _, listing := range outer[0] {
-			json.Unmarshal(listing, &items)
-			break
-		}
 	}
 
 	data := map[string]any{
 		"Title":   "Workspace - GoWe",
 		"Session": sess,
-		"Path":    path,
+		"Path":    wsPath,
 		"Items":   items,
 	}
 	ui.render(w, "workspace/browser", data)

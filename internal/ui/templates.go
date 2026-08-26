@@ -2261,19 +2261,14 @@ var templates = map[string]string{
     <div class="bg-white shadow overflow-hidden sm:rounded-lg">
         <ul class="divide-y divide-gray-200">
             {{range .Items}}
-            {{if gt (len .) 0}}
-            {{$name := index . 0}}
-            {{$type := index . 1}}
-            {{$parent := index . 2}}
-            {{$fullPath := printf "%s%s" $parent $name}}
             <li>
-                {{if eq $type "folder"}}
-                <a href="/workspace?path={{urlquery $fullPath}}" class="block hover:bg-gray-50 px-4 py-4">
+                {{if eq .Type "folder"}}
+                <a href="/workspace?path={{urlquery .Path}}" class="block hover:bg-gray-50 px-4 py-4">
                     <div class="flex items-center">
                         <svg class="h-5 w-5 text-yellow-400 mr-3" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                         </svg>
-                        <span class="text-sm font-medium text-gray-900">{{$name}}</span>
+                        <span class="text-sm font-medium text-gray-900">{{.Name}}</span>
                     </div>
                 </a>
                 {{else}}
@@ -2282,13 +2277,12 @@ var templates = map[string]string{
                         <svg class="h-5 w-5 text-gray-400 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
                         </svg>
-                        <span class="text-sm text-gray-900">{{$name}}</span>
-                        <span class="ml-2 text-xs text-gray-500">{{$type}}</span>
+                        <span class="text-sm text-gray-900">{{.Name}}</span>
+                        <span class="ml-2 text-xs text-gray-500">{{.Type}}</span>
                     </div>
                 </div>
                 {{end}}
             </li>
-            {{end}}
             {{else}}
             <li class="px-4 py-8 text-center text-gray-500">
                 Empty directory

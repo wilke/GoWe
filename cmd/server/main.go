@@ -50,7 +50,7 @@ func main() {
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
 	workspaceStaging := flag.String("workspace-staging", "", "Workspace staging mode: 'server' (pre/post-stage ws:// on server) or empty (passthrough to workers)")
-	wsStagingURL := flag.String("workspace-url", "", "BV-BRC Workspace service URL for server-side staging (default: production)")
+	wsStagingURL := flag.String("workspace-url", "", "BV-BRC Workspace service URL for server-side staging and the web UI workspace browser (default: production)")
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
@@ -69,7 +69,7 @@ func main() {
 
 	// File upload proxy options
 	uploadBackend := flag.String("upload-backend", "", "Enable file upload proxy with backend: shock, s3, local")
-	uploadMaxSize := flag.Int64("upload-max-size", 1<<30, "Maximum upload size in bytes (default: 1GB)")
+	uploadMaxSize := flag.Int64("upload-max-size", 1<<30, "Maximum upload size in bytes for the file proxy and web UI workspace uploads (default: 1GB)")
 
 	// Shock upload options
 	uploadShockHost := flag.String("upload-shock-host", "", "Shock server host for uploads (e.g., localhost:7445)")
@@ -204,9 +204,13 @@ func main() {
 	reg.Register(executor.NewWorkerExecutor(st, logger))
 
 	// Register BVBRCExecutor and create RPC callers if a token is available.
-	const workspaceURL = "https://p3.theseed.org/services/Workspace"
-
-	serverOpts := []server.Option{server.WithExecutorRegistry(reg)}
+	serverOpts := []server.Option{
+		server.WithExecutorRegistry(reg),
+		// The web UI browses and uploads to the Workspace as the logged-in
+		// user (session token), never as the server's service account.
+		server.WithWorkspaceURL(*wsStagingURL),
+		server.WithUIUploadMaxSize(*uploadMaxSize),
+	}
 
 	// Configure admin role assignment.
 	adminConfig := server.NewAdminConfig(st, "GOWE_ADMINS", *configFile)
@@ -328,11 +332,6 @@ func main() {
 			bvbrcCfg.Token = tok
 			defaultBVBRCCaller = bvbrc.NewHTTPRPCCaller(bvbrcCfg, logger)
 			serverOpts = append(serverOpts, server.WithBVBRCCaller(defaultBVBRCCaller))
-
-			// Workspace caller for workspace browsing.
-			wsCfg := bvbrc.ClientConfig{AppServiceURL: workspaceURL, Token: tok}
-			wsCaller := bvbrc.NewHTTPRPCCaller(wsCfg, logger)
-			serverOpts = append(serverOpts, server.WithWorkspaceCaller(wsCaller))
 
 			logger.Info("bvbrc service account ready", "username", tokenInfo.Username)
 		}

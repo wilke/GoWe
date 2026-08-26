@@ -31,7 +31,7 @@ gowe-server [flags]
 | `--config` | `""` | Path to server config file (for admins, worker keys) |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
-| `--workspace-url` | `""` | BV-BRC Workspace service URL for server-side staging (default: production) |
+| `--workspace-url` | `""` | BV-BRC Workspace service URL for server-side staging and the web UI workspace browser/uploads, which always run under the logged-in user's own token (default: production) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |
@@ -53,7 +53,7 @@ Environment variables:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--upload-backend` | `""` | Enable file upload proxy: `shock`, `s3`, `local` |
-| `--upload-max-size` | `1073741824` (1 GB) | Maximum upload size in bytes |
+| `--upload-max-size` | `1073741824` (1 GB) | Maximum upload size in bytes, for the file proxy and for web UI workspace uploads (oversized bodies get 413) |
 | `--upload-local-dir` | `""` | Local directory for file uploads |
 | `--upload-download-dirs` | `""` | Comma-separated directories allowed for file download |
 
