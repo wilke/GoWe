@@ -64,12 +64,15 @@ const tools: Tool[] = [
   },
   {
     name: "workspace_upload",
-    description: "Upload file content to the BV-BRC workspace",
+    description:
+      "Upload TEXT content to the BV-BRC workspace as an inline object. Text only: the content " +
+      "travels as a JSON string, so binary data is corrupted (bytes that are not valid UTF-8 are " +
+      "replaced). For binary files use the Shock upload path (gowe / ws-create.pl --useshock).",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Destination workspace path" },
-        content: { type: "string", description: "File content to upload" },
+        content: { type: "string", description: "Text content to upload (UTF-8 only, not binary)" },
         type: { type: "string", description: "Object type (txt, json, contigs, etc.)", default: "unspecified" },
       },
       required: ["path", "content"],
