@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.15.0](https://github.com/wilke/GoWe/compare/v0.14.0...v0.15.0) (2026-08-26)
+
+
+### Features
+
+* **scheduler:** non-blocking scatter-over-subworkflow via proxy tasks ([#167](https://github.com/wilke/GoWe/issues/167)) ([8a8b655](https://github.com/wilke/GoWe/commit/8a8b655a96ae0eb5feb362d468837408f6bf19f9)), closes [#164](https://github.com/wilke/GoWe/issues/164)
+* **server,cli:** admin output verification and re-delivery ([#180](https://github.com/wilke/GoWe/issues/180)) ([a2e0a19](https://github.com/wilke/GoWe/commit/a2e0a19e2f044b36a13ddf1db811a2a4ce413fee)), closes [#175](https://github.com/wilke/GoWe/issues/175)
+* **server,ui:** exclude child submissions from listings by default ([#169](https://github.com/wilke/GoWe/issues/169)) ([27774fa](https://github.com/wilke/GoWe/commit/27774fa88e34efb764062a4d427211c0f4593afc))
+
+
+### Bug Fixes
+
+* **bvbrc,mcp:** recorded Workspace fixtures, TS/Python parity, download-url tools ([#178](https://github.com/wilke/GoWe/issues/178)) ([73c9c05](https://github.com/wilke/GoWe/commit/73c9c05aa63856dbeac93eb48de4846c3c329207))
+* **bvbrc,staging,cli:** verify Shock uploads and stream large files ([#177](https://github.com/wilke/GoWe/issues/177)) ([83de02d](https://github.com/wilke/GoWe/commit/83de02d1a3ce006be338552308384cd53776d995))
+* **server:** synchronous cancel fan-out to sub-workflow child submissions ([#168](https://github.com/wilke/GoWe/issues/168)) ([1c1c4a9](https://github.com/wilke/GoWe/commit/1c1c4a92fb004f604568557692d86d3951f9d723))
+* **staging:** upload stage-out bytes through Shock — JSON-inline content corrupts every binary file ([#172](https://github.com/wilke/GoWe/issues/172), [#171](https://github.com/wilke/GoWe/issues/171)) ([#174](https://github.com/wilke/GoWe/issues/174)) ([4a1305e](https://github.com/wilke/GoWe/commit/4a1305e88b14cc7f5ef7b09c519ca47a1f7d9043))
+* **store,scheduler:** CAS submission finalize/activate + bounded list pagination ([#165](https://github.com/wilke/GoWe/issues/165)) ([e73c511](https://github.com/wilke/GoWe/commit/e73c511c5e5cf5d2f230539da4fd9df1582d1e21))
+* **ui:** typed Workspace client with session identity, seekable uploads, size cap ([#179](https://github.com/wilke/GoWe/issues/179)) ([843837c](https://github.com/wilke/GoWe/commit/843837c0e84a462644c52cdc2d2eb48d6c776fc1))
+
 ## [0.14.0](https://github.com/wilke/GoWe/compare/v0.13.2...v0.14.0) (2026-08-09)
 
 
