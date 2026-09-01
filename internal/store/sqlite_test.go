@@ -1652,6 +1652,215 @@ func TestBatchCreateStepInstances_Empty(t *testing.T) {
 	}
 }
 
+// TestStepInstance_ErrorRoundTrip covers GoWe issue #197: the step_instances
+// diagnostic `error` column must round-trip through create, get, update, and
+// both list paths (ListStepsBySubmission and ListStepsByState).
+func TestStepInstance_ErrorRoundTrip(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	sub := sampleSubmission(wf.ID)
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	t.Run("create with no error persists empty", func(t *testing.T) {
+		si := &model.StepInstance{
+			ID:           "si_err-none",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateWaiting,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != "" {
+			t.Errorf("Error = %q, want empty", got.Error)
+		}
+	})
+
+	t.Run("create with error persists and round-trips via Get", func(t *testing.T) {
+		wantErr := "scatter input \"items\" is not an array (got string)"
+		si := &model.StepInstance{
+			ID:           "si_err-create",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateFailed,
+			Outputs:      map[string]any{},
+			Error:        wantErr,
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != wantErr {
+			t.Errorf("Error = %q, want %q", got.Error, wantErr)
+		}
+	})
+
+	t.Run("update sets and clears error", func(t *testing.T) {
+		si := &model.StepInstance{
+			ID:           "si_err-update",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateWaiting,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+
+		// Update to FAILED with an error message.
+		si.State = model.StepStateFailed
+		si.Error = "pickValue first_non_null: all sources are null"
+		si.CompletedAt = &now
+		if err := st.UpdateStepInstance(ctx, si); err != nil {
+			t.Fatalf("UpdateStepInstance: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != si.Error {
+			t.Errorf("Error after update = %q, want %q", got.Error, si.Error)
+		}
+
+		// A subsequent update that clears Error must clear the column too.
+		si.Error = ""
+		if err := st.UpdateStepInstance(ctx, si); err != nil {
+			t.Fatalf("UpdateStepInstance (clear): %v", err)
+		}
+		got, err = st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance after clear: %v", err)
+		}
+		if got.Error != "" {
+			t.Errorf("Error after clear = %q, want empty", got.Error)
+		}
+	})
+
+	t.Run("error round-trips through ListStepsBySubmission and ListStepsByState", func(t *testing.T) {
+		wantErr := "when condition evaluation: unexpected type"
+		si := &model.StepInstance{
+			ID:           "si_err-list",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateFailed,
+			Outputs:      map[string]any{},
+			Error:        wantErr,
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+
+		bySub, err := st.ListStepsBySubmission(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("ListStepsBySubmission: %v", err)
+		}
+		var foundInSub bool
+		for _, s := range bySub {
+			if s.ID == si.ID {
+				foundInSub = true
+				if s.Error != wantErr {
+					t.Errorf("ListStepsBySubmission: Error = %q, want %q", s.Error, wantErr)
+				}
+			}
+		}
+		if !foundInSub {
+			t.Fatal("si_err-list not found via ListStepsBySubmission")
+		}
+
+		byState, err := st.ListStepsByState(ctx, model.StepStateFailed)
+		if err != nil {
+			t.Fatalf("ListStepsByState: %v", err)
+		}
+		var foundInState bool
+		for _, s := range byState {
+			if s.ID == si.ID {
+				foundInState = true
+				if s.Error != wantErr {
+					t.Errorf("ListStepsByState: Error = %q, want %q", s.Error, wantErr)
+				}
+			}
+		}
+		if !foundInState {
+			t.Fatal("si_err-list not found via ListStepsByState")
+		}
+	})
+
+	t.Run("BatchCreateStepInstances persists error", func(t *testing.T) {
+		wantErr := "scatter iteration 2 when evaluation: boom"
+		steps := []*model.StepInstance{
+			{
+				ID:           "si_err-batch",
+				SubmissionID: sub.ID,
+				StepID:       "step1",
+				State:        model.StepStateFailed,
+				Outputs:      map[string]any{},
+				Error:        wantErr,
+				CreatedAt:    now,
+			},
+		}
+		if err := st.BatchCreateStepInstances(ctx, steps); err != nil {
+			t.Fatalf("BatchCreateStepInstances: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, "si_err-batch")
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != wantErr {
+			t.Errorf("Error = %q, want %q", got.Error, wantErr)
+		}
+	})
+
+	t.Run("ResetFailedSteps clears the error", func(t *testing.T) {
+		si := &model.StepInstance{
+			ID:           "si_err-reset",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateFailed,
+			Outputs:      map[string]any{},
+			Error:        "boom",
+			CompletedAt:  &now,
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+		if _, err := st.ResetFailedSteps(ctx, sub.ID); err != nil {
+			t.Fatalf("ResetFailedSteps: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.State != model.StepStateWaiting {
+			t.Errorf("State after reset = %q, want WAITING", got.State)
+		}
+		if got.Error != "" {
+			t.Errorf("Error after reset = %q, want empty", got.Error)
+		}
+	})
+}
+
 // --- CancelNonTerminalSteps tests ---
 
 func TestCancelNonTerminalSteps(t *testing.T) {

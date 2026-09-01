@@ -338,6 +338,13 @@ var alterStatements = []struct {
 		column:   "poststage_completed_at",
 		alterSQL: "ALTER TABLE submissions ADD COLUMN poststage_completed_at TEXT",
 	},
+	// Step instance diagnostic message for dispatch/evaluation failures (#197).
+	// Nullable: NULL means no error was recorded (success, or a pre-#197 row).
+	{
+		table:    "step_instances",
+		column:   "error",
+		alterSQL: "ALTER TABLE step_instances ADD COLUMN error TEXT",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

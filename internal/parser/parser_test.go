@@ -713,6 +713,103 @@ $graph:
 	}
 }
 
+// TestParseGraph_StepInputPickValue verifies that a map-style step input's
+// pickValue field is parsed into cwl.StepInput.PickValue (GoWe issue #197 —
+// previously silently dropped by the parser).
+func TestParseGraph_StepInputPickValue(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "first_non_null",
+			yaml: `pickValue: first_non_null`,
+			want: "first_non_null",
+		},
+		{
+			name: "the_only_non_null",
+			yaml: `pickValue: the_only_non_null`,
+			want: "the_only_non_null",
+		},
+		{
+			name: "all_non_null",
+			yaml: `pickValue: all_non_null`,
+			want: "all_non_null",
+		},
+		{
+			name: "absent",
+			yaml: ``,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := testParser()
+			data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: main
+    class: Workflow
+    requirements:
+      - class: MultipleInputFeatureRequirement
+    inputs:
+      a:
+        type: string?
+      b:
+        type: string?
+    outputs:
+      result:
+        type: string
+        outputSource: step1/output
+    steps:
+      step1:
+        run: "#tool1"
+        in:
+          input1:
+            source: [a, b]
+            ` + tt.yaml + `
+        out: [output]
+  - id: tool1
+    class: CommandLineTool
+    baseCommand: echo
+    inputs:
+      input1:
+        type: string
+    outputs:
+      output:
+        type: string
+`)
+			graph, err := p.ParseGraph(data)
+			if err != nil {
+				t.Fatalf("ParseGraph: %v", err)
+			}
+			si := graph.Workflow.Steps["step1"].In["input1"]
+			if si.PickValue != tt.want {
+				t.Errorf("PickValue = %q, want %q", si.PickValue, tt.want)
+			}
+
+			// pickValue must also survive the cwl -> model conversion.
+			mw, err := p.ToModel(graph, "test")
+			if err != nil {
+				t.Fatalf("ToModel: %v", err)
+			}
+			var msi *model.StepInput
+			for i := range mw.Steps[0].In {
+				if mw.Steps[0].In[i].ID == "input1" {
+					msi = &mw.Steps[0].In[i]
+				}
+			}
+			if msi == nil {
+				t.Fatal("model step input 'input1' not found")
+			}
+			if msi.PickValue != tt.want {
+				t.Errorf("model.StepInput.PickValue = %q, want %q", msi.PickValue, tt.want)
+			}
+		})
+	}
+}
+
 func TestToModel_PackedPipeline(t *testing.T) {
 	p := testParser()
 	data := loadTestdata(t, "packed/pipeline-packed.cwl")
@@ -1072,6 +1169,62 @@ func TestComputeDependsOn(t *testing.T) {
 				modelInputs = append(modelInputs, model.StepInput{Source: source})
 			}
 			got := computeDependsOn(modelInputs, tt.wfInputs)
+			if len(got) != len(tt.want) {
+				t.Fatalf("computeDependsOn = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("computeDependsOn[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestComputeDependsOn_MultiSource covers GoWe issue #197: computeDependsOn
+// must register EVERY producing step from a multi-source input's Sources
+// array, not just the first one recovered from the deprecated comma-joined
+// Source string (which — via strings.SplitN(..., "/", 2)[0] — only ever
+// yielded the first source's step).
+func TestComputeDependsOn_MultiSource(t *testing.T) {
+	tests := []struct {
+		name   string
+		inputs []model.StepInput
+		want   []string
+	}{
+		{
+			name: "multi-source registers all producing steps",
+			inputs: []model.StepInput{
+				{Sources: []string{"step_a/out", "step_b/out"}},
+			},
+			want: []string{"step_a", "step_b"},
+		},
+		{
+			name: "multi-source order reversed still registers both",
+			inputs: []model.StepInput{
+				{Sources: []string{"step_b/out", "step_a/out"}},
+			},
+			want: []string{"step_a", "step_b"}, // computeDependsOn sorts the result
+		},
+		{
+			name: "multi-source mixing a step output and a workflow input",
+			inputs: []model.StepInput{
+				{Sources: []string{"step_a/out", "workflow_input"}},
+			},
+			want: []string{"step_a"},
+		},
+		{
+			name: "multiple multi-source inputs on the same step",
+			inputs: []model.StepInput{
+				{Sources: []string{"step_a/out", "step_b/out"}},
+				{Sources: []string{"step_c/out", "step_a/stats"}},
+			},
+			want: []string{"step_a", "step_b", "step_c"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeDependsOn(tt.inputs, map[string]bool{"workflow_input": true})
 			if len(got) != len(tt.want) {
 				t.Fatalf("computeDependsOn = %v, want %v", got, tt.want)
 			}

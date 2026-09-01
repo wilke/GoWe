@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/internal/fileliteral"
 )
 
@@ -24,6 +25,7 @@ type InputDef struct {
 	ValueFrom    string   // Expression to transform input
 	LoadContents bool     // Read file contents before valueFrom
 	LinkMerge    string   // merge_nested (default) or merge_flattened
+	PickValue    string   // "first_non_null", "the_only_non_null", or "all_non_null"
 }
 
 // Options configures step input resolution.
@@ -48,12 +50,34 @@ func ResolveInputs(
 ) (map[string]any, error) {
 	resolved := make(map[string]any, len(inputs))
 
-	// First pass: resolve sources and defaults.
+	// First pass: resolve sources, apply pickValue, and apply defaults.
+	//
+	// pickValue is resolved here — before defaults and before any scatter
+	// split — so that: (1) a nil source is never masked by a default that
+	// should not apply once pickValue has made a selection, and (2) scatter
+	// steps (which read the resolved value straight out of this map, see
+	// scheduler.dispatchScatterStep) see the final flat picked value/array
+	// rather than the raw multi-source shape (e.g. `[null, [...]]`).
 	for _, inp := range inputs {
 		var value any
 		if len(inp.Sources) == 1 {
-			// Single source - value is the resolved source.
-			value = ResolveSource(inp.Sources[0], workflowInputs, stepOutputs)
+			// Single source - value is the resolved source. A single source
+			// with pickValue set means the (possibly scattered) producer's
+			// output is itself an array to pick across (CWL "pickValue on a
+			// single source" case, mirroring cwloutput.CollectWorkflowOutputs).
+			v := ResolveSource(inp.Sources[0], workflowInputs, stepOutputs)
+			if inp.PickValue != "" {
+				values := []any{v}
+				if arr, ok := v.([]any); ok {
+					values = arr
+				}
+				picked, err := cwloutput.ApplyPickValue(values, inp.PickValue)
+				if err != nil {
+					return nil, fmt.Errorf("input %s: %w", inp.ID, err)
+				}
+				v = picked
+			}
+			value = v
 		} else if len(inp.Sources) > 1 {
 			// Multiple sources (MultipleInputFeatureRequirement) - value is array of resolved sources.
 			values := make([]any, len(inp.Sources))
@@ -62,18 +86,15 @@ func ResolveInputs(
 			}
 			// Apply linkMerge: merge_flattened flattens nested arrays into a single array.
 			// Default (merge_nested) keeps them as-is.
-			if inp.LinkMerge == "merge_flattened" {
-				var flattened []any
-				for _, v := range values {
-					if arr, ok := v.([]any); ok {
-						flattened = append(flattened, arr...)
-					} else {
-						flattened = append(flattened, v)
-					}
+			merged := cwloutput.ApplyLinkMerge(values, inp.LinkMerge)
+			if inp.PickValue != "" {
+				picked, err := cwloutput.ApplyPickValue(merged, inp.PickValue)
+				if err != nil {
+					return nil, fmt.Errorf("input %s: %w", inp.ID, err)
 				}
-				value = flattened
+				value = picked
 			} else {
-				value = values
+				value = merged
 			}
 		}
 
@@ -340,7 +361,7 @@ func evaluateValueFromExpressions(
 
 // InputDefFromModel creates an InputDef from model.StepInput fields.
 // This is a convenience function for converting from the model representation.
-func InputDefFromModel(id string, sources []string, source string, defaultVal any, valueFrom string, loadContents bool, linkMerge string) InputDef {
+func InputDefFromModel(id string, sources []string, source string, defaultVal any, valueFrom string, loadContents bool, linkMerge string, pickValue string) InputDef {
 	// Prefer Sources array, fall back to splitting comma-separated Source.
 	srcs := sources
 	if len(srcs) == 0 && source != "" {
@@ -353,5 +374,6 @@ func InputDefFromModel(id string, sources []string, source string, defaultVal an
 		ValueFrom:    valueFrom,
 		LoadContents: loadContents,
 		LinkMerge:    linkMerge,
+		PickValue:    pickValue,
 	}
 }

@@ -1549,12 +1549,29 @@ func resolveInputValue(v any, baseDir string) any {
 func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs map[string]map[string]any, cwlDir string, evaluator *cwlexpr.Evaluator) (map[string]any, error) {
 	resolved := make(map[string]any)
 
-	// First pass: resolve sources and defaults.
+	// First pass: resolve sources, apply pickValue, and apply defaults.
+	// pickValue is applied here — before defaults and before any scatter split —
+	// mirroring internal/stepinput.ResolveInputs, so the standalone runner and
+	// the server scheduler agree on step-level pickValue semantics.
 	for inputID, stepInput := range step.In {
 		var value any
 		if len(stepInput.Sources) == 1 {
-			// Single source - value is the resolved source.
-			value = resolveSource(stepInput.Sources[0], workflowInputs, stepOutputs)
+			// Single source - value is the resolved source. A single source with
+			// pickValue set means the (possibly scattered) producer's output is
+			// itself an array to pick across.
+			v := resolveSource(stepInput.Sources[0], workflowInputs, stepOutputs)
+			if stepInput.PickValue != "" {
+				values := []any{v}
+				if arr, ok := v.([]any); ok {
+					values = arr
+				}
+				picked, err := cwloutput.ApplyPickValue(values, stepInput.PickValue)
+				if err != nil {
+					return nil, fmt.Errorf("input %s: %w", inputID, err)
+				}
+				v = picked
+			}
+			value = v
 		} else if len(stepInput.Sources) > 1 {
 			// Multiple sources (MultipleInputFeatureRequirement) - value is array of resolved sources.
 			values := make([]any, len(stepInput.Sources))
@@ -1562,7 +1579,16 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 				values[i] = resolveSource(src, workflowInputs, stepOutputs)
 			}
 			// Apply linkMerge to combine values.
-			value = cwloutput.ApplyLinkMerge(values, stepInput.LinkMerge)
+			merged := cwloutput.ApplyLinkMerge(values, stepInput.LinkMerge)
+			if stepInput.PickValue != "" {
+				picked, err := cwloutput.ApplyPickValue(merged, stepInput.PickValue)
+				if err != nil {
+					return nil, fmt.Errorf("input %s: %w", inputID, err)
+				}
+				value = picked
+			} else {
+				value = merged
+			}
 		}
 		if value == nil && stepInput.Default != nil {
 			// Resolve File/Directory objects in defaults relative to CWL directory.

@@ -554,6 +554,10 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 }
 
 // areStepDependenciesSatisfied checks whether all upstream step dependencies are met.
+//
+// Per CWL v1.2, there is no "skip cascade": a SKIPPED (when-false) producer
+// yields null outputs, and its consumers still run — gated only by their own
+// `when` condition. Only a FAILED dependency blocks (and cascades) the consumer.
 func areStepDependenciesSatisfied(dependsOn []string, stepByStepID map[string]*model.StepInstance) (satisfied bool, blocked bool) {
 	if len(dependsOn) == 0 {
 		return true, false
@@ -564,9 +568,9 @@ func areStepDependenciesSatisfied(dependsOn []string, stepByStepID map[string]*m
 			return false, true
 		}
 		switch dep.State {
-		case model.StepStateFailed, model.StepStateSkipped:
+		case model.StepStateFailed:
 			return false, true
-		case model.StepStateCompleted:
+		case model.StepStateCompleted, model.StepStateSkipped:
 			continue
 		default:
 			return false, false
@@ -647,6 +651,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			// CWL spec: non-boolean 'when' expressions must fail the step.
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("when condition evaluation: %v", err)
 			si.CompletedAt = &now
 			l.logger.Error("when condition evaluation failed", "si_id", si.ID, "error", err)
 			return l.updateStepInstance(ctx, si)
@@ -673,7 +678,9 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Use a synthetic task map built from step instance outputs.
 	tasksByStep := buildSyntheticTasksByStep(allSteps)
 
+	var populateErr error
 	if err := l.populateToolAndJob(tmpTask, step, wf, mergedInputs, tasksByStep); err != nil {
+		populateErr = err
 		l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
 			"si_id", si.ID, "error", err)
 	}
@@ -736,7 +743,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 
 	// Scatter dispatch.
 	if len(step.Scatter) > 0 {
-		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType)
+		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType, populateErr)
 	}
 
 	// ExpressionTool dispatch.
@@ -745,6 +752,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		now := time.Now().UTC()
 		if err != nil {
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("expression tool: %v", err)
 			si.CompletedAt = &now
 			l.logger.Error("expression tool failed", "si_id", si.ID, "error", err)
 		} else {
@@ -772,6 +780,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	if err := ResolveTaskInputs(task, step, mergedInputs, tasksByStep, nil); err != nil {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("resolve inputs: %v", err)
 		si.CompletedAt = &now
 		return l.updateStepInstance(ctx, si)
 	}
@@ -807,7 +816,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
 	step *model.Step, wf *model.Workflow, sub *model.Submission,
 	mergedInputs map[string]any, tasksByStep map[string]*model.Task,
-	stepOutputs map[string]map[string]any, execType model.ExecutorType) error {
+	stepOutputs map[string]map[string]any, execType model.ExecutorType, populateErr error) error {
 
 	l.logger.Info("dispatching scatter step",
 		"si_id", si.ID, "step_id", si.StepID,
@@ -829,6 +838,14 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		if !ok {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			if populateErr != nil {
+				// Most common root cause: job-input resolution (e.g. a
+				// step-level pickValue error) failed earlier, so the scatter
+				// input never got its real (array) value.
+				si.Error = fmt.Sprintf("scatter input %q: input resolution failed: %v", scatterInput, populateErr)
+			} else {
+				si.Error = fmt.Sprintf("scatter input %q is not an array (got %T)", scatterInput, value)
+			}
 			si.CompletedAt = &now
 			return l.updateStepInstance(ctx, si)
 		}
@@ -846,6 +863,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 	default:
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("unknown scatterMethod %q", method)
 		si.CompletedAt = &now
 		return l.updateStepInstance(ctx, si)
 	}
@@ -856,10 +874,11 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		if tmpTask.RuntimeHints != nil {
 			expressionLib = tmpTask.RuntimeHints.ExpressionLib
 		}
-		for _, combo := range combinations {
+		for i, combo := range combinations {
 			if err := applyScatterValueFrom(step, combo, mergedInputs, expressionLib); err != nil {
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d valueFrom: %v", i, err)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -892,6 +911,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 			if err != nil {
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d expression tool: %v", i, err)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -923,6 +943,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				// CWL spec: non-boolean 'when' expressions must fail.
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d when evaluation: %v", i, err)
 				si.CompletedAt = &now
 				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
 				return l.updateStepInstance(ctx, si)
@@ -942,6 +963,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				if err := l.store.CreateTask(ctx, task); err != nil {
 					now := time.Now().UTC()
 					si.State = model.StepStateFailed
+					si.Error = fmt.Sprintf("scatter iteration %d: create task: %v", i, err)
 					si.CompletedAt = &now
 					return l.updateStepInstance(ctx, si)
 				}
@@ -959,6 +981,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		if err := l.store.CreateTask(ctx, task); err != nil {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("scatter iteration %d: create task: %v", i, err)
 			si.CompletedAt = &now
 			return l.updateStepInstance(ctx, si)
 		}
@@ -972,6 +995,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				// Scatter iteration failed.
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d task failed", i)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -1810,6 +1834,21 @@ func (l *Loop) evaluateWhenConditionFromSteps(step *model.Step, submissionInputs
 		inputs[k] = v
 	}
 
+	resolveWhenSource := func(src string) any {
+		if strings.Contains(src, "/") {
+			parts := strings.SplitN(src, "/", 2)
+			stepID, outputID := parts[0], parts[1]
+			if outputs, ok := stepOutputs[stepID]; ok {
+				return outputs[outputID]
+			}
+			return nil
+		}
+		// Always set the input, even if nil. CWL spec requires
+		// null (not undefined) for missing optional inputs so
+		// that when expressions like $(inputs.x !== null) work.
+		return submissionInputs[src]
+	}
+
 	for _, si := range step.In {
 		if si.Source == "" && len(si.Sources) == 0 {
 			continue
@@ -1820,32 +1859,38 @@ func (l *Loop) evaluateWhenConditionFromSteps(step *model.Step, submissionInputs
 			sources = strings.Split(si.Source, ",")
 		}
 		if len(sources) == 1 {
-			src := sources[0]
-			if strings.Contains(src, "/") {
-				parts := strings.SplitN(src, "/", 2)
-				stepID, outputID := parts[0], parts[1]
-				if outputs, ok := stepOutputs[stepID]; ok {
-					inputs[si.ID] = outputs[outputID]
+			v := resolveWhenSource(sources[0])
+			// pickValue-aware resolution mirrors stepinput.ResolveInputs so that
+			// `when` sees the same flat, picked value as the step's job inputs
+			// (a single source may itself be an array from a scattered
+			// conditional producer).
+			if si.PickValue != "" {
+				values := []any{v}
+				if arr, ok := v.([]any); ok {
+					values = arr
 				}
-			} else {
-				// Always set the input, even if nil. CWL spec requires
-				// null (not undefined) for missing optional inputs so
-				// that when expressions like $(inputs.x !== null) work.
-				inputs[si.ID] = submissionInputs[src]
+				picked, err := cwloutput.ApplyPickValue(values, si.PickValue)
+				if err != nil {
+					return false, fmt.Errorf("when condition input %s: %w", si.ID, err)
+				}
+				v = picked
 			}
+			inputs[si.ID] = v
 		} else if len(sources) > 1 {
 			values := make([]any, len(sources))
 			for i, src := range sources {
-				if strings.Contains(src, "/") {
-					parts := strings.SplitN(src, "/", 2)
-					if outputs, ok := stepOutputs[parts[0]]; ok {
-						values[i] = outputs[parts[1]]
-					}
-				} else {
-					values[i] = submissionInputs[src]
-				}
+				values[i] = resolveWhenSource(src)
 			}
-			inputs[si.ID] = values
+			merged := cwloutput.ApplyLinkMerge(values, si.LinkMerge)
+			if si.PickValue != "" {
+				picked, err := cwloutput.ApplyPickValue(merged, si.PickValue)
+				if err != nil {
+					return false, fmt.Errorf("when condition input %s: %w", si.ID, err)
+				}
+				inputs[si.ID] = picked
+			} else {
+				inputs[si.ID] = merged
+			}
 		}
 	}
 
@@ -2704,6 +2749,15 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 		},
 	}
 
+	// Prefer the step instance's own diagnostic (set at dispatch/evaluation
+	// failure time, e.g. a scatter shape error or a pickValue resolution
+	// failure) — it is more specific than the generic "step failed" message
+	// and, unlike task-level errors below, is the only diagnostic available
+	// when the step never got as far as creating a task.
+	if failedStep.Error != "" {
+		subErr.Message = fmt.Sprintf("step '%s' failed: %s", failedStep.StepID, failedStep.Error)
+	}
+
 	// Look for a failed task under this step to get exit code and stderr.
 	tasks, err := l.store.ListTasksByStepInstance(ctx, failedStep.ID)
 	if err != nil {
@@ -2881,6 +2935,7 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 			si.ValueFrom,
 			si.LoadContents,
 			si.LinkMerge,
+			si.PickValue,
 		)
 	}
 
