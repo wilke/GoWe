@@ -584,6 +584,71 @@ GET /api/v1/submissions/{sub_id}/tasks/{task_id}/logs
 }
 ```
 
+### Submission Timing
+
+```
+GET /api/v1/submissions/{id}/timing
+GET /api/v1/submissions/{id}/timing?include_children=true
+```
+
+A timing-only projection of a submission: per-task queue/run durations, per-step
+aggregates, and submission-level totals. The response carries timing fields and
+raw timestamps only — task `tool`/`job` definitions and stdout/stderr never ship
+through this endpoint. With `include_children=true` the report recurses into
+sub-workflow child submissions (`children` array of nested reports).
+
+```json
+{
+  "data": {
+    "submission": {
+      "id": "sub_xyz789",
+      "state": "COMPLETED",
+      "wall_s": 322.4,
+      "scheduling_s": 0.8,
+      "compute_s": 301.2,
+      "queue_s": 12.5,
+      "critical_path_s": 310.9,
+      "counts": { "total": 5, "success": 5 },
+      "created_at": "2026-04-07T12:00:00Z",
+      "completed_at": "2026-04-07T12:05:22Z"
+    },
+    "steps": [
+      { "step_id": "predict", "state": "COMPLETED", "wall_s": 290.1,
+        "fan_in_s": 0.9, "max_run_s": 288.0, "tasks": 3,
+        "created_at": "...", "completed_at": "..." }
+    ],
+    "tasks": [
+      { "task_id": "task_001", "step_id": "predict", "scatter_index": 0,
+        "executor": "worker", "state": "SUCCESS", "kind": "task",
+        "queue_s": 4.1, "run_s": 288.0, "retry_count": 0,
+        "created_at": "...", "started_at": "...", "completed_at": "..." }
+    ]
+  }
+}
+```
+
+Semantics (per-state trust rules):
+
+- `started_at` is trusted as a timestamp only in `RUNNING`/`SUCCESS`/`FAILED`.
+  A `QUEUED` worker task's `started_at` is a stale dispatch stamp and is never
+  used — its `queue_s` is "waiting so far" from `created_at`.
+- `run_s` requires both timestamps and a `SUCCESS`/`FAILED` state; on
+  `RETRYING`/`SCHEDULED` rows it is the last failed attempt's window, flagged
+  `"retrying": true`, and `queue_s` is measured since first dispatch (it
+  includes prior attempts' run time).
+- `kind` classifies rows: `task`, `subworkflow` (proxy for a child submission;
+  `run_s` is the child's wall time once the child is terminal, and may lag the
+  proxy's own stamps by up to one scheduler tick; `child_submission_id` links
+  the child), `skipped-iteration` (when-skip scatter synthetic — excluded from
+  every aggregate), `cancelled` (`SKIPPED`; no `run_s`, `queue_s` only if it
+  never started).
+- Steps with zero tasks (inline ExpressionTool evaluation, when-skipped steps)
+  are flagged `"inline": true`; their `wall_s` spans the step instance's own
+  lifetime and therefore includes dependency wait.
+- `compute_s` sums task `run_s` (sub-workflow proxies contribute their child's
+  wall time); `scheduling_s` is submission creation → first task creation;
+  `critical_path_s` is the longest path over the workflow step DAG.
+
 ---
 
 ## 8. Cancel a Job

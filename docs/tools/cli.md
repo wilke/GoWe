@@ -206,12 +206,27 @@ gowe status <id> [flags]
 
 **Examples:**
 
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--timing` | Show the timing breakdown instead of the plain status: submission totals (wall, scheduling, compute, queue, critical path), per-step wall/fan-in/max-run, and per-task queue/run durations. Sub-workflow children are included recursively. |
+| `--json` | Print the raw timing JSON (requires `--timing`) |
+
+**Examples:**
+
 ```bash
 # Check submission status
 gowe status sub_abc123
 
 # Check workflow details
 gowe status wf_xyz789
+
+# Timing breakdown (per step and per task)
+gowe status sub_abc123 --timing
+
+# Raw timing JSON for scripting
+gowe status sub_abc123 --timing --json
 ```
 
 **Output:**
@@ -226,6 +241,20 @@ Tasks:
   task_001  assemble   RUNNING   bvbrc
   task_002  annotate   PENDING   bvbrc
 ```
+
+**Timing output (`--timing`):**
+
+```
+Submission sub_abc123 [COMPLETED]  wall=322.4s scheduling=0.8s compute=301.2s queue=12.5s critical-path=310.9s
+  STEP      STATE      WALL    FAN-IN  MAX-RUN  TASKS
+  assemble  COMPLETED  290.1s  0.9s    288.0s   3
+  TASK      STEP      IDX  EXECUTOR  STATE    KIND  QUEUE  RUN     RETRIES
+  task_001  assemble  0    worker    SUCCESS  task  4.1s   288.0s  0
+```
+
+Queue/run durations follow the timing trust rules: a `QUEUED` worker task shows
+waiting time from its creation (its `started_at` is a stale dispatch stamp), and
+`RETRYING` rows show the last failed attempt's window.
 
 ---
 
