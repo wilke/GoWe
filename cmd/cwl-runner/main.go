@@ -25,6 +25,7 @@ var (
 	quiet            bool
 	parallel         bool
 	maxJobs          int
+	coresBudget      int
 	noFailFast       bool
 	collectMetrics   bool
 	imageDir         string
@@ -72,7 +73,8 @@ Examples:
 
 	// Parallel execution flags.
 	rootCmd.PersistentFlags().BoolVar(&parallel, "parallel", false, "Enable parallel execution of independent steps and scatter iterations")
-	rootCmd.PersistentFlags().IntVarP(&maxJobs, "jobs", "j", 0, "Maximum concurrent jobs (default: number of CPUs)")
+	rootCmd.PersistentFlags().IntVarP(&maxJobs, "jobs", "j", 0, "Maximum concurrent tool executions across the entire run -- top-level steps, scatter iterations, nested sub-workflow steps, and scatter-over-subworkflow iterations all share this one budget (default: number of CPUs)")
+	rootCmd.PersistentFlags().IntVar(&coresBudget, "cores", 0, "Machine core budget: each concurrent tool execution additionally consumes its evaluated ResourceRequirement cores (default 1) from this budget; a requirement larger than the budget is clamped with a warning (default: 0, disabled)")
 	rootCmd.PersistentFlags().BoolVar(&noFailFast, "no-fail-fast", false, "Continue execution after errors (default: fail fast)")
 
 	// Metrics flags.
@@ -127,6 +129,9 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 		r.Parallel.Enabled = true
 		if maxJobs > 0 {
 			r.Parallel.MaxWorkers = maxJobs
+		}
+		if coresBudget > 0 {
+			r.Parallel.CoresBudget = coresBudget
 		}
 		r.Parallel.FailFast = !noFailFast
 	}

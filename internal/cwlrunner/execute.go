@@ -55,7 +55,10 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 // not the application inside the container.
 // containerMounts: files to mount at absolute paths inside container (from InitialWorkDirRequirement).
 // dockerOutputDir: custom output directory inside container (from dockerOutputDirectory).
-func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
+// cores: evaluated ResourceRequirement cores (see resourceCoresWeight); passed through as the
+// container --cpus limit when > 0. Same value used to size the --cores weighted-semaphore
+// acquisition for this execution, evaluated once by the caller.
+func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string, cores int) (*ExecutionResult, error) {
 	executor := toolexec.NewExecutor(r.logger)
 	result, err := executor.Execute(ctx, &toolexec.Options{
 		Tool:            tool,
@@ -69,6 +72,7 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 		DockerOutputDir: dockerOutputDir,
 		Namespaces:      r.namespaces,
 		JobRequirements: r.jobRequirements,
+		Resources:       toolexec.ResourceConfig{Cores: cores},
 	})
 	if err != nil {
 		return nil, err
@@ -81,7 +85,11 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 // not the application inside the container.
 // containerMounts: files to mount at absolute paths inside container (from InitialWorkDirRequirement).
 // dockerOutputDir: custom output directory inside container (from dockerOutputDirectory).
-func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string) (*ExecutionResult, error) {
+// cores: evaluated ResourceRequirement cores (see resourceCoresWeight); passed through as the
+// container --cpus limit when > 0 (Apptainer additionally requires cgroups v2 unified mode, which
+// cwl-runner does not currently detect/set -- see ApptainerCgroups in internal/worker for the
+// equivalent worker-side detection; --cpus is a no-op here until that's wired up for cwl-runner too).
+func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string, cores int) (*ExecutionResult, error) {
 	executor := toolexec.NewExecutor(r.logger)
 	result, err := executor.Execute(ctx, &toolexec.Options{
 		Tool:            tool,
@@ -95,6 +103,7 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 		DockerOutputDir: dockerOutputDir,
 		Namespaces:      r.namespaces,
 		JobRequirements: r.jobRequirements,
+		Resources:       toolexec.ResourceConfig{Cores: cores},
 	})
 	if err != nil {
 		return nil, err

@@ -737,7 +737,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
+		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, runtime.Cores)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
@@ -755,7 +755,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir)
+		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, runtime.Cores)
 	default:
 		// Build runtime context using actual work directory for local execution.
 		runtime := buildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
@@ -805,6 +805,24 @@ func (r *Runner) executeSubWorkflow(ctx context.Context, subGraph *cwl.GraphDocu
 	if err != nil {
 		return nil, fmt.Errorf("build DAG: %w", err)
 	}
+
+	// Fix for #183: previously this function always ran the child workflow's
+	// steps through the serial loop below regardless of r.Parallel, so every
+	// sub-workflow (at any nesting depth) serialized its interior even under
+	// --parallel. When enabled, run the child DAG through a parallelExecutor
+	// instead, reusing r.Parallel (and therefore the Runner-level shared
+	// semaphore(s) created once in executeWorkflow) so this nesting level
+	// competes for capacity on equal footing with every other level. This
+	// also gives scattered tool/ExpressionTool steps inside the sub-workflow
+	// the parallel scatter routing "for free", since parallelExecutor.
+	// executeStep already has that logic (see #183 item 3).
+	if r.Parallel.Enabled {
+		pe := newParallelExecutor(r, subGraph, dag, mergedInputs, r.Parallel)
+		return pe.execute(ctx)
+	}
+
+	// Sequential execution (original behavior, unchanged when parallel
+	// execution is disabled).
 
 	// Track outputs from completed steps.
 	stepOutputs := make(map[string]map[string]any)
@@ -976,46 +994,33 @@ func (r *Runner) executeScatterSubWorkflow(ctx context.Context, subGraph *cwl.Gr
 		return nil, fmt.Errorf("unknown scatter method: %s", method)
 	}
 
-	r.logger.Info("executing scatter over subworkflow", "workflow", subGraph.Workflow.ID, "iterations", len(combinations))
+	r.logger.Info("executing scatter over subworkflow", "workflow", subGraph.Workflow.ID, "iterations", len(combinations), "parallel", r.Parallel.Enabled)
 
-	// Execute each scatter iteration.
+	// Execute each scatter iteration. Fix for #183: previously this was
+	// always a plain serial for loop regardless of r.Parallel (the
+	// cwl-runner twin of what #164 fixed scheduler-side), so a workflow that
+	// scattered over a sub-workflow serialized every iteration even under
+	// --parallel. When enabled, iterations run concurrently (goroutine per
+	// combination); each iteration's own executeSubWorkflow call is a
+	// structural step and acquires no semaphore itself (see the INVARIANT
+	// comment on Semaphore) -- only the leaf tool executions it eventually
+	// reaches do, bounded by the Runner-level shared semaphore(s).
 	results := make([]map[string]any, len(combinations))
-	for i, iterInputs := range combinations {
-		// Evaluate valueFrom for this iteration if evaluator is provided.
-		if evaluator != nil {
-			for inputID, stepInput := range step.In {
-				if stepInput.ValueFrom != "" {
-					self := iterInputs[inputID]
-					ctx := cwlexpr.NewContext(iterInputs).WithSelf(self)
-					evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, ctx)
-					if err != nil {
-						return nil, fmt.Errorf("iteration %d input %s valueFrom: %w", i, inputID, err)
-					}
-					iterInputs[inputID] = evaluated
-				}
-			}
-		}
-
-		// Check 'when' condition for this iteration.
-		if step.When != "" && evaluator != nil {
-			evalCtx := cwlexpr.NewContext(iterInputs)
-			shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+	var iterErr error
+	if r.Parallel.Enabled {
+		iterErr = r.executeScatterSubWorkflowParallel(ctx, subGraph, step, evaluator, combinations, results)
+	} else {
+		for i, iterInputs := range combinations {
+			outputs, err := r.scatterSubWorkflowIteration(ctx, subGraph, step, evaluator, i, iterInputs)
 			if err != nil {
-				return nil, fmt.Errorf("iteration %d when expression: %w", i, err)
+				iterErr = err
+				break
 			}
-			if !shouldRun {
-				r.logger.Debug("skipping scatter iteration (when condition false)", "iteration", i)
-				results[i] = nil
-				continue
-			}
+			results[i] = outputs
 		}
-
-		// Execute the subworkflow for this iteration.
-		outputs, err := r.executeSubWorkflow(ctx, subGraph, iterInputs)
-		if err != nil {
-			return nil, fmt.Errorf("iteration %d: %w", i, err)
-		}
-		results[i] = outputs
+	}
+	if iterErr != nil {
+		return nil, iterErr
 	}
 
 	// Aggregate outputs: merge results into output arrays.
@@ -1039,6 +1044,131 @@ func (r *Runner) executeScatterSubWorkflow(ctx context.Context, subGraph *cwl.Gr
 		outputs[outID] = arr
 	}
 	return outputs, nil
+}
+
+// scatterSubWorkflowIteration runs one scatter-over-subworkflow combination:
+// evaluates this iteration's valueFrom expressions, checks its 'when'
+// condition, and (if it should run) executes the child sub-workflow. Shared
+// by both the serial and parallel branches of executeScatterSubWorkflow so
+// their per-iteration semantics never drift apart.
+//
+// iterInputs must be private to this iteration (never shared with another
+// goroutine): it is mutated in place by valueFrom evaluation. The scatter
+// combination generators (dotProduct/flatCrossProduct) already allocate a
+// fresh map per combination, so this holds for every caller.
+//
+// Returns (nil, nil) when the 'when' condition is false (matching the
+// existing "results[i] = nil" skip semantics), or a wrapped error identifying
+// the iteration index on any failure.
+func (r *Runner) scatterSubWorkflowIteration(ctx context.Context, subGraph *cwl.GraphDocument,
+	step cwl.Step, evaluator *cwlexpr.Evaluator, i int, iterInputs map[string]any) (map[string]any, error) {
+
+	// Evaluate valueFrom for this iteration if evaluator is provided.
+	if evaluator != nil {
+		for inputID, stepInput := range step.In {
+			if stepInput.ValueFrom != "" {
+				self := iterInputs[inputID]
+				exprCtx := cwlexpr.NewContext(iterInputs).WithSelf(self)
+				evaluated, err := evaluator.Evaluate(stepInput.ValueFrom, exprCtx)
+				if err != nil {
+					return nil, fmt.Errorf("iteration %d input %s valueFrom: %w", i, inputID, err)
+				}
+				iterInputs[inputID] = evaluated
+			}
+		}
+	}
+
+	// Check 'when' condition for this iteration.
+	if step.When != "" && evaluator != nil {
+		evalCtx := cwlexpr.NewContext(iterInputs)
+		shouldRun, err := evaluator.EvaluateBool(step.When, evalCtx)
+		if err != nil {
+			return nil, fmt.Errorf("iteration %d when expression: %w", i, err)
+		}
+		if !shouldRun {
+			r.logger.Debug("skipping scatter iteration (when condition false)", "iteration", i)
+			return nil, nil
+		}
+	}
+
+	// Execute the subworkflow for this iteration.
+	outputs, err := r.executeSubWorkflow(ctx, subGraph, iterInputs)
+	if err != nil {
+		return nil, fmt.Errorf("iteration %d: %w", i, err)
+	}
+	return outputs, nil
+}
+
+// executeScatterSubWorkflowParallel runs scatter-over-subworkflow iterations
+// concurrently, one goroutine per combination, writing results[i] by index
+// (order-preserving). On FailFast, the first error cancels a derived context
+// so in-flight/not-yet-started iterations stop early; without FailFast, all
+// iterations run to completion and the first error (by index) is returned.
+//
+// This function itself acquires no semaphore -- it is a structural
+// (coordination) step; only the leaf tool executions reached transitively
+// through executeSubWorkflow do. See the INVARIANT comment on Semaphore.
+func (r *Runner) executeScatterSubWorkflowParallel(ctx context.Context, subGraph *cwl.GraphDocument,
+	step cwl.Step, evaluator *cwlexpr.Evaluator, combinations []map[string]any, results []map[string]any) error {
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	failFast := r.Parallel.FailFast
+	errs := make([]error, len(combinations))
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+
+	for i, iterInputs := range combinations {
+		wg.Add(1)
+		go func(idx int, in map[string]any) {
+			defer wg.Done()
+
+			// Skip work for iterations that haven't started yet once a
+			// FailFast error has already cancelled ctx. Gated on failFast:
+			// without it, ctx is never cancelled by us (see below), and
+			// every iteration must actually run to completion and report
+			// its own real error rather than a synthetic ctx.Err() stand-in
+			// -- otherwise the !failFast error scan below could surface a
+			// bare "context canceled" instead of the iteration's real
+			// failure.
+			if failFast {
+				select {
+				case <-ctx.Done():
+					errs[idx] = ctx.Err()
+					return
+				default:
+				}
+			}
+
+			outputs, err := r.scatterSubWorkflowIteration(ctx, subGraph, step, evaluator, idx, in)
+			errs[idx] = err
+			results[idx] = outputs
+
+			if err != nil && failFast {
+				errOnce.Do(func() {
+					firstErr = err
+					cancel()
+				})
+			}
+		}(i, iterInputs)
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		return firstErr
+	}
+	if !failFast {
+		for _, err := range errs {
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // mergeScatterResultsNested merges scatter results into nested arrays for nested_crossproduct.
@@ -1238,6 +1368,22 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 
 	// Use parallel execution if enabled
 	if r.Parallel.Enabled {
+		// Create the tool-execution semaphore(s) ONCE for the entire run, at
+		// the Runner level, so every nesting level (top-level steps, nested
+		// sub-workflows, scatter-over-subworkflow iterations -- see
+		// executeSubWorkflow and executeScatterSubWorkflow) shares the same
+		// budget. r.Parallel is passed by value into each parallelExecutor,
+		// but Semaphore/Cores are pointer fields, so the pointer itself is
+		// what's shared. See the INVARIANT comment on Semaphore in
+		// semaphore.go for why one global semaphore across arbitrary nesting
+		// depth cannot deadlock.
+		if r.Parallel.Semaphore == nil {
+			r.Parallel.Semaphore = NewSemaphore(r.Parallel.MaxWorkers)
+		}
+		if r.Parallel.CoresBudget > 0 && r.Parallel.Cores == nil {
+			r.Parallel.Cores = NewCoresSemaphore(r.Parallel.CoresBudget, r.logger)
+		}
+
 		pe := newParallelExecutor(r, graph, dag, mergedInputs, r.Parallel)
 		workflowOutputs, err := pe.execute(ctx)
 		if err != nil {
@@ -2225,6 +2371,69 @@ func mergeStepRequirements(tool *cwl.CommandLineTool, step *cwl.Step) {
 	}
 }
 
+// cloneToolForExecution returns a shallow copy of tool with its own
+// Requirements and Hints maps, safe to mutate (via mergeStepRequirements /
+// mergeWorkflowRequirements) without affecting the shared
+// *cwl.CommandLineTool stored in a graph's Tools map.
+//
+// This matters under nested/scattered parallelism: the same *cwl.GraphDocument
+// (and therefore the same tool pointers in its Tools map) can be reached by
+// multiple concurrent goroutines -- e.g. every iteration of a
+// scatter-over-subworkflow shares one child graph. mergeStepRequirements only
+// ever ADDS missing top-level keys to tool.Requirements/tool.Hints (nested
+// requirement values are never mutated after being read), so a shallow copy
+// of those two maps is sufficient; no deeper cloning is needed.
+func cloneToolForExecution(tool *cwl.CommandLineTool) *cwl.CommandLineTool {
+	if tool == nil {
+		return nil
+	}
+	clone := *tool
+	if tool.Requirements != nil {
+		clone.Requirements = make(map[string]any, len(tool.Requirements))
+		for k, v := range tool.Requirements {
+			clone.Requirements[k] = v
+		}
+	}
+	if tool.Hints != nil {
+		clone.Hints = make(map[string]any, len(tool.Hints))
+		for k, v := range tool.Hints {
+			clone.Hints[k] = v
+		}
+	}
+	return &clone
+}
+
+// resourceCoresWeight evaluates a tool's ResourceRequirement.coresMin
+// (falling back to .cores), defaulting to 1 when neither is specified. This
+// is the single source of truth used both to populate runtime.cores (see
+// buildRuntimeContextWithInputs, for CWL expression evaluation and for the
+// container --cpus limit threaded through toolexec.Options.Resources.Cores)
+// and to size a leaf tool execution's --cores weighted-semaphore acquisition
+// (see acquireExecutionSlot). evaluator may be nil (no expression support,
+// e.g. resource values that are plain ints).
+func resourceCoresWeight(tool *cwl.CommandLineTool, inputs map[string]any, evaluator *cwlexpr.Evaluator) int {
+	cores := 1
+	rr := getResourceRequirement(tool)
+	if rr == nil {
+		return cores
+	}
+	ctx := cwlexpr.NewContext(inputs)
+	// CWL allows coresMin/coresMax - use coresMin if present.
+	if coresMin, ok := rr["coresMin"]; ok {
+		cores = evalResourceInt(coresMin, evaluator, ctx)
+	}
+	// If no coresMin (or it evaluated to the default of 1), try cores.
+	if cores == 1 {
+		if coresVal, ok := rr["cores"]; ok {
+			cores = evalResourceInt(coresVal, evaluator, ctx)
+		}
+	}
+	if cores < 1 {
+		cores = 1
+	}
+	return cores
+}
+
 // buildRuntimeContext creates a RuntimeContext from tool requirements.
 func buildRuntimeContext(tool *cwl.CommandLineTool, outDir string) *cwlexpr.RuntimeContext {
 	return buildRuntimeContextWithInputs(tool, outDir, nil, nil)
@@ -2246,16 +2455,11 @@ func buildRuntimeContextWithInputs(tool *cwl.CommandLineTool, outDir string, inp
 		}
 		ctx := cwlexpr.NewContext(inputs)
 
-		// CWL allows coresMin/coresMax - use coresMin if present.
-		if coresMin, ok := rr["coresMin"]; ok {
-			runtime.Cores = evalResourceInt(coresMin, evaluator, ctx)
-		}
-		// If no coresMin, try cores.
-		if runtime.Cores == 1 {
-			if cores, ok := rr["cores"]; ok {
-				runtime.Cores = evalResourceInt(cores, evaluator, ctx)
-			}
-		}
+		// CWL allows coresMin/coresMax - use coresMin if present. Delegates
+		// to resourceCoresWeight, the same function used to size the
+		// --cores weighted-semaphore acquisition, so both consumers of
+		// "how many cores does this tool need" agree.
+		runtime.Cores = resourceCoresWeight(tool, inputs, evaluator)
 
 		// Apply RAM requirements.
 		if ramMin, ok := rr["ramMin"]; ok {
