@@ -111,6 +111,7 @@ fi
     --admins "$ADMINS" \
     --workspace-staging server \
     --redeliver-source-dirs "${REDELIVER_SOURCE_DIRS:-/scout/wf/data}" \
+    --metrics-addr "${METRICS_ADDR:-localhost:9091}" \
     > "$LOG_DIR/server.log" 2>&1 &
 echo $! > "$PID_DIR/server.pid"
 echo "  server  PID=$(cat "$PID_DIR/server.pid")  port=${GOWE_PORT}"
