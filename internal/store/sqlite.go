@@ -1504,6 +1504,25 @@ func (s *SQLiteStore) TerminalizeTask(ctx context.Context, task *model.Task) (bo
 	return n > 0, nil
 }
 
+// TerminalizeTaskFrom writes the same field set as UpdateTask, but only while
+// the task is still in the exact `from` state — a tighter compare-and-set
+// than TerminalizeTask's "not already terminal" guard. Use it when the
+// caller's snapshot is only valid for one specific state: e.g. a task
+// observed as QUEUED that a worker may have since checked out (moving it to
+// RUNNING with a new external_id). TerminalizeTask's NOT-IN guard would still
+// let that write through and clobber the checkout; this method's exact-state
+// guard does not. Returns applied=false (no error) when the task has already
+// moved on, so the caller can leave it alone.
+func (s *SQLiteStore) TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error) {
+	s.logger.Debug("sql", "op", "terminalize_from", "table", "tasks", "id", task.ID, "from", from)
+
+	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=? AND state=?`, task.ID, string(from))
+	if err != nil {
+		return false, fmt.Errorf("terminalize task %s from %s: %w", task.ID, from, err)
+	}
+	return n > 0, nil
+}
+
 // CASTaskState moves a task from one exact state to another (compare-and-set).
 // Returns applied=false (no error) when the task is no longer in the `from`
 // state — e.g. a concurrent cancel SKIPPED it — so a stale snapshot can never

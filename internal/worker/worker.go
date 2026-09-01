@@ -638,8 +638,9 @@ var errReportDeclined = errors.New("server declined report")
 
 // reportComplete reports a final task result, detaching from ctx cancellation so a
 // cancelled or killed task can still be reported (bounded by a short timeout).
-// Transient failures (network errors, 5xx) are retried up to 3 attempts with a
-// short backoff; a 409 is a deliberate server-side drop and is never retried.
+// Transient failures (network errors, 5xx, 429, 408) are retried up to 3
+// attempts with a short backoff; a 409 is a deliberate server-side drop and
+// is never retried.
 func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskResult) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -666,8 +667,10 @@ func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskR
 					"task_id", taskID, "detail", se.Body)
 				return fmt.Errorf("%w: %s", errReportDeclined, se.Body)
 			}
-			if se.StatusCode < 500 {
-				// Other 4xx (e.g. 404): retrying cannot help.
+			if se.StatusCode < 500 && se.StatusCode != http.StatusTooManyRequests && se.StatusCode != http.StatusRequestTimeout {
+				// Other 4xx (e.g. 404): retrying cannot help. 429 and 408 are
+				// transient (rate limiting, request timeout) and fall through
+				// to the retry below alongside network errors and 5xx.
 				return err
 			}
 		}

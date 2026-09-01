@@ -74,6 +74,15 @@ type Store interface {
 	// TerminalizeTask is UpdateTask guarded by a compare-and-set: the write is
 	// skipped (applied=false, no error) when the task is already terminal.
 	TerminalizeTask(ctx context.Context, task *model.Task) (bool, error)
+	// TerminalizeTaskFrom is UpdateTask guarded by a compare-and-set against a
+	// single exact state: the write is skipped (applied=false, no error)
+	// unless the task is still in `from`. Use this instead of TerminalizeTask
+	// when the caller's snapshot is only valid for one specific non-terminal
+	// state — e.g. detectStuckTasks failing a task it observed as QUEUED: a
+	// worker that checks the task out between the snapshot and this write
+	// must win, not be clobbered by a stale full-row write that resets
+	// external_id and reports the task terminal out from under the worker.
+	TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error)
 	// CASTaskState moves a task `from`→`to` only while it is still exactly in
 	// `from`; applied=false (no error) otherwise, so a stale snapshot can
 	// never overwrite a concurrent terminal write (e.g. a cancel that SKIPPED

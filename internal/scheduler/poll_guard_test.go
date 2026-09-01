@@ -219,16 +219,28 @@ func TestPollInFlight_CancelSkipNotResurrected(t *testing.T) {
 	ctx := context.Background()
 
 	subID := seedPollTask(t, st, model.TaskStateQueued, model.ExecutorTypeBVBRC, "bvbrc_job_42")
-	reg.Register(&stubExecutor{
+	stub := &stubExecutor{
 		typ: model.ExecutorTypeBVBRC,
 		status: func(ctx context.Context, task *model.Task) (model.TaskState, error) {
-			// Concurrent cancel fan-out lands mid-poll.
-			if _, err := st.CancelNonTerminalTasks(ctx, subID, time.Now().UTC()); err != nil {
-				t.Errorf("cancel inside status: %v", err)
+			// The race fires once, on the first observation: a concurrent
+			// cancel fan-out lands mid-poll. If a stale full-row write then
+			// resurrects the task, pollInFlight's RUNNING scan will observe
+			// it again and call Status a second time — that rescan must NOT
+			// re-issue the cancel, or the accidental re-cancellation would
+			// mask the resurrecting write behind a coincidentally-correct
+			// final state (newState == task.State on the rescan would then
+			// hide the bug this test exists to catch). So every call after
+			// the first just echoes back the state it was handed.
+			if task.State == model.TaskStateQueued {
+				if _, err := st.CancelNonTerminalTasks(ctx, subID, time.Now().UTC()); err != nil {
+					t.Errorf("cancel inside status: %v", err)
+				}
+				return model.TaskStateRunning, nil
 			}
-			return model.TaskStateRunning, nil
+			return task.State, nil
 		},
-	})
+	}
+	reg.Register(stub)
 
 	if err := l.pollInFlight(ctx, map[string]bool{}); err != nil {
 		t.Fatalf("pollInFlight: %v", err)
@@ -240,6 +252,9 @@ func TestPollInFlight_CancelSkipNotResurrected(t *testing.T) {
 	}
 	if got.State != model.TaskStateSkipped {
 		t.Errorf("state = %s, want SKIPPED (cancel must not be resurrected)", got.State)
+	}
+	if stub.calls != 1 {
+		t.Errorf("Status called %d times, want 1 (a correctly-guarded write never resurrects the task into the RUNNING rescan)", stub.calls)
 	}
 }
 

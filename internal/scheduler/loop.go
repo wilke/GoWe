@@ -2100,13 +2100,19 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 			// No capable worker exists — retrying won't help. Exhaust retries
 			// so markRetries does not re-queue this task.
 			oldest.MaxRetries = oldest.RetryCount
-			// CAS write: a concurrent cancel may have already terminalized
-			// this task (SKIPPED); the stuck-fail must not overwrite it.
-			applied, err := l.store.TerminalizeTask(ctx, oldest)
+			// CAS write: oldest was snapshotted as QUEUED, but a worker may
+			// have checked it out (QUEUED->RUNNING with a new external_id)
+			// between the snapshot and this write, or a concurrent cancel
+			// may have already terminalized it (SKIPPED). TerminalizeTask's
+			// "not already terminal" guard would still let this stale
+			// full-row write through against a checked-out RUNNING task,
+			// clobbering the worker's external_id; require the task to
+			// still be exactly QUEUED instead.
+			applied, err := l.store.TerminalizeTaskFrom(ctx, oldest, model.TaskStateQueued)
 			if err != nil {
 				l.logger.Error("fail stuck task", "task_id", oldest.ID, "error", err)
 			} else if !applied {
-				l.logger.Info("stuck task reached a terminal state concurrently, leaving as-is",
+				l.logger.Debug("stuck task no longer queued, leaving",
 					"task_id", oldest.ID)
 			} else {
 				l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)

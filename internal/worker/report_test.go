@@ -55,25 +55,37 @@ func TestReportComplete_ConflictNotRetried(t *testing.T) {
 }
 
 func TestReportComplete_ServerErrorRetriedThenGivesUp(t *testing.T) {
-	shrinkBackoff(t)
-	var requests atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer ts.Close()
-
-	w := newReportTestWorker(ts.URL)
-	err := w.reportComplete(context.Background(), "task_1", TaskResult{State: model.TaskStateSuccess})
-
-	if err == nil {
-		t.Fatal("expected error after exhausting retries")
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{"500 internal server error", http.StatusInternalServerError},
+		{"429 too many requests", http.StatusTooManyRequests},
+		{"408 request timeout", http.StatusRequestTimeout},
 	}
-	if errors.Is(err, errReportDeclined) {
-		t.Fatalf("err = %v, must not be classified as declined", err)
-	}
-	if n := requests.Load(); n != 3 {
-		t.Errorf("requests = %d, want 3 (transient errors retried up to 3 attempts)", n)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			shrinkBackoff(t)
+			var requests atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer ts.Close()
+
+			w := newReportTestWorker(ts.URL)
+			err := w.reportComplete(context.Background(), "task_1", TaskResult{State: model.TaskStateSuccess})
+
+			if err == nil {
+				t.Fatal("expected error after exhausting retries")
+			}
+			if errors.Is(err, errReportDeclined) {
+				t.Fatalf("err = %v, must not be classified as declined", err)
+			}
+			if n := requests.Load(); n != 3 {
+				t.Errorf("requests = %d, want 3 (transient errors retried up to 3 attempts)", n)
+			}
+		})
 	}
 }
 

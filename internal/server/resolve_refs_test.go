@@ -98,6 +98,9 @@ func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.T
 }
 func (m *mockStore) UpdateTask(context.Context, *model.Task) error              { return nil }
 func (m *mockStore) TerminalizeTask(context.Context, *model.Task) (bool, error) { return true, nil }
+func (m *mockStore) TerminalizeTaskFrom(context.Context, *model.Task, model.TaskState) (bool, error) {
+	return true, nil
+}
 func (m *mockStore) CASTaskState(context.Context, string, model.TaskState, model.TaskState) (bool, error) {
 	return true, nil
 }
