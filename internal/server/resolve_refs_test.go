@@ -63,6 +63,9 @@ func (m *mockStore) GetChildSubmissions(context.Context, string) ([]*model.Submi
 func (m *mockStore) CountSubmissionsByState(_ context.Context, _ time.Time, _ string) (map[string]int, error) {
 	return nil, nil
 }
+func (m *mockStore) GetSubmissionMeta(context.Context, string) (*model.SubmissionMeta, error) {
+	return nil, nil
+}
 
 func (m *mockStore) CreateStepInstance(context.Context, *model.StepInstance) error { return nil }
 func (m *mockStore) BatchCreateStepInstances(context.Context, []*model.StepInstance) error {
@@ -121,6 +124,12 @@ func (m *mockStore) GetTaskSummaries(context.Context, []string) (map[string]mode
 }
 func (m *mockStore) ResetFailedTasks(context.Context, string) (int, error) { return 0, nil }
 func (m *mockStore) ResetFailedSteps(context.Context, string) (int, error) { return 0, nil }
+func (m *mockStore) CountTasksByState(context.Context) (map[string]int, error) {
+	return nil, nil
+}
+func (m *mockStore) CountTasksQueuedByGroup(context.Context) (map[string]int, error) {
+	return nil, nil
+}
 
 func (m *mockStore) CreateSession(context.Context, *model.Session) error           { return nil }
 func (m *mockStore) GetSession(context.Context, string) (*model.Session, error)    { return nil, nil }

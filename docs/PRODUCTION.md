@@ -119,6 +119,33 @@ curl -s http://localhost:8091/api/v1/health | python3 -m json.tool
 
 Returns executor availability, worker summary (online/offline counts, runtimes, groups), and uptime.
 
+## Metrics
+
+`gowe-server` can expose Prometheus metrics on a **second, unauthenticated HTTP listener** — separate from the main API/UI server, with no auth middleware, no request logging, and no route other than `/metrics`. It is off by default.
+
+```bash
+gowe-server ... --metrics-addr localhost:9090
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-addr` | `""` | Listen address for the metrics-only server. Empty disables metrics entirely (no registry is even constructed, so instrumentation is a true no-op). |
+| `--metrics-workflow-label` | `true` | Include the workflow name as a label. Set `false` on a shared/multi-tenant server if workflow names themselves are sensitive — every observation collapses to `workflow="_all"`. |
+| `--metrics-label-cap` | `200` | Cap on distinct values tracked per user-authored label (`workflow`, `step`); values beyond the cap collapse into `_other` so an unbounded set of workflow/step names can never blow up cardinality on a shared server. |
+
+**Bind guidance:** because this endpoint has no authentication of its own, bind `--metrics-addr` to `localhost` or a private/internal interface — never to a publicly routable address — and let your Prometheus server (or a reverse proxy in front of it) reach it over a private network, an SSH tunnel, or a scrape-side sidecar. Do **not** put `--metrics-addr` on the same address as `--addr`; they are intentionally two separate `http.Server`s so a metrics scrape can never touch the authenticated API surface (and vice versa).
+
+**Prometheus scrape config example:**
+
+```yaml
+scrape_configs:
+  - job_name: gowe-server
+    static_configs:
+      - targets: ["localhost:9090"]
+```
+
+Metrics cover task queue/run/staging durations, submission wall time, per-tick scheduler phase durations, retry/failure/skip counters, and live gauges for task/submission/worker counts and per-group queue depth. See `SPECIFICATION.md` §12 for the full metric catalog.
+
 ## TLS & Secure Cookies
 
 The server transmits provider tokens (BV-BRC) and session cookies, so production traffic **must** be encrypted. There are two supported deployment modes.

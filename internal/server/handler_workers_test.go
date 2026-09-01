@@ -8,8 +8,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/pkg/model"
 )
+
+// runSecondsSampleCount sums gowe_task_run_seconds samples across every
+// label combination, via the public Gatherer — tests here only care about
+// exactly-once counting, not which labels won.
+func runSecondsSampleCount(t *testing.T, reg *metrics.Registry) uint64 {
+	t.Helper()
+	mfs, err := reg.Gatherer().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gowe_task_run_seconds" {
+			continue
+		}
+		var total uint64
+		for _, m := range mf.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+		return total
+	}
+	return 0
+}
 
 func doPut(t *testing.T, srv *Server, path, body string) (*httptest.ResponseRecorder, envelope) {
 	t.Helper()
@@ -204,9 +227,13 @@ func TestWorkerTaskComplete(t *testing.T) {
 }
 
 // TestWorkerTaskComplete_AlreadyTerminal409: a duplicate report on a task that
-// already reached a terminal state is deliberately refused.
+// already reached a terminal state is deliberately refused. Extended to
+// verify exactly-once metrics observation: checkoutTask stamps started_at
+// (seedQueuedWorkerTask alone does not), so the first report observes one
+// gowe_task_run_seconds sample and the refused duplicate observes none.
 func TestWorkerTaskComplete_AlreadyTerminal409(t *testing.T) {
-	srv := testServer()
+	reg := metrics.NewRegistry(metrics.Config{})
+	srv := testServer(WithMetrics(reg))
 	workerID := registerTestWorker(t, srv)
 	_, subID := createTestSubmission(t, srv)
 	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_dup")
@@ -222,6 +249,9 @@ func TestWorkerTaskComplete_AlreadyTerminal409(t *testing.T) {
 	}
 	if env.Error == nil || env.Error.Code != model.ErrConflict {
 		t.Errorf("error = %+v, want CONFLICT", env.Error)
+	}
+	if n := runSecondsSampleCount(t, reg); n != 1 {
+		t.Errorf("gowe_task_run_seconds samples = %d, want 1 (exactly-once despite the duplicate report)", n)
 	}
 }
 

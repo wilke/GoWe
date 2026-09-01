@@ -18,6 +18,7 @@ import (
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
@@ -107,6 +108,33 @@ type Loop struct {
 	// cache provides per-tick memoization for frequently-read DB entities
 	// (submissions, workflows, step instances). Reset at the start of each Tick().
 	cache *tickCache
+
+	// metrics is nil unless the server was started with --metrics-addr;
+	// every Registry method no-ops on a nil receiver, so instrumentation
+	// call sites throughout this file never check for nil themselves.
+	metrics *metrics.Registry
+}
+
+// SetMetrics wires the Prometheus metrics registry into the scheduler. Not
+// setting it (nil) leaves instrumentation disabled.
+func (l *Loop) SetMetrics(m *metrics.Registry) {
+	l.metrics = m
+}
+
+// workflowNameForTask looks up a task's workflow name via the per-tick
+// submission cache for Prometheus workflow labeling. Returns "" on any
+// lookup failure (missing submission, store error) rather than propagating
+// the error — a label lookup miss must never block instrumentation-adjacent
+// scheduler work.
+func (l *Loop) workflowNameForTask(ctx context.Context, task *model.Task) string {
+	if l.cache == nil {
+		return ""
+	}
+	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
+	if err != nil || sub == nil {
+		return ""
+	}
+	return sub.WorkflowName
 }
 
 // taskRequirementKey groups QUEUED tasks by their scheduling requirements
@@ -201,6 +229,15 @@ func (l *Loop) finalizeSubmissionCAS(ctx context.Context, sub *model.Submission)
 	if err == nil && l.cache != nil {
 		l.cache.invalidateSubmission(sub.ID)
 	}
+	// This is the single instrumentation point for gowe_submission_wall_seconds
+	// on the scheduler side: both normal completion (finalizeSubmissions,
+	// phase 5) and the scheduler's own cancel cascade (cancelChildSubmission)
+	// go through this wrapper. F-M: a submission cancelled via the API/UI
+	// handler never reaches here — cancelseq.Run observes its own wall time
+	// directly.
+	if err == nil && applied {
+		l.metrics.ObserveSubmissionWall(sub)
+	}
 	return applied, err
 }
 
@@ -268,67 +305,128 @@ func (l *Loop) listSubmissionsByState(ctx context.Context, state string) ([]*mod
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
+	tickStart := time.Now()
+	defer func() { l.metrics.ObserveTickPhase("total", time.Since(tickStart)) }()
+
 	l.cachedWorkerCaps = nil          // Reset per-tick worker capability cache.
 	l.cache = newTickCache()          // Reset per-tick entity cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
+	phaseStart := time.Now()
 	if err := l.advanceWaiting(ctx, affected); err != nil {
 		return fmt.Errorf("phase 1 (waiting): %w", err)
 	}
+	l.metrics.ObserveTickPhase("1", time.Since(phaseStart))
 
 	// Phase 1.5: Pre-stage workspace inputs for PENDING submissions (server-side mode).
 	if l.wsStager != nil {
+		phaseStart = time.Now()
 		if err := l.prestageWorkspaceInputs(ctx, affected); err != nil {
 			return fmt.Errorf("phase 1.5 (pre-stage): %w", err)
 		}
+		l.metrics.ObserveTickPhase("1.5", time.Since(phaseStart))
 	}
 
 	// Phase 2: Dispatch READY StepInstances — resolve inputs, create Tasks, submit to executors.
+	phaseStart = time.Now()
 	if err := l.dispatchReady(ctx, affected); err != nil {
 		return fmt.Errorf("phase 2 (dispatch): %w", err)
 	}
+	l.metrics.ObserveTickPhase("2", time.Since(phaseStart))
 
 	// Phase 2.5: Re-submit RETRYING tasks.
+	phaseStart = time.Now()
 	if err := l.resubmitRetrying(ctx, affected); err != nil {
 		return fmt.Errorf("phase 2.5 (retry): %w", err)
 	}
+	l.metrics.ObserveTickPhase("2.5", time.Since(phaseStart))
 
 	// Phase 3: Poll QUEUED/RUNNING tasks for status updates (async executors).
+	phaseStart = time.Now()
 	if err := l.pollInFlight(ctx, affected); err != nil {
 		return fmt.Errorf("phase 3 (poll): %w", err)
 	}
+	l.metrics.ObserveTickPhase("3", time.Since(phaseStart))
 
 	// Phase 3.5: Detect stuck QUEUED worker tasks (progress-based).
 	if l.config.StuckTaskThreshold > 0 {
+		phaseStart = time.Now()
 		if err := l.detectStuckTasks(ctx, affected); err != nil {
 			l.logger.Error("phase 3.5 (stuck detection)", "error", err)
 		}
+		l.metrics.ObserveTickPhase("3.5", time.Since(phaseStart))
 	}
 
 	// Phase 4: Advance DISPATCHED/RUNNING StepInstances when all their Tasks are terminal.
+	phaseStart = time.Now()
 	if err := l.advanceSteps(ctx, affected); err != nil {
 		return fmt.Errorf("phase 4 (advance steps): %w", err)
 	}
+	l.metrics.ObserveTickPhase("4", time.Since(phaseStart))
 
 	// Phase 5: Finalize submissions where all StepInstances are terminal.
+	phaseStart = time.Now()
 	if err := l.finalizeSubmissions(ctx, affected); err != nil {
 		return fmt.Errorf("phase 5 (finalize): %w", err)
 	}
+	l.metrics.ObserveTickPhase("5", time.Since(phaseStart))
 
 	// Phase 5.5: Upload outputs to workspace for completed submissions (server-side mode).
 	if l.wsStager != nil {
+		phaseStart = time.Now()
 		if err := l.poststageWorkspaceOutputs(ctx, affected); err != nil {
 			return fmt.Errorf("phase 5.5 (post-stage): %w", err)
 		}
+		l.metrics.ObserveTickPhase("5.5", time.Since(phaseStart))
 	}
 
 	// Phase 6: Transition newly-FAILED tasks to RETRYING if retries remain.
+	phaseStart = time.Now()
 	if err := l.markRetries(ctx, affected); err != nil {
 		return fmt.Errorf("phase 6 (retries): %w", err)
 	}
+	l.metrics.ObserveTickPhase("6", time.Since(phaseStart))
+
+	// Phase 7: Refresh state gauges from a fresh snapshot. Not a numbered
+	// phase in the architecture doc (it observes, never mutates), so it has
+	// no gowe_scheduler_tick_seconds{phase} entry of its own — it's folded
+	// into "total".
+	l.refreshGauges(ctx)
 
 	return nil
+}
+
+// refreshGauges sets gowe_tasks{state}, gowe_submissions{state},
+// gowe_workers{state,group}, and gowe_queue_depth{group} from a fresh
+// per-tick snapshot. A no-op when metrics are disabled (RefreshGauges is
+// nil-safe) except for the store round-trips themselves, which this method
+// skips entirely when l.metrics is nil.
+func (l *Loop) refreshGauges(ctx context.Context) {
+	if l.metrics == nil {
+		return
+	}
+	taskCounts, err := l.store.CountTasksByState(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: count tasks by state", "error", err)
+	}
+	subCounts, err := l.store.CountSubmissionsByState(ctx, time.Time{}, "")
+	if err != nil {
+		l.logger.Error("refresh gauges: count submissions by state", "error", err)
+	}
+	queueDepth, err := l.store.CountTasksQueuedByGroup(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: count tasks queued by group", "error", err)
+	}
+	// A fresh ListWorkers, not workerCapabilities().Workers: that cache is
+	// deliberately online-only (it answers "can a task be scheduled right
+	// now"), which would hide offline/draining workers from this gauge
+	// entirely instead of reporting them at 0 in their own state bucket.
+	workers, err := l.store.ListWorkers(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: list workers", "error", err)
+	}
+	l.metrics.RefreshGauges(taskCounts, subCounts, workers, queueDepth)
 }
 
 // advanceWaiting transitions WAITING StepInstances to READY (deps met) or SKIPPED (blocked).
@@ -1097,8 +1195,10 @@ func (l *Loop) failSubworkflowProxy(ctx context.Context, task *model.Task, si *m
 	task.State = model.TaskStateFailed
 	task.Stderr = reason
 	task.CompletedAt = &now
-	if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+	if applied, err := l.store.TerminalizeTask(ctx, task); err != nil {
 		l.logger.Error("fail subworkflow proxy", "task_id", task.ID, "error", err)
+	} else if applied {
+		l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "subworkflow")
 	}
 	si.State = model.StepStateFailed
 	si.CompletedAt = &now
@@ -1139,9 +1239,12 @@ func (l *Loop) reconcileDispatchWithCancel(ctx context.Context, subID, siID stri
 		task.State = model.TaskStateSkipped
 		task.CompletedAt = &now
 		// CAS: when-skipped synthetic SUCCESS tasks are already terminal and
-		// stay as they are.
-		if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+		// stay as they are. Proxies are excluded from CancelNonTerminalTasks,
+		// so this is the one per-row SKIP count, gated on the write applying.
+		if applied, err := l.store.TerminalizeTask(ctx, task); err != nil {
 			l.logger.Error("skip proxy task after cancel", "task_id", task.ID, "error", err)
+		} else if applied {
+			l.metrics.AddTasksSkipped(1)
 		}
 	}
 	l.skipStepInstanceIfActive(ctx, siID)
@@ -1168,9 +1271,11 @@ func (l *Loop) cancelChildSubmission(ctx context.Context, child *model.Submissio
 	if _, err := l.store.CancelNonTerminalSteps(ctx, child.ID, now); err != nil {
 		l.logger.Error("cancel child steps", "child_id", child.ID, "error", err)
 	}
-	if _, err := l.store.CancelNonTerminalTasks(ctx, child.ID, now); err != nil {
+	tasksCancelled, err := l.store.CancelNonTerminalTasks(ctx, child.ID, now)
+	if err != nil {
 		l.logger.Error("cancel child tasks", "child_id", child.ID, "error", err)
 	}
+	l.metrics.AddTasksSkipped(tasksCancelled)
 	l.logger.Info("child submission cancelled", "child_id", child.ID)
 }
 
@@ -1612,7 +1717,9 @@ func (l *Loop) persistSubmitOutcome(ctx context.Context, task *model.Task) {
 	if !applied {
 		l.logger.Info("task reached a terminal state concurrently, submit outcome discarded",
 			"task_id", task.ID, "outcome_state", task.State)
+		return
 	}
+	l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "submit")
 }
 
 // mergeScatterOutputs merges scatter results into arrays with proper nesting.
@@ -1838,6 +1945,8 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				if !applied {
 					l.logger.Info("task reached a terminal state concurrently, leaving as-is",
 						"task_id", task.ID, "polled_state", newState)
+				} else {
+					l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "poll")
 				}
 				affected[task.SubmissionID] = true
 				continue
@@ -1929,9 +2038,16 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 		now := time.Now().UTC()
 		task.State = model.TaskStateSkipped
 		task.CompletedAt = &now
-		if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+		applied, err := l.store.TerminalizeTask(ctx, task)
+		if err != nil {
 			l.logger.Error("skip orphaned subworkflow proxy", "task_id", task.ID, "error", err)
 			return
+		}
+		// Proxies are excluded from CancelNonTerminalTasks (its RETURN
+		// COUNT never sees them) — this reconciliation retirement is the
+		// one per-row SKIP count, gated on the CAS write applying.
+		if applied {
+			l.metrics.AddTasksSkipped(1)
 		}
 		if si != nil && !si.State.IsTerminal() {
 			l.skipStepInstanceIfActive(ctx, si.ID)
@@ -1987,6 +2103,7 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 	} else {
 		l.logger.Info("subworkflow proxy advanced",
 			"task_id", task.ID, "state", task.State, "child_id", child.ID)
+		l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "subworkflow")
 	}
 	affected[task.SubmissionID] = true
 }
@@ -2151,6 +2268,11 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 			} else {
 				l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)
 				affected[oldest.SubmissionID] = true
+				// A stuck QUEUED task never had a started_at, so the
+				// duration histograms are skipped by ObserveTaskTerminal's
+				// own guard — only the failures{reason="stuck"} counter
+				// increments (S1).
+				l.metrics.ObserveTaskTerminal(oldest, l.workflowNameForTask(ctx, oldest), "stuck")
 			}
 		}
 	}
@@ -2591,6 +2713,7 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 			continue
 		}
 		l.logger.Info("task marked for retry", "task_id", task.ID, "retry_count", task.RetryCount, "max_retries", task.MaxRetries)
+		l.metrics.IncTaskRetry(task, l.workflowNameForTask(ctx, task))
 		affected[task.SubmissionID] = true
 	}
 

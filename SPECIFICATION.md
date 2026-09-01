@@ -578,6 +578,7 @@ middleware; worker endpoints via `X-Worker-Key`; admin endpoints require the adm
 | BV-BRC proxy | `GET /apps`, `GET /apps/{id}`, `GET /apps/{id}/cwl-tool`, `GET /workspace`, file up/download |
 | Streaming | `GET /sse/submissions/{id}` (server-sent events) |
 | Admin | `GET /admin/tasks/active`, `PUT /admin/tasks/{tid}/priority`, `POST /admin/submissions/{id}/verify-outputs`, `POST /admin/submissions/{id}/redeliver[?dry_run=true]` (§10.6, §13.5), worker-key, user/role and label management |
+| Metrics | `GET /metrics` (Prometheus text format) — **NOT** part of `/api/v1` and **NOT** served by the main listener: it runs on its own `http.Server` bound to `--metrics-addr` (default `""` = disabled), with no auth middleware and no request logging. Task queue/run/staging duration histograms, submission wall-time histograms, per-tick scheduler phase histograms, retry/failure/skip counters, and task/submission/worker/queue-depth gauges. The `workflow`/`step` labels are user-authored and cardinality-capped (default 200 distinct values, overflow → `_other`); `--metrics-workflow-label=false` drops the workflow label to `_all` entirely. |
 
 The full route table is defined in `internal/server/`.
 

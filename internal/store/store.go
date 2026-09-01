@@ -49,6 +49,12 @@ type Store interface {
 	UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error
 	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)
 	CountSubmissionsByState(ctx context.Context, since time.Time, submittedBy string) (map[string]int, error)
+	// GetSubmissionMeta is a lean SELECT of workflow_name and labels only
+	// (no inputs/outputs/tasks/timestamps) — for label lookups that only
+	// need to name a submission's workflow, e.g. Prometheus instrumentation
+	// on the handler path where the caller never loads the full row.
+	// Returns (nil, nil) when the submission does not exist.
+	GetSubmissionMeta(ctx context.Context, id string) (*model.SubmissionMeta, error)
 
 	// StepInstance operations
 	CreateStepInstance(ctx context.Context, si *model.StepInstance) error
@@ -108,6 +114,15 @@ type Store interface {
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
 	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
 	ResetFailedSteps(ctx context.Context, submissionID string) (int, error)
+	// CountTasksByState returns the current global count of tasks per state
+	// (a single GROUP BY query), used to refresh the gowe_tasks{state} gauge
+	// once per scheduler tick.
+	CountTasksByState(ctx context.Context) (map[string]int, error)
+	// CountTasksQueuedByGroup returns the current count of QUEUED tasks per
+	// worker group (a single GROUP BY query keyed on the runtime_hints
+	// worker_group JSON field, '' normalized to "default"), used to refresh
+	// the gowe_queue_depth{group} gauge once per scheduler tick.
+	CountTasksQueuedByGroup(ctx context.Context) (map[string]int, error)
 
 	// Session operations
 	CreateSession(ctx context.Context, sess *model.Session) error

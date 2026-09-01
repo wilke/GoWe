@@ -13,11 +13,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/logging"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
@@ -56,6 +59,11 @@ func main() {
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
 	tokenInjectGroups := flag.String("token-inject-groups", "", "Comma-separated worker groups whose tasks auto-receive the submitter's provider token without the per-tool inject_bvbrc_token opt-in (e.g. bvbrc,esmfold). Empty = opt-in only")
+
+	// Metrics options
+	metricsAddr := flag.String("metrics-addr", "", "Listen address for a second, unauthenticated HTTP server exposing only /metrics (Prometheus); empty disables metrics entirely. Bind to localhost or a private interface — this endpoint has no auth")
+	metricsWorkflowLabel := flag.Bool("metrics-workflow-label", true, "Include the (unbounded, user-authored) workflow name as a Prometheus label; false maps every observation to workflow=\"_all\" instead")
+	metricsLabelCap := flag.Int("metrics-label-cap", metrics.DefaultLabelCap, "Per-label distinct-value cap for the user-authored workflow/step Prometheus labels; values beyond the cap collapse into \"_other\"")
 
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
@@ -204,6 +212,18 @@ func main() {
 	}
 	reg.Register(executor.NewWorkerExecutor(st, logger))
 
+	// Prometheus metrics registry. Constructing it unconditionally (nil only
+	// when --metrics-addr is left empty) keeps every instrumentation call
+	// site in server/scheduler guard-free — a nil *metrics.Registry no-ops
+	// every method — while the actual HTTP listener stays opt-in.
+	var metricsReg *metrics.Registry
+	if *metricsAddr != "" {
+		metricsReg = metrics.NewRegistry(metrics.Config{
+			LabelCap:             *metricsLabelCap,
+			DisableWorkflowLabel: !*metricsWorkflowLabel,
+		})
+	}
+
 	// Register BVBRCExecutor and create RPC callers if a token is available.
 	serverOpts := []server.Option{
 		server.WithExecutorRegistry(reg),
@@ -211,6 +231,7 @@ func main() {
 		// user (session token), never as the server's service account.
 		server.WithWorkspaceURL(*wsStagingURL),
 		server.WithUIUploadMaxSize(*uploadMaxSize),
+		server.WithMetrics(metricsReg),
 	}
 
 	// Configure admin role assignment.
@@ -362,6 +383,7 @@ func main() {
 		logger.Info("token auto-injection enabled for worker groups", "groups", schedCfg.TokenInjectGroups)
 	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
+	sched.SetMetrics(metricsReg)
 
 	// One Workspace stager serves both the scheduler (server-side pre/post
 	// staging, only in "server" mode) and the admin output verification /
@@ -411,6 +433,28 @@ func main() {
 	srv.StartScheduler(ctx)
 	srv.StartWorkerReaper(ctx)
 
+	// Second, unauthenticated listener exposing ONLY /metrics — deliberately
+	// separate from the main API/UI server (no auth middleware, no request
+	// logging, no other routes) so a Prometheus scrape target never shares
+	// the main server's auth surface. Bind to localhost or a private
+	// interface; this endpoint has no access control of its own.
+	var metricsServer *http.Server
+	if metricsReg != nil {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.HandlerFor(metricsReg.Gatherer(), promhttp.HandlerOpts{}))
+		metricsServer = &http.Server{
+			Addr:              *metricsAddr,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 30 * time.Second,
+		}
+		go func() {
+			logger.Info("metrics server starting", "addr", *metricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("metrics server failed", "error", err)
+			}
+		}()
+	}
+
 	go func() {
 		if cfg.TLSEnabled() {
 			logger.Info("server starting", "addr", cfg.Addr, "scheme", "https", "tls_cert", cfg.TLSCertFile)
@@ -441,6 +485,12 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("metrics server shutdown error", "error", err)
+		}
+	}
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
