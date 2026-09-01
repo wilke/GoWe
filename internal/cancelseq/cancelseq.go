@@ -46,10 +46,21 @@ type Result struct {
 // may be nil (metrics disabled) — every Registry method no-ops on a nil
 // receiver.
 func Run(ctx context.Context, st store.Store, reg *metrics.Registry, logger *slog.Logger, sub *model.Submission, now time.Time) (Result, error) {
-	if err := st.UpdateSubmission(ctx, sub); err != nil {
+	applied, err := st.FinalizeSubmission(ctx, sub)
+	if err != nil {
 		return Result{}, err
 	}
-	reg.ObserveSubmissionWall(sub)
+	if applied {
+		reg.ObserveSubmissionWall(sub)
+	} else {
+		// A concurrent writer (the scheduler or a second cancel) already
+		// terminalized this submission — its own wall sample was (or will
+		// be) observed by whichever write actually applied. Skip ours to
+		// avoid double-counting, but proceed with step/task cancellation
+		// below regardless: those writes are CAS/guarded (only touch
+		// non-terminal rows), so racing the other terminalizer is harmless.
+		logger.Debug("cancel: submission already terminal, skipping wall observation", "submission_id", sub.ID)
+	}
 
 	stepsCancelled, err := st.CancelNonTerminalSteps(ctx, sub.ID, now)
 	if err != nil {

@@ -135,6 +135,8 @@ gowe-server ... --metrics-addr localhost:9090
 
 **Bind guidance:** because this endpoint has no authentication of its own, bind `--metrics-addr` to `localhost` or a private/internal interface — never to a publicly routable address — and let your Prometheus server (or a reverse proxy in front of it) reach it over a private network, an SSH tunnel, or a scrape-side sidecar. Do **not** put `--metrics-addr` on the same address as `--addr`; they are intentionally two separate `http.Server`s so a metrics scrape can never touch the authenticated API surface (and vice versa).
 
+If the metrics listener fails to bind (e.g. `--metrics-addr` already in use), `gowe-server` logs the error and continues running with metrics disabled — the main API/UI server is never taken down by a metrics-port conflict.
+
 **Prometheus scrape config example:**
 
 ```yaml

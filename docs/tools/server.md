@@ -45,7 +45,7 @@ gowe-server [flags]
 | `--metrics-workflow-label` | `true` | Include the (unbounded, user-authored) workflow name as a Prometheus label; `false` maps every observation to `workflow="_all"` instead |
 | `--metrics-label-cap` | `200` | Per-label distinct-value cap for the user-authored `workflow`/`step` labels; values beyond the cap collapse into `_other` |
 
-The metrics listener is deliberately separate from the main API/UI server: no auth middleware, no request logging, no routes other than `/metrics`. Bind it to `localhost` or a private interface — see [PRODUCTION.md](../../PRODUCTION.md) for scrape and bind guidance.
+The metrics listener is deliberately separate from the main API/UI server: no auth middleware, no request logging, no routes other than `/metrics`. Bind it to `localhost` or a private interface — see [PRODUCTION.md](../PRODUCTION.md) for scrape and bind guidance.
 
 ```bash
 # Enable Prometheus metrics on localhost:9090/metrics

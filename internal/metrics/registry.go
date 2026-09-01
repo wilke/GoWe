@@ -82,9 +82,11 @@ type Registry struct {
 	workflowLabelEnabled bool
 	labelCap             int
 
-	mu           sync.Mutex
-	workflowSeen map[string]struct{}
-	stepSeen     map[string]struct{}
+	mu              sync.Mutex
+	workflowSeen    map[string]struct{}
+	stepSeen        map[string]struct{}
+	executorSeen    map[string]struct{}
+	workerGroupSeen map[string]struct{}
 }
 
 // NewRegistry builds a Registry with a private prometheus.Registry (isolated
@@ -166,6 +168,8 @@ func NewRegistry(cfg Config) *Registry {
 		labelCap:             labelCap,
 		workflowSeen:         make(map[string]struct{}),
 		stepSeen:             make(map[string]struct{}),
+		executorSeen:         make(map[string]struct{}),
+		workerGroupSeen:      make(map[string]struct{}),
 	}
 
 	r.reg.MustRegister(
@@ -207,7 +211,11 @@ func (r *Registry) boundedLabel(seen map[string]struct{}, v string) string {
 }
 
 // taskLabelValues resolves the four base task labels: workflow (escape
-// hatch + cap), step (cap), executor, and worker_group (empty → "default").
+// hatch + cap), step (cap), executor (cap), and worker_group (empty →
+// "default", then cap). executor and worker_group are user-authored via
+// gowe:Execution hints (parser.go accepts any string for both), so they get
+// their own seen-maps/caps just like workflow and step — otherwise a
+// submitter could drive unbounded cardinality through either label.
 func (r *Registry) taskLabelValues(workflow, step, executor, workerGroup string) (wf, st, ex, grp string) {
 	if r.workflowLabelEnabled {
 		wf = r.boundedLabel(r.workflowSeen, workflow)
@@ -215,11 +223,12 @@ func (r *Registry) taskLabelValues(workflow, step, executor, workerGroup string)
 		wf = allWorkflowsLabel
 	}
 	st = r.boundedLabel(r.stepSeen, step)
-	ex = executor
+	ex = r.boundedLabel(r.executorSeen, executor)
 	grp = workerGroup
 	if grp == "" {
 		grp = defaultWorkerGroup
 	}
+	grp = r.boundedLabel(r.workerGroupSeen, grp)
 	return wf, st, ex, grp
 }
 

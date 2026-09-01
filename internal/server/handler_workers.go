@@ -419,10 +419,8 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	// report (refused with 409 above) can never double-observe. reason
 	// "worker" only matters for a FAILED outcome (ObserveTaskTerminal
 	// ignores it for SUCCESS).
-	if s.metrics != nil {
-		workflowName := s.workflowNameFor(r.Context(), task.SubmissionID)
-		s.metrics.ObserveTaskTerminal(task, workflowName, "worker")
-	}
+	workflowName := s.workflowNameFor(r.Context(), task.SubmissionID)
+	s.metrics.ObserveTaskTerminal(task, workflowName, "worker")
 
 	// Clear worker's current_task.
 	worker, err := s.store.GetWorker(r.Context(), workerID)

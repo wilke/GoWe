@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
@@ -173,6 +174,43 @@ func assertCancelledWallSamples(t *testing.T, reg *metrics.Registry, want uint64
 		return
 	}
 	t.Fatal("gowe_submission_wall_seconds metric family not found")
+}
+
+// TestCancelseqRun_SequentialCancels_ObserveWallSampleOnce exercises the
+// CAS-gated observation directly against cancelseq.Run (bypassing the HTTP
+// handler, whose own IsTerminal pre-check would reject a second cancel
+// before it ever reached Run — the race this guards against is two
+// concurrent requests that both read the submission as non-terminal before
+// either one's write lands). The first Run call wins the CAS and observes
+// the wall sample; the second call finds the row already CANCELLED,
+// FinalizeSubmission returns applied=false, and Run must skip the second
+// observation rather than double-counting it.
+func TestCancelseqRun_SequentialCancels_ObserveWallSampleOnce(t *testing.T) {
+	st := setupTestStore(t)
+	defer st.Close()
+	ctx := context.Background()
+
+	sub := seedCancelTestSubmission(t, st, testWSUser)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := metrics.NewRegistry(metrics.Config{})
+
+	now := time.Now().UTC()
+	sub.State = model.SubmissionStateCancelled
+	sub.CompletedAt = &now
+
+	if _, err := cancelseq.Run(ctx, st, reg, logger, sub, now); err != nil {
+		t.Fatalf("first cancelseq.Run: %v", err)
+	}
+	// Second call simulates a racing request that read the same
+	// pre-cancel submission state: FinalizeSubmission's CAS must reject
+	// this write (the row is already CANCELLED), so Run must not observe
+	// a second wall sample.
+	if _, err := cancelseq.Run(ctx, st, reg, logger, sub, now); err != nil {
+		t.Fatalf("second cancelseq.Run: %v", err)
+	}
+
+	assertCancelledWallSamples(t, reg, 1)
 }
 
 func TestHandleSubmissionCancel_AlreadyTerminal400(t *testing.T) {

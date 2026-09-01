@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -128,6 +129,56 @@ func TestLabelCap_Overflow(t *testing.T) {
 	}
 	if got := overflow.GetHistogram().GetSampleCount(); got != 2 {
 		t.Errorf("_other series sample count = %d, want 2 (wf-c + wf-d)", got)
+	}
+}
+
+func TestLabelCap_Overflow_ExecutorAndWorkerGroup(t *testing.T) {
+	r := NewRegistry(Config{})
+	base := time.Now().UTC()
+	dispatched := timePtr(base)
+	started := timePtr(base.Add(time.Second))
+	completed := timePtr(base.Add(2 * time.Second))
+
+	const n = 250
+	for i := 0; i < n; i++ {
+		task := &model.Task{
+			ID:           "task1",
+			StepID:       "step1",
+			State:        model.TaskStateSuccess,
+			ExecutorType: model.ExecutorType(fmt.Sprintf("executor-%d", i)),
+			RuntimeHints: &model.RuntimeHints{WorkerGroup: fmt.Sprintf("group-%d", i)},
+			DispatchedAt: dispatched,
+			StartedAt:    started,
+			CompletedAt:  completed,
+		}
+		r.ObserveTaskTerminal(task, "wf1", "")
+	}
+
+	// DefaultLabelCap (200) distinct executor values and 200 distinct
+	// worker_group values are let through 1:1 (indices 0-199); the
+	// remaining 50 (indices 200-249) collapse BOTH labels into "_other",
+	// landing on a single shared overflow series. So exactly 201 distinct
+	// series exist: 200 real + 1 overflow.
+	if got := testutil.CollectAndCount(r.taskRunSeconds); got != DefaultLabelCap+1 {
+		t.Errorf("distinct taskRunSeconds series = %d, want %d (%d capped + _other)", got, DefaultLabelCap+1, DefaultLabelCap)
+	}
+
+	overflow := &dto.Metric{}
+	if err := r.taskRunSeconds.WithLabelValues("wf1", "step1", overflowLabel, overflowLabel).(prometheus.Histogram).Write(overflow); err != nil {
+		t.Fatalf("write overflow series: %v", err)
+	}
+	if got := overflow.GetHistogram().GetSampleCount(); got != uint64(n-DefaultLabelCap) {
+		t.Errorf("_other series sample count = %d, want %d (indices %d..%d)", got, n-DefaultLabelCap, DefaultLabelCap, n-1)
+	}
+
+	// A distinct value observed before the cap was reached (index 0) must
+	// still pass through as itself, on both labels.
+	real := &dto.Metric{}
+	if err := r.taskRunSeconds.WithLabelValues("wf1", "step1", "executor-0", "group-0").(prometheus.Histogram).Write(real); err != nil {
+		t.Fatalf("write real series: %v", err)
+	}
+	if got := real.GetHistogram().GetSampleCount(); got != 1 {
+		t.Errorf("executor-0/group-0 series sample count = %d, want 1", got)
 	}
 }
 
