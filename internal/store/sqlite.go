@@ -211,7 +211,7 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
-		 FROM workflows WHERE content_hash = ?`, hash,
+		 FROM workflows WHERE content_hash = ? ORDER BY created_at DESC LIMIT 1`, hash,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
 		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
 
