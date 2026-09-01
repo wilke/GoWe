@@ -260,12 +260,18 @@ func (l *Loop) uploadOutputManifest(ctx context.Context, stager *staging.Workspa
 	return nil
 }
 
-// failOutputStaging marks a submission as FAILED due to output staging issues.
+// failOutputStaging marks a submission as FAILED due to output staging
+// issues. It always stamps PoststageCompletedAt, closing the poststage
+// window on the failure path too (not just on success) — some callers reach
+// this before PoststageStartedAt was ever set (no token, unsupported
+// destination scheme), in which case PoststageS stays nil since it requires
+// both stamps; that's correct, since no staging window was ever opened.
 func (l *Loop) failOutputStaging(ctx context.Context, sub *model.Submission, reason string) {
 	sub.OutputState = "upload_failed"
 	sub.State = model.SubmissionStateFailed
 	now := time.Now().UTC()
 	sub.CompletedAt = &now
+	sub.PoststageCompletedAt = &now
 	sub.Error = &model.SubmissionError{
 		Code:    "OUTPUT_STAGING_FAILED",
 		Message: reason,

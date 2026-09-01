@@ -51,15 +51,22 @@ type taskTiming struct {
 	RunS *float64 `json:"run_s,omitempty"`
 	// DispatchS is submit → dispatch (dispatched_at − created_at). Unlike
 	// StartedAt, DispatchedAt is written once per dispatch attempt by
-	// submitAndUpdateTask and never touched again, so it needs no per-state
-	// trust gating — it is safe to read in any state, including QUEUED.
+	// submitAndUpdateTask (including retries — a retry overwrites it with the
+	// new attempt's timestamp) and never touched again between attempts, so
+	// it needs no per-state trust gating — it is safe to read in any state,
+	// including QUEUED. Because CreatedAt stays fixed while DispatchedAt
+	// moves to the latest attempt, a retried task's DispatchS spans every
+	// prior attempt's queue and run time too, not just the gap before the
+	// first dispatch.
 	DispatchS *float64 `json:"dispatch_s,omitempty"`
 	// CheckoutWaitS is dispatch → checkout/run-start (started_at −
 	// dispatched_at): for worker tasks, real time spent sitting in the
 	// worker's own queue after being made available; for bvbrc, real time on
 	// the platform's queue before the platform reported RUNNING. Near-zero
-	// for synchronous executors (dispatched_at == started_at). Subject to the
-	// same StartedAt trust gating as RunS.
+	// for synchronous executors (dispatched_at == started_at). It follows the
+	// StartedAt trust gate — computed whenever StartedAt is trusted,
+	// including RUNNING — not RunS's additional terminal-only requirement of
+	// a CompletedAt stamp.
 	CheckoutWaitS *float64 `json:"checkout_wait_s,omitempty"`
 	// StageInS/StageOutS are the worker-reported input/output staging
 	// durations. Present only for worker tasks that reported them (nil for
@@ -429,9 +436,10 @@ func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTi
 
 // checkoutWaitSecs computes dispatch → checkout/run-start (started_at −
 // dispatched_at) for a task whose StartedAt is already trust-gated by the
-// caller. Nil when DispatchedAt is unavailable (pre-upgrade row, or a
-// sub-workflow proxy — proxies set DispatchedAt too, but this is only called
-// for plain task/cancelled rows since subworkflow RunS comes from the child).
+// caller. Nil when DispatchedAt is unavailable (pre-upgrade row). Also
+// reached for subworkflow proxy rows (they set DispatchedAt too) even though
+// their RunS is overwritten from the child below — harmless, since
+// CheckoutWaitS is reported independently of RunS.
 func checkoutWaitSecs(t *model.Task) *float64 {
 	if t.DispatchedAt == nil || t.StartedAt == nil {
 		return nil

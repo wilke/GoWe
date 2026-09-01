@@ -639,9 +639,13 @@ Semantics (per-state trust rules):
   was `QUEUED` across a pre-0.15.x-next schema upgrade, a stale dispatch
   stamp) and is never used — its `queue_s` is "waiting so far" from
   `created_at`. `dispatched_at`, by contrast, needs no such gating: it is
-  written once by the scheduler at submit time and never touched again, so it
-  is safe to read (and `dispatch_s = dispatched_at − created_at` is safe to
-  compute) in any state.
+  stamped once per dispatch attempt (including retries — a retry overwrites
+  it with the new attempt's timestamp) and never touched again *between*
+  attempts, so it is safe to read (and `dispatch_s = dispatched_at −
+  created_at` is safe to compute) in any state. Because `created_at` stays
+  fixed at the task's original creation while `dispatched_at` moves to the
+  latest attempt, a retried row's `dispatch_s` spans every prior attempt's
+  queue and run time too, not just the gap before the first dispatch.
 - `run_s` requires both timestamps and a `SUCCESS`/`FAILED` state; on
   `RETRYING`/`SCHEDULED` rows it is the last failed attempt's window, flagged
   `"retrying": true`, and `queue_s` is measured since first dispatch (it
@@ -651,7 +655,9 @@ Semantics (per-state trust rules):
   worker's own pull queue after becoming available; for `bvbrc`, real time on
   the platform's queue before it reported `RUNNING`. Near-zero for synchronous
   executors (`local`/`container`/`apptainer`), where dispatch and execution
-  start are the same event. Subject to the same trust gating as `run_s`.
+  start are the same event. It follows the `started_at` trust gate — computed
+  whenever `started_at` is trusted, including `RUNNING` — not `run_s`'s
+  additional terminal-only requirement of a `completed_at` stamp.
 - `stage_in_s`/`stage_out_s` are worker-measured input/output staging
   durations, present only on `worker` tasks whose worker reported them (nil
   for every other executor, and for tasks run by a worker that predates this

@@ -1766,6 +1766,8 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.Stderr = ""
 		task.CompletedAt = nil
 		task.StartedAt = nil
+		task.StageInMs = nil
+		task.StageOutMs = nil
 
 		l.logger.Info("retrying task", "task_id", task.ID, "attempt", task.RetryCount)
 		l.submitAndUpdateTask(ctx, task)

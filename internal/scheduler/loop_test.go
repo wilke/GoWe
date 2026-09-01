@@ -480,6 +480,18 @@ func TestTick_RetryOnFailure(t *testing.T) {
 		t.Errorf("after tick 1: RetryCount = %d, want 0", task.RetryCount)
 	}
 
+	// Simulate the failed attempt having reported staging times (as a worker
+	// task would): resubmitRetrying (#190-review fix 6) must clear these
+	// before the next attempt, so a retry doesn't show the prior attempt's
+	// stage durations.
+	staleStageIn := int64(1200)
+	staleStageOut := int64(300)
+	task.StageInMs = &staleStageIn
+	task.StageOutMs = &staleStageOut
+	if err := st.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("stamp stale stage times: %v", err)
+	}
+
 	// Tick 2: resubmit RETRYING -> RetryCount=1 -> FAILED -> RETRYING.
 	if err := sched.Tick(ctx); err != nil {
 		t.Fatalf("Tick 2: %v", err)
@@ -490,6 +502,12 @@ func TestTick_RetryOnFailure(t *testing.T) {
 	}
 	if task.RetryCount != 1 {
 		t.Errorf("after tick 2: RetryCount = %d, want 1", task.RetryCount)
+	}
+	if task.StageInMs != nil {
+		t.Errorf("after tick 2: StageInMs = %v, want nil (resubmit must clear prior attempt's stage times)", task.StageInMs)
+	}
+	if task.StageOutMs != nil {
+		t.Errorf("after tick 2: StageOutMs = %v, want nil (resubmit must clear prior attempt's stage times)", task.StageOutMs)
 	}
 
 	// Tick 3: resubmit RETRYING -> RetryCount=2 -> FAILED. 2 >= 2 -> stays FAILED.

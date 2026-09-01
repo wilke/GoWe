@@ -140,8 +140,12 @@ func TestResetFailedTasks_ClearsStartedAt(t *testing.T) {
 	task.ExecutorType = model.ExecutorTypeBVBRC
 	staleStarted := task.CreatedAt.Add(time.Minute)
 	staleCompleted := task.CreatedAt.Add(2 * time.Minute)
+	staleStageIn := int64(1500)
+	staleStageOut := int64(750)
 	task.StartedAt = &staleStarted
 	task.CompletedAt = &staleCompleted
+	task.StageInMs = &staleStageIn
+	task.StageOutMs = &staleStageOut
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -163,6 +167,14 @@ func TestResetFailedTasks_ClearsStartedAt(t *testing.T) {
 	}
 	if afterReset.State != model.TaskStatePending {
 		t.Fatalf("state = %q, want PENDING", afterReset.State)
+	}
+	// #190-review fix 6: a new attempt must not show the prior attempt's
+	// stage times.
+	if afterReset.StageInMs != nil {
+		t.Errorf("stage_in_ms = %v, want nil after reset", afterReset.StageInMs)
+	}
+	if afterReset.StageOutMs != nil {
+		t.Errorf("stage_out_ms = %v, want nil after reset", afterReset.StageOutMs)
 	}
 
 	// Simulate the scheduler re-dispatching (PENDING -> QUEUED) and the bvbrc
@@ -295,5 +307,65 @@ func TestExecTaskUpdate_StageMsSurvivesUpdate(t *testing.T) {
 	}
 	if got.StageOutMs == nil || *got.StageOutMs != stageOut {
 		t.Errorf("stage_out_ms = %v, want %d", got.StageOutMs, stageOut)
+	}
+}
+
+// TestUpdateSubmissionIfState_RejectsWhenStateAlreadyMoved is the killing
+// test for the prestage CAS in internal/scheduler/workspace.go: a plain
+// UpdateSubmission call has no state guard and always writes, so a mutant
+// that swaps UpdateSubmissionIfState for UpdateSubmission stays green
+// against every other test in this suite. This test targets the guard
+// directly — call UpdateSubmissionIfState expecting PENDING against a row
+// that is actually CANCELLED and assert both that the call reports
+// applied=false AND that the row is left completely untouched (the field the
+// caller was trying to change must NOT have moved).
+func TestUpdateSubmissionIfState_RejectsWhenStateAlreadyMoved(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	sub := sampleSubmission(wf.ID)
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create submission: %v", err)
+	}
+
+	// Move the row to CANCELLED out from under the in-memory sub, the way a
+	// concurrent HTTP cancel would.
+	cancelled, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	cancelled.State = model.SubmissionStateCancelled
+	now := time.Now().UTC()
+	cancelled.CompletedAt = &now
+	if applied, err := st.FinalizeSubmission(ctx, cancelled); err != nil || !applied {
+		t.Fatalf("finalize (cancel): applied=%v err=%v", applied, err)
+	}
+
+	// Attempt the prestage completed-stamp write against the stale
+	// (still-PENDING) in-memory snapshot — this is exactly what
+	// prestageWorkspaceInputs does when a cancel lands mid-stage.
+	prestageCompleted := now.Add(time.Second)
+	sub.PrestageCompletedAt = &prestageCompleted
+	applied, err := st.UpdateSubmissionIfState(ctx, sub, model.SubmissionStatePending, sub.OutputState)
+	if err != nil {
+		t.Fatalf("update if state: %v", err)
+	}
+	if applied {
+		t.Fatal("expected applied=false: submission is no longer PENDING")
+	}
+
+	got, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	if got.State != model.SubmissionStateCancelled {
+		t.Fatalf("state = %q, want CANCELLED (must not be resurrected)", got.State)
+	}
+	if got.PrestageCompletedAt != nil {
+		t.Fatalf("prestage_completed_at = %v, want nil (rejected write must not land)", got.PrestageCompletedAt)
 	}
 }

@@ -1783,7 +1783,8 @@ func (s *SQLiteStore) ResetFailedTasks(ctx context.Context, submissionID string)
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks
-		 SET state = ?, retry_count = 0, started_at = NULL, completed_at = NULL, stderr = '', exit_code = NULL
+		 SET state = ?, retry_count = 0, started_at = NULL, completed_at = NULL, stderr = '', exit_code = NULL,
+		     stage_in_ms = NULL, stage_out_ms = NULL
 		 WHERE submission_id = ? AND state = ?`,
 		string(model.TaskStatePending), submissionID, string(model.TaskStateFailed))
 	if err != nil {
