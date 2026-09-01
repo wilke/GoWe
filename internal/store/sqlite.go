@@ -28,6 +28,29 @@ func unmarshalJSON(data string, dest any, field string) error {
 	return nil
 }
 
+// formatTimePtr formats a *time.Time as an RFC3339Nano *string for a
+// nullable TEXT column, returning nil (SQL NULL) when t is nil.
+func formatTimePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format(time.RFC3339Nano)
+	return &s
+}
+
+// scanTimePtr parses a nullable RFC3339Nano TEXT column into a *time.Time,
+// returning nil when raw is nil (SQL NULL).
+func scanTimePtr(raw *string) (*time.Time, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	t, err := parseTimeOrZero(*raw)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 // parseTimeOrZero parses an RFC3339Nano time string, returning zero time for empty strings.
 func parseTimeOrZero(value string) (time.Time, error) {
 	if value == "" {
@@ -463,13 +486,16 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 	}
 
 	_, err = ex.ExecContext(ctx,
-		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
 		storedToken, tokenExpiry, sub.AuthProvider, sub.ParentTaskID,
 		sub.OutputDestination, sub.OutputState,
+		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
+		formatTimePtr(sub.PoststageStartedAt), formatTimePtr(sub.PoststageCompletedAt),
 	)
 	return err
 }
@@ -509,15 +535,18 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var state, createdAt string
 	var completedAt *string
 	var tokenExpiry int64
+	var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
 		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON,
-		&sub.OutputDestination, &sub.OutputState)
+		&sub.OutputDestination, &sub.OutputState,
+		&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -558,6 +587,18 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	}
 	if tokenExpiry > 0 {
 		sub.TokenExpiry = time.Unix(tokenExpiry, 0)
+	}
+	if sub.PrestageStartedAt, err = scanTimePtr(prestageStartedAt); err != nil {
+		return nil, err
+	}
+	if sub.PrestageCompletedAt, err = scanTimePtr(prestageCompletedAt); err != nil {
+		return nil, err
+	}
+	if sub.PoststageStartedAt, err = scanTimePtr(poststageStartedAt); err != nil {
+		return nil, err
+	}
+	if sub.PoststageCompletedAt, err = scanTimePtr(poststageCompletedAt); err != nil {
+		return nil, err
 	}
 
 	// Load associated tasks.
@@ -650,8 +691,10 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	return subs, total, err
 }
 
-// submissionListColumns is the column set scanned by scanSubmissionRows.
-const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state`
+// submissionListColumns is the column set scanned by scanSubmissionRows. New
+// columns are appended at the end so the position of every existing column
+// stays stable.
+const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state, prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at`
 
 // scanSubmissionRows scans submissionListColumns rows, skipping (with an error
 // log) rows that fail token decryption or JSON/timestamp parsing so one corrupt
@@ -664,12 +707,14 @@ func (s *SQLiteStore) scanSubmissionRows(rows *sql.Rows) ([]*model.Submission, e
 		var state, createdAt string
 		var completedAt *string
 		var tokenExpiry int64
+		var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
 
 		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 			&inputsJSON, &outputsJSON, &labelsJSON,
 			&sub.SubmittedBy, &createdAt, &completedAt,
 			&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID,
-			&sub.OutputDestination, &sub.OutputState); err != nil {
+			&sub.OutputDestination, &sub.OutputState,
+			&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt); err != nil {
 			return nil, err
 		}
 
@@ -705,6 +750,22 @@ func (s *SQLiteStore) scanSubmissionRows(rows *sql.Rows) ([]*model.Submission, e
 		}
 		if tokenExpiry > 0 {
 			sub.TokenExpiry = time.Unix(tokenExpiry, 0)
+		}
+		if sub.PrestageStartedAt, err = scanTimePtr(prestageStartedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.PrestageCompletedAt, err = scanTimePtr(prestageCompletedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.PoststageStartedAt, err = scanTimePtr(poststageStartedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.PoststageCompletedAt, err = scanTimePtr(poststageCompletedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
 		}
 
 		subs = append(subs, &sub)
@@ -800,9 +861,12 @@ func (s *SQLiteStore) execSubmissionUpdate(ctx context.Context, sub *model.Submi
 	args := append([]any{
 		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON,
 		completedAt, sub.OutputDestination, sub.OutputState,
+		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
+		formatTimePtr(sub.PoststageStartedAt), formatTimePtr(sub.PoststageCompletedAt),
 	}, whereArgs...)
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=?`+where,
+		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=?,
+		 prestage_started_at=?, prestage_completed_at=?, poststage_started_at=?, poststage_completed_at=?`+where,
 		args...,
 	)
 	if err != nil {
@@ -937,7 +1001,8 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 	s.logger.Debug("sql", "op", "list_children", "table", "submissions", "parent_task_id", parentTaskID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id, error
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id, error,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at
 		 FROM submissions WHERE parent_task_id = ? ORDER BY created_at`, parentTaskID)
 	if err != nil {
 		return nil, err
@@ -950,10 +1015,12 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 		var inputsJSON, outputsJSON, labelsJSON, errorJSON string
 		var state, createdAt string
 		var completedAt *string
+		var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
 
 		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 			&inputsJSON, &outputsJSON, &labelsJSON,
-			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID, &errorJSON); err != nil {
+			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID, &errorJSON,
+			&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt); err != nil {
 			return nil, err
 		}
 
@@ -983,6 +1050,18 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 				return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 			}
 			sub.CompletedAt = &t
+		}
+		if sub.PrestageStartedAt, err = scanTimePtr(prestageStartedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+		}
+		if sub.PrestageCompletedAt, err = scanTimePtr(prestageCompletedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+		}
+		if sub.PoststageStartedAt, err = scanTimePtr(poststageStartedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+		}
+		if sub.PoststageCompletedAt, err = scanTimePtr(poststageCompletedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 		}
 
 		subs = append(subs, &sub)
@@ -1236,6 +1315,16 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	return s.insertTask(ctx, s.db, task)
 }
 
+// taskColumns is the column set returned by every unscoped `SELECT * FROM
+// tasks` query and the column order for `INSERT INTO tasks`. Scanned
+// positionally by scanTask, scanTasks, and CheckoutTask's own inline scan —
+// all three must stay in this exact order. New columns are appended at the
+// end so the position of every existing column stays stable.
+const taskColumns = `id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
+	 stdout, stderr, exit_code, created_at, started_at, completed_at,
+	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms`
+
 // insertTask marshals the task (including runtime-hint encryption) and runs
 // the shared INSERT on the given execer. It is the single insert path behind
 // CreateTask and CreateTasksAndDispatchStep so both persist the same field
@@ -1266,7 +1355,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		return err
 	}
 
-	var startedAt, completedAt *string
+	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
 		s := task.StartedAt.Format(time.RFC3339Nano)
 		startedAt = &s
@@ -1275,13 +1364,14 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		s := task.CompletedAt.Format(time.RFC3339Nano)
 		completedAt = &s
 	}
+	if task.DispatchedAt != nil {
+		s := task.DispatchedAt.Format(time.RFC3339Nano)
+		dispatchedAt = &s
+	}
 
 	_, err = ex.ExecContext(ctx,
-		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (`+taskColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1289,7 +1379,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		task.Stdout, task.Stderr, task.ExitCode,
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
-		task.ScatterIndex,
+		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
 	)
 	return err
 }
@@ -1324,10 +1414,7 @@ func (s *SQLiteStore) CreateTasksAndDispatchStep(ctx context.Context, tasks []*m
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "select", "table", "tasks", "id", id)
 	return s.scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE id = ?`, id))
 }
 
@@ -1335,10 +1422,7 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "submission_id", submissionID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
 	if err != nil {
 		return nil, err
@@ -1378,10 +1462,7 @@ func (s *SQLiteStore) ListTasksBySubmissionPaged(ctx context.Context, submission
 
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
 		queryArgs...,
 	)
@@ -1401,10 +1482,7 @@ func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceI
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "step_instance_id", stepInstanceID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE step_instance_id = ? ORDER BY scatter_index, created_at`, stepInstanceID)
 	if err != nil {
 		return nil, err
@@ -1442,7 +1520,7 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 		return 0, err
 	}
 
-	var startedAt, completedAt *string
+	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
 		v := task.StartedAt.Format(time.RFC3339Nano)
 		startedAt = &v
@@ -1450,6 +1528,10 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 	if task.CompletedAt != nil {
 		v := task.CompletedAt.Format(time.RFC3339Nano)
 		completedAt = &v
+	}
+	if task.DispatchedAt != nil {
+		v := task.DispatchedAt.Format(time.RFC3339Nano)
+		dispatchedAt = &v
 	}
 
 	args := append([]any{
@@ -1459,12 +1541,14 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.StepInstanceID, task.ScatterIndex,
+		dispatchedAt, task.StageInMs, task.StageOutMs,
 	}, whereArgs...)
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
 		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
 		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
-		 step_instance_id=?, scatter_index=?`+where,
+		 step_instance_id=?, scatter_index=?,
+		 dispatched_at=?, stage_in_ms=?, stage_out_ms=?`+where,
 		args...,
 	)
 	if err != nil {
@@ -1583,10 +1667,7 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	s.logger.Debug("sql", "op", "list_by_state", "table", "tasks", "state", state)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -1600,10 +1681,7 @@ func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	s.logger.Debug("sql", "op", "get_active_tasks")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state IN (?, ?, ?, ?)
 		 ORDER BY priority DESC, created_at`,
 		string(model.TaskStatePending), string(model.TaskStateScheduled),
@@ -1696,12 +1774,17 @@ func (s *SQLiteStore) GetTaskSummaries(ctx context.Context, submissionIDs []stri
 	return result, rows.Err()
 }
 
+// ResetFailedTasks also clears started_at (M1): without this, a retried
+// bvbrc task's MarkTaskRunning (COALESCE(started_at, ?)) would preserve the
+// PRIOR attempt's stamp instead of stamping the new one, because a non-nil
+// started_at survives from the failed attempt otherwise.
 func (s *SQLiteStore) ResetFailedTasks(ctx context.Context, submissionID string) (int, error) {
 	s.logger.Debug("sql", "op", "reset_failed_tasks", "submission_id", submissionID)
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks
-		 SET state = ?, retry_count = 0, completed_at = NULL, stderr = '', exit_code = NULL
+		 SET state = ?, retry_count = 0, started_at = NULL, completed_at = NULL, stderr = '', exit_code = NULL,
+		     stage_in_ms = NULL, stage_out_ms = NULL
 		 WHERE submission_id = ? AND state = ?`,
 		string(model.TaskStatePending), submissionID, string(model.TaskStateFailed))
 	if err != nil {
@@ -1737,7 +1820,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var state, executorType, createdAt string
-	var startedAt, completedAt *string
+	var startedAt, completedAt, dispatchedAt *string
 
 	err := row.Scan(
 		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
@@ -1747,7 +1830,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&task.Stdout, &task.Stderr, &task.ExitCode,
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
-		&task.ScatterIndex,
+		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1796,6 +1879,13 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		}
 		task.CompletedAt = &t
 	}
+	if dispatchedAt != nil {
+		t, err := parseTimeOrZero(*dispatchedAt)
+		if err != nil {
+			return nil, err
+		}
+		task.DispatchedAt = &t
+	}
 
 	return &task, nil
 }
@@ -1807,7 +1897,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var state, executorType, createdAt string
-		var startedAt, completedAt *string
+		var startedAt, completedAt, dispatchedAt *string
 
 		if err := rows.Scan(
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
@@ -1817,7 +1907,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
-			&task.ScatterIndex,
+			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		); err != nil {
 			return nil, err
 		}
@@ -1873,6 +1963,14 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 				continue
 			}
 			task.CompletedAt = &t
+		}
+		if dispatchedAt != nil {
+			t, err := parseTimeOrZero(*dispatchedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+				continue
+			}
+			task.DispatchedAt = &t
 		}
 
 		tasks = append(tasks, &task)
@@ -2166,10 +2264,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
 		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
@@ -2182,7 +2277,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var stateStr, executorType, createdAt string
-		var startedAt, completedAt *string
+		var startedAt, completedAt, dispatchedAt *string
 
 		if err := rows.Scan(
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
@@ -2192,7 +2287,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
-			&task.ScatterIndex,
+			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		); err != nil {
 			rows.Close()
 			return nil, err
@@ -2249,6 +2344,14 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 				continue
 			}
 			task.CompletedAt = &t
+		}
+		if dispatchedAt != nil {
+			t, err := parseTimeOrZero(*dispatchedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+				continue
+			}
+			task.DispatchedAt = &t
 		}
 
 		candidates = append(candidates, &task)

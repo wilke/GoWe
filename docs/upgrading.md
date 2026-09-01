@@ -4,6 +4,45 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.15.x → next
+
+Dispatch/staging attribution (#184 PR2) adds `tasks.dispatched_at`, `tasks.stage_in_ms`,
+`tasks.stage_out_ms`, and four `submissions` staging timestamps
+(`prestage_started_at`/`prestage_completed_at`/`poststage_started_at`/`poststage_completed_at`).
+All eight columns are nullable and added via the normal idempotent `ALTER TABLE ADD COLUMN`
+migration path — no manual step is required. Two behavior changes an operator should know
+about:
+
+- **`started_at` is now `NULL` on `QUEUED` worker and bvbrc tasks in the API/UI.**
+  `submitAndUpdateTask` no longer stamps `started_at` for those two executors at dispatch
+  time (`CheckoutTask` and, for bvbrc, `MarkTaskRunning` on first observed platform
+  `RUNNING` are the sole writers now — see `internal/scheduler/loop.go`). Previously a
+  `QUEUED` worker/bvbrc task carried a stale dispatch-time `started_at` that looked like a
+  live duration but was not one; this is a deliberate fix, not a regression. Any script that
+  read `started_at` off a `QUEUED` task row will now see `null` instead of that stale
+  timestamp. The submission `/timing` endpoint's trust rules (added in the prior release)
+  already treated a `QUEUED` task's `started_at` as untrustworthy, so its output is
+  unaffected; the UI's "Duration" column on a `QUEUED` row now correctly shows `-` instead
+  of a ticking (and misleading) live value.
+- **Migration window:** a task that is `QUEUED` at the moment of the upgrade keeps whatever
+  `started_at` value the old server wrote until it next reaches `RUNNING` or a terminal
+  state — the migration only adds columns, it does not rewrite existing rows. The `/timing`
+  trust rule (never trust a `QUEUED` row's `started_at`) is exactly the guard that makes
+  this safe to ignore: both the pre-upgrade stale value and the post-upgrade `NULL` are
+  already excluded from every duration computed there.
+
+Worker/server version skew is safe in both directions: an old worker's `/complete` report
+carries no `stage_in_ms`/`stage_out_ms` fields, so a new server simply persists `NULL` for
+those columns (same as "staging did not occur"); a new worker talking to an old server has
+those fields silently ignored by the old handler's decode struct. No coordinated rollout is
+required — workers and servers can be upgraded independently and in either order.
+
+The `GET /api/v1/submissions/{id}/timing` response (and `gowe status --timing`) gains
+`dispatch_s`, `checkout_wait_s`, `stage_in_s`, `compute_s`, and `stage_out_s` per task, and
+`prestage_s`/`poststage_s` on the submission — see [`API_GUIDE.md`](API_GUIDE.md) §7. The
+CLI `--timing` table grows the corresponding columns; the web UI is unchanged aside from the
+`started_at`-nulling behavior above.
+
 ## 0.14.x → 0.15.0
 
 0.15.0 ([CHANGELOG](../CHANGELOG.md)) changes four things an operator has to know about:

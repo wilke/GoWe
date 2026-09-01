@@ -43,12 +43,15 @@ func seedTimingSubmission(t *testing.T, st store.Store) string {
 	}); err != nil {
 		t.Fatalf("seed step instance: %v", err)
 	}
+	stageIn := int64(2000)
+	stageOut := int64(500)
 	if err := st.CreateTask(ctx, &model.Task{
 		ID: "task_1", SubmissionID: "sub_timing", StepID: "step1", StepInstanceID: "si_1",
 		State: model.TaskStateSuccess, ExecutorType: model.ExecutorTypeLocal, ScatterIndex: -1,
 		Tool:      map[string]any{"class": "CommandLineTool"},
 		Stdout:    "SEKRIT",
-		CreatedAt: base.Add(5 * time.Second), StartedAt: tp(10), CompletedAt: tp(40),
+		CreatedAt: base.Add(5 * time.Second), DispatchedAt: tp(7), StartedAt: tp(10), CompletedAt: tp(40),
+		StageInMs: &stageIn, StageOutMs: &stageOut,
 	}); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}
@@ -83,12 +86,16 @@ func TestStatusTimingTable(t *testing.T) {
 		"Submission sub_timing [COMPLETED]",
 		"wall=60.0s",
 		"scheduling=5.0s",
-		"compute=30.0s",
+		"compute=30.0s",       // submission-level: sums task run_s (unaffected by stage breakdown)
 		"critical-path=45.0s", // step wall: min task created (5s) → si completed (50s)
 		"STEP", "MAX-RUN",
 		"step1", "45.0s",
-		"TASK", "QUEUE", "RUN",
+		"TASK", "QUEUE", "DISPATCH", "CHECKOUT", "STAGE-IN", "COMPUTE", "STAGE-OUT", "RUN",
 		"task_1", "5.0s", "30.0s", "SUCCESS",
+		"2.0s",  // dispatch_s (dispatched_at 7s − created_at 5s) and stage_in_s (2000ms)
+		"3.0s",  // checkout_wait_s (started_at 10s − dispatched_at 7s)
+		"0.5s",  // stage_out_s (500ms)
+		"27.5s", // task-level compute_s = run_s(30) − stage_in(2) − stage_out(0.5)
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -124,6 +131,21 @@ func TestStatusTimingJSON(t *testing.T) {
 	}
 	if _, leaked := body.Tasks[0]["tool"]; leaked {
 		t.Error("timing JSON leaks task tool definition")
+	}
+	if got := body.Tasks[0]["dispatch_s"]; got != 2.0 {
+		t.Errorf("dispatch_s = %v, want 2", got)
+	}
+	if got := body.Tasks[0]["checkout_wait_s"]; got != 3.0 {
+		t.Errorf("checkout_wait_s = %v, want 3", got)
+	}
+	if got := body.Tasks[0]["stage_in_s"]; got != 2.0 {
+		t.Errorf("stage_in_s = %v, want 2", got)
+	}
+	if got := body.Tasks[0]["stage_out_s"]; got != 0.5 {
+		t.Errorf("stage_out_s = %v, want 0.5", got)
+	}
+	if got := body.Tasks[0]["compute_s"]; got != 27.5 {
+		t.Errorf("compute_s = %v, want 27.5", got)
 	}
 	if strings.Contains(out, "SEKRIT") {
 		t.Errorf("timing JSON leaks task stdout:\n%s", out)

@@ -1076,6 +1076,10 @@ func (l *Loop) createSubworkflowProxyTask(si *model.StepInstance, tmpTask *model
 	now := time.Now().UTC()
 	task.State = model.TaskStateRunning
 	task.StartedAt = &now
+	// Proxies are "dispatched" the instant they're created — there is no
+	// separate submit step (the child submission itself is the dispatch).
+	createdAt := task.CreatedAt
+	task.DispatchedAt = &createdAt
 	task.Job = job
 	task.Inputs = job
 	task.MaxRetries = 0
@@ -1519,6 +1523,9 @@ func scrubTaskToken(task *model.Task) {
 func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	exec, err := l.registry.Get(task.ExecutorType)
 	if err != nil {
+		// No executor lookup succeeded, so the task was never actually
+		// dispatched — DispatchedAt deliberately stays nil here (unlike the
+		// success path below, which always stamps it).
 		now := time.Now().UTC()
 		task.State = model.TaskStateFailed
 		task.Stderr = err.Error()
@@ -1527,8 +1534,20 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		return
 	}
 
+	// DispatchedAt is stamped for every executor on every dispatch attempt
+	// (including retries — resubmitRetrying calls back into this function).
+	// StartedAt is kept in step with it only for synchronous executors
+	// (local/container/apptainer), whose Submit() call IS the execution
+	// start. worker and bvbrc tasks run asynchronously: worker's StartedAt is
+	// written solely by CheckoutTask (real pickup time), and bvbrc's solely
+	// by MarkTaskRunning on first observed platform RUNNING (PR0) — stamping
+	// it here would just be the stale "dispatch time" value the PR1 trust
+	// rules warn QUEUED consumers never to trust (F-J class).
 	now := time.Now().UTC()
-	task.StartedAt = &now
+	task.DispatchedAt = &now
+	if isSyncExecutor(task.ExecutorType) {
+		task.StartedAt = &now
+	}
 	externalID, submitErr := exec.Submit(ctx, task)
 	task.ExternalID = externalID
 
@@ -1566,6 +1585,19 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	}
 
 	l.persistSubmitOutcome(ctx, task)
+}
+
+// isSyncExecutor reports whether task submission and execution start happen
+// in the same call (local/container/apptainer run inline in Submit()).
+// worker and bvbrc are asynchronous: their real run-start is observed later
+// (worker checkout, bvbrc's first polled RUNNING), never at submit time.
+func isSyncExecutor(t model.ExecutorType) bool {
+	switch t {
+	case model.ExecutorTypeWorker, model.ExecutorTypeBVBRC:
+		return false
+	default:
+		return true
+	}
 }
 
 // persistSubmitOutcome writes a submit result without overwriting a state a
@@ -1734,6 +1766,8 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.Stderr = ""
 		task.CompletedAt = nil
 		task.StartedAt = nil
+		task.StageInMs = nil
+		task.StageOutMs = nil
 
 		l.logger.Info("retrying task", "task_id", task.ID, "attempt", task.RetryCount)
 		l.submitAndUpdateTask(ctx, task)

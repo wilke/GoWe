@@ -30,6 +30,17 @@ type Submission struct {
 	// OutputState tracks the output upload lifecycle: "" | "uploading" | "delivered" | "upload_failed" | "skipped".
 	OutputState string `json:"output_state,omitempty"`
 
+	// Prestage/poststage timestamps bound the scheduler's ws:// input
+	// pre-staging and output delivery phases (see internal/scheduler/workspace.go).
+	// PrestageStartedAt is stamped once even across multi-tick retries (a
+	// failed pre-stage attempt leaves it set so the next tick does not
+	// re-stamp it). All four are nil when the submission has no ws://
+	// inputs/outputs to stage.
+	PrestageStartedAt    *time.Time `json:"prestage_started_at,omitempty"`
+	PrestageCompletedAt  *time.Time `json:"prestage_completed_at,omitempty"`
+	PoststageStartedAt   *time.Time `json:"poststage_started_at,omitempty"`
+	PoststageCompletedAt *time.Time `json:"poststage_completed_at,omitempty"`
+
 	// Authentication token fields (not serialized to JSON responses).
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time

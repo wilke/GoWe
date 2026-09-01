@@ -49,11 +49,40 @@ type taskTiming struct {
 	// child is terminal (the proxy's own stamps lag the child by up to one
 	// scheduler tick). [S5]
 	RunS *float64 `json:"run_s,omitempty"`
+	// DispatchS is submit → dispatch (dispatched_at − created_at). Unlike
+	// StartedAt, DispatchedAt is written once per dispatch attempt by
+	// submitAndUpdateTask (including retries — a retry overwrites it with the
+	// new attempt's timestamp) and never touched again between attempts, so
+	// it needs no per-state trust gating — it is safe to read in any state,
+	// including QUEUED. Because CreatedAt stays fixed while DispatchedAt
+	// moves to the latest attempt, a retried task's DispatchS spans every
+	// prior attempt's queue and run time too, not just the gap before the
+	// first dispatch.
+	DispatchS *float64 `json:"dispatch_s,omitempty"`
+	// CheckoutWaitS is dispatch → checkout/run-start (started_at −
+	// dispatched_at): for worker tasks, real time spent sitting in the
+	// worker's own queue after being made available; for bvbrc, real time on
+	// the platform's queue before the platform reported RUNNING. Near-zero
+	// for synchronous executors (dispatched_at == started_at). It follows the
+	// StartedAt trust gate — computed whenever StartedAt is trusted,
+	// including RUNNING — not RunS's additional terminal-only requirement of
+	// a CompletedAt stamp.
+	CheckoutWaitS *float64 `json:"checkout_wait_s,omitempty"`
+	// StageInS/StageOutS are the worker-reported input/output staging
+	// durations. Present only for worker tasks that reported them (nil for
+	// every other executor, and for pre-upgrade or old-worker rows).
+	StageInS  *float64 `json:"stage_in_s,omitempty"`
+	StageOutS *float64 `json:"stage_out_s,omitempty"`
+	// ComputeS is RunS with staging overhead subtracted (run − stage_in −
+	// stage_out, clamped to zero). Populated only for plain task rows (kind
+	// "task") with a RunS; equals RunS when no staging data is present.
+	ComputeS *float64 `json:"compute_s,omitempty"`
 	// Retrying marks rows between attempts (RETRYING/SCHEDULED): their
 	// timestamps describe the last failed attempt, not a final result.
 	Retrying          bool       `json:"retrying,omitempty"`
 	RetryCount        int        `json:"retry_count"`
 	CreatedAt         time.Time  `json:"created_at"`
+	DispatchedAt      *time.Time `json:"dispatched_at,omitempty"`
 	StartedAt         *time.Time `json:"started_at,omitempty"`
 	CompletedAt       *time.Time `json:"completed_at,omitempty"`
 	ChildSubmissionID string     `json:"child_submission_id,omitempty"`
@@ -97,10 +126,17 @@ type submissionTiming struct {
 	// each step's [min task created (or si.created for inline), si.completed]
 	// interval along dependency chains. Absent when the workflow definition
 	// is unavailable.
-	CriticalPathS *float64          `json:"critical_path_s,omitempty"`
-	Counts        model.TaskSummary `json:"counts"`
-	CreatedAt     time.Time         `json:"created_at"`
-	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
+	CriticalPathS *float64 `json:"critical_path_s,omitempty"`
+	// PrestageS/PoststageS are the ws:// input pre-staging and output
+	// delivery phases (prestage_completed_at − prestage_started_at, and the
+	// poststage equivalent). Present only when both stamps of the pair
+	// exist — nil when the submission had no ws:// inputs/outputs to stage,
+	// or the phase is still in flight, or predates this field.
+	PrestageS   *float64          `json:"prestage_s,omitempty"`
+	PoststageS  *float64          `json:"poststage_s,omitempty"`
+	Counts      model.TaskSummary `json:"counts"`
+	CreatedAt   time.Time         `json:"created_at"`
+	CompletedAt *time.Time        `json:"completed_at,omitempty"`
 }
 
 // timingReport is the /timing response body.
@@ -263,6 +299,16 @@ func (s *Server) buildTimingReport(ctx context.Context, sub *model.Submission, n
 //     "skipped-iteration", excluded from all aggregates.
 //   - SKIPPED (kind "cancelled") never has run_s; queue_s only if it never
 //     started.
+//
+// #184 PR2 (dispatch/staging attribution): as of this change, a QUEUED
+// worker/bvbrc task's started_at is persisted as NULL rather than a stale
+// dispatch-time stamp — submitAndUpdateTask no longer writes it for those
+// executors (CheckoutTask/MarkTaskRunning are the sole writers). The trust
+// rule above is unchanged and still load-bearing: a task that was QUEUED
+// across the schema upgrade keeps whatever pre-upgrade started_at value it
+// already had until it next reaches a terminal/running state, so a QUEUED
+// row's started_at must still never be trusted, whether it is NULL (new
+// behavior) or stale (migration window).
 func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTiming {
 	row := taskTiming{
 		TaskID:       t.ID,
@@ -273,6 +319,7 @@ func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTi
 		Kind:         timingKindTask,
 		RetryCount:   t.RetryCount,
 		CreatedAt:    t.CreatedAt,
+		DispatchedAt: t.DispatchedAt,
 		StartedAt:    t.StartedAt,
 		CompletedAt:  t.CompletedAt,
 	}
@@ -302,16 +349,25 @@ func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTi
 		row.Kind = timingKindSubworkflow
 	}
 
+	// DispatchS (submit → dispatch) needs no state gating: DispatchedAt is
+	// written once by submitAndUpdateTask and never touched again (unlike
+	// StartedAt, CheckoutTask never overwrites it), so it is never stale.
+	if t.DispatchedAt != nil {
+		row.DispatchS = ptrSecs(t.DispatchedAt.Sub(t.CreatedAt))
+	}
+
 	switch t.State {
 	case model.TaskStateRunning:
 		if t.StartedAt != nil {
 			row.QueueS = ptrSecs(t.StartedAt.Sub(t.CreatedAt))
+			row.CheckoutWaitS = checkoutWaitSecs(t)
 		} else {
 			row.QueueS = ptrSecs(now.Sub(t.CreatedAt))
 		}
 	case model.TaskStateSuccess, model.TaskStateFailed:
 		if t.StartedAt != nil {
 			row.QueueS = ptrSecs(t.StartedAt.Sub(t.CreatedAt))
+			row.CheckoutWaitS = checkoutWaitSecs(t)
 			if t.CompletedAt != nil {
 				row.RunS = ptrSecs(t.CompletedAt.Sub(*t.StartedAt))
 			}
@@ -331,6 +387,7 @@ func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTi
 		if t.StartedAt != nil && t.CompletedAt != nil {
 			// Last failed attempt's window (stamps persist until resubmit).
 			row.RunS = ptrSecs(t.CompletedAt.Sub(*t.StartedAt))
+			row.CheckoutWaitS = checkoutWaitSecs(t)
 		}
 	default:
 		// PENDING/QUEUED: waiting so far. A QUEUED worker task may carry a
@@ -345,7 +402,49 @@ func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTi
 		row.RunS = ptrSecs(child.CompletedAt.Sub(child.CreatedAt))
 	}
 
+	// StageInS/StageOutS need no state gating: written once by the worker's
+	// terminal report and never touched again. nil for every non-worker
+	// executor and for pre-upgrade/old-worker rows.
+	if t.StageInMs != nil {
+		v := roundSecs(float64(*t.StageInMs) / 1000)
+		row.StageInS = &v
+	}
+	if t.StageOutMs != nil {
+		v := roundSecs(float64(*t.StageOutMs) / 1000)
+		row.StageOutS = &v
+	}
+	// ComputeS = run − stage_in − stage_out, guarded non-negative. Restricted
+	// to plain task rows: subworkflow/cancelled/skipped-iteration rows never
+	// carry staging data of their own.
+	if row.Kind == timingKindTask && row.RunS != nil {
+		compute := *row.RunS
+		if row.StageInS != nil {
+			compute -= *row.StageInS
+		}
+		if row.StageOutS != nil {
+			compute -= *row.StageOutS
+		}
+		if compute < 0 {
+			compute = 0
+		}
+		compute = roundSecs(compute)
+		row.ComputeS = &compute
+	}
+
 	return row
+}
+
+// checkoutWaitSecs computes dispatch → checkout/run-start (started_at −
+// dispatched_at) for a task whose StartedAt is already trust-gated by the
+// caller. Nil when DispatchedAt is unavailable (pre-upgrade row). Also
+// reached for subworkflow proxy rows (they set DispatchedAt too) even though
+// their RunS is overwritten from the child below — harmless, since
+// CheckoutWaitS is reported independently of RunS.
+func checkoutWaitSecs(t *model.Task) *float64 {
+	if t.DispatchedAt == nil || t.StartedAt == nil {
+		return nil
+	}
+	return ptrSecs(t.StartedAt.Sub(*t.DispatchedAt))
 }
 
 // buildStepTiming aggregates one step instance's task rows and returns the
@@ -442,6 +541,12 @@ func buildSubmissionTiming(sub *model.Submission, rows []taskTiming, now time.Ti
 	out.Counts = model.ComputeTaskSummary(summaryStates)
 	if firstTask != nil {
 		out.SchedulingS = ptrSecs(firstTask.Sub(sub.CreatedAt))
+	}
+	if sub.PrestageStartedAt != nil && sub.PrestageCompletedAt != nil {
+		out.PrestageS = ptrSecs(sub.PrestageCompletedAt.Sub(*sub.PrestageStartedAt))
+	}
+	if sub.PoststageStartedAt != nil && sub.PoststageCompletedAt != nil {
+		out.PoststageS = ptrSecs(sub.PoststageCompletedAt.Sub(*sub.PoststageStartedAt))
 	}
 	return out
 }

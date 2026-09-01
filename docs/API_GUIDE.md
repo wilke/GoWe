@@ -607,6 +607,8 @@ sub-workflow child submissions (`children` array of nested reports).
       "scheduling_s": 0.8,
       "compute_s": 301.2,
       "queue_s": 12.5,
+      "prestage_s": 1.9,
+      "poststage_s": 3.4,
       "critical_path_s": 310.9,
       "counts": { "total": 5, "success": 5 },
       "created_at": "2026-04-07T12:00:00Z",
@@ -620,8 +622,11 @@ sub-workflow child submissions (`children` array of nested reports).
     "tasks": [
       { "task_id": "task_001", "step_id": "predict", "scatter_index": 0,
         "executor": "worker", "state": "SUCCESS", "kind": "task",
-        "queue_s": 4.1, "run_s": 288.0, "retry_count": 0,
-        "created_at": "...", "started_at": "...", "completed_at": "..." }
+        "queue_s": 4.1, "dispatch_s": 0.05, "checkout_wait_s": 3.6,
+        "stage_in_s": 12.0, "compute_s": 270.5, "stage_out_s": 5.5,
+        "run_s": 288.0, "retry_count": 0,
+        "created_at": "...", "dispatched_at": "...", "started_at": "...",
+        "completed_at": "..." }
     ]
   }
 }
@@ -630,12 +635,35 @@ sub-workflow child submissions (`children` array of nested reports).
 Semantics (per-state trust rules):
 
 - `started_at` is trusted as a timestamp only in `RUNNING`/`SUCCESS`/`FAILED`.
-  A `QUEUED` worker task's `started_at` is a stale dispatch stamp and is never
-  used — its `queue_s` is "waiting so far" from `created_at`.
+  A `QUEUED` worker or bvbrc task's `started_at` is `null` (or, for a task that
+  was `QUEUED` across a pre-0.15.x-next schema upgrade, a stale dispatch
+  stamp) and is never used — its `queue_s` is "waiting so far" from
+  `created_at`. `dispatched_at`, by contrast, needs no such gating: it is
+  stamped once per dispatch attempt (including retries — a retry overwrites
+  it with the new attempt's timestamp) and never touched again *between*
+  attempts, so it is safe to read (and `dispatch_s = dispatched_at −
+  created_at` is safe to compute) in any state. Because `created_at` stays
+  fixed at the task's original creation while `dispatched_at` moves to the
+  latest attempt, a retried row's `dispatch_s` spans every prior attempt's
+  queue and run time too, not just the gap before the first dispatch.
 - `run_s` requires both timestamps and a `SUCCESS`/`FAILED` state; on
   `RETRYING`/`SCHEDULED` rows it is the last failed attempt's window, flagged
   `"retrying": true`, and `queue_s` is measured since first dispatch (it
   includes prior attempts' run time).
+- `checkout_wait_s` (`started_at − dispatched_at`) is the gap between dispatch
+  and actual execution start: for `worker` tasks, real time spent in the
+  worker's own pull queue after becoming available; for `bvbrc`, real time on
+  the platform's queue before it reported `RUNNING`. Near-zero for synchronous
+  executors (`local`/`container`/`apptainer`), where dispatch and execution
+  start are the same event. It follows the `started_at` trust gate — computed
+  whenever `started_at` is trusted, including `RUNNING` — not `run_s`'s
+  additional terminal-only requirement of a `completed_at` stamp.
+- `stage_in_s`/`stage_out_s` are worker-measured input/output staging
+  durations, present only on `worker` tasks whose worker reported them (nil
+  for every other executor, and for tasks run by a worker that predates this
+  field). `compute_s` on a task row is `run_s` with staging subtracted
+  (`run_s − stage_in_s − stage_out_s`, clamped to zero), populated only for
+  plain `task` rows.
 - `kind` classifies rows: `task`, `subworkflow` (proxy for a child submission;
   `run_s` is the child's wall time once the child is terminal, and may lag the
   proxy's own stamps by up to one scheduler tick; `child_submission_id` links
@@ -649,9 +677,14 @@ Semantics (per-state trust rules):
   inline step sitting mid-chain can overlap its upstream dependency's
   interval; `critical_path_s` sums per-step intervals along dependency
   chains, so it can exceed `wall_s` when this happens.
-- `compute_s` sums task `run_s` (sub-workflow proxies contribute their child's
-  wall time); `scheduling_s` is submission creation → first task creation;
-  `critical_path_s` is the longest path over the workflow step DAG.
+- On the submission: `compute_s` sums task `run_s` (sub-workflow proxies
+  contribute their child's wall time, unchanged by this section's per-task
+  `compute_s`); `scheduling_s` is submission creation → first task creation
+  (pre-dispatch work, including prestage); `prestage_s`/`poststage_s` are the
+  ws:// input pre-staging and output delivery phase durations respectively
+  (present only when a submission has ws:// inputs/outputs to stage, and only
+  once each phase has both started and completed); `critical_path_s` is the
+  longest path over the workflow step DAG.
 
 ---
 

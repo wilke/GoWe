@@ -573,7 +573,7 @@ middleware; worker endpoints via `X-Worker-Key`; admin endpoints require the adm
 |-------|--------------------------|
 | Health | `GET /health` |
 | Workflows | `GET/POST /workflows`, `GET/PUT/DELETE /workflows/{id}`, `GET …/inputs`, `GET …/outputs`, `POST …/validate` |
-| Submissions | `GET/POST /submissions` (list excludes child submissions unless `include_children=true`), `GET /submissions/{id}`, `GET …/timing[?include_children=true]` (timing-only projection: queue/run per task, step wall/fan-in, critical path — never Tool/Job/stdout), `DELETE /submissions/{id}`, `PUT …/cancel`, `PUT …/retry`, `GET …/tasks`, `GET …/tasks/{tid}/logs` |
+| Submissions | `GET/POST /submissions` (list excludes child submissions unless `include_children=true`), `GET /submissions/{id}`, `GET …/timing[?include_children=true]` (timing-only projection: queue/run per task, step wall/fan-in, critical path, plus the dispatch/checkout-wait/stage-in/stage-out per-task breakdown and submission-level prestage/poststage windows — never Tool/Job/stdout), `DELETE /submissions/{id}`, `PUT …/cancel`, `PUT …/retry`, `GET …/tasks`, `GET …/tasks/{tid}/logs` |
 | Workers | `POST /workers`, `GET /workers`, `GET /workers/{id}/work`, `PUT /workers/{id}/heartbeat`, `PUT …/tasks/{tid}/status`, `PUT …/tasks/{tid}/complete`, `DELETE /workers/{id}` |
 | BV-BRC proxy | `GET /apps`, `GET /apps/{id}`, `GET /apps/{id}/cwl-tool`, `GET /workspace`, file up/download |
 | Streaming | `GET /sse/submissions/{id}` (server-sent events) |

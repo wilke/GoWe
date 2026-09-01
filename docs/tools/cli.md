@@ -210,7 +210,7 @@ gowe status <id> [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--timing` | Show the timing breakdown instead of the plain status: submission totals (wall, scheduling, compute, queue, critical path), per-step wall/fan-in/max-run, and per-task queue/run durations. Sub-workflow children are included recursively. |
+| `--timing` | Show the timing breakdown instead of the plain status: submission totals (wall, scheduling, compute, queue, prestage, poststage, critical path), per-step wall/fan-in/max-run, and per-task queue/dispatch/checkout-wait/stage-in/compute/stage-out/run durations. Sub-workflow children are included recursively. |
 | `--json` | Print the raw timing JSON (requires `--timing`) |
 
 **Examples:**
@@ -245,16 +245,20 @@ Tasks:
 **Timing output (`--timing`):**
 
 ```
-Submission sub_abc123 [COMPLETED]  wall=322.4s scheduling=0.8s compute=301.2s queue=12.5s critical-path=310.9s
+Submission sub_abc123 [COMPLETED]  wall=322.4s scheduling=0.8s compute=301.2s queue=12.5s prestage=1.9s poststage=3.4s critical-path=310.9s
   STEP      STATE      WALL    FAN-IN  MAX-RUN  TASKS
   assemble  COMPLETED  290.1s  0.9s    288.0s   3
-  TASK      STEP      IDX  EXECUTOR  STATE    KIND  QUEUE  RUN     RETRIES
-  task_001  assemble  0    worker    SUCCESS  task  4.1s   288.0s  0
+  TASK      STEP      IDX  EXECUTOR  STATE    KIND  QUEUE  DISPATCH  CHECKOUT  STAGE-IN  COMPUTE  STAGE-OUT  RUN     RETRIES
+  task_001  assemble  0    worker    SUCCESS  task  4.1s   0.1s      3.6s      12.0s     270.5s   5.5s       288.0s  0
 ```
 
-Queue/run durations follow the timing trust rules: a `QUEUED` worker task shows
-waiting time from its creation (its `started_at` is a stale dispatch stamp), and
-`RETRYING` rows show the last failed attempt's window.
+Queue/run durations follow the timing trust rules: a `QUEUED` worker or bvbrc
+task shows waiting time from its creation (its `started_at` is untrustworthy —
+`null` as of this endpoint's dispatch/staging attribution, or a stale dispatch
+stamp for a row still `QUEUED` from before that upgrade), and `RETRYING` rows
+show the last failed attempt's window. DISPATCH/CHECKOUT/STAGE-IN/STAGE-OUT
+render `-` when the executor or attempt has no such data (only `worker` tasks
+report stage timings; synchronous executors have a near-zero CHECKOUT).
 
 ---
 

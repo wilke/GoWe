@@ -749,9 +749,11 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
 		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
 	}
+	stageInStart := time.Now()
 	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
 		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
 	}
+	stageInMs := time.Since(stageInStart).Milliseconds()
 
 	// Parse tool from task.Tool map using the proper parser.
 	tool, err := w.parser.ParseToolFromMap(task.Tool)
@@ -819,12 +821,15 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 			return cerr
 		}
 		if result != nil {
+			// This attempt did stage in (we got as far as running the tool),
+			// so attach StageInMs to the report even though it's a failure.
 			return w.reportComplete(ctx, task.ID, TaskResult{
-				State:    model.TaskStateFailed,
-				ExitCode: &result.ExitCode,
-				Stdout:   result.Stdout,
-				Stderr:   result.Stderr + "\n" + err.Error(),
-				Outputs:  result.Outputs,
+				State:     model.TaskStateFailed,
+				ExitCode:  &result.ExitCode,
+				Stdout:    result.Stdout,
+				Stderr:    result.Stderr + "\n" + err.Error(),
+				Outputs:   result.Outputs,
+				StageInMs: &stageInMs,
 			})
 		}
 		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", err))
@@ -838,18 +843,22 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		w.logger.Info("using per-task stager with overrides", "task_id", task.ID,
 			"has_ws_dest", task.RuntimeHints.OutputDestination != "")
 	}
+	stageOutStart := time.Now()
 	stagedOutputs := make(map[string]any)
 	for outputID, output := range result.Outputs {
 		w.logger.Debug("staging output", "task_id", task.ID, "output_id", outputID)
 		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task, outStager, "")
 	}
+	stageOutMs := time.Since(stageOutStart).Milliseconds()
 
 	if err := w.reportComplete(ctx, task.ID, TaskResult{
-		State:    model.TaskStateSuccess,
-		ExitCode: &result.ExitCode,
-		Stdout:   result.Stdout,
-		Stderr:   result.Stderr,
-		Outputs:  stagedOutputs,
+		State:      model.TaskStateSuccess,
+		ExitCode:   &result.ExitCode,
+		Stdout:     result.Stdout,
+		Stderr:     result.Stderr,
+		Outputs:    stagedOutputs,
+		StageInMs:  &stageInMs,
+		StageOutMs: &stageOutMs,
 	}); err != nil {
 		return err
 	}

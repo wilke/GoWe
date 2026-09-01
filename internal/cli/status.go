@@ -20,6 +20,8 @@ type timingSubmissionRow struct {
 	SchedulingS   *float64 `json:"scheduling_s"`
 	ComputeS      float64  `json:"compute_s"`
 	QueueS        float64  `json:"queue_s"`
+	PrestageS     *float64 `json:"prestage_s"`
+	PoststageS    *float64 `json:"poststage_s"`
 	CriticalPathS *float64 `json:"critical_path_s"`
 }
 
@@ -34,17 +36,22 @@ type timingStepRow struct {
 }
 
 type timingTaskRow struct {
-	TaskID       string   `json:"task_id"`
-	StepID       string   `json:"step_id"`
-	ScatterIndex int      `json:"scatter_index"`
-	Executor     string   `json:"executor"`
-	WorkerGroup  string   `json:"worker_group"`
-	State        string   `json:"state"`
-	Kind         string   `json:"kind"`
-	QueueS       *float64 `json:"queue_s"`
-	RunS         *float64 `json:"run_s"`
-	Retrying     bool     `json:"retrying"`
-	RetryCount   int      `json:"retry_count"`
+	TaskID        string   `json:"task_id"`
+	StepID        string   `json:"step_id"`
+	ScatterIndex  int      `json:"scatter_index"`
+	Executor      string   `json:"executor"`
+	WorkerGroup   string   `json:"worker_group"`
+	State         string   `json:"state"`
+	Kind          string   `json:"kind"`
+	QueueS        *float64 `json:"queue_s"`
+	DispatchS     *float64 `json:"dispatch_s"`
+	CheckoutWaitS *float64 `json:"checkout_wait_s"`
+	StageInS      *float64 `json:"stage_in_s"`
+	ComputeS      *float64 `json:"compute_s"`
+	StageOutS     *float64 `json:"stage_out_s"`
+	RunS          *float64 `json:"run_s"`
+	Retrying      bool     `json:"retrying"`
+	RetryCount    int      `json:"retry_count"`
 }
 
 type timingBody struct {
@@ -171,10 +178,11 @@ func runTimingStatus(cmd *cobra.Command, id string, asJSON bool) error {
 // sub-workflow children) as submission → steps → tasks tables.
 func printTimingReport(w io.Writer, r *timingBody) {
 	s := r.Submission
-	fmt.Fprintf(w, "Submission %s [%s]  wall=%s scheduling=%s compute=%s queue=%s critical-path=%s\n",
+	fmt.Fprintf(w, "Submission %s [%s]  wall=%s scheduling=%s compute=%s queue=%s prestage=%s poststage=%s critical-path=%s\n",
 		s.ID, s.State,
 		fmtSeconds(s.WallS), fmtSeconds(s.SchedulingS),
 		fmtSecondsVal(s.ComputeS), fmtSecondsVal(s.QueueS),
+		fmtSeconds(s.PrestageS), fmtSeconds(s.PoststageS),
 		fmtSeconds(s.CriticalPathS))
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -189,8 +197,13 @@ func printTimingReport(w io.Writer, r *timingBody) {
 	}
 	tw.Flush()
 
+	// The DISPATCH/CHECKOUT/STAGE-IN/COMPUTE/STAGE-OUT columns are the #184
+	// PR2 breakdown (submit→dispatch→checkout→stage-in→compute→stage-out);
+	// they render "-" for executors/rows that don't carry that data (only
+	// worker tasks report stage timings; CHECKOUT is near-zero for sync
+	// executors).
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  TASK\tSTEP\tIDX\tEXECUTOR\tSTATE\tKIND\tQUEUE\tRUN\tRETRIES")
+	fmt.Fprintln(tw, "  TASK\tSTEP\tIDX\tEXECUTOR\tSTATE\tKIND\tQUEUE\tDISPATCH\tCHECKOUT\tSTAGE-IN\tCOMPUTE\tSTAGE-OUT\tRUN\tRETRIES")
 	for _, t := range r.Tasks {
 		idx := "-"
 		if t.ScatterIndex >= 0 {
@@ -200,9 +213,11 @@ func printTimingReport(w io.Writer, r *timingBody) {
 		if t.Retrying {
 			state += " (retrying)"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
 			t.TaskID, t.StepID, idx, t.Executor, state, t.Kind,
-			fmtSeconds(t.QueueS), fmtSeconds(t.RunS), t.RetryCount)
+			fmtSeconds(t.QueueS), fmtSeconds(t.DispatchS), fmtSeconds(t.CheckoutWaitS),
+			fmtSeconds(t.StageInS), fmtSeconds(t.ComputeS), fmtSeconds(t.StageOutS),
+			fmtSeconds(t.RunS), t.RetryCount)
 	}
 	tw.Flush()
 
