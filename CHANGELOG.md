@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.0](https://github.com/wilke/GoWe/compare/v0.15.0...v0.16.0) (2026-09-01)
+
+
+### Features
+
+* **scheduler,worker,server,store:** dispatch and staging attribution for timing ([#191](https://github.com/wilke/GoWe/issues/191)) ([90ef7f0](https://github.com/wilke/GoWe/commit/90ef7f0fbc3a56e2708810a1b7081454bdd71e7b))
+* **server,cli,ui:** submission timing view ([#188](https://github.com/wilke/GoWe/issues/188)) ([c5e6fb9](https://github.com/wilke/GoWe/commit/c5e6fb96dfab8afea9ecf914b5a0352018874654))
+* **server,scheduler,metrics:** Prometheus /metrics with bounded labels and exactly-once observation ([#192](https://github.com/wilke/GoWe/issues/192)) ([86801ef](https://github.com/wilke/GoWe/commit/86801efdc72c97d1fdda98a53962352bbc94c789)), closes [#185](https://github.com/wilke/GoWe/issues/185)
+
+
+### Bug Fixes
+
+* **scheduler,server,worker:** guarded task transitions and report validation ([#190](https://github.com/wilke/GoWe/issues/190)) ([0a8f595](https://github.com/wilke/GoWe/commit/0a8f595b8e36a50060ae8314994caa943e62e1d2)), closes [#160](https://github.com/wilke/GoWe/issues/160)
+
 ## [0.15.0](https://github.com/wilke/GoWe/compare/v0.14.0...v0.15.0) (2026-08-26)
 
 
