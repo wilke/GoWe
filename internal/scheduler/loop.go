@@ -895,7 +895,13 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 			if step.When != "" {
 				shouldRun, err := l.evaluateWhenForScatterIterationFromSteps(step, combo, mergedInputs, stepOutputs)
 				if err != nil {
-					l.logger.Warn("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+					// CWL spec: non-boolean 'when' expressions must fail the step.
+					now := time.Now().UTC()
+					si.State = model.StepStateFailed
+					si.Error = fmt.Sprintf("scatter iteration %d when evaluation: %v", i, err)
+					si.CompletedAt = &now
+					l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+					return l.updateStepInstance(ctx, si)
 				} else if !shouldRun {
 					nullOutputs := make(map[string]any)
 					for _, outID := range step.Out {
@@ -1109,6 +1115,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 		if !ok {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("scatter input %q is not an array (got %T)", scatterInput, value)
 			si.CompletedAt = &now
 			return l.updateStepInstance(ctx, si)
 		}
@@ -1128,10 +1135,11 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 		if tmpTask.RuntimeHints != nil {
 			expressionLib = tmpTask.RuntimeHints.ExpressionLib
 		}
-		for _, combo := range combinations {
+		for i, combo := range combinations {
 			if err := applyScatterValueFrom(step, combo, mergedInputs, expressionLib); err != nil {
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d valueFrom: %v", i, err)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -1162,6 +1170,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 				// CWL spec: non-boolean 'when' expressions must fail the step.
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d when evaluation: %v", i, err)
 				si.CompletedAt = &now
 				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
 				return l.updateStepInstance(ctx, si)
@@ -1259,8 +1268,10 @@ func (l *Loop) createSubworkflowProxyTask(si *model.StepInstance, tmpTask *model
 }
 
 // failSubworkflowProxy records a non-retryable sub-workflow dispatch failure:
-// the proxy task goes FAILED with the reason in Stderr (so
-// buildSubmissionError surfaces it) and the step instance is failed. [F11]
+// the proxy task goes FAILED with the reason in Stderr, the step instance's
+// Error is set to the same reason (so buildSubmissionError surfaces it even
+// when no failed task is found under the step), and the step instance is
+// failed. [F11]
 func (l *Loop) failSubworkflowProxy(ctx context.Context, task *model.Task, si *model.StepInstance, reason string) {
 	now := time.Now().UTC()
 	task.State = model.TaskStateFailed
@@ -1272,6 +1283,7 @@ func (l *Loop) failSubworkflowProxy(ctx context.Context, task *model.Task, si *m
 		l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "subworkflow")
 	}
 	si.State = model.StepStateFailed
+	si.Error = reason
 	si.CompletedAt = &now
 	if err := l.updateStepInstance(ctx, si); err != nil {
 		l.logger.Error("fail subworkflow step", "si_id", si.ID, "error", err)
