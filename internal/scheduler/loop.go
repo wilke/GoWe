@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +26,23 @@ import (
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
+)
+
+// Scheduler lifecycle states, reported via Loop.State() (and surfaced by the
+// /api/v1/health endpoint). Stored as an atomic int32 internally; these are
+// the string values exposed to callers.
+const (
+	StateNotStarted = "not_started" // NewLoop constructed, Start not yet called.
+	StateRunning    = "running"     // Start has entered its poll loop.
+	StateStopped    = "stopped"     // Start returned (ctx cancelled or Stop called).
+)
+
+// loopState codes backing the atomic state field. Ordered so the zero value
+// matches "not started".
+const (
+	loopStateNotStarted int32 = iota
+	loopStateRunning
+	loopStateStopped
 )
 
 // Config holds scheduler configuration.
@@ -85,6 +103,12 @@ type Loop struct {
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
+
+	// state tracks the lifecycle for State()/health reporting. Holds one of
+	// the loopState* constants; read/written via atomic ops so State() is
+	// safe to call from the HTTP handler goroutine while Start()'s loop runs
+	// on its own goroutine.
+	state atomic.Int32
 
 	// Cached per-tick: structured worker capability snapshot.
 	cachedWorkerCaps *WorkerCapabilities
@@ -171,6 +195,12 @@ func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Lo
 // Start begins the scheduling loop. Blocks until ctx is cancelled or Stop is called.
 func (l *Loop) Start(ctx context.Context) error {
 	l.logger.Info("scheduler started", "poll_interval", l.config.PollInterval)
+	l.state.Store(loopStateRunning)
+	// Belt-and-braces: covers a return via panic recovery or any future exit
+	// path that forgets to set the state explicitly. The exit branches below
+	// set it before closing doneCh so Stop()'s caller never observes a stale
+	// "running" state (close(doneCh) unblocks Stop() before this defer runs).
+	defer l.state.Store(loopStateStopped)
 	ticker := time.NewTicker(l.config.PollInterval)
 	defer ticker.Stop()
 
@@ -178,10 +208,12 @@ func (l *Loop) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			l.logger.Info("scheduler stopping (context cancelled)")
+			l.state.Store(loopStateStopped)
 			close(l.doneCh)
 			return ctx.Err()
 		case <-l.stopCh:
 			l.logger.Info("scheduler stopping (stop called)")
+			l.state.Store(loopStateStopped)
 			close(l.doneCh)
 			return nil
 		case <-ticker.C:
@@ -189,6 +221,21 @@ func (l *Loop) Start(ctx context.Context) error {
 				l.logger.Error("tick error", "error", err)
 			}
 		}
+	}
+}
+
+// State reports the scheduler's current lifecycle state: "not_started"
+// before Start is called, "running" while its poll loop is active, and
+// "stopped" once Start has returned (context cancelled or Stop called).
+// Safe to call concurrently with Start/Stop from any goroutine.
+func (l *Loop) State() string {
+	switch l.state.Load() {
+	case loopStateRunning:
+		return StateRunning
+	case loopStateStopped:
+		return StateStopped
+	default:
+		return StateNotStarted
 	}
 }
 

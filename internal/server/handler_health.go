@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -89,6 +90,16 @@ func (s *Server) workerSummary(ctx context.Context) *workerSummary {
 	return ws
 }
 
+// schedulerStatus reports the scheduler's lifecycle state. A nil scheduler
+// (server started without one, e.g. some tests) reports "not_started" the
+// same as one that hasn't had Start called yet.
+func (s *Server) schedulerStatus() string {
+	if s.scheduler == nil {
+		return scheduler.StateNotStarted
+	}
+	return s.scheduler.State()
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	respondOK(w, reqID, healthResponse{
@@ -96,7 +107,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Version:   "0.1.0",
 		GoVersion: runtime.Version(),
 		Uptime:    time.Since(s.startTime).Round(time.Second).String(),
-		Scheduler: "not_started",
+		Scheduler: s.schedulerStatus(),
 		Store:     "skeleton",
 		Executors: s.executorStatus(),
 		Workers:   s.workerSummary(r.Context()),
