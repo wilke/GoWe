@@ -12,6 +12,15 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// roundDur renders a duration rounded to whole seconds, clamping negatives
+// (cross-process clock skew) to zero.
+func roundDur(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	return d.Round(time.Second).String()
+}
+
 // Template functions available in all templates.
 var templateFuncs = template.FuncMap{
 	"formatTime": func(t time.Time) string {
@@ -40,6 +49,56 @@ var templateFuncs = template.FuncMap{
 			return end[0].Sub(*start).Round(time.Second).String()
 		}
 		return time.Since(*start).Round(time.Second).String()
+	},
+	// taskQueueDisplay renders a task's queue time under the timing trust
+	// rules: StartedAt is trusted only in RUNNING/SUCCESS/FAILED — a QUEUED
+	// worker task's StartedAt is a stale dispatch stamp, so queued (and
+	// pending/retrying) tasks show "waiting" time from CreatedAt instead.
+	"taskQueueDisplay": func(t model.Task) string {
+		switch t.State {
+		case model.TaskStateRunning:
+			if t.StartedAt != nil {
+				return roundDur(t.StartedAt.Sub(t.CreatedAt))
+			}
+			return "waiting " + roundDur(time.Since(t.CreatedAt))
+		case model.TaskStateSuccess:
+			if t.StartedAt != nil {
+				return roundDur(t.StartedAt.Sub(t.CreatedAt))
+			}
+			return "—" // When-skip synthetic iteration: never dispatched.
+		case model.TaskStateFailed:
+			if t.StartedAt != nil {
+				return roundDur(t.StartedAt.Sub(t.CreatedAt))
+			}
+			if t.CompletedAt != nil {
+				// Failed before it started: whole window spent waiting.
+				return roundDur(t.CompletedAt.Sub(t.CreatedAt))
+			}
+			return "—"
+		case model.TaskStateSkipped:
+			if t.StartedAt == nil && t.CompletedAt != nil {
+				return roundDur(t.CompletedAt.Sub(t.CreatedAt))
+			}
+			return "—"
+		default: // PENDING, SCHEDULED, QUEUED, RETRYING: waiting so far.
+			return "waiting " + roundDur(time.Since(t.CreatedAt))
+		}
+	},
+	// taskRunDisplay renders a task's run duration only when the timestamps
+	// can be trusted: SUCCESS/FAILED with both stamps, or the last failed
+	// attempt's window on RETRYING/SCHEDULED rows.
+	"taskRunDisplay": func(t model.Task) string {
+		switch t.State {
+		case model.TaskStateSuccess, model.TaskStateFailed:
+			if t.StartedAt != nil && t.CompletedAt != nil {
+				return roundDur(t.CompletedAt.Sub(*t.StartedAt))
+			}
+		case model.TaskStateRetrying, model.TaskStateScheduled:
+			if t.StartedAt != nil && t.CompletedAt != nil {
+				return roundDur(t.CompletedAt.Sub(*t.StartedAt)) + " (retrying)"
+			}
+		}
+		return "—"
 	},
 	"stateColor": func(state string) string {
 		switch strings.ToUpper(state) {
@@ -1676,6 +1735,8 @@ var templates = map[string]string{
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Executor</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                     </tr>
                 </thead>
@@ -1717,6 +1778,8 @@ var templates = map[string]string{
                                 -
                             {{end}}
                         </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{taskQueueDisplay .}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{taskRunDisplay .}}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm space-x-2">
                             <a href="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/logs"
                                class="text-indigo-600 hover:text-indigo-500">
@@ -1733,7 +1796,7 @@ var templates = map[string]string{
                     </tr>
                     {{else}}
                     <tr>
-                        <td colspan="5" class="px-6 py-4 text-sm text-gray-500 text-center">No tasks</td>
+                        <td colspan="7" class="px-6 py-4 text-sm text-gray-500 text-center">No tasks</td>
                     </tr>
                     {{end}}
                 </tbody>

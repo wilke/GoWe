@@ -20,6 +20,14 @@ import (
 )
 
 func testServer(opts ...Option) *Server {
+	srv, _ := testServerWithStore(opts...)
+	return srv
+}
+
+// testServerWithStore is testServer but also returns the backing store, so
+// tests can seed rows with exact hand-set timestamps (the store persists
+// caller-set stamps verbatim, making duration assertions deterministic).
+func testServerWithStore(opts ...Option) (*Server, store.Store) {
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	st, err := store.NewSQLiteStore(":memory:", logger)
 	if err != nil {
@@ -36,7 +44,7 @@ func testServer(opts ...Option) *Server {
 		}),
 	}
 	defaultOpts = append(defaultOpts, opts...)
-	return New(config.DefaultServerConfig(), st, nil, logger, defaultOpts...)
+	return New(config.DefaultServerConfig(), st, nil, logger, defaultOpts...), st
 }
 
 // testApps returns a static app list for tests that exercise the /apps endpoints.

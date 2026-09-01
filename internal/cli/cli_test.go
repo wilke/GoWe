@@ -20,6 +20,16 @@ import (
 // startTestServer starts a server with an in-memory SQLite store and returns the URL.
 func startTestServer(t *testing.T) string {
 	t.Helper()
+	url, _ := startTestServerWithStore(t)
+	return url
+}
+
+// startTestServerWithStore is startTestServer but also returns the backing
+// store, so tests can seed rows with exact hand-set timestamps (the store
+// persists caller-set stamps verbatim, making duration assertions
+// deterministic).
+func startTestServerWithStore(t *testing.T) (string, store.Store) {
+	t.Helper()
 	srvLogger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	st, err := store.NewSQLiteStore(":memory:", srvLogger)
 	if err != nil {
@@ -43,7 +53,7 @@ func startTestServer(t *testing.T) string {
 	)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts.URL
+	return ts.URL, st
 }
 
 // submitTestWorkflow creates a workflow + submission via HTTP and returns the submission ID.

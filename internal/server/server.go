@@ -299,6 +299,7 @@ func (s *Server) routes() {
 				r.Post("/", s.handleCreateSubmission)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", s.handleGetSubmission)
+					r.Get("/timing", s.handleSubmissionTiming)
 					r.Put("/cancel", s.handleCancelSubmission)
 					r.Delete("/", s.handleDeleteSubmission)
 					r.Put("/retry", s.handleRetrySubmission)
