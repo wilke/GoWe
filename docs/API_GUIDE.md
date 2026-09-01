@@ -644,7 +644,11 @@ Semantics (per-state trust rules):
   never started).
 - Steps with zero tasks (inline ExpressionTool evaluation, when-skipped steps)
   are flagged `"inline": true`; their `wall_s` spans the step instance's own
-  lifetime and therefore includes dependency wait.
+  lifetime and therefore includes dependency wait. Because that interval
+  starts at submission time rather than at the step's actual dispatch, an
+  inline step sitting mid-chain can overlap its upstream dependency's
+  interval; `critical_path_s` sums per-step intervals along dependency
+  chains, so it can exceed `wall_s` when this happens.
 - `compute_s` sums task `run_s` (sub-workflow proxies contribute their child's
   wall time); `scheduling_s` is submission creation → first task creation;
   `critical_path_s` is the longest path over the workflow step DAG.

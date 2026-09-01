@@ -106,7 +106,8 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	steps := []model.Step{}
 	for _, id := range []string{"s_success", "s_failed", "s_running", "s_queued_worker",
-		"s_cancelled", "s_cancelled_started", "s_synthetic", "s_retrying", "s_scheduled", "s_failed_submit", "s_proxy"} {
+		"s_cancelled", "s_cancelled_started", "s_synthetic", "s_retrying", "s_retrying_never_started",
+		"s_scheduled", "s_failed_submit", "s_proxy"} {
 		steps = append(steps, model.Step{ID: id})
 	}
 	seedTimingWorkflow(t, st, "wf_rules", steps)
@@ -157,6 +158,11 @@ func TestTimingPerStateRules(t *testing.T) {
 		model.TaskStateRetrying, at(0), atp(10), atp(20))
 	retrying.RetryCount = 2
 	seedTimingTask(t, st, retrying)
+	// RETRYING that never actually started (defensive path): queue_s is
+	// still "since dispatch" from created_at, no run_s.
+	retryingNeverStarted := mkTask("t_retrying_never_started", "s_retrying_never_started",
+		model.ExecutorTypeLocal, model.TaskStateRetrying, at(0), nil, nil)
+	seedTimingTask(t, st, retryingNeverStarted)
 	// SCHEDULED between attempts: same rule row as RETRYING (last window).
 	scheduled := mkTask("t_scheduled", "s_scheduled", model.ExecutorTypeLocal,
 		model.TaskStateScheduled, at(0), atp(10), atp(25))
@@ -269,6 +275,21 @@ func TestTimingPerStateRules(t *testing.T) {
 		}
 	})
 
+	t.Run("retrying never started", func(t *testing.T) {
+		r := findTaskRow(t, rep, "t_retrying_never_started")
+		if !r.Retrying {
+			t.Error("retrying flag not set")
+		}
+		assertNil("run_s", r.RunS)
+		if r.QueueS == nil {
+			t.Fatal("queue_s: got nil, want since-dispatch value")
+		}
+		// now − created, same now-based pattern as t_queued_worker.
+		if *r.QueueS < 60 {
+			t.Errorf("queue_s = %v, want now-based since-dispatch value", *r.QueueS)
+		}
+	})
+
 	t.Run("scheduled between attempts reports last window", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_scheduled")
 		if !r.Retrying {
@@ -308,8 +329,8 @@ func TestTimingPerStateRules(t *testing.T) {
 		if !almostEq(rep.Submission.ComputeS, 134) {
 			t.Errorf("compute_s = %v, want 134", rep.Submission.ComputeS)
 		}
-		if rep.Submission.Counts.Total != 11 {
-			t.Errorf("counts.total = %d, want 11", rep.Submission.Counts.Total)
+		if rep.Submission.Counts.Total != 12 {
+			t.Errorf("counts.total = %d, want 12", rep.Submission.Counts.Total)
 		}
 		if rep.Submission.SchedulingS == nil || !almostEq(*rep.Submission.SchedulingS, 0) {
 			t.Errorf("scheduling_s = %v, want 0", rep.Submission.SchedulingS)
@@ -380,6 +401,72 @@ func TestTimingCriticalPath(t *testing.T) {
 	}
 	if a.Inline {
 		t.Error("step A should not be inline")
+	}
+}
+
+// TestTimingCriticalPathExceedsWallWithInlineMidChain documents a known
+// consequence of the inline-step wall_s definition: since an inline (zero
+// task) step's interval runs si.created (submission time) → si.completed,
+// it can overlap its upstream dependency's own interval instead of sitting
+// after it. When that inline step is mid-chain, critical_path_s — which
+// sums per-step intervals along dependency chains — can exceed wall_s. This
+// is documented in docs/API_GUIDE.md's timing section.
+func TestTimingCriticalPathExceedsWallWithInlineMidChain(t *testing.T) {
+	srv, st := testServerWithStore()
+
+	seedTimingWorkflow(t, st, "wf_inline_chain", []model.Step{
+		{ID: "A"},
+		{ID: "B", DependsOn: []string{"A"}},
+	})
+
+	subID := "sub_inline_chain"
+	seedTimingSub(t, st, &model.Submission{
+		ID: subID, WorkflowID: "wf_inline_chain", WorkflowName: "wf_inline_chain",
+		State: model.SubmissionStateCompleted, CreatedAt: at(0), CompletedAt: atp(12),
+	})
+
+	// Step A: one task, 0 -> 10 (created at submission time, matches si).
+	seedTimingStep(t, st, &model.StepInstance{
+		ID: "si_A", SubmissionID: subID, StepID: "A",
+		State: model.StepStateCompleted, CreatedAt: at(0), CompletedAt: atp(10),
+	})
+	seedTimingTask(t, st, &model.Task{
+		ID: "t_A", SubmissionID: subID, StepID: "A", StepInstanceID: "si_A",
+		State: model.TaskStateSuccess, ExecutorType: model.ExecutorTypeLocal, ScatterIndex: -1,
+		CreatedAt: at(0), StartedAt: atp(1), CompletedAt: atp(10),
+	})
+
+	// Step B: inline (zero tasks, when-skipped). Its interval is
+	// si.created (submission time, t=0) -> si.completed (t=12), which
+	// overlaps A's entire 0->10 interval rather than following it.
+	seedTimingStep(t, st, &model.StepInstance{
+		ID: "si_B", SubmissionID: subID, StepID: "B",
+		State: model.StepStateSkipped, CreatedAt: at(0), CompletedAt: atp(12),
+	})
+
+	rep := getTiming(t, srv, subID, "")
+
+	if rep.Submission.WallS == nil || !almostEq(*rep.Submission.WallS, 12) {
+		t.Fatalf("wall_s = %v, want 12", rep.Submission.WallS)
+	}
+	// critical_path_s = stepDurations[B] (12, inline) + stepDurations[A] (10)
+	// = 22, which exceeds wall_s (12). This is the documented caveat, not a
+	// bug: B's interval already contains A's, so summing them double-counts
+	// the overlap.
+	if rep.Submission.CriticalPathS == nil || !almostEq(*rep.Submission.CriticalPathS, 22) {
+		t.Fatalf("critical_path_s = %v, want 22", rep.Submission.CriticalPathS)
+	}
+	if *rep.Submission.CriticalPathS <= *rep.Submission.WallS {
+		t.Errorf("expected critical_path_s (%v) > wall_s (%v) for this inline-mid-chain case",
+			*rep.Submission.CriticalPathS, *rep.Submission.WallS)
+	}
+
+	b := findStepRow(t, rep, "B")
+	if !b.Inline {
+		t.Error("step B should be inline")
+	}
+	if b.WallS == nil || !almostEq(*b.WallS, 12) {
+		t.Errorf("step B wall_s = %v, want 12", b.WallS)
 	}
 }
 
@@ -539,6 +626,53 @@ func TestTimingIncludeChildren(t *testing.T) {
 		t.Errorf("child wall_s = %v, want 89", child.Submission.WallS)
 	}
 }
+
+// TestBuildSubmissionTimingExcludesSkippedIterationDurations kills the
+// mutant that would delete buildSubmissionTiming's own aggregate-exclusion
+// `continue` for skipped-iteration rows. taskTimingRow's early return
+// already guarantees a real skipped-iteration row's RunS/QueueS are nil, so
+// exercising the endpoint end-to-end can never distinguish "the continue
+// works" from "the continue is dead code". buildSubmissionTiming takes
+// already-projected []taskTiming and is package-visible, so this test
+// bypasses taskTimingRow entirely and hands it a skipped-iteration row with
+// durations that WOULD leak into the aggregates if the continue were
+// removed — a direct test of buildSubmissionTiming's own guard.
+func TestBuildSubmissionTimingExcludesSkippedIterationDurations(t *testing.T) {
+	sub := &model.Submission{
+		ID: "sub_mutant", State: model.SubmissionStateRunning, CreatedAt: at(0),
+	}
+	rows := []taskTiming{
+		{
+			TaskID: "t_real", StepID: "s1", State: string(model.TaskStateSuccess),
+			Kind: timingKindTask, CreatedAt: at(0),
+			RunS: floatp(30), QueueS: floatp(5),
+		},
+		{
+			// Hand-built as if the early return in taskTimingRow had NOT
+			// fired: a skipped-iteration row carrying non-nil durations.
+			// buildSubmissionTiming must still exclude it.
+			TaskID: "t_fake_synthetic", StepID: "s2", State: string(model.TaskStateSuccess),
+			Kind: timingKindSkippedIteration, CreatedAt: at(0),
+			RunS: floatp(999), QueueS: floatp(999),
+		},
+	}
+
+	out := buildSubmissionTiming(sub, rows, at(60))
+
+	if !almostEq(out.ComputeS, 30) {
+		t.Errorf("compute_s = %v, want 30 (fake synthetic's 999 must be excluded)", out.ComputeS)
+	}
+	if !almostEq(out.QueueS, 5) {
+		t.Errorf("queue_s = %v, want 5 (fake synthetic's 999 must be excluded)", out.QueueS)
+	}
+	// The row still counts toward the task summary — only durations are
+	// excluded from aggregates, not the row's presence.
+	if out.Counts.Total != 2 {
+		t.Errorf("counts.total = %d, want 2", out.Counts.Total)
+	}
+}
+
+func floatp(v float64) *float64 { return &v }
 
 // TestTimingNotFound: unknown submissions answer 404.
 func TestTimingNotFound(t *testing.T) {

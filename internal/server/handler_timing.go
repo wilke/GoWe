@@ -283,10 +283,15 @@ func taskTimingRow(t *model.Task, child *model.Submission, now time.Time) taskTi
 		row.ChildSubmissionID = child.ID
 	}
 
-	// Kind classification. Order matters: when-skip synthetics ARE
-	// ExecutorTypeSubworkflow rows, so the nil-started SUCCESS check runs
-	// first; a SKIPPED proxy reads as "cancelled" (state wins) but keeps its
-	// child_submission_id.
+	// Kind classification. Order matters: this SUCCESS-with-nil-started_at
+	// check must run before the executor-type check below. Plain-scatter
+	// when-skip synthetics keep the step's own executor type, but
+	// scatter-over-subworkflow when-skip synthetics ARE ExecutorTypeSubworkflow
+	// rows — see the scatter dispatch in internal/scheduler/loop.go. Checking
+	// executor type first would misclassify those as "subworkflow" instead of
+	// "skipped-iteration", giving them a queue_s and leaking them into the
+	// duration aggregates. A SKIPPED proxy reads as "cancelled" (state wins)
+	// but keeps its child_submission_id.
 	switch {
 	case t.State == model.TaskStateSuccess && t.StartedAt == nil:
 		row.Kind = timingKindSkippedIteration
