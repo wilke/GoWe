@@ -13,6 +13,7 @@ import (
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/executor"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
@@ -42,6 +43,8 @@ type Server struct {
 	workerAuth       *WorkerKeyAuthenticator  // validates static + DB-backed worker keys
 	fileUploadConfig *FileUploadConfig        // optional; file upload proxy configuration
 	wsStager         *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+	metrics          *metrics.Registry        // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
+	workflowNames    *workflowNameCache       // LRU backing workflowNameFor, the worker-report path's metric label lookup
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -96,6 +99,16 @@ func WithWorkspaceStager(ws *staging.WorkspaceStager) Option {
 	}
 }
 
+// WithMetrics sets the Prometheus metrics registry. A nil Registry (the
+// default when this option is never applied) leaves instrumentation
+// disabled — every Registry method no-ops on a nil receiver, so handler code
+// never checks for this.
+func WithMetrics(m *metrics.Registry) Option {
+	return func(s *Server) {
+		s.metrics = m
+	}
+}
+
 // WithRedeliverSourceDirs sets the directories the admin re-delivery endpoint
 // may read local originals from (symlinks resolved, segment-aware prefix).
 // Without it, re-delivery never opens a local file.
@@ -142,14 +155,15 @@ func WithWorkerKeyConfig(cfg *WorkerKeyConfig) Option {
 // sched may be nil if no scheduling is desired (e.g. in tests).
 func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, logger *slog.Logger, opts ...Option) *Server {
 	s := &Server{
-		router:    chi.NewRouter(),
-		logger:    logger.With("component", "server"),
-		config:    cfg,
-		startTime: time.Now(),
-		parser:    parser.New(logger),
-		validator: parser.NewValidator(logger),
-		store:     st,
-		scheduler: sched,
+		router:        chi.NewRouter(),
+		logger:        logger.With("component", "server"),
+		config:        cfg,
+		startTime:     time.Now(),
+		parser:        parser.New(logger),
+		validator:     parser.NewValidator(logger),
+		store:         st,
+		scheduler:     sched,
+		workflowNames: newWorkflowNameCache(defaultWorkflowNameCacheSize),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -174,6 +188,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	if s.adminConfig != nil {
 		s.ui.WithAdminChecker(s.adminConfig)
 	}
+	s.ui.WithMetrics(s.metrics)
 
 	s.routes()
 	return s

@@ -43,6 +43,11 @@ The `GET /api/v1/submissions/{id}/timing` response (and `gowe status --timing`) 
 CLI `--timing` table grows the corresponding columns; the web UI is unchanged aside from the
 `started_at`-nulling behavior above.
 
+Also new and entirely optional: Prometheus metrics on a second listener, off by default —
+`--metrics-addr`, `--metrics-workflow-label`, `--metrics-label-cap` (see
+[`docs/tools/server.md`](tools/server.md#metrics) and
+[`PRODUCTION.md`](PRODUCTION.md#metrics)).
+
 ## 0.14.x → 0.15.0
 
 0.15.0 ([CHANGELOG](../CHANGELOG.md)) changes four things an operator has to know about:

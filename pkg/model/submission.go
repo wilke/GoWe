@@ -74,6 +74,14 @@ type TaskSummary struct {
 	Skipped   int `json:"skipped"`
 }
 
+// SubmissionMeta is the lean projection of a submission's identity used for
+// label lookups (e.g. Prometheus workflow labeling): just enough to name the
+// submission's workflow without loading its inputs/outputs/tasks.
+type SubmissionMeta struct {
+	WorkflowName string            `json:"workflow_name"`
+	Labels       map[string]string `json:"labels,omitempty"`
+}
+
 // ComputeTaskSummary calculates the TaskSummary from a slice of Tasks.
 func ComputeTaskSummary(tasks []Task) TaskSummary {
 	s := TaskSummary{Total: len(tasks)}

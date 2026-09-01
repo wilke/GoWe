@@ -123,6 +123,7 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 		if !applied {
 			continue // Left PENDING concurrently; don't persist rewritten inputs.
 		}
+		l.metrics.ObserveStaging("prestage", sub.PrestageStartedAt, sub.PrestageCompletedAt)
 
 		// Persist the rewritten inputs.
 		if err := l.store.UpdateSubmissionInputs(ctx, sub.ID, sub.Inputs); err != nil {
@@ -234,6 +235,7 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 					"submission_id", sub.ID,
 					"state", sub.OutputState,
 				)
+				l.metrics.ObserveStaging("poststage", sub.PoststageStartedAt, sub.PoststageCompletedAt)
 			}
 		} else {
 			l.failOutputStaging(ctx, sub, "workspace output upload failed")
@@ -280,6 +282,10 @@ func (l *Loop) failOutputStaging(ctx context.Context, sub *model.Submission, rea
 		l.logger.Error("mark output staging failed", "submission_id", sub.ID, "error", err)
 	} else {
 		l.logger.Info("submission failed: output staging", "submission_id", sub.ID, "reason", reason)
+		// PoststageStartedAt may be nil here (no token, unsupported
+		// destination scheme) — ObserveStaging's own started-nil guard
+		// skips the observation in that case, same trust rule as tasks.
+		l.metrics.ObserveStaging("poststage", sub.PoststageStartedAt, sub.PoststageCompletedAt)
 	}
 }
 

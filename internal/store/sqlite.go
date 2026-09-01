@@ -831,6 +831,30 @@ func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Ti
 	return counts, rows.Err()
 }
 
+// GetSubmissionMeta is a lean SELECT of workflow_name and labels only — no
+// inputs/outputs/tasks/timestamps, no token decryption — for label lookups
+// (e.g. Prometheus workflow labeling) that only need to name a submission's
+// workflow.
+func (s *SQLiteStore) GetSubmissionMeta(ctx context.Context, id string) (*model.SubmissionMeta, error) {
+	s.logger.Debug("sql", "op", "select_meta", "table", "submissions", "id", id)
+
+	var meta model.SubmissionMeta
+	var labelsJSON string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT workflow_name, labels FROM submissions WHERE id = ?`, id,
+	).Scan(&meta.WorkflowName, &labelsJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(labelsJSON, &meta.Labels, "labels"); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
 // execSubmissionUpdate marshals the mutable submission columns and runs the
 // shared UPDATE with the given WHERE clause, returning the number of rows
 // affected. It is the single write path behind UpdateSubmission and
@@ -1675,6 +1699,62 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	defer rows.Close()
 
 	return s.scanTasks(rows)
+}
+
+// CountTasksByState returns the current global count of tasks per state (a
+// single GROUP BY query), used to refresh the gowe_tasks{state} gauge once
+// per scheduler tick.
+func (s *SQLiteStore) CountTasksByState(ctx context.Context) (map[string]int, error) {
+	s.logger.Debug("sql", "op", "count_by_state", "table", "tasks")
+
+	rows, err := s.db.QueryContext(ctx, `SELECT state, COUNT(*) FROM tasks GROUP BY state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var state string
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, err
+		}
+		counts[state] = count
+	}
+	return counts, rows.Err()
+}
+
+// CountTasksQueuedByGroup returns the current count of QUEUED tasks per
+// worker group (a single GROUP BY query on the runtime_hints worker_group
+// JSON field, ” normalized to "default" in SQL so the map's keys already
+// match the gowe_queue_depth{group} label convention), used to refresh that
+// gauge once per scheduler tick. json_extract reads the plaintext
+// worker_group field directly — only the nested HTTP bearer credential
+// inside runtime_hints is ever encrypted (see tokens.go), so this needs no
+// decryption.
+func (s *SQLiteStore) CountTasksQueuedByGroup(ctx context.Context) (map[string]int, error) {
+	s.logger.Debug("sql", "op", "count_queued_by_group", "table", "tasks")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(NULLIF(json_extract(runtime_hints, '$.worker_group'), ''), 'default') AS grp, COUNT(*)
+		 FROM tasks WHERE state = ?
+		 GROUP BY grp`, string(model.TaskStateQueued))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var group string
+		var count int
+		if err := rows.Scan(&group, &count); err != nil {
+			return nil, err
+		}
+		counts[group] = count
+	}
+	return counts, rows.Err()
 }
 
 func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {

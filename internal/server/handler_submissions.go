@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/pkg/model"
 )
@@ -279,136 +280,42 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 	sub.State = model.SubmissionStateCancelled
 	sub.CompletedAt = &now
 
-	if err := s.store.UpdateSubmission(r.Context(), sub); err != nil {
+	// The full cancel sequence (persist, cancel non-terminal steps/tasks,
+	// synchronous descendant fan-out, metrics) is shared with the web UI's
+	// cancel handler via internal/cancelseq — see that package's doc comment
+	// for why it's the seam (closes #185: the UI handler used to skip all of
+	// this). Fan-out is a belt over the scheduler's braces:
+	// CancelNonTerminalTasks deliberately excludes subworkflow proxies so
+	// the scheduler's per-tick reconciliation can cascade the cancel one
+	// nesting level per tick — but that leaves children RUNNING until the
+	// scheduler gets around to them. Cancelling them here, at cancel-accept
+	// time, means workers see the kill signal on their next heartbeat even
+	// if the scheduler is slow or stopped. Every write is CAS, so this is
+	// idempotent against a concurrently-running scheduler cascade (and vice
+	// versa).
+	result, err := cancelseq.Run(r.Context(), s.store, s.metrics, s.logger, sub, now)
+	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 		return
 	}
 
-	// Cancel all non-terminal step instances in a single UPDATE.
-	stepsCancelled, err := s.store.CancelNonTerminalSteps(r.Context(), sub.ID, now)
-	if err != nil {
-		s.logger.Error("cancel non-terminal steps", "submission_id", sub.ID, "error", err)
-	}
-
-	// Cancel all non-terminal tasks in a single UPDATE.
-	tasksCancelled, err := s.store.CancelNonTerminalTasks(r.Context(), sub.ID, now)
-	if err != nil {
-		s.logger.Error("cancel non-terminal tasks", "submission_id", sub.ID, "error", err)
-	}
-
-	// Synchronous fan-out to descendant child submissions (belt over the
-	// scheduler's braces): CancelNonTerminalTasks deliberately excludes
-	// subworkflow proxies so the scheduler's per-tick reconciliation can
-	// cascade the cancel one nesting level per tick — but that leaves
-	// children RUNNING until the scheduler gets around to them. Cancel them
-	// here, at cancel-accept time, so workers see the kill signal on their
-	// next heartbeat even if the scheduler is slow or stopped. Every write
-	// is CAS, so this is idempotent against a concurrently-running
-	// scheduler cascade (and vice versa).
-	childrenCancelled := s.cancelDescendantSubmissions(r.Context(), sub.ID, now, map[string]bool{})
-
 	respondOK(w, reqID, map[string]any{
 		"id":                      sub.ID,
 		"state":                   sub.State,
-		"steps_cancelled":         stepsCancelled,
-		"tasks_cancelled":         tasksCancelled,
-		"tasks_already_completed": max(0, len(sub.Tasks)-tasksCancelled),
-		"children_cancelled":      childrenCancelled,
+		"steps_cancelled":         result.StepsCancelled,
+		"tasks_cancelled":         result.TasksCancelled,
+		"tasks_already_completed": max(0, len(sub.Tasks)-result.TasksCancelled),
+		"children_cancelled":      result.ChildrenCancelled,
 	})
 }
 
-// cancelDescendantSubmissions walks the given submission's subworkflow proxy
-// tasks and synchronously cancels every non-terminal descendant child
-// submission (any nesting depth), then retires the proxies as SKIPPED. It
-// returns the number of child submissions this call actually transitioned to
-// CANCELLED.
-//
-// This mirrors the scheduler's cancelChildSubmission cascade but runs it to
-// full depth in one pass; the scheduler's per-tick reconciliation remains the
-// backstop for cancels arriving via other paths. All writes are CAS
-// (FinalizeSubmission / TerminalizeTask skip already-terminal rows;
-// CancelNonTerminalSteps/Tasks only touch non-terminal rows), so racing the
-// scheduler is harmless in both directions. The visited set guards against
-// cycles, mirroring hasActiveChildSubmissions.
+// cancelDescendantSubmissions is a thin wrapper around
+// cancelseq.CancelDescendants, kept so existing tests that exercise the
+// descendant fan-out directly (bypassing the HTTP handler) don't need to
+// import internal/cancelseq themselves.
 func (s *Server) cancelDescendantSubmissions(ctx context.Context, submissionID string, now time.Time, visited map[string]bool) int {
-	if visited[submissionID] {
-		return 0
-	}
-	visited[submissionID] = true
-
-	tasks, err := s.store.ListTasksBySubmission(ctx, submissionID)
-	if err != nil {
-		s.logger.Error("cancel fan-out: list tasks", "submission_id", submissionID, "error", err)
-		return 0
-	}
-
-	cancelled := 0
-	for _, task := range tasks {
-		if task.ExecutorType != model.ExecutorTypeSubworkflow {
-			continue
-		}
-		children, err := s.store.GetChildSubmissions(ctx, task.ID)
-		if err != nil {
-			s.logger.Error("cancel fan-out: list children", "task_id", task.ID, "error", err)
-			continue
-		}
-		// A childless proxy is mid-dispatch: the scheduler may create the
-		// child at any moment. Leave the proxy RUNNING — retiring it here
-		// would disarm pollSubworkflowTask's reconciliation, the only path
-		// that cancels a child created after this walk. A childless proxy
-		// holds no worker tasks, so leaving it costs nothing.
-		if len(children) == 0 {
-			continue
-		}
-		// If any child could not be verifiably cancelled, keep the proxy
-		// RUNNING so the scheduler's reconciliation stays armed as backstop.
-		allHandled := true
-		for _, child := range children {
-			if !child.State.IsTerminal() {
-				child.State = model.SubmissionStateCancelled
-				child.CompletedAt = &now
-				applied, err := s.store.FinalizeSubmission(ctx, child)
-				if err != nil {
-					s.logger.Error("cancel fan-out: finalize child", "child_id", child.ID, "error", err)
-					allHandled = false
-					continue
-				}
-				if applied {
-					cancelled++
-					s.logger.Info("child submission cancelled (handler fan-out)", "child_id", child.ID)
-				} else if fresh, err := s.store.GetSubmission(ctx, child.ID); err == nil && fresh != nil {
-					// A concurrent writer (scheduler cascade or completion)
-					// terminalized the child first — leave its state alone.
-					s.logger.Debug("cancel fan-out: child already terminal",
-						"child_id", child.ID, "state", fresh.State)
-				}
-			}
-			// Steps/tasks: these only touch non-terminal rows, so they are
-			// safe (and useful) regardless of who terminalized the child.
-			if _, err := s.store.CancelNonTerminalSteps(ctx, child.ID, now); err != nil {
-				s.logger.Error("cancel fan-out: cancel child steps", "child_id", child.ID, "error", err)
-			}
-			if _, err := s.store.CancelNonTerminalTasks(ctx, child.ID, now); err != nil {
-				s.logger.Error("cancel fan-out: cancel child tasks", "child_id", child.ID, "error", err)
-			}
-			// Recurse even into already-terminal children: grandchildren may
-			// still be active (e.g. a scheduler cascade cancelled the child
-			// but has not reached the next nesting level yet).
-			cancelled += s.cancelDescendantSubmissions(ctx, child.ID, now, visited)
-		}
-		if !allHandled {
-			continue
-		}
-		// Every child verifiably terminal — retire the proxy as SKIPPED.
-		// CAS: an already-terminal proxy (concurrent scheduler write) stays.
-		task.State = model.TaskStateSkipped
-		task.CompletedAt = &now
-		if _, err := s.store.TerminalizeTask(ctx, task); err != nil {
-			s.logger.Error("cancel fan-out: skip proxy task", "task_id", task.ID, "error", err)
-		}
-	}
-	return cancelled
+	return cancelseq.CancelDescendants(ctx, s.store, s.metrics, s.logger, submissionID, now, visited)
 }
 
 // hasActiveChildSubmissions reports whether any child submission spawned by the

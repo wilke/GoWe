@@ -7,9 +7,34 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/me/gowe/internal/metrics"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
+
+// runSecondsSampleCount sums gowe_task_run_seconds samples across every
+// label combination, via the public Gatherer — tests here only care about
+// exactly-once counting, not which labels won.
+func runSecondsSampleCount(t *testing.T, reg *metrics.Registry) uint64 {
+	t.Helper()
+	mfs, err := reg.Gatherer().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gowe_task_run_seconds" {
+			continue
+		}
+		var total uint64
+		for _, m := range mf.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+		return total
+	}
+	return 0
+}
 
 func doPut(t *testing.T, srv *Server, path, body string) (*httptest.ResponseRecorder, envelope) {
 	t.Helper()
@@ -204,9 +229,13 @@ func TestWorkerTaskComplete(t *testing.T) {
 }
 
 // TestWorkerTaskComplete_AlreadyTerminal409: a duplicate report on a task that
-// already reached a terminal state is deliberately refused.
+// already reached a terminal state is deliberately refused. Extended to
+// verify exactly-once metrics observation: checkoutTask stamps started_at
+// (seedQueuedWorkerTask alone does not), so the first report observes one
+// gowe_task_run_seconds sample and the refused duplicate observes none.
 func TestWorkerTaskComplete_AlreadyTerminal409(t *testing.T) {
-	srv := testServer()
+	reg := metrics.NewRegistry(metrics.Config{})
+	srv := testServer(WithMetrics(reg))
 	workerID := registerTestWorker(t, srv)
 	_, subID := createTestSubmission(t, srv)
 	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_dup")
@@ -222,6 +251,76 @@ func TestWorkerTaskComplete_AlreadyTerminal409(t *testing.T) {
 	}
 	if env.Error == nil || env.Error.Code != model.ErrConflict {
 		t.Errorf("error = %+v, want CONFLICT", env.Error)
+	}
+	if n := runSecondsSampleCount(t, reg); n != 1 {
+		t.Errorf("gowe_task_run_seconds samples = %d, want 1 (exactly-once despite the duplicate report)", n)
+	}
+}
+
+// racyTerminalizeStore wraps a real store.Store and, on TerminalizeTask,
+// races the caller: it first flips the target row to FAILED via the
+// embedded store (a write that itself wins, since the row is not yet
+// terminal), then delegates the caller's original TerminalizeTask call —
+// which now loses its own CAS because the row is already terminal. This
+// models a task that reached a terminal state (e.g. a cancel fan-out
+// SKIPPED it, or another report raced this one) strictly between the
+// handler's earlier GetTask/IsTerminal pre-check and its TerminalizeTask
+// call, without needing real goroutines to hit the window.
+type racyTerminalizeStore struct {
+	store.Store
+}
+
+func (r *racyTerminalizeStore) TerminalizeTask(ctx context.Context, task *model.Task) (bool, error) {
+	racer := *task
+	racer.State = model.TaskStateFailed
+	now := time.Now().UTC()
+	racer.CompletedAt = &now
+	if _, err := r.Store.TerminalizeTask(ctx, &racer); err != nil {
+		return false, err
+	}
+	return r.Store.TerminalizeTask(ctx, task)
+}
+
+// TestWorkerTaskComplete_CASLoss_AppliedGate409NoObservation covers the
+// applied-gate on the complete handler's CAS write (internal/server/handler_workers.go
+// TerminalizeTask call around line 403): the pre-check task.State.IsTerminal()
+// passes (the task is RUNNING when read), but the CAS itself returns
+// applied=false because the row was terminalized concurrently. The handler
+// must respond 409 and must NOT observe a gowe_task_run_seconds sample for
+// the losing write — mutation-tested by temporarily moving the observation
+// into the !applied branch (see task notes); reverted after confirming that
+// mutation makes this test fail.
+func TestWorkerTaskComplete_CASLoss_AppliedGate409NoObservation(t *testing.T) {
+	reg := metrics.NewRegistry(metrics.Config{})
+	srv, realStore := testServerWithStore(WithMetrics(reg))
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_cas_loss")
+	checkoutTask(t, srv, workerID)
+
+	// Swap in the racing store only for the complete call: the pre-check
+	// GetTask still reads a RUNNING row through it, but TerminalizeTask
+	// loses its own CAS to the race it injects.
+	srv.store = &racyTerminalizeStore{Store: realStore}
+
+	w, env := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/complete",
+		`{"state":"SUCCESS","exit_code":0}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrConflict {
+		t.Errorf("error = %+v, want CONFLICT", env.Error)
+	}
+	if n := runSecondsSampleCount(t, reg); n != 0 {
+		t.Errorf("gowe_task_run_seconds samples = %d, want 0 (CAS loss must not observe)", n)
+	}
+
+	got, err := realStore.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.State != model.TaskStateFailed {
+		t.Errorf("task state = %s, want FAILED (the race's own write won)", got.State)
 	}
 }
 

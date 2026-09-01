@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/bvbrc"
+	"github.com/me/gowe/internal/cancelseq"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/store"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
@@ -37,6 +39,11 @@ type UI struct {
 	bvbrcCaller  bvbrc.RPCCaller // AppService caller
 	adminChecker AdminChecker    // Admin role checker (nil = no admins)
 	startTime    time.Time
+
+	// metrics is nil unless the server was started with --metrics-addr;
+	// every Registry method no-ops on a nil receiver, so handler code never
+	// checks for this.
+	metrics *metrics.Registry
 
 	// workspaceURL is the BV-BRC Workspace JSON-RPC endpoint. Every
 	// workspace operation builds a per-request client against it with the
@@ -129,6 +136,12 @@ func (ui *UI) WithBVBRCCaller(caller bvbrc.RPCCaller) {
 // WithAdminChecker sets the admin role checker.
 func (ui *UI) WithAdminChecker(checker AdminChecker) {
 	ui.adminChecker = checker
+}
+
+// WithMetrics sets the Prometheus metrics registry (nil is valid and leaves
+// instrumentation disabled).
+func (ui *UI) WithMetrics(m *metrics.Registry) {
+	ui.metrics = m
 }
 
 // HandleLogin renders the login page.
@@ -734,9 +747,12 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 
 // HandleSubmissionCancel cancels a running submission (HTMX).
 //
-// Note: unlike the API cancel handler, this path performs no synchronous
-// fan-out to sub-workflow child submissions — the scheduler's reconciliation
-// cascade cancels them one nesting level per tick (correct, slightly slower).
+// This runs the same cancel sequence as the API handler (internal/server),
+// shared via internal/cancelseq: cancel non-terminal steps/tasks, fan out
+// synchronously to sub-workflow child submissions, and observe metrics.
+// Before internal/cancelseq existed, this handler finalized the submission
+// directly and did none of that — a UI-initiated cancel left tasks running
+// and workers never learned about it (issue #185).
 func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	id := ui.pathParam(r, "id")
@@ -759,10 +775,10 @@ func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sub.State = model.SubmissionStateCancelled
-	now := time.Now()
+	now := time.Now().UTC()
 	sub.CompletedAt = &now
 
-	if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
+	if _, err := cancelseq.Run(r.Context(), ui.store, ui.metrics, ui.logger, sub, now); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
