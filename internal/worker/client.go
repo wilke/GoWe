@@ -228,10 +228,23 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, respBody)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return resp, nil
+}
+
+// StatusError is the error doRequest returns for HTTP responses >= 400,
+// preserving the status code so callers can distinguish a deliberate refusal
+// (409 Conflict — e.g. a report for a task that is already terminal or owned
+// by another worker) from transient server errors (5xx).
+type StatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
 }
 
 // decodeResponseData extracts the data field from the API response envelope.

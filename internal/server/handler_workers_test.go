@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -130,21 +131,60 @@ func TestWorkerCheckout_NotFound(t *testing.T) {
 	}
 }
 
+// seedQueuedWorkerTask creates a QUEUED worker-executor task directly in the
+// store (emulating scheduler dispatch, which sets external_id to the task's
+// own id via executor.Submit) so it can be checked out through the API.
+func seedQueuedWorkerTask(t *testing.T, srv *Server, subID, id string) string {
+	t.Helper()
+	task := &model.Task{
+		ID:           id,
+		SubmissionID: subID,
+		StepID:       "step1",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		ExternalID:   id,
+		Inputs:       map[string]any{},
+		Outputs:      map[string]any{},
+		Job:          map[string]any{},
+		ScatterIndex: -1,
+	}
+	if err := srv.store.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("seed queued worker task: %v", err)
+	}
+	return id
+}
+
+// checkoutTask checks out the next task for workerID through the API.
+func checkoutTask(t *testing.T, srv *Server, workerID string) *model.Task {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/v1/workers/"+workerID+"/work", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("checkout: status=%d, body=%s", w.Code, w.Body.String())
+	}
+	var env envelope
+	json.Unmarshal(w.Body.Bytes(), &env)
+	var task model.Task
+	if err := json.Unmarshal(env.Data, &task); err != nil {
+		t.Fatalf("decode checkout task: %v", err)
+	}
+	return &task
+}
+
 func TestWorkerTaskComplete(t *testing.T) {
 	srv := testServer()
 	workerID := registerTestWorker(t, srv)
 
-	// Create a workflow + submission with tasks.
-	_, subID := createTestSubmissionWithTasks(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_1")
 
-	// Get the task IDs.
-	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
-	var tasks []map[string]any
-	json.Unmarshal(env.Data, &tasks)
-	if len(tasks) == 0 {
-		t.Fatal("no tasks found")
+	// The worker must own the task (checkout sets external_id) before its
+	// report is accepted.
+	checked := checkoutTask(t, srv, workerID)
+	if checked.ID != taskID {
+		t.Fatalf("checked out %s, want %s", checked.ID, taskID)
 	}
-	taskID := tasks[0]["id"].(string)
 
 	// Report completion.
 	body := `{"state":"SUCCESS","exit_code":0,"stdout":"output","stderr":"","outputs":{"result":"file:///tmp/out"}}`
@@ -161,6 +201,176 @@ func TestWorkerTaskComplete(t *testing.T) {
 	if data["state"] != "SUCCESS" {
 		t.Errorf("state = %v, want SUCCESS", data["state"])
 	}
+}
+
+// TestWorkerTaskComplete_AlreadyTerminal409: a duplicate report on a task that
+// already reached a terminal state is deliberately refused.
+func TestWorkerTaskComplete_AlreadyTerminal409(t *testing.T) {
+	srv := testServer()
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_dup")
+	checkoutTask(t, srv, workerID)
+
+	body := `{"state":"SUCCESS","exit_code":0}`
+	if w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/complete", body); w.Code != http.StatusOK {
+		t.Fatalf("first report: status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	w, env := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/complete", body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate report: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrConflict {
+		t.Errorf("error = %+v, want CONFLICT", env.Error)
+	}
+}
+
+// TestWorkerTaskComplete_NotOwner409: a report from a worker that does not own
+// the task (external_id mismatch) is refused, and the task is untouched.
+func TestWorkerTaskComplete_NotOwner409(t *testing.T) {
+	srv := testServer()
+	ownerID := registerTestWorker(t, srv)
+	otherID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_owner")
+	checkoutTask(t, srv, ownerID)
+
+	w, _ := doPut(t, srv, "/api/v1/workers/"+otherID+"/tasks/"+taskID+"/complete",
+		`{"state":"FAILED","exit_code":1}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := srv.store.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.State != model.TaskStateRunning || got.ExternalID != ownerID {
+		t.Errorf("task = %s/%s, want RUNNING/%s (untouched by non-owner report)", got.State, got.ExternalID, ownerID)
+	}
+}
+
+// TestWorkerTaskComplete_RequeuedOwnership: after a requeue (external_id
+// cleared) the former owner's late report is refused; the worker that
+// re-checks the task out is accepted (F-K).
+func TestWorkerTaskComplete_RequeuedOwnership(t *testing.T) {
+	srv := testServer()
+	oldWorker := registerTestWorker(t, srv)
+	newWorker := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_requeue")
+	checkoutTask(t, srv, oldWorker)
+
+	// Server-side requeue (e.g. the stale-worker reaper): external_id = ''.
+	if _, err := srv.store.RequeueWorkerTasks(context.Background(), oldWorker); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+
+	// The former owner's late report must be refused.
+	w, _ := doPut(t, srv, "/api/v1/workers/"+oldWorker+"/tasks/"+taskID+"/complete",
+		`{"state":"SUCCESS","exit_code":0}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale owner report: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	// The new owner checks it out and reports successfully.
+	checked := checkoutTask(t, srv, newWorker)
+	if checked.ID != taskID {
+		t.Fatalf("re-checkout got %s, want %s", checked.ID, taskID)
+	}
+	w, _ = doPut(t, srv, "/api/v1/workers/"+newWorker+"/tasks/"+taskID+"/complete",
+		`{"state":"SUCCESS","exit_code":0}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("new owner report: status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	// And the former owner is still refused (terminal now).
+	w, _ = doPut(t, srv, "/api/v1/workers/"+oldWorker+"/tasks/"+taskID+"/complete",
+		`{"state":"FAILED","exit_code":1}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale owner after terminal: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkerTaskStatus_Guards: the status endpoint accepts only non-terminal
+// transitions on tasks the reporting worker owns (F-L + F-K).
+func TestWorkerTaskStatus_Guards(t *testing.T) {
+	srv := testServer()
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	ctx := context.Background()
+
+	t.Run("terminal current state refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_term")
+		task, _ := srv.store.GetTask(ctx, taskID)
+		task.State = model.TaskStateSuccess
+		if err := srv.store.UpdateTask(ctx, task); err != nil {
+			t.Fatalf("terminalize seed: %v", err)
+		}
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"RUNNING"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("terminal target refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_target")
+		checkoutTask(t, srv, workerID) // RUNNING, owned by workerID
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"SUCCESS"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+		got, _ := srv.store.GetTask(ctx, taskID)
+		if got.State != model.TaskStateRunning {
+			t.Errorf("state = %s, want RUNNING (terminalizing via /status must be refused)", got.State)
+		}
+	})
+
+	t.Run("non-owner refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_owner")
+		// Not checked out: external_id is the task's own id, not the worker's.
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"RUNNING"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+		got, _ := srv.store.GetTask(ctx, taskID)
+		if got.State != model.TaskStateQueued {
+			t.Errorf("state = %s, want QUEUED (untouched)", got.State)
+		}
+	})
+
+	t.Run("invalid transition refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_trans")
+		task, _ := srv.store.GetTask(ctx, taskID)
+		task.ExternalID = workerID // owner, still QUEUED
+		if err := srv.store.UpdateTask(ctx, task); err != nil {
+			t.Fatalf("set owner: %v", err)
+		}
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"PENDING"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("owner non-terminal transition accepted", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_ok")
+		task, _ := srv.store.GetTask(ctx, taskID)
+		task.ExternalID = workerID // owner, still QUEUED
+		if err := srv.store.UpdateTask(ctx, task); err != nil {
+			t.Fatalf("set owner: %v", err)
+		}
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"RUNNING"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+		}
+		got, _ := srv.store.GetTask(ctx, taskID)
+		if got.State != model.TaskStateRunning {
+			t.Errorf("state = %s, want RUNNING", got.State)
+		}
+		if got.ExternalID != workerID {
+			t.Errorf("external_id = %q, want %q (CAS write must not touch it)", got.ExternalID, workerID)
+		}
+	})
 }
 
 func TestWorkerTaskComplete_NotFound(t *testing.T) {

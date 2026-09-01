@@ -80,6 +80,16 @@ type Store interface {
 	// the task). Used for retry marking (FAILED→RETRYING) and retry claiming
 	// (RETRYING→SCHEDULED).
 	CASTaskState(ctx context.Context, id string, from, to model.TaskState) (bool, error)
+	// MarkTaskRunning transitions a task QUEUED→RUNNING (compare-and-set),
+	// stamping started_at only when it is not already set. It writes no other
+	// column — in particular never external_id — so a poll observation can
+	// never clobber a concurrent checkout's worker assignment (the F-J zombie
+	// class). applied=false (no error) when the task is no longer QUEUED.
+	MarkTaskRunning(ctx context.Context, id string) (bool, error)
+	// UpdateTaskPriority sets only the priority column. A full-row
+	// read-modify-write here would be in the same clobber class as F-J: it
+	// could overwrite a concurrent checkout's external_id/started_at.
+	UpdateTaskPriority(ctx context.Context, id string, priority int) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 	GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error)

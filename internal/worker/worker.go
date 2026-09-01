@@ -2,8 +2,10 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -475,7 +477,12 @@ func (w *Worker) pollAndExecute(ctx context.Context) error {
 
 	// Execute the task (blocking). Heartbeat continues in background goroutine.
 	if err := w.executeTask(ctx, task); err != nil {
-		w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
+		if errors.Is(err, errReportDeclined) {
+			// The server deliberately dropped the report (stale ownership or
+			// already-terminal task); reportComplete logged it at Info.
+		} else {
+			w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
+		}
 	}
 
 	return nil
@@ -618,23 +625,79 @@ func redactSecrets(s string, secrets map[string]string) string {
 	return s
 }
 
+// reportRetryBackoff is the base delay between report attempts (attempt n
+// waits (n-1)×this). A variable so tests can shrink it.
+var reportRetryBackoff = 500 * time.Millisecond
+
+// errReportDeclined marks a report the server deliberately refused (HTTP 409):
+// the task is already terminal, or it is owned by another worker (it was
+// requeued and re-checked-out while this worker was still finishing). The
+// result is dropped and the task dir kept — callers skip cleanup on error —
+// and the report is never retried.
+var errReportDeclined = errors.New("server declined report")
+
 // reportComplete reports a final task result, detaching from ctx cancellation so a
 // cancelled or killed task can still be reported (bounded by a short timeout).
+// Transient failures (network errors, 5xx) are retried up to 3 attempts with a
+// short backoff; a 409 is a deliberate server-side drop and is never retried.
 func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskResult) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	return w.client.ReportComplete(rctx, taskID, result)
+
+	const attempts = 3
+	var lastErr error
+	for i := 1; i <= attempts; i++ {
+		if i > 1 {
+			select {
+			case <-time.After(time.Duration(i-1) * reportRetryBackoff):
+			case <-rctx.Done():
+				return lastErr
+			}
+		}
+		err := w.client.ReportComplete(rctx, taskID, result)
+		if err == nil {
+			return nil
+		}
+		var se *StatusError
+		if errors.As(err, &se) {
+			if se.StatusCode == http.StatusConflict {
+				// Deliberate drop: keep the task dir, drop the result.
+				w.logger.Info("server declined report: dropping result, keeping task dir",
+					"task_id", taskID, "detail", se.Body)
+				return fmt.Errorf("%w: %s", errReportDeclined, se.Body)
+			}
+			if se.StatusCode < 500 {
+				// Other 4xx (e.g. 404): retrying cannot help.
+				return err
+			}
+		}
+		lastErr = err
+		if i < attempts {
+			w.logger.Warn("report failed, will retry", "task_id", taskID,
+				"attempt", i, "max_attempts", attempts, "error", err)
+		}
+	}
+	return lastErr
 }
 
 // reportCancelled reports a task as SKIPPED (the scheduler's terminal state for a
 // cancelled task), used when the server has cancelled the task mid-execution.
 func (w *Worker) reportCancelled(ctx context.Context, task *model.Task) error {
 	exitCode := -1
-	return w.reportComplete(ctx, task.ID, TaskResult{
+	err := w.reportComplete(ctx, task.ID, TaskResult{
 		State:    model.TaskStateSkipped,
 		ExitCode: &exitCode,
 		Stderr:   "task cancelled by server",
 	})
+	if errors.Is(err, errReportDeclined) {
+		// Routine after a cancel fan-out: the server's cancel already SKIPPED
+		// the task, so its 409 to our SKIPPED report is the expected outcome,
+		// not an error.
+		w.logger.Info("cancel report declined: task already terminal on server",
+			"task_id", task.ID)
+		return nil
+	}
+	return err
 }
 
 // handleExecCancellation reports the right terminal outcome when tool execution

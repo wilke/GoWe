@@ -1759,6 +1759,15 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				l.pollSubworkflowTask(ctx, task, affected)
 				continue
 			}
+			// QUEUED worker tasks change state only via server handlers
+			// (checkout → RUNNING, complete → terminal): polling them here
+			// races the checkout transaction — the stale snapshot write was
+			// the F-J zombie (external_id clobbered, task invisible to
+			// Requeue/ReconcileWorkerTasks). They stay in the RUNNING scan so
+			// worker-reported terminal states are still collected.
+			if state == model.TaskStateQueued && task.ExecutorType == model.ExecutorTypeWorker {
+				continue
+			}
 			exec, err := l.registry.Get(task.ExecutorType)
 			if err != nil {
 				l.logger.Error("get executor for poll", "task_id", task.ID, "error", err)
@@ -1775,12 +1784,8 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				continue
 			}
 
-			task.State = newState
-			if newState == model.TaskStateRunning && task.StartedAt == nil {
-				now := time.Now().UTC()
-				task.StartedAt = &now
-			}
 			if newState.IsTerminal() {
+				task.State = newState
 				now := time.Now().UTC()
 				task.CompletedAt = &now
 				stdout, stderr, _ := exec.Logs(ctx, task)
@@ -1804,11 +1809,33 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				continue
 			}
 
-			if err := l.store.UpdateTask(ctx, task); err != nil {
-				l.logger.Error("update polled task", "task_id", task.ID, "error", err)
+			// Non-terminal observations persist through narrow CAS writes only —
+			// never a full-row UpdateTask, which would clobber concurrent
+			// handler writes (external_id, started_at; the F-J zombie).
+			if task.State == model.TaskStateQueued && newState == model.TaskStateRunning {
+				applied, err := l.store.MarkTaskRunning(ctx, task.ID)
+				if err != nil {
+					l.logger.Error("mark polled task running", "task_id", task.ID, "error", err)
+					continue
+				}
+				if !applied {
+					// The task left QUEUED concurrently (checkout, cancel SKIP,
+					// worker report) — the winning write stands.
+					l.logger.Debug("task no longer QUEUED, leaving as-is",
+						"task_id", task.ID, "polled_state", newState)
+					continue
+				}
+				affected[task.SubmissionID] = true
 				continue
 			}
-			affected[task.SubmissionID] = true
+
+			// Any other non-terminal observation — e.g. a transient bvbrc
+			// RUNNING→QUEUED regression — is deliberately NOT persisted:
+			// MarkTaskRunning cannot express it, and rewriting the row from a
+			// stale snapshot is exactly the F-J clobber. The platform state is
+			// re-observed next tick. [N1]
+			l.logger.Debug("ignoring non-terminal state observation",
+				"task_id", task.ID, "state", task.State, "polled_state", newState)
 		}
 	}
 
@@ -2073,8 +2100,14 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 			// No capable worker exists — retrying won't help. Exhaust retries
 			// so markRetries does not re-queue this task.
 			oldest.MaxRetries = oldest.RetryCount
-			if err := l.store.UpdateTask(ctx, oldest); err != nil {
+			// CAS write: a concurrent cancel may have already terminalized
+			// this task (SKIPPED); the stuck-fail must not overwrite it.
+			applied, err := l.store.TerminalizeTask(ctx, oldest)
+			if err != nil {
 				l.logger.Error("fail stuck task", "task_id", oldest.ID, "error", err)
+			} else if !applied {
+				l.logger.Info("stuck task reached a terminal state concurrently, leaving as-is",
+					"task_id", oldest.ID)
 			} else {
 				l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)
 				affected[oldest.SubmissionID] = true

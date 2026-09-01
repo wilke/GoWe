@@ -138,8 +138,10 @@ func (s *Server) handleSetTaskPriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task.Priority = req.Priority
-	if err := s.store.UpdateTask(r.Context(), task); err != nil {
+	// Priority-only UPDATE: a full-row read-modify-write here could clobber
+	// concurrent checkout/report writes (external_id, started_at, state — the
+	// same class as the F-J poll bug).
+	if err := s.store.UpdateTaskPriority(r.Context(), tid, req.Priority); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
 		return
