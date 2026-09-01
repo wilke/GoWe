@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/wilke/GoWe/compare/v0.16.1...v0.16.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **cwlrunner:** parallelize nested scatter/sub-workflows; global -j cap; add --cores budget ([#202](https://github.com/wilke/GoWe/issues/202)) ([99ff8c2](https://github.com/wilke/GoWe/commit/99ff8c2a5ebc11b2d5bb9f8814ccff35f7b6add5))
+
 ## [0.16.1](https://github.com/wilke/GoWe/compare/v0.16.0...v0.16.1) (2026-09-01)
 
 
