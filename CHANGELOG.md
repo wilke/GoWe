@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.1](https://github.com/wilke/GoWe/compare/v0.16.0...v0.16.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **scheduler,parser,stepinput:** honor step-level pickValue; stop skip-cascade on skipped deps ([#199](https://github.com/wilke/GoWe/issues/199)) ([7545d9e](https://github.com/wilke/GoWe/commit/7545d9e209a694413b301e50f358cd7f1356a7ce))
+* **server:** report actual scheduler state in health endpoint ([#195](https://github.com/wilke/GoWe/issues/195)) ([5785287](https://github.com/wilke/GoWe/commit/5785287ccf3e7fc6dc83e418fb10f49323039153))
+
 ## [0.16.0](https://github.com/wilke/GoWe/compare/v0.15.0...v0.16.0) (2026-09-01)
 
 
