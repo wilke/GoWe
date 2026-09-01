@@ -1236,6 +1236,15 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	return s.insertTask(ctx, s.db, task)
 }
 
+// taskColumns is the column set returned by every unscoped `SELECT * FROM
+// tasks` query and the column order for `INSERT INTO tasks`. Scanned
+// positionally by scanTask, scanTasks, and CheckoutTask's own inline scan —
+// all three must stay in this exact order.
+const taskColumns = `id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
+	 stdout, stderr, exit_code, created_at, started_at, completed_at,
+	 tool, job, runtime_hints, scatter_index`
+
 // insertTask marshals the task (including runtime-hint encryption) and runs
 // the shared INSERT on the given execer. It is the single insert path behind
 // CreateTask and CreateTasksAndDispatchStep so both persist the same field
@@ -1277,10 +1286,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 	}
 
 	_, err = ex.ExecContext(ctx,
-		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index)
+		`INSERT INTO tasks (`+taskColumns+`)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
@@ -1324,10 +1330,7 @@ func (s *SQLiteStore) CreateTasksAndDispatchStep(ctx context.Context, tasks []*m
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "select", "table", "tasks", "id", id)
 	return s.scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE id = ?`, id))
 }
 
@@ -1335,10 +1338,7 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "submission_id", submissionID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
 	if err != nil {
 		return nil, err
@@ -1378,10 +1378,7 @@ func (s *SQLiteStore) ListTasksBySubmissionPaged(ctx context.Context, submission
 
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
 		queryArgs...,
 	)
@@ -1401,10 +1398,7 @@ func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceI
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "step_instance_id", stepInstanceID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE step_instance_id = ? ORDER BY scatter_index, created_at`, stepInstanceID)
 	if err != nil {
 		return nil, err
@@ -1583,10 +1577,7 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	s.logger.Debug("sql", "op", "list_by_state", "table", "tasks", "state", state)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -1600,10 +1591,7 @@ func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	s.logger.Debug("sql", "op", "get_active_tasks")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state IN (?, ?, ?, ?)
 		 ORDER BY priority DESC, created_at`,
 		string(model.TaskStatePending), string(model.TaskStateScheduled),
@@ -2166,10 +2154,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
 		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
