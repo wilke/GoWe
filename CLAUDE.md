@@ -145,6 +145,9 @@ SQLite with `modernc.org/sqlite` (pure Go, no CGO). Schema in `internal/store/mi
 - Use subagents where appropriate: fan out independent implementation pieces, and run
   adversarial review lenses in parallel before opening a PR (see the #164 plan on the
   issue tracker for the pattern: map → plan → review → implement → verify).
+- **When work can be decomposed, delegate bounded implementation and test tasks to Sonnet
+  subagents. Reserve the main loop for planning, integration and review. Use Opus
+  subagents where necessary.**
 - Go is not installed natively — build and test through the `build` / `test` skills
   (Apptainer `golang:1.24`).
 
