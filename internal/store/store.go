@@ -74,12 +74,31 @@ type Store interface {
 	// TerminalizeTask is UpdateTask guarded by a compare-and-set: the write is
 	// skipped (applied=false, no error) when the task is already terminal.
 	TerminalizeTask(ctx context.Context, task *model.Task) (bool, error)
+	// TerminalizeTaskFrom is UpdateTask guarded by a compare-and-set against a
+	// single exact state: the write is skipped (applied=false, no error)
+	// unless the task is still in `from`. Use this instead of TerminalizeTask
+	// when the caller's snapshot is only valid for one specific non-terminal
+	// state — e.g. detectStuckTasks failing a task it observed as QUEUED: a
+	// worker that checks the task out between the snapshot and this write
+	// must win, not be clobbered by a stale full-row write that resets
+	// external_id and reports the task terminal out from under the worker.
+	TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error)
 	// CASTaskState moves a task `from`→`to` only while it is still exactly in
 	// `from`; applied=false (no error) otherwise, so a stale snapshot can
 	// never overwrite a concurrent terminal write (e.g. a cancel that SKIPPED
 	// the task). Used for retry marking (FAILED→RETRYING) and retry claiming
 	// (RETRYING→SCHEDULED).
 	CASTaskState(ctx context.Context, id string, from, to model.TaskState) (bool, error)
+	// MarkTaskRunning transitions a task QUEUED→RUNNING (compare-and-set),
+	// stamping started_at only when it is not already set. It writes no other
+	// column — in particular never external_id — so a poll observation can
+	// never clobber a concurrent checkout's worker assignment (the F-J zombie
+	// class). applied=false (no error) when the task is no longer QUEUED.
+	MarkTaskRunning(ctx context.Context, id string) (bool, error)
+	// UpdateTaskPriority sets only the priority column. A full-row
+	// read-modify-write here would be in the same clobber class as F-J: it
+	// could overwrite a concurrent checkout's external_id/started_at.
+	UpdateTaskPriority(ctx context.Context, id string, priority int) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 	GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error)

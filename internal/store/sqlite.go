@@ -1504,6 +1504,25 @@ func (s *SQLiteStore) TerminalizeTask(ctx context.Context, task *model.Task) (bo
 	return n > 0, nil
 }
 
+// TerminalizeTaskFrom writes the same field set as UpdateTask, but only while
+// the task is still in the exact `from` state — a tighter compare-and-set
+// than TerminalizeTask's "not already terminal" guard. Use it when the
+// caller's snapshot is only valid for one specific state: e.g. a task
+// observed as QUEUED that a worker may have since checked out (moving it to
+// RUNNING with a new external_id). TerminalizeTask's NOT-IN guard would still
+// let that write through and clobber the checkout; this method's exact-state
+// guard does not. Returns applied=false (no error) when the task has already
+// moved on, so the caller can leave it alone.
+func (s *SQLiteStore) TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error) {
+	s.logger.Debug("sql", "op", "terminalize_from", "table", "tasks", "id", task.ID, "from", from)
+
+	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=? AND state=?`, task.ID, string(from))
+	if err != nil {
+		return false, fmt.Errorf("terminalize task %s from %s: %w", task.ID, from, err)
+	}
+	return n > 0, nil
+}
+
 // CASTaskState moves a task from one exact state to another (compare-and-set).
 // Returns applied=false (no error) when the task is no longer in the `from`
 // state — e.g. a concurrent cancel SKIPPED it — so a stale snapshot can never
@@ -1521,6 +1540,43 @@ func (s *SQLiteStore) CASTaskState(ctx context.Context, id string, from, to mode
 	}
 	n, _ := result.RowsAffected()
 	return n > 0, nil
+}
+
+// MarkTaskRunning transitions a task QUEUED→RUNNING (compare-and-set),
+// stamping started_at only when it is not already set (COALESCE keeps a
+// pre-existing stamp, e.g. one written by CheckoutTask). It deliberately
+// writes no other column — never external_id — so a stale poll snapshot can
+// never clobber a concurrent checkout's worker assignment (the F-J zombie
+// class). Returns applied=false (no error) when the task is no longer QUEUED.
+func (s *SQLiteStore) MarkTaskRunning(ctx context.Context, id string) (bool, error) {
+	s.logger.Debug("sql", "op", "mark_running", "table", "tasks", "id", id)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ? AND state = ?`,
+		string(model.TaskStateRunning), now, id, string(model.TaskStateQueued))
+	if err != nil {
+		return false, fmt.Errorf("mark task %s running: %w", id, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
+// UpdateTaskPriority sets only the priority column. A full-row
+// read-modify-write here would be in the same clobber class as F-J: it could
+// overwrite a concurrent checkout's external_id/started_at.
+func (s *SQLiteStore) UpdateTaskPriority(ctx context.Context, id string, priority int) error {
+	s.logger.Debug("sql", "op", "update_priority", "table", "tasks", "id", id, "priority", priority)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET priority = ? WHERE id = ?`, priority, id)
+	if err != nil {
+		return fmt.Errorf("update task %s priority: %w", id, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("task %s not found", id)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error) {

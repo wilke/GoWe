@@ -678,8 +678,17 @@ Report task progress.
 curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/tasks/task_456/status \
   -H "X-Worker-Key: secret-key-1" \
   -H "Content-Type: application/json" \
-  -d '{"state": "running"}'
+  -d '{"state": "RUNNING"}'
 ```
+
+Returns `409 Conflict` (`error.code: CONFLICT`) instead of applying the report when:
+- **already-terminal** — the task has already reached a terminal state (SUCCESS, FAILED, or SKIPPED), e.g. a concurrent cancel fan-out or a prior report beat this one.
+- **not-owner** — the task's `external_id` no longer matches this worker's id (it was reaped/requeued and re-checked-out, or never checked out by this worker to begin with). This is the guard a stuck-task reap or a checkout race relies on: a late report from a worker that lost ownership is dropped rather than silently accepted.
+- the requested state is itself terminal (terminal results must go through `/complete`, not `/status`).
+- the task cannot transition from its current state to the requested state (`CanTransitionTo` rejects it).
+- the state changed concurrently between the read and the compare-and-set write.
+
+In every 409 case the worker's report is dropped; the worker logs and moves on rather than retrying (a 409 is a deliberate, not transient, refusal — see `/complete` below and the report retry behavior in `internal/worker/worker.go`).
 
 #### `PUT /api/v1/workers/{id}/tasks/{tid}/complete`
 
@@ -702,6 +711,13 @@ curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/tasks/task_456/compl
     }
   }'
 ```
+
+Returns `409 Conflict` (`error.code: CONFLICT`) instead of applying the report when:
+- **already-terminal** — the task has already reached a terminal state, e.g. a concurrent cancel fan-out already SKIPPED it, or the task was reaped as stuck and FAILED, or another report already landed.
+- **not-owner** — the task's `external_id` no longer matches this worker's id, e.g. the task was reaped/requeued and re-checked-out by a different worker while this worker was still running it.
+- the terminalizing compare-and-set write loses a race against a concurrent terminal write between the read and the write.
+
+A worker that gets a 409 from `/complete` drops its result and keeps the task's working directory on disk (it does not retry and does not clean up) — see the worker protocol note above. Its retryable-vs-declined classification is in `reportComplete` (`internal/worker/worker.go`): network errors, 5xx, 429, and 408 are retried up to 3 attempts; a 409 is never retried.
 
 #### `DELETE /api/v1/workers/{id}`
 

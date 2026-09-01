@@ -217,8 +217,17 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 
 // handleWorkerTaskStatus allows a worker to report task state updates.
 // PUT /api/v1/workers/{id}/tasks/{tid}/status
+//
+// Guards: the task must not already be terminal, the target state must be
+// non-terminal (terminal results go through /complete, which stamps
+// completed_at and outputs — this endpoint could otherwise terminalize with
+// neither, F-L), and the reporting worker must own the task (external_id).
+// These defend against stale or duplicate workers — NOT adversaries: the
+// worker key is not bound to the worker id, so a valid key can report under
+// any worker id (S2, documented limitation).
 func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+	workerID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
 
 	var req struct {
@@ -244,6 +253,30 @@ func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	newState := model.TaskState(req.State)
+	if task.State.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is already terminal (" + string(task.State) + ")",
+		})
+		return
+	}
+	if newState.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "terminal state " + req.State + " must be reported via the complete endpoint",
+		})
+		return
+	}
+	// Ownership: external_id = the assigned worker id after checkout, '' after
+	// a requeue, and the new worker's id after re-checkout — a late report
+	// from a previous owner is always distinguishable (F-K).
+	if task.ExternalID != workerID {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is not assigned to worker " + workerID,
+		})
+		return
+	}
 	if !task.State.CanTransitionTo(newState) {
 		respondError(w, reqID, http.StatusConflict, &model.APIError{
 			Code:    model.ErrConflict,
@@ -252,14 +285,23 @@ func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	task.State = newState
-	if err := s.store.UpdateTask(r.Context(), task); err != nil {
+	// State-column-only CAS: a full-row write here could clobber concurrent
+	// checkout/requeue writes (external_id, started_at — the F-J clobber class).
+	applied, err := s.store.CASTaskState(r.Context(), tid, task.State, newState)
+	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
 		return
 	}
+	if !applied {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " changed state concurrently",
+		})
+		return
+	}
 
-	respondOK(w, reqID, map[string]any{"task_id": task.ID, "state": task.State})
+	respondOK(w, reqID, map[string]any{"task_id": task.ID, "state": newState})
 }
 
 // handleWorkerTaskComplete allows a worker to report task completion.
@@ -295,6 +337,28 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The guards below defend against stale or duplicate workers — a requeued
+	// task re-reported by its former owner, or a double report after a retry —
+	// NOT against adversaries: the worker key is not bound to the worker id,
+	// so a valid key can report under any worker id (S2, documented limitation).
+	if task.State.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is already terminal (" + string(task.State) + ")",
+		})
+		return
+	}
+	// Ownership: external_id = the assigned worker id after checkout, '' after
+	// a requeue, and the new worker's id after re-checkout — a late report
+	// from a previous owner is always distinguishable (F-K).
+	if task.ExternalID != workerID {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is not assigned to worker " + workerID,
+		})
+		return
+	}
+
 	newState := model.TaskState(req.State)
 	if newState == "" {
 		// Default to SUCCESS if exit code is 0, FAILED otherwise.
@@ -324,9 +388,22 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
 	}
 
-	if err := s.store.UpdateTask(r.Context(), task); err != nil {
+	// CAS write: refuse to overwrite a terminal state written between the read
+	// above and this write (e.g. a cancel fan-out that SKIPPED the task), so a
+	// double report is applied exactly once. A requeue + re-checkout landing in
+	// that same statements-wide window would still be accepted (the ownership
+	// check above covers the practical, tick-wide races — F-K).
+	applied, err := s.store.TerminalizeTask(r.Context(), task)
+	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
+		return
+	}
+	if !applied {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " reached a terminal state concurrently",
+		})
 		return
 	}
 

@@ -189,6 +189,80 @@ func TestTerminalizeTask(t *testing.T) {
 	}
 }
 
+func TestTerminalizeTaskFrom(t *testing.T) {
+	tests := []struct {
+		name        string
+		initial     model.TaskState
+		from        model.TaskState
+		wantApplied bool
+		wantState   model.TaskState
+	}{
+		{"applies when still QUEUED", model.TaskStateQueued, model.TaskStateQueued, true, model.TaskStateFailed},
+		// A worker checked the task out between the caller's snapshot and
+		// this write (QUEUED->RUNNING, e.g. via MarkTaskRunning): the
+		// exact-state guard must refuse, unlike TerminalizeTask's NOT-IN
+		// guard which would let a stale QUEUED-snapshot write through here
+		// and clobber the checkout's external_id.
+		{"refuses when moved to RUNNING", model.TaskStateRunning, model.TaskStateQueued, false, model.TaskStateRunning},
+		// SKIPPED simulates a concurrent cancel that already terminalized the task.
+		{"refuses to overwrite SKIPPED", model.TaskStateSkipped, model.TaskStateQueued, false, model.TaskStateSkipped},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := testStore(t)
+			ctx := context.Background()
+
+			wf := sampleWorkflow()
+			if err := st.CreateWorkflow(ctx, wf); err != nil {
+				t.Fatalf("create workflow: %v", err)
+			}
+			sub := sampleSubmission(wf.ID)
+			if err := st.CreateSubmission(ctx, sub); err != nil {
+				t.Fatalf("create submission: %v", err)
+			}
+			task := sampleTask(sub.ID)
+			task.State = tt.initial
+			task.ExternalID = "worker-owned-external-id"
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatalf("create task: %v", err)
+			}
+
+			// Simulate detectStuckTasks: a stale snapshot taken while the
+			// task was QUEUED, now being written as FAILED with the
+			// external_id reset — this must not apply unless the task is
+			// still exactly QUEUED.
+			snapshot := *task
+			snapshot.State = model.TaskStateFailed
+			snapshot.ExternalID = ""
+
+			applied, err := st.TerminalizeTaskFrom(ctx, &snapshot, tt.from)
+			if err != nil {
+				t.Fatalf("terminalize from: %v", err)
+			}
+			if applied != tt.wantApplied {
+				t.Errorf("applied = %v, want %v", applied, tt.wantApplied)
+			}
+
+			got, err := st.GetTask(ctx, task.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.State != tt.wantState {
+				t.Errorf("state = %q, want %q", got.State, tt.wantState)
+			}
+			if tt.wantApplied {
+				if got.ExternalID != "" {
+					t.Errorf("external_id = %q, want cleared", got.ExternalID)
+				}
+			} else {
+				if got.ExternalID != "worker-owned-external-id" {
+					t.Errorf("external_id = %q, want unchanged (worker-owned-external-id)", got.ExternalID)
+				}
+			}
+		})
+	}
+}
+
 func TestListSubmissionsAwaitingOutputStaging(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()
