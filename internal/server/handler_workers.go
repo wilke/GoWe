@@ -312,11 +312,13 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	tid := chi.URLParam(r, "tid")
 
 	var req struct {
-		State    string         `json:"state"`
-		ExitCode *int           `json:"exit_code"`
-		Stdout   string         `json:"stdout"`
-		Stderr   string         `json:"stderr"`
-		Outputs  map[string]any `json:"outputs"`
+		State      string         `json:"state"`
+		ExitCode   *int           `json:"exit_code"`
+		Stdout     string         `json:"stdout"`
+		Stderr     string         `json:"stderr"`
+		Outputs    map[string]any `json:"outputs"`
+		StageInMs  *int64         `json:"stage_in_ms"`
+		StageOutMs *int64         `json:"stage_out_ms"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -378,6 +380,11 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	if req.Outputs != nil {
 		task.Outputs = req.Outputs
 	}
+	// nil on an old worker (version skew: the field is simply absent from its
+	// JSON body) leaves the columns NULL, same as a worker attempt that never
+	// staged anything.
+	task.StageInMs = req.StageInMs
+	task.StageOutMs = req.StageOutMs
 
 	// The task has reached a terminal state via the worker report path (the only
 	// path a worker task terminalizes on). The injected provider token is no

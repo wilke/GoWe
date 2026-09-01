@@ -42,16 +42,29 @@ type Task struct {
 
 	// DependsOn is retained for backward compatibility with existing DB rows.
 	// New code should use StepInstance-level dependency tracking instead.
-	DependsOn   []string   `json:"depends_on,omitempty"`
-	Priority    int        `json:"priority"`
-	RetryCount  int        `json:"retry_count"`
-	MaxRetries  int        `json:"max_retries"`
-	Stdout      string     `json:"-"`
-	Stderr      string     `json:"-"`
-	ExitCode    *int       `json:"-"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	DependsOn  []string  `json:"depends_on,omitempty"`
+	Priority   int       `json:"priority"`
+	RetryCount int       `json:"retry_count"`
+	MaxRetries int       `json:"max_retries"`
+	Stdout     string    `json:"-"`
+	Stderr     string    `json:"-"`
+	ExitCode   *int      `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
+	// DispatchedAt is stamped once per dispatch attempt (submit to the
+	// executor), regardless of executor type — unlike StartedAt, CheckoutTask
+	// never touches this column, so it is never stale while a worker task is
+	// QUEUED. A sub-workflow proxy task sets it equal to CreatedAt.
+	DispatchedAt *time.Time `json:"dispatched_at,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+
+	// StageInMs/StageOutMs are the worker-measured input/output staging
+	// durations for this task's execution, reported alongside the terminal
+	// result. Nil when the executor is not `worker`, when staging did not
+	// occur, or when the reporting worker predates this field (version skew:
+	// an old worker never sends it, so it persists as NULL).
+	StageInMs  *int64 `json:"stage_in_ms,omitempty"`
+	StageOutMs *int64 `json:"stage_out_ms,omitempty"`
 }
 
 // DatasetRequirement describes a reference dataset needed by a CWL tool.

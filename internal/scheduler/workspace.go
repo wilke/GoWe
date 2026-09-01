@@ -45,6 +45,28 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 			continue
 		}
 
+		// Stamp prestage_started_at once, even across multi-tick retries (a
+		// failed attempt below leaves PrestageStartedAt set in the DB, so a
+		// later tick's freshly-loaded sub already has it and skips this
+		// block). CAS-gated on (PENDING, sub.OutputState): a concurrent
+		// cancel moving the submission off PENDING must never be clobbered
+		// back by this write — the F-J clobber class, at submission level —
+		// so an unapplied write leaves the submission alone entirely.
+		if sub.PrestageStartedAt == nil {
+			now := time.Now().UTC()
+			sub.PrestageStartedAt = &now
+			applied, err := l.store.UpdateSubmissionIfState(ctx, sub, model.SubmissionStatePending, sub.OutputState)
+			if err != nil {
+				l.logger.Error("stamp prestage_started_at", "submission_id", sub.ID, "error", err)
+			}
+			if l.cache != nil {
+				l.cache.invalidateSubmission(sub.ID)
+			}
+			if !applied {
+				continue // Left PENDING concurrently; leave the submission alone.
+			}
+		}
+
 		// Create a per-submission staging directory.
 		stageDir := filepath.Join(os.TempDir(), "gowe-ws-stage", sub.ID)
 		if err := os.MkdirAll(stageDir, 0o755); err != nil {
@@ -83,6 +105,23 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 
 		if !allOK {
 			continue // Leave inputs unchanged; worker will try ws:// if it has the stager.
+		}
+
+		// Stamp prestage_completed_at, same CAS guard as the started stamp
+		// above — a concurrent cancel must not be clobbered back to PENDING,
+		// and if it already left PENDING the rewritten inputs below must not
+		// be persisted either (the submission is no longer going to run them).
+		now := time.Now().UTC()
+		sub.PrestageCompletedAt = &now
+		applied, err := l.store.UpdateSubmissionIfState(ctx, sub, model.SubmissionStatePending, sub.OutputState)
+		if err != nil {
+			l.logger.Error("stamp prestage_completed_at", "submission_id", sub.ID, "error", err)
+		}
+		if l.cache != nil {
+			l.cache.invalidateSubmission(sub.ID)
+		}
+		if !applied {
+			continue // Left PENDING concurrently; don't persist rewritten inputs.
 		}
 
 		// Persist the rewritten inputs.
@@ -130,8 +169,13 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 			continue
 		}
 
-		// Mark as uploading.
+		// Mark as uploading. The store query above already scopes this loop to
+		// COMPLETED submissions with no prior output_state, so this is the
+		// single attempt (no multi-tick retry loop to guard against, unlike
+		// prestage_started_at).
+		poststageStarted := time.Now().UTC()
 		sub.OutputState = "uploading"
+		sub.PoststageStartedAt = &poststageStarted
 		if err := l.updateSubmission(ctx, sub); err != nil {
 			l.logger.Error("mark uploading", "submission_id", sub.ID, "error", err)
 			continue
@@ -179,7 +223,9 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 					"submission_id", sub.ID, "error", err)
 			}
 
+			poststageCompleted := time.Now().UTC()
 			sub.OutputState = "delivered"
+			sub.PoststageCompletedAt = &poststageCompleted
 			if err := l.updateSubmission(ctx, sub); err != nil {
 				l.logger.Error("update submission after post-stage",
 					"submission_id", sub.ID, "error", err)

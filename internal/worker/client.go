@@ -174,6 +174,16 @@ type TaskResult struct {
 	Stdout   string          `json:"stdout"`
 	Stderr   string          `json:"stderr"`
 	Outputs  map[string]any  `json:"outputs"`
+
+	// StageInMs/StageOutMs are the measured input/output staging durations in
+	// milliseconds. Omitted (nil) when staging did not occur for this
+	// attempt. An older worker never sets these fields, so the server (once
+	// upgraded) simply persists NULL — version skew is safe in both
+	// directions: an old worker talking to a new server sends no field (JSON
+	// decodes it as nil), and a new worker talking to an old server has the
+	// field silently ignored by the old handler's decode struct.
+	StageInMs  *int64 `json:"stage_in_ms,omitempty"`
+	StageOutMs *int64 `json:"stage_out_ms,omitempty"`
 }
 
 // ReportComplete sends the final task result.

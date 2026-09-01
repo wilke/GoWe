@@ -300,6 +300,44 @@ var alterStatements = []struct {
 		alterSQL: "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(state, executor_type, priority DESC, created_at)",
 	},
+	// Dispatch/staging attribution (#184 PR2). All nullable: NULL is
+	// load-bearing (never dispatched / no stage data / not yet staged), same
+	// as the base schema's started_at/completed_at.
+	{
+		table:    "tasks",
+		column:   "dispatched_at",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN dispatched_at TEXT",
+	},
+	{
+		table:    "tasks",
+		column:   "stage_in_ms",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN stage_in_ms INTEGER",
+	},
+	{
+		table:    "tasks",
+		column:   "stage_out_ms",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN stage_out_ms INTEGER",
+	},
+	{
+		table:    "submissions",
+		column:   "prestage_started_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN prestage_started_at TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "prestage_completed_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN prestage_completed_at TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "poststage_started_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN poststage_started_at TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "poststage_completed_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN poststage_completed_at TEXT",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
