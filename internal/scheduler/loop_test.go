@@ -640,6 +640,76 @@ func TestStart_StopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// waitForState polls sched.State() until it equals want or the timeout
+// elapses, failing the test on timeout.
+func waitForState(t *testing.T, sched *Loop, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sched.State() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("State() = %q after timeout, want %q", sched.State(), want)
+}
+
+// TestLoop_State covers the not_started -> running -> stopped lifecycle
+// reported by State(), exercised via both context cancellation and an
+// explicit Stop() call (issue #193: /api/v1/health must report the real
+// scheduler state instead of a hardcoded "not_started").
+func TestLoop_State(t *testing.T) {
+	t.Run("not started", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		if got := sched.State(); got != StateNotStarted {
+			t.Errorf("State() before Start = %q, want %q", got, StateNotStarted)
+		}
+	})
+
+	t.Run("running", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+
+		go func() { _ = sched.Start(ctx) }()
+		waitForState(t, sched, StateRunning)
+	})
+
+	t.Run("stopped via context cancel", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		done := make(chan error, 1)
+		go func() { done <- sched.Start(ctx) }()
+		waitForState(t, sched, StateRunning)
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return within 5 seconds after context cancellation")
+		}
+		if got := sched.State(); got != StateStopped {
+			t.Errorf("State() after context cancel = %q, want %q", got, StateStopped)
+		}
+	})
+
+	t.Run("stopped via Stop", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		ctx := context.Background()
+
+		go func() { _ = sched.Start(ctx) }()
+		waitForState(t, sched, StateRunning)
+
+		if err := sched.Stop(); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if got := sched.State(); got != StateStopped {
+			t.Errorf("State() after Stop = %q, want %q", got, StateStopped)
+		}
+	})
+}
+
 // --- Feature C: WorkerCapabilities / canMatchTask tests ---
 
 func TestCanMatchTask_NoWorkers(t *testing.T) {

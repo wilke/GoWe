@@ -13,4 +13,9 @@ type Scheduler interface {
 
 	// Tick runs a single scheduling iteration. Used for testing.
 	Tick(ctx context.Context) error
+
+	// State reports the scheduler's lifecycle state: "not_started", "running",
+	// or "stopped". Surfaced by the /api/v1/health endpoint. Safe for
+	// concurrent use.
+	State() string
 }
