@@ -98,6 +98,50 @@ func TestMigrate_Idempotent(t *testing.T) {
 	}
 }
 
+// TestMigrate_DropsLegacyUniqueContentHashIndex pins the #201 schema
+// migration: workflows.content_hash originally carried a UNIQUE index
+// (idx_workflows_content_hash), which blocks both `register --force` and
+// PUT-publishes-new-version from ever inserting a row whose hash happens to
+// match an existing row. This simulates a pre-#201 database (still on the
+// old unique index) and asserts that re-running Migrate() converts it to
+// non-unique, in place, without erroring.
+func TestMigrate_DropsLegacyUniqueContentHashIndex(t *testing.T) {
+	st := testStore(t) // already migrated once (non-unique index)
+	ctx := context.Background()
+
+	// Simulate a pre-#201 database: drop the (now non-unique) index and
+	// recreate it the old way, UNIQUE.
+	if _, err := st.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_workflows_content_hash`); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`CREATE UNIQUE INDEX idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''`); err != nil {
+		t.Fatalf("create legacy unique index: %v", err)
+	}
+
+	// Re-migrating must drop the unique index and recreate it non-unique.
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("re-migrate: %v", err)
+	}
+
+	// Two rows sharing a content_hash must now be insertable — this is
+	// exactly what register --force and PUT-publishes-new-version rely on.
+	wf1 := sampleWorkflow()
+	wf1.ID = "wf_dup-hash-1"
+	wf1.ContentHash = "same-hash-for-test"
+	if err := st.CreateWorkflow(ctx, wf1); err != nil {
+		t.Fatalf("create wf1: %v", err)
+	}
+	wf2 := sampleWorkflow()
+	wf2.ID = "wf_dup-hash-2"
+	wf2.ContentHash = "same-hash-for-test"
+	wf2.CreatedAt = wf1.CreatedAt.Add(time.Second)
+	wf2.UpdatedAt = wf2.CreatedAt
+	if err := st.CreateWorkflow(ctx, wf2); err != nil {
+		t.Fatalf("create wf2 with duplicate content_hash: %v (legacy unique index was not migrated away)", err)
+	}
+}
+
 // --- Workflow CRUD tests ---
 
 func TestCreateAndGetWorkflow(t *testing.T) {
@@ -256,6 +300,45 @@ func TestDeleteWorkflow_NotFound(t *testing.T) {
 	st := testStore(t)
 	if err := st.DeleteWorkflow(context.Background(), "wf_nonexistent"); err == nil {
 		t.Error("expected error for nonexistent workflow")
+	}
+}
+
+// TestGetWorkflowByName_ReturnsNewest pins the retrieval contract from
+// #201: by-name lookup must resolve to the newest of any same-name rows
+// (created_at DESC). Timestamps are hand-staggered by whole seconds — like
+// TestListWorkflows_Pagination — because created_at is stored as an
+// RFC3339Nano *string* and compared lexically; RFC3339Nano trims trailing
+// fractional zeros, so two same-second timestamps with different
+// sub-second precision can sort backwards lexically. Whole-second spacing
+// avoids that trap entirely.
+func TestGetWorkflowByName_ReturnsNewest(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var ids []string
+	for i := 0; i < 3; i++ {
+		wf := sampleWorkflow()
+		wf.ID = fmt.Sprintf("wf_same-name-%d", i)
+		wf.Name = "same-name"
+		wf.CreatedAt = base.Add(time.Duration(i) * time.Second)
+		wf.UpdatedAt = wf.CreatedAt
+		if err := st.CreateWorkflow(ctx, wf); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		ids = append(ids, wf.ID)
+	}
+
+	got, err := st.GetWorkflowByName(ctx, "same-name")
+	if err != nil {
+		t.Fatalf("get by name: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil workflow")
+	}
+	wantID := ids[len(ids)-1] // the last-created (newest) row
+	if got.ID != wantID {
+		t.Errorf("id = %q, want %q (newest of %d same-name rows)", got.ID, wantID, len(ids))
 	}
 }
 

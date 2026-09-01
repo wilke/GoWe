@@ -162,7 +162,16 @@ var alterStatements = []struct {
 		table:    "workflows",
 		column:   "content_hash",
 		alterSQL: "ALTER TABLE workflows ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
-		indexSQL: "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''",
+		// Non-unique (#201): a UNIQUE index here enforced "one row per
+		// content forever", which is incompatible with `register --force`
+		// (an explicit escape hatch that creates a new row with an
+		// identical parse/hash) and with PUT-publishes-new-version
+		// (handleUpdateWorkflow), whose fresh hash may legitimately match
+		// an older row's. GetWorkflowByHash resolves any duplicates to the
+		// newest via ORDER BY created_at DESC LIMIT 1. See the DROP INDEX
+		// at the top of migrate() below for the one-time migration off the
+		// old unique index on existing databases.
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''",
 	},
 	{
 		table:    "workflows",
@@ -353,6 +362,16 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+
+	// #201: existing databases may still carry the old UNIQUE index on
+	// workflows.content_hash. Drop it unconditionally (idempotent via IF
+	// EXISTS) before the alterStatements loop below recreates it
+	// non-unique — a UNIQUE constraint here blocks both `register --force`
+	// and PUT-publishes-new-version from ever inserting a row whose hash
+	// happens to match an existing row.
+	if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_workflows_content_hash`); err != nil {
+		return err
 	}
 
 	// Execute ALTER TABLE statements idempotently.

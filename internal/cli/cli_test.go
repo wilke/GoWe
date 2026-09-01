@@ -349,6 +349,95 @@ func TestRegisterCommand(t *testing.T) {
 	}
 }
 
+// TestRegisterCommand_DedupUX pins the #201 UX fix: registering identical
+// content twice must report the second registration as an existing-row
+// dedup hit, distinguishable from a fresh registration.
+func TestRegisterCommand_DedupUX(t *testing.T) {
+	url := startTestServer(t)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	_, err := runCLI(t,
+		"--server", url,
+		"register",
+		testdataPath("separate/pipeline.cwl"),
+		testdataPath("separate/pipeline.cwl"),
+	)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if err != nil {
+		t.Fatalf("register error: %v\noutput: %s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 output lines, got %d: %s", len(lines), output)
+	}
+	if !strings.HasPrefix(lines[0], "Registered:") {
+		t.Errorf("first registration line = %q, want prefix 'Registered:'", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "Registered (existing):") {
+		t.Errorf("second (dedup) registration line = %q, want prefix 'Registered (existing):'", lines[1])
+	}
+}
+
+// TestRegisterCommand_Force pins the --force flag plumbing (#201): with
+// --force, registering identical content twice must create two distinct
+// rows instead of deduping — every line reports a fresh "Registered:", none
+// report "Registered (existing):".
+func TestRegisterCommand_Force(t *testing.T) {
+	url, st := startTestServerWithStore(t)
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	_, err := runCLI(t,
+		"--server", url,
+		"register", "--force",
+		testdataPath("separate/pipeline.cwl"),
+		testdataPath("separate/pipeline.cwl"),
+	)
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if err != nil {
+		t.Fatalf("register --force error: %v\noutput: %s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 output lines, got %d: %s", len(lines), output)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "(existing)") {
+			t.Errorf("--force line reported a dedup hit, want fresh registration: %q", line)
+		}
+		if !strings.HasPrefix(line, "Registered:") {
+			t.Errorf("line = %q, want prefix 'Registered:'", line)
+		}
+	}
+
+	_, total, err := st.ListWorkflows(context.Background(), model.DefaultListOptions())
+	if err != nil {
+		t.Fatalf("list workflows: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total workflows = %d, want 2 (--force must not dedup)", total)
+	}
+}
+
 func TestRegisterCommand_MultipleFiles(t *testing.T) {
 	url := startTestServer(t)
 

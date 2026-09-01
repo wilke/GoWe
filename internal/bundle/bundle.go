@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
@@ -324,10 +325,21 @@ func bundleBareTool(toolDoc map[string]any, toolPath string, processID string) (
 		stepIn[id] = id
 	}
 
-	// Build workflow outputs (same as tool outputs, with outputSource)
+	// Build workflow outputs (same as tool outputs, with outputSource).
+	// Iterate output IDs in sorted order: outputs may originate from a map
+	// (Go's random iteration order), and stepOut is a slice appended into
+	// the packed step's "out" list, so an unsorted range here would make
+	// the packed bytes nondeterministic across runs (#201).
 	wfOutputs := make(map[string]any)
+	outputIDs := make([]string, 0, len(outputs))
+	for id := range outputs {
+		outputIDs = append(outputIDs, id)
+	}
+	sort.Strings(outputIDs)
+
 	stepOut := []string{}
-	for id, out := range outputs {
+	for _, id := range outputIDs {
+		out := outputs[id]
 		var outputType any
 		switch v := out.(type) {
 		case string:
@@ -828,7 +840,19 @@ func resolveImports(v any, baseDir string) (any, error) {
 // adds it to the graph, and replaces the reference with a fragment.
 // If the loaded file is itself a Workflow, its steps are recursively resolved.
 func resolveStepRuns(steps map[string]any, baseDir string, graph *[]any, toolIDs map[string]string, workflowDockerReq map[string]any) error {
-	for stepName, stepVal := range steps {
+	// Iterate steps in a deterministic (sorted) order. Go randomizes map
+	// iteration order per run; since this loop appends resolved tools to
+	// *graph, an unsorted range here produces byte-different packed output
+	// for identical input on every invocation, defeating content-hash
+	// dedup (#201).
+	stepNames := make([]string, 0, len(steps))
+	for stepName := range steps {
+		stepNames = append(stepNames, stepName)
+	}
+	sort.Strings(stepNames)
+
+	for _, stepName := range stepNames {
+		stepVal := steps[stepName]
 		step, ok := stepVal.(map[string]any)
 		if !ok {
 			continue
