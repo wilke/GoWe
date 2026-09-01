@@ -1380,3 +1380,105 @@ func TestGroupAutoInjectsToken(t *testing.T) {
 		t.Error("empty TokenInjectGroups must never auto-inject")
 	}
 }
+
+// TestAreStepDependenciesSatisfied covers the CWL v1.2 "no skip cascade"
+// semantics: a SKIPPED dependency must count as satisfied (its outputs
+// resolve to null downstream), while a FAILED dependency must still block
+// (and cascade-skip) the consumer.
+func TestAreStepDependenciesSatisfied(t *testing.T) {
+	mk := func(state model.StepInstanceState) *model.StepInstance {
+		return &model.StepInstance{State: state}
+	}
+
+	tests := []struct {
+		name          string
+		dependsOn     []string
+		steps         map[string]*model.StepInstance
+		wantSatisfied bool
+		wantBlocked   bool
+	}{
+		{
+			name:          "no dependencies",
+			dependsOn:     nil,
+			steps:         map[string]*model.StepInstance{},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "all completed",
+			dependsOn: []string{"a", "b"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateCompleted),
+				"b": mk(model.StepStateCompleted),
+			},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "skipped dependency is satisfied, not blocked",
+			dependsOn: []string{"a"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateSkipped),
+			},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "mix of completed and skipped is satisfied",
+			dependsOn: []string{"a", "b"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateCompleted),
+				"b": mk(model.StepStateSkipped),
+			},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "failed dependency still blocks",
+			dependsOn: []string{"a"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateFailed),
+			},
+			wantSatisfied: false,
+			wantBlocked:   true,
+		},
+		{
+			name:      "failed dependency blocks even alongside a completed one",
+			dependsOn: []string{"a", "b"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateCompleted),
+				"b": mk(model.StepStateFailed),
+			},
+			wantSatisfied: false,
+			wantBlocked:   true,
+		},
+		{
+			name:      "still-running dependency is neither satisfied nor blocked",
+			dependsOn: []string{"a"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateRunning),
+			},
+			wantSatisfied: false,
+			wantBlocked:   false,
+		},
+		{
+			name:          "missing dependency is treated as blocked",
+			dependsOn:     []string{"missing"},
+			steps:         map[string]*model.StepInstance{},
+			wantSatisfied: false,
+			wantBlocked:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			satisfied, blocked := areStepDependenciesSatisfied(tt.dependsOn, tt.steps)
+			if satisfied != tt.wantSatisfied {
+				t.Errorf("satisfied = %v, want %v", satisfied, tt.wantSatisfied)
+			}
+			if blocked != tt.wantBlocked {
+				t.Errorf("blocked = %v, want %v", blocked, tt.wantBlocked)
+			}
+		})
+	}
+}

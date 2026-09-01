@@ -957,6 +957,7 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 				ValueFrom:    stringField(val, "valueFrom"),
 				LoadContents: boolField(val, "loadContents"),
 				LinkMerge:    stringField(val, "linkMerge"),
+				PickValue:    stringField(val, "pickValue"),
 			}
 		}
 	}
@@ -1674,6 +1675,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 				ValueFrom:    si.ValueFrom,
 				LoadContents: si.LoadContents,
 				LinkMerge:    si.LinkMerge,
+				PickValue:    si.PickValue,
 			})
 		}
 		sort.Slice(ms.In, func(i, j int) bool {
@@ -1773,8 +1775,16 @@ func computeDependsOn(inputs []model.StepInput, workflowInputs map[string]bool) 
 	seen := make(map[string]bool)
 	var deps []string
 	for _, si := range inputs {
-		if strings.Contains(si.Source, "/") {
-			stepID := strings.SplitN(si.Source, "/", 2)[0]
+		sources := si.Sources
+		if len(sources) == 0 && si.Source != "" {
+			// Fallback for callers that only populate the deprecated comma-joined field.
+			sources = strings.Split(si.Source, ",")
+		}
+		for _, source := range sources {
+			if !strings.Contains(source, "/") {
+				continue
+			}
+			stepID := strings.SplitN(source, "/", 2)[0]
 			if !seen[stepID] {
 				seen[stepID] = true
 				deps = append(deps, stepID)

@@ -14,6 +14,7 @@ type StepInstance struct {
 	ScatterMethod string            `json:"scatter_method,omitempty"` // dotproduct, flat_crossproduct, nested_crossproduct
 	ScatterDims   []int             `json:"scatter_dims,omitempty"`   // Size of each scatter dimension
 	Outputs       map[string]any    `json:"outputs,omitempty"`
+	Error         string            `json:"error,omitempty"` // Diagnostic message set on dispatch/evaluation failure
 	CreatedAt     time.Time         `json:"created_at"`
 	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
 }

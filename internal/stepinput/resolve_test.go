@@ -3,6 +3,7 @@ package stepinput
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -315,7 +316,7 @@ func TestResolveDefaultValue_File(t *testing.T) {
 
 func TestInputDefFromModel(t *testing.T) {
 	// Test with Sources array.
-	def := InputDefFromModel("in1", []string{"a", "b"}, "ignored", "default", "$(self)", true, "")
+	def := InputDefFromModel("in1", []string{"a", "b"}, "ignored", "default", "$(self)", true, "", "")
 	if def.ID != "in1" {
 		t.Errorf("expected ID='in1', got %q", def.ID)
 	}
@@ -333,19 +334,19 @@ func TestInputDefFromModel(t *testing.T) {
 	}
 
 	// Test with comma-separated Source (backwards compat).
-	def = InputDefFromModel("in2", nil, "x,y,z", nil, "", false, "")
+	def = InputDefFromModel("in2", nil, "x,y,z", nil, "", false, "", "")
 	if len(def.Sources) != 3 || def.Sources[0] != "x" || def.Sources[1] != "y" || def.Sources[2] != "z" {
 		t.Errorf("expected Sources=[x,y,z], got %v", def.Sources)
 	}
 
 	// Test with single Source.
-	def = InputDefFromModel("in3", nil, "single", nil, "", false, "")
+	def = InputDefFromModel("in3", nil, "single", nil, "", false, "", "")
 	if len(def.Sources) != 1 || def.Sources[0] != "single" {
 		t.Errorf("expected Sources=[single], got %v", def.Sources)
 	}
 
 	// Test with empty Sources and Source.
-	def = InputDefFromModel("in4", nil, "", "fallback", "", false, "")
+	def = InputDefFromModel("in4", nil, "", "fallback", "", false, "", "")
 	if len(def.Sources) != 0 {
 		t.Errorf("expected empty Sources, got %v", def.Sources)
 	}
@@ -389,4 +390,155 @@ func TestResolveInputs_LoadContentsBeforeValueFrom(t *testing.T) {
 	if resolved["file_data"] != "file contents" {
 		t.Errorf("expected 'file contents', got %v", resolved["file_data"])
 	}
+}
+
+// TestResolveInputs_PickValue covers GoWe issue #197: step-level pickValue
+// must be honored by ResolveInputs, mirroring the workflow-output pickValue
+// semantics in internal/cwloutput. It must be applied before defaults and
+// before any scatter split (the resolved value here is what scatter reads
+// directly from Task.Job).
+func TestResolveInputs_PickValue(t *testing.T) {
+	tests := []struct {
+		name           string
+		inputs         []InputDef
+		workflowInputs map[string]any
+		wantValue      any
+		wantErrSubstr  string
+	}{
+		{
+			name: "first_non_null over multi-source picks first non-null",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, PickValue: "first_non_null"},
+			},
+			workflowInputs: map[string]any{"b": "from-b"}, // "a" resolves to nil (absent)
+			wantValue:      "from-b",
+		},
+		{
+			name: "first_non_null prefers the earlier non-null source",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, PickValue: "first_non_null"},
+			},
+			workflowInputs: map[string]any{"a": "from-a", "b": "from-b"},
+			wantValue:      "from-a",
+		},
+		{
+			name: "the_only_non_null with exactly one non-null value",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, PickValue: "the_only_non_null"},
+			},
+			workflowInputs: map[string]any{"b": "from-b"},
+			wantValue:      "from-b",
+		},
+		{
+			name: "the_only_non_null errors on multiple non-null values",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, PickValue: "the_only_non_null"},
+			},
+			workflowInputs: map[string]any{"a": "from-a", "b": "from-b"},
+			wantErrSubstr:  "multiple non-null values",
+		},
+		{
+			name: "all_non_null returns the non-null subset",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b", "c"}, PickValue: "all_non_null"},
+			},
+			workflowInputs: map[string]any{"b": 2, "c": 3},
+			wantValue:      []any{2, 3},
+		},
+		{
+			name: "all sources null with first_non_null errors",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, PickValue: "first_non_null"},
+			},
+			workflowInputs: map[string]any{},
+			wantErrSubstr:  "all sources are null",
+		},
+		{
+			name: "single source whose resolved value is an array is picked across",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"arr"}, PickValue: "first_non_null"},
+			},
+			workflowInputs: map[string]any{"arr": []any{nil, "x"}},
+			wantValue:      "x",
+		},
+		{
+			name: "single source non-array value with pickValue is a no-op pass-through",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"arr"}, PickValue: "first_non_null"},
+			},
+			workflowInputs: map[string]any{"arr": "solo"},
+			wantValue:      "solo",
+		},
+		{
+			name: "pickValue combines with merge_flattened linkMerge",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, LinkMerge: "merge_flattened", PickValue: "all_non_null"},
+			},
+			workflowInputs: map[string]any{"a": []any{1, 2}}, // "b" resolves to nil
+			wantValue:      []any{1, 2},
+		},
+		{
+			name: "default does not override an empty all_non_null result",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, PickValue: "all_non_null", Default: "fallback"},
+			},
+			workflowInputs: map[string]any{},
+			wantValue:      []any{},
+		},
+		{
+			// Multi-source resolution always yields a typed []any, even when
+			// every element is nil, so the interface itself is never a true
+			// nil — the default fallback (which checks `value == nil`) never
+			// fires for a multi-source input, pickValue or not. This is
+			// pre-existing behavior, unaffected by the pickValue change.
+			name: "multi-source nil values do not trigger default",
+			inputs: []InputDef{
+				{ID: "picked", Sources: []string{"a", "b"}, Default: "fallback"},
+			},
+			workflowInputs: map[string]any{},
+			wantValue:      []any{nil, nil},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolved, err := ResolveInputs(tt.inputs, tt.workflowInputs, map[string]map[string]any{}, Options{})
+			if tt.wantErrSubstr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil (resolved=%v)", tt.wantErrSubstr, resolved)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSubstr) {
+					t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := resolved["picked"]
+			if !valuesEqual(got, tt.wantValue) {
+				t.Errorf("resolved[picked] = %#v, want %#v", got, tt.wantValue)
+			}
+		})
+	}
+}
+
+func valuesEqual(a, b any) bool {
+	aArr, aOk := a.([]any)
+	bArr, bOk := b.([]any)
+	if aOk != bOk {
+		return false
+	}
+	if aOk {
+		if len(aArr) != len(bArr) {
+			return false
+		}
+		for i := range aArr {
+			if !valuesEqual(aArr[i], bArr[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	return a == b
 }
