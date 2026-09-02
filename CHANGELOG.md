@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/wilke/GoWe/compare/v0.17.0...v0.17.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cwloutput,toolexec,cli:** honor outputEval basename renames when staging outputs ([#213](https://github.com/wilke/GoWe/issues/213)) ([906ab2e](https://github.com/wilke/GoWe/commit/906ab2e96aea434495f4e7f473830f0e4ab89082))
+
 ## [0.17.0](https://github.com/wilke/GoWe/compare/v0.16.2...v0.17.0) (2026-09-02)
 
 
