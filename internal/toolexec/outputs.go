@@ -666,8 +666,26 @@ func processOutputFileObject(fileObj map[string]any) (map[string]any, error) {
 	}
 
 	absPath, _ := filepath.Abs(path)
+
+	// outputEval (or a hand-authored record-typed File object) may already
+	// carry a basename/nameroot/nameext that intentionally differs from the
+	// on-disk path — that's a rename NormalizeOutputFiles (invoked by the
+	// caller after this function returns) honors by renaming the file on
+	// disk. Only derive these from path when the object doesn't already
+	// carry a non-empty value, so we don't silently discard the rename here
+	// (#214; mirror image of #212's bug, which was in the opposite
+	// direction).
 	basename := filepath.Base(path)
+	if v, ok := fileObj["basename"].(string); ok && v != "" {
+		basename = v
+	}
 	nameroot, nameext := splitNameExtension(basename)
+	if v, ok := fileObj["nameroot"].(string); ok && v != "" {
+		nameroot = v
+	}
+	if v, ok := fileObj["nameext"].(string); ok && v != "" {
+		nameext = v
+	}
 
 	// Compute checksum.
 	checksum, err := computeChecksum(path)
