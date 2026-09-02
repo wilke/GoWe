@@ -26,12 +26,25 @@ func defaultServer() string {
 	return "http://localhost:8080"
 }
 
+// buildVersion is the binary's build version, injected from cmd/cli via
+// SetBuildVersion (stamped there by -ldflags "-X main.Version=..."). "dev"
+// when built without stamping.
+var buildVersion = "dev"
+
+// SetBuildVersion sets the version reported by `gowe --version`.
+func SetBuildVersion(v string) {
+	if v != "" {
+		buildVersion = v
+	}
+}
+
 // NewRootCmd creates the root cobra command for the gowe CLI.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "gowe",
-		Short: "GoWe — CWL workflow engine for BV-BRC",
-		Long:  "GoWe submits, monitors, and manages CWL workflows on BV-BRC.",
+		Use:     "gowe",
+		Short:   "GoWe — CWL workflow engine for BV-BRC",
+		Long:    "GoWe submits, monitors, and manages CWL workflows on BV-BRC.",
+		Version: buildVersion,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if flagDebug {
 				flagLogLevel = "debug"

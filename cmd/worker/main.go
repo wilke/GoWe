@@ -25,6 +25,7 @@ func main() {
 	var cfg worker.Config
 
 	// Server connection flags.
+	showVersion := flag.Bool("version", false, "Print the build version and exit")
 	flag.StringVar(&cfg.ServerURL, "server", "http://localhost:8080", "GoWe server URL")
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
@@ -145,6 +146,11 @@ func main() {
 	logFormat := flag.String("log-format", "text", "Log format (text, json)")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("gowe-worker " + Version)
+		os.Exit(0)
+	}
 
 	if *debug {
 		*logLevel = "debug"

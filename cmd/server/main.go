@@ -43,6 +43,7 @@ func main() {
 	forceExecutor := flag.String("force-executor", "", "Force all tasks to this executor, ignoring CWL hints (testing only)")
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
+	showVersion := flag.Bool("version", false, "Print the build version and exit")
 
 	// TLS / secure-cookie options.
 	flag.StringVar(&cfg.TLSCertFile, "tls-cert", cfg.TLSCertFile, "Path to PEM certificate; enables native HTTPS when set together with --tls-key")
@@ -102,6 +103,12 @@ func main() {
 	uploadDownloadDirs := flag.String("upload-download-dirs", "", "Comma-separated list of directories allowed for file download")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("gowe-server " + Version)
+		os.Exit(0)
+	}
+	cfg.Version = Version
 
 	if *debug {
 		cfg.LogLevel = "debug"
