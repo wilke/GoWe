@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/wilke/GoWe/compare/v0.16.2...v0.17.0) (2026-09-02)
+
+
+### Features
+
+* **cli,server,worker,cwl-runner:** surface the stamped build version everywhere ([#209](https://github.com/wilke/GoWe/issues/209)) ([b46242a](https://github.com/wilke/GoWe/commit/b46242a74cca87c99d9c4054d2dbd01cf0cd165b))
+
+
+### Bug Fixes
+
+* **bundle,server,cli:** deterministic packing; version-aware dedup with --force; immutable workflow ids ([#207](https://github.com/wilke/GoWe/issues/207)) ([8d26ee0](https://github.com/wilke/GoWe/commit/8d26ee08a494e03963b6712a62e9a23f1538773d))
+* **scheduler:** set StepInstance.Error on remaining silent-FAILED branches; fail ExpressionTool scatter on when-eval error ([#204](https://github.com/wilke/GoWe/issues/204)) ([2230698](https://github.com/wilke/GoWe/commit/2230698556fd0b1037f6c9f4acd98c0a4dd5e9a1))
+
 ## [0.16.2](https://github.com/wilke/GoWe/compare/v0.16.1...v0.16.2) (2026-09-01)
 
 
