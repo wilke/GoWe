@@ -364,6 +364,15 @@ func rewritePathPrefix(v any, oldPrefix, newPrefix string) {
 							val["location"] = newP
 						}
 					}
+					// dirname (when present) is set elsewhere in the
+					// codebase as filepath.Dir(path) (e.g.
+					// internal/cwltool/helpers.go, internal/toolexec/
+					// outputs.go); keep it in sync with the rewritten path
+					// rather than leaving a stale parent-dir string behind
+					// (#214).
+					if _, ok := val["dirname"]; ok {
+						val["dirname"] = filepath.Dir(newP)
+					}
 				}
 			}
 		}

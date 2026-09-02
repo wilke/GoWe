@@ -157,3 +157,140 @@ ${
 		t.Fatal("expected an error for colliding outputEval basenames, got nil")
 	}
 }
+
+// TestCollectOutputs_RecordOutputEvalBasenameRename is the regression test
+// for GoWe#214 gap 1: processOutputFileObject's record-type outputEval
+// branch used to unconditionally recompute basename from path, discarding
+// an intentional rename before cwloutput.NormalizeOutputFiles ever saw it.
+// The rename must now survive processOutputFileObject and be honored on
+// disk by NormalizeOutputFiles, exactly like the File[]/glob case in
+// TestCollectOutputs_OutputEvalBasenameRename.
+func TestCollectOutputs_RecordOutputEvalBasenameRename(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "1.txt"), []byte("content-1"), 0644); err != nil {
+		t.Fatalf("write 1.txt: %v", err)
+	}
+
+	tool := &cwl.CommandLineTool{
+		Outputs: map[string]cwl.ToolOutputParam{
+			"myrecord": {
+				Type: "record",
+				OutputBinding: &cwl.OutputBinding{
+					// No glob: self=null, the record is built entirely by
+					// the expression, mirroring a record-typed output whose
+					// File field is assembled (and renamed) by hand.
+					OutputEval: `
+${
+  return {
+    "file": {
+      "class": "File",
+      "path": runtime.outdir + "/1.txt",
+      "basename": "alpha_1.txt"
+    }
+  };
+}`,
+				},
+			},
+		},
+	}
+
+	e := NewExecutor(slog.Default())
+	outputs, err := e.CollectOutputs(tool, workDir, map[string]any{}, 0, workDir, nil)
+	if err != nil {
+		t.Fatalf("CollectOutputs: %v", err)
+	}
+
+	rec, ok := outputs["myrecord"].(map[string]any)
+	if !ok {
+		t.Fatalf("myrecord is %T, want map[string]any", outputs["myrecord"])
+	}
+	f, ok := rec["file"].(map[string]any)
+	if !ok {
+		t.Fatalf("myrecord.file is %T, want map[string]any", rec["file"])
+	}
+
+	basename, _ := f["basename"].(string)
+	path, _ := f["path"].(string)
+	if basename != "alpha_1.txt" {
+		t.Errorf("basename = %q, want %q (intentional rename must be honored, not overwritten with the path-derived name)", basename, "alpha_1.txt")
+	}
+	// The gate invariant: basename MUST equal filepath.Base(path), asserted
+	// at disk level, exactly as in TestCollectOutputs_OutputEvalBasenameRename.
+	if filepath.Base(path) != basename {
+		t.Errorf("INCONSISTENT: basename=%q path-base=%q (path=%q)", basename, filepath.Base(path), path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("basename %q: file not found on disk at %q: %v", basename, path, err)
+	}
+	wantNameroot, wantNameext := "alpha_1", ".txt"
+	if f["nameroot"] != wantNameroot {
+		t.Errorf("nameroot = %v, want %v", f["nameroot"], wantNameroot)
+	}
+	if f["nameext"] != wantNameext {
+		t.Errorf("nameext = %v, want %v", f["nameext"], wantNameext)
+	}
+
+	// The pre-rename name must no longer exist (renamed, not copied).
+	if _, err := os.Stat(filepath.Join(workDir, "1.txt")); !os.IsNotExist(err) {
+		t.Errorf("stale pre-rename file \"1.txt\" still present on disk")
+	}
+}
+
+// TestCollectOutputs_RecordOutputEvalNoBasenameRegression is the no-op
+// companion to TestCollectOutputs_RecordOutputEvalBasenameRename: when the
+// record's File field does NOT carry an explicit basename, GoWe must still
+// fill one in from path (the original, pre-#214 behavior for the common
+// case), and no spurious rename should happen on disk.
+func TestCollectOutputs_RecordOutputEvalNoBasenameRegression(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "2.txt"), []byte("content-2"), 0644); err != nil {
+		t.Fatalf("write 2.txt: %v", err)
+	}
+
+	tool := &cwl.CommandLineTool{
+		Outputs: map[string]cwl.ToolOutputParam{
+			"myrecord": {
+				Type: "record",
+				OutputBinding: &cwl.OutputBinding{
+					OutputEval: `
+${
+  return {
+    "file": {
+      "class": "File",
+      "path": runtime.outdir + "/2.txt"
+    }
+  };
+}`,
+				},
+			},
+		},
+	}
+
+	e := NewExecutor(slog.Default())
+	outputs, err := e.CollectOutputs(tool, workDir, map[string]any{}, 0, workDir, nil)
+	if err != nil {
+		t.Fatalf("CollectOutputs: %v", err)
+	}
+
+	rec := outputs["myrecord"].(map[string]any)
+	f := rec["file"].(map[string]any)
+
+	basename, _ := f["basename"].(string)
+	path, _ := f["path"].(string)
+	if basename != "2.txt" {
+		t.Errorf("basename = %q, want %q (path-derived basename must still be filled in when absent)", basename, "2.txt")
+	}
+	if filepath.Base(path) != basename {
+		t.Errorf("INCONSISTENT: basename=%q path-base=%q (path=%q)", basename, filepath.Base(path), path)
+	}
+	wantNameroot, wantNameext := "2", ".txt"
+	if f["nameroot"] != wantNameroot {
+		t.Errorf("nameroot = %v, want %v", f["nameroot"], wantNameroot)
+	}
+	if f["nameext"] != wantNameext {
+		t.Errorf("nameext = %v, want %v", f["nameext"], wantNameext)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("file not found on disk at %q: %v", path, err)
+	}
+}
