@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/me/gowe/internal/bvbrc"
+	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -36,6 +38,7 @@ var reservedKeys = map[string]bool{
 //     job submission to run under the user's identity.
 type BVBRCExecutor struct {
 	appServiceURL string          // BV-BRC App Service endpoint
+	workspaceURL  string          // BV-BRC Workspace endpoint (wildcard-glob output resolution)
 	defaultCaller bvbrc.RPCCaller // Optional: default caller for status/logs
 	logger        *slog.Logger
 }
@@ -49,22 +52,42 @@ func NewBVBRCExecutor(appServiceURL string, defaultCaller bvbrc.RPCCaller, logge
 	}
 	return &BVBRCExecutor{
 		appServiceURL: appServiceURL,
+		workspaceURL:  bvbrcpkg.DefaultWorkspaceURL,
 		defaultCaller: defaultCaller,
 		logger:        logger.With("component", "bvbrc-executor"),
 	}
+}
+
+// SetWorkspaceURL overrides the BV-BRC Workspace service URL used to list a
+// result folder when resolving wildcard-glob outputs (buildOutputsFromGlobs).
+// Defaults to bvbrc.DefaultWorkspaceURL, matching how appServiceURL is wired
+// at this executor's call site today (cmd/server/main.go hardcodes
+// bvbrc.DefaultAppServiceURL rather than threading a flag through). Nothing
+// currently calls this in production; tests use it to point at a fake
+// Workspace service.
+func (e *BVBRCExecutor) SetWorkspaceURL(url string) {
+	if url != "" {
+		e.workspaceURL = url
+	}
+}
+
+// taskToken extracts the user's BV-BRC token from a task's RuntimeHints, if
+// one was set (RuntimeHints.StagerOverrides.HTTPCredential.Token). Returns ""
+// when no per-task token is available.
+func taskToken(task *model.Task) string {
+	if task.RuntimeHints != nil &&
+		task.RuntimeHints.StagerOverrides != nil &&
+		task.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+		return task.RuntimeHints.StagerOverrides.HTTPCredential.Token
+	}
+	return ""
 }
 
 // getTaskCaller creates an RPC caller for the given task.
 // It uses the token from RuntimeHints.StagerOverrides.HTTPCredential if available,
 // otherwise falls back to the default caller.
 func (e *BVBRCExecutor) getTaskCaller(task *model.Task) (bvbrc.RPCCaller, string, error) {
-	// Try to get token from RuntimeHints.
-	var token string
-	if task.RuntimeHints != nil &&
-		task.RuntimeHints.StagerOverrides != nil &&
-		task.RuntimeHints.StagerOverrides.HTTPCredential != nil {
-		token = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
-	}
+	token := taskToken(task)
 
 	if token != "" {
 		// Create per-task caller with user's token.
@@ -130,7 +153,12 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 	// Determine workspace path from params or default.
 	workspacePath, _ := params["output_path"].(string)
 	if workspacePath == "" && username != "" {
-		workspacePath = fmt.Sprintf("/%s@patricbrc.org/home/", username)
+		// username is the raw "un=" token field, verbatim — it already
+		// carries whatever domain suffix the token issuer put there (e.g.
+		// "awilke@bvbrc"). Appending another domain here produced a
+		// double-domain path ("/awilke@bvbrc@patricbrc.org/home/") that
+		// BV-BRC rejects outright; see the #154/#198 promotion round-trip.
+		workspacePath = fmt.Sprintf("/%s/home/", username)
 	}
 
 	e.logger.Debug("submitting job",
@@ -233,7 +261,18 @@ func (e *BVBRCExecutor) Status(ctx context.Context, task *model.Task) (model.Tas
 				task.Outputs = outputs
 			}
 		} else if len(task.Outputs) == 0 {
-			outputs := e.buildOutputsFromGlobs(task, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
+			outputs, globErr := e.buildOutputsFromGlobs(ctx, task, jobInfo.Parameters.OutputPath, jobInfo.Parameters.OutputFile)
+			if globErr != nil {
+				// Propagated like any other error on this path (query_tasks
+				// unmarshal, RPC failures, ...): the caller logs it and
+				// leaves the task QUEUED for the next poll. Unlike those,
+				// this condition (a non-array output whose glob matches more
+				// than one file) is permanent for a given job, so the task
+				// will keep re-polling into this same error rather than ever
+				// reaching a terminal state — that mirrors the existing
+				// Status() error-handling convention, not a new one.
+				return state, fmt.Errorf("task %s: resolve outputs from glob patterns: %w", task.ID, globErr)
+			}
 			if len(outputs) > 0 {
 				task.Outputs = outputs
 				e.logger.Info("built outputs from glob patterns (output_files empty)",
@@ -290,11 +329,14 @@ func (e *BVBRCExecutor) buildOutputs(task *model.Task, outputFiles [][]string, o
 }
 
 // buildOutputsFromGlobs constructs CWL outputs from the tool's glob patterns
-// when BV-BRC query_tasks doesn't return output_files. Each glob pattern is
-// resolved to a ws:// URI under the result folder.
-func (e *BVBRCExecutor) buildOutputsFromGlobs(task *model.Task, outputPath, outputFile string) map[string]any {
+// when BV-BRC query_tasks doesn't return output_files. Each concrete (non-
+// wildcard) glob pattern is resolved directly to a ws:// URI under the
+// result folder. Wildcard globs (containing *?[) are resolved by listing the
+// result folder once via Workspace.ls and matching each pattern against the
+// listing; see resolveWildcardOutputs.
+func (e *BVBRCExecutor) buildOutputsFromGlobs(ctx context.Context, task *model.Task, outputPath, outputFile string) (map[string]any, error) {
 	if outputPath == "" || outputFile == "" || task.Tool == nil {
-		return nil
+		return nil, nil
 	}
 
 	resultFolder := outputPath + "/." + outputFile
@@ -306,14 +348,25 @@ func (e *BVBRCExecutor) buildOutputsFromGlobs(task *model.Task, outputPath, outp
 		"basename": "." + outputFile,
 	}
 
-	// Iterate CWL outputs and resolve glob patterns to workspace paths.
-	iterateOutputGlobs(task.Tool, func(id, glob string) {
+	// wildcardOutput defers resolution of a glob containing *?[ until the
+	// result folder has been listed; def is the output's own CWL definition
+	// (outputBinding + type), reused by globMatches and outputTypeIsArray.
+	type wildcardOutput struct {
+		id      string
+		pattern string
+		def     map[string]any
+	}
+	var wildcards []wildcardOutput
+
+	// Iterate CWL outputs and resolve concrete glob patterns to workspace
+	// paths; queue wildcard patterns for resolveWildcardOutputs below.
+	iterateOutputGlobs(task.Tool, func(id, glob string, def map[string]any) {
 		if id == "result_folder" || id == "result" || glob == "." {
 			return
 		}
 		pattern := strings.ReplaceAll(glob, "$(inputs.output_file)", outputFile)
-		// Skip wildcard globs — we can't resolve them without listing the folder.
 		if strings.ContainsAny(pattern, "*?[") {
+			wildcards = append(wildcards, wildcardOutput{id: id, pattern: pattern, def: def})
 			return
 		}
 		outputs[id] = map[string]any{
@@ -323,11 +376,149 @@ func (e *BVBRCExecutor) buildOutputsFromGlobs(task *model.Task, outputPath, outp
 		}
 	})
 
-	return outputs
+	if len(wildcards) == 0 {
+		return outputs, nil
+	}
+
+	listing, err := e.listResultFolder(ctx, task, resultFolder)
+	if err != nil {
+		return nil, fmt.Errorf("list result folder %s for wildcard-glob outputs: %w", resultFolder, err)
+	}
+	if len(listing) == 0 {
+		// BV-BRC result folders can be slow to index; a genuinely empty
+		// listing right after completion is expected, not an error. This
+		// Status() call runs once, in the SUCCESS branch, right before the
+		// task terminalizes — there is no next poll for these outputs to
+		// resolve on, so the skip is permanent for this task, matching the
+		// pre-existing behavior for wildcard globs (they were unconditionally
+		// skipped before this change too).
+		e.logger.Warn("empty workspace listing while resolving wildcard-glob outputs; leaving them unresolved",
+			"task_id", task.ID, "result_folder", resultFolder, "wildcard_outputs", len(wildcards))
+		return outputs, nil
+	}
+
+	for _, w := range wildcards {
+		var matches []string
+		for _, obj := range listing {
+			if obj.Type == bvbrcpkg.WorkspaceTypeFolder || obj.Type == bvbrcpkg.WorkspaceTypeJobResult {
+				continue // a glob resolves to files, not subfolders/job-result containers of the result dir
+			}
+			name := obj.Name
+			if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+				continue // defensive: an unusable name from the service
+			}
+			if globMatches(w.def, name, outputFile) {
+				matches = append(matches, name)
+			}
+		}
+		if len(matches) == 0 {
+			continue // no match — leave this output unresolved, as with an unmatched concrete glob
+		}
+		sort.Strings(matches)
+
+		if outputTypeIsArray(w.def) {
+			arr := make([]any, 0, len(matches))
+			for _, name := range matches {
+				arr = append(arr, map[string]any{
+					"class":    "File",
+					"location": "ws://" + resultFolder + "/" + name,
+					"basename": name,
+				})
+			}
+			outputs[w.id] = arr
+			continue
+		}
+
+		if len(matches) > 1 {
+			return nil, fmt.Errorf("output %q: glob %q matched %d files in %s, expected exactly one for a non-array output (declare it as an array type to accept all matches): %v",
+				w.id, w.pattern, len(matches), resultFolder, matches)
+		}
+		outputs[w.id] = map[string]any{
+			"class":    "File",
+			"location": "ws://" + resultFolder + "/" + matches[0],
+			"basename": matches[0],
+		}
+	}
+
+	return outputs, nil
 }
 
-// iterateOutputGlobs calls fn(id, glob) for each CWL output with a glob pattern.
-func iterateOutputGlobs(tool map[string]any, fn func(id, glob string)) {
+// listResultFolder lists a BV-BRC result folder via Workspace.ls, using the
+// same per-task token as query_tasks/start_app.
+func (e *BVBRCExecutor) listResultFolder(ctx context.Context, task *model.Task, resultFolder string) ([]bvbrcpkg.WorkspaceObject, error) {
+	token := taskToken(task)
+	if token == "" {
+		return nil, fmt.Errorf("task %s: no user token for BV-BRC workspace listing", task.ID)
+	}
+
+	client := bvbrcpkg.NewClient(bvbrcpkg.Config{
+		WorkspaceURL: e.workspaceURL,
+		Token:        token,
+		Timeout:      bvbrcpkg.DefaultTimeout,
+		MaxRetries:   bvbrcpkg.DefaultMaxRetries,
+		RetryDelay:   bvbrcpkg.DefaultRetryDelay,
+	}, e.logger)
+
+	result, err := client.WorkspaceLs(ctx, bvbrcpkg.WorkspaceLsInput{Paths: []string{resultFolder}})
+	if err != nil {
+		return nil, err
+	}
+	return lookupWorkspaceListing(result, resultFolder), nil
+}
+
+// lookupWorkspaceListing finds the listing for dir in a WorkspaceLs result,
+// tolerating the service's trailing-slash inconsistency on the response key
+// (the same tolerance internal/ui's listWorkspaceDir applies).
+func lookupWorkspaceListing(result map[string][]bvbrcpkg.WorkspaceObject, dir string) []bvbrcpkg.WorkspaceObject {
+	if items, ok := result[dir]; ok {
+		return items
+	}
+	trimmed := strings.TrimSuffix(dir, "/")
+	if items, ok := result[trimmed]; ok {
+		return items
+	}
+	if items, ok := result[trimmed+"/"]; ok {
+		return items
+	}
+	if len(result) == 1 {
+		for _, items := range result {
+			return items
+		}
+	}
+	return nil
+}
+
+// outputTypeIsArray reports whether a CWL output definition declares an
+// array type: "File[]", "File[]?" (optional-array shorthand), {"type":
+// "array", ...}, or a union type (e.g. ["null", "File[]"]) containing one of
+// those.
+func outputTypeIsArray(def map[string]any) bool {
+	return cwlTypeIsArray(def["type"])
+}
+
+func cwlTypeIsArray(t any) bool {
+	switch v := t.(type) {
+	case string:
+		return strings.HasSuffix(strings.TrimSuffix(v, "?"), "[]")
+	case map[string]any:
+		ty, _ := v["type"].(string)
+		return ty == "array"
+	case []any:
+		for _, item := range v {
+			if cwlTypeIsArray(item) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// iterateOutputGlobs calls fn(id, glob, def) for each CWL output with a glob
+// pattern, where def is that output's own definition map (outputBinding,
+// type, ...).
+func iterateOutputGlobs(tool map[string]any, fn func(id, glob string, def map[string]any)) {
 	toolOutputs, ok := tool["outputs"]
 	if !ok {
 		return
@@ -342,7 +533,7 @@ func iterateOutputGlobs(tool map[string]any, fn func(id, glob string)) {
 		if !ok || glob == "" {
 			return
 		}
-		fn(id, glob)
+		fn(id, glob, m)
 	}
 
 	switch out := toolOutputs.(type) {

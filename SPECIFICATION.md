@@ -464,21 +464,27 @@ scheme. Each backend handles both stage-in (inputs) and stage-out (outputs).
 | `file://` | `shared.go` | copy to a shared filesystem path (distributed workers) | supported |
 | `http(s)://` | *(http stager)* | HTTP PUT/POST upload, custom headers/auth/retry | defined |
 | `shock://` | `shock.go` | Shock data service (`shock://host/node/{id}`) | defined |
-| `ws://` | `workspace.go` | BV-BRC Workspace service (default for BV-BRC runs) | defined |
+| `ws://` | `workspace.go` | BV-BRC Workspace service (default for BV-BRC runs) | supported |
 | `s3://` | `s3.go` | S3-compatible object storage | planned |
 
 Backends marked *defined*/*planned* are implemented to varying degrees but not fully covered
 by the conformance suite; see the test matrix in [`docs/Execution-Modes.md`](docs/Execution-Modes.md).
 Staging supports **copy**, **symlink**, and **reference** modes.
 
-> **`ws://` (BV-BRC Workspace)** is *defined* — implemented end to end (submission, output
-> mapping, the stager, and server-side pre/post-staging) but not CI-verified, since it requires
-> a live BV-BRC service and a real user token. Stage-out follows the upload protocol in §10.6
-> (streamed, size- and md5-verified; validated against the live service by the
-> `-tags=integration` tests in `pkg/bvbrc`, not by CI). See
+> **`ws://` (BV-BRC Workspace)** is **supported**: implemented end to end (submission, output
+> mapping, the stager, and server-side pre/post-staging) and verified against a live BV-BRC
+> service by a hybrid round-trip (`ws://` input → local/worker step → `ws://` output, including a
+> wildcard-glob output and a recursive `Directory` stage-in) — see the gated
+> `-tags=integration` tests in `internal/executor/bvbrc_integration_test.go` and `pkg/bvbrc`.
+> That verification is not CI-gated (it needs a live service and a real user token, which CI
+> does not have), so promotion to *supported* rests on this round-trip having been run and
+> attached as evidence rather than on a green CI matrix cell — see
 > [`docs/BVBRC-Workspace-Deep-Dive.md`](docs/BVBRC-Workspace-Deep-Dive.md) for the full
-> submission/result round-trip and the remaining gaps (wildcard-glob resolution in the BV-BRC
-> output fallback, recursive `Directory` download on stage-in).
+> submission/result round-trip and what closed the previously-open gaps (streamed, size-verified
+> upload; wildcard-glob output resolution; recursive `Directory` stage-in). Server-side staging
+> requires `--workspace-staging server --workspace-url <url>` (§10.3); without it, `ws://`
+> locations pass through to worker-side stagers unchanged. One edge remains optional and
+> out of scope here: submit-time schema validation against `query_app_description` (#154 gap 4).
 
 ### 10.3 Server-side staging and upload proxy
 
