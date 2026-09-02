@@ -2,9 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -17,6 +20,15 @@ import (
 //  2. ExpressionTool scatter per-iteration 'when' evaluation failure must
 //     fail the step (CWL spec: non-boolean 'when' must fail), matching the
 //     CommandLineTool scatter path — not warn-and-continue.
+//
+// It also covers GoWe issue #205, the two leftovers disclosed by #200/#204
+// (PR #204, commit 2230698):
+//
+//  3. dispatchStep's token-expiry and preflight no-capable-worker branches
+//     must set StepInstance.Error, not just flip the state to FAILED.
+//  4. buildSubmissionError's task-lookup loop must not clobber a specific,
+//     non-empty StepInstance.Error with the generic "step task failed"
+//     message when a FAILED task also exists under the step.
 
 // valueFromErrorScatterSubwfCWL: scatterSubwfCWL with a per-iteration
 // valueFrom expression that throws (calls an undefined function), so
@@ -322,5 +334,232 @@ func TestExpressionToolScatter_WhenEvalError_FailsStep(t *testing.T) {
 	}
 	if !strings.Contains(sub.Error.Message, "scatter_step") {
 		t.Errorf("submission Error.Message = %q, want it to mention the failing step", sub.Error.Message)
+	}
+}
+
+// TestDispatchStep_TokenExpiry_SetsStepInstanceError covers GoWe #205 item 1:
+// dispatchStep's token-expiry branch (~line 616) previously flipped the step
+// to FAILED with only a log line. It must now persist a concise, actionable
+// StepInstance.Error that also surfaces through buildSubmissionError.
+func TestDispatchStep_TokenExpiry_SetsStepInstanceError(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// UpdateSubmission does not persist TokenExpiry (it's an insert-only
+	// column), so the submission is created directly with an already-expired
+	// token rather than going through createPipeline + a follow-up update.
+	wfID := "wf_" + uuid.New().String()
+	subID := "sub_" + uuid.New().String()
+	wf := &model.Workflow{
+		ID:         wfID,
+		Name:       "test-workflow",
+		CWLVersion: "v1.2",
+		Steps: []model.Step{
+			{
+				ID: "step1",
+				ToolInline: &model.Tool{
+					ID:          "tool1",
+					Class:       "CommandLineTool",
+					BaseCommand: []string{"echo", "hello"},
+				},
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	sub := &model.Submission{
+		ID:           subID,
+		WorkflowID:   wfID,
+		WorkflowName: wf.Name,
+		State:        model.SubmissionStatePending,
+		Inputs:       map[string]any{},
+		Outputs:      map[string]any{},
+		Labels:       map[string]string{},
+		TokenExpiry:  now.Add(-time.Hour),
+		CreatedAt:    now,
+	}
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+	initialSI := &model.StepInstance{
+		ID:           "si_" + uuid.New().String(),
+		SubmissionID: subID,
+		StepID:       "step1",
+		State:        model.StepStateWaiting,
+		Outputs:      map[string]any{},
+		CreatedAt:    now,
+	}
+	if err := st.CreateStepInstance(ctx, initialSI); err != nil {
+		t.Fatalf("CreateStepInstance: %v", err)
+	}
+
+	got := runToTerminal(t, sched, st, subID, 5)
+	if got.State != model.SubmissionStateFailed {
+		t.Fatalf("submission state = %s, want FAILED", got.State)
+	}
+
+	si := getStepInstancesByStep(t, st, subID)["step1"]
+	if si.State != model.StepStateFailed {
+		t.Fatalf("step1.State = %s, want FAILED", si.State)
+	}
+	if si.Error == "" {
+		t.Fatal("step1 step instance Error is empty, want a persisted diagnostic")
+	}
+	if !strings.Contains(si.Error, "token expired") {
+		t.Errorf("step1 step instance Error = %q, want it to mention token expiry", si.Error)
+	}
+
+	if got.Error == nil || got.Error.Message == "" {
+		t.Fatal("submission Error is nil/empty, want a diagnostic message")
+	}
+	if !strings.Contains(got.Error.Message, "token expired") {
+		t.Errorf("submission Error.Message = %q, want it to surface the token-expiry reason", got.Error.Message)
+	}
+}
+
+// TestDispatchStep_PreflightNoCapableWorker_SetsStepInstanceError covers GoWe
+// #205 item 1: dispatchStep's preflight no-capable-worker branch (~line 701),
+// reached once PreflightDeferralTicks deferrals are exhausted, previously
+// flipped the step to FAILED with only a log line ("reason" was computed but
+// discarded). It must now reuse that reason in a persisted StepInstance.Error.
+func TestDispatchStep_PreflightNoCapableWorker_SetsStepInstanceError(t *testing.T) {
+	sched, st := testSetup(t)
+
+	sched.config.DefaultExecutor = "worker"
+	sched.config.PreflightDeferralTicks = 1
+	sched.config.MaxRetries = 0
+
+	steps := []model.Step{
+		{
+			ID: "container_step",
+			ToolInline: &model.Tool{
+				ID:          "tool1",
+				Class:       "CommandLineTool",
+				BaseCommand: []string{"echo", "hello"},
+			},
+			Hints: &model.StepHints{
+				DockerImage: "alpine",
+			},
+		},
+	}
+
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 0)
+
+	got := runToTerminal(t, sched, st, subID, 5)
+	if got.State != model.SubmissionStateFailed {
+		t.Fatalf("submission state = %s, want FAILED", got.State)
+	}
+
+	si := getStepInstancesByStep(t, st, subID)["container_step"]
+	if si.State != model.StepStateFailed {
+		t.Fatalf("container_step.State = %s, want FAILED", si.State)
+	}
+	if si.Error == "" {
+		t.Fatal("container_step step instance Error is empty, want a persisted diagnostic")
+	}
+	if !strings.Contains(si.Error, "no capable worker") || !strings.Contains(si.Error, "no online workers") {
+		t.Errorf("container_step step instance Error = %q, want it to reference the no-capable-worker reason", si.Error)
+	}
+
+	if got.Error == nil || got.Error.Message == "" {
+		t.Fatal("submission Error is nil/empty, want a diagnostic message")
+	}
+	if !strings.Contains(got.Error.Message, "no capable worker") {
+		t.Errorf("submission Error.Message = %q, want it to surface the no-capable-worker reason", got.Error.Message)
+	}
+}
+
+// TestBuildSubmissionError_MessagePrecedence covers GoWe #205 item 2:
+// buildSubmissionError's task-lookup loop must not overwrite Message with the
+// generic "step task failed" text when the step instance already carries a
+// specific, non-empty Error — while still enriching Context (exit code,
+// stderr) from the failed task. When StepInstance.Error is empty, the
+// existing generic-message behavior (pinned by earlier tests) is unchanged.
+func TestBuildSubmissionError_MessagePrecedence(t *testing.T) {
+	tests := []struct {
+		name    string
+		siError string
+	}{
+		{
+			name:    "specific_si_error_wins_over_generic_task_message",
+			siError: "scatter iteration 2 valueFrom: boom",
+		},
+		{
+			name:    "empty_si_error_falls_back_to_generic_task_message",
+			siError: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sched, st := testSetup(t)
+			ctx := context.Background()
+
+			_, subID := createPipeline(t, st, []model.Step{{ID: "step1"}}, map[string]any{}, 0)
+
+			si := getStepInstancesByStep(t, st, subID)["step1"]
+			now := time.Now().UTC()
+			si.State = model.StepStateFailed
+			si.Error = tt.siError
+			si.CompletedAt = &now
+			if err := st.UpdateStepInstance(ctx, si); err != nil {
+				t.Fatalf("UpdateStepInstance: %v", err)
+			}
+
+			exitCode := 1
+			task := &model.Task{
+				ID:             "task_" + uuid.New().String(),
+				SubmissionID:   subID,
+				StepID:         "step1",
+				StepInstanceID: si.ID,
+				State:          model.TaskStateFailed,
+				ExecutorType:   model.ExecutorTypeLocal,
+				Inputs:         map[string]any{},
+				Outputs:        map[string]any{},
+				ScatterIndex:   -1,
+				ExitCode:       &exitCode,
+				Stderr:         "boom: exit 1",
+			}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			subErr := sched.buildSubmissionError(ctx, []*model.StepInstance{si})
+			if subErr == nil {
+				t.Fatal("buildSubmissionError returned nil")
+			}
+
+			if tt.siError != "" {
+				if !strings.Contains(subErr.Message, tt.siError) {
+					t.Errorf("Message = %q, want it to contain the specific si.Error %q", subErr.Message, tt.siError)
+				}
+				if strings.Contains(subErr.Message, "task failed") {
+					t.Errorf("Message = %q, generic 'task failed' text leaked through despite a specific si.Error (#205)", subErr.Message)
+				}
+			} else {
+				// Existing pinned behavior: empty si.Error falls back to the
+				// generic task-derived message.
+				wantMsg := fmt.Sprintf("step '%s' task failed with exit code %d", "step1", exitCode)
+				if subErr.Message != wantMsg {
+					t.Errorf("Message = %q, want generic %q", subErr.Message, wantMsg)
+				}
+			}
+
+			// Context must still be enriched from the task regardless of
+			// which branch set Message.
+			if subErr.Context == nil || subErr.Context.TaskID != task.ID {
+				t.Errorf("Context.TaskID = %v, want %q (task-derived enrichment must survive)", subErr.Context, task.ID)
+			}
+			if subErr.Context.ExitCode == nil || *subErr.Context.ExitCode != exitCode {
+				t.Errorf("Context.ExitCode = %v, want %d", subErr.Context.ExitCode, exitCode)
+			}
+			if subErr.Context.Stderr != task.Stderr {
+				t.Errorf("Context.Stderr = %q, want %q", subErr.Context.Stderr, task.Stderr)
+			}
+		})
 	}
 }
