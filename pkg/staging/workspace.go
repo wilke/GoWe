@@ -78,8 +78,19 @@ func (s *WorkspaceStager) WithToken(token string) *WorkspaceStager {
 	return &clone
 }
 
-// StageIn downloads a file from the BV-BRC Workspace to destPath.
-// The location must be a ws:// URI, e.g. ws:///user@bvbrc/home/file.fasta
+// maxDirectoryEntries caps the total number of objects a recursive StageIn
+// will download from a single ws:// Directory input, guarding against a
+// workspace folder large enough to exhaust local disk or memory.
+const maxDirectoryEntries = 10000
+
+// maxDirectoryDepth caps how many levels deep a recursive StageIn will
+// descend into a ws:// Directory input.
+const maxDirectoryDepth = 20
+
+// StageIn downloads a file or a folder from the BV-BRC Workspace to destPath.
+// The location must be a ws:// URI, e.g. ws:///user@bvbrc/home/file.fasta.
+// When the location names a workspace folder, its entire tree (files and
+// subfolders) is recursively downloaded under destPath, preserving structure.
 func (s *WorkspaceStager) StageIn(ctx context.Context, location string, destPath string, opts StageOptions) error {
 	wsPath, err := parseWorkspaceURI(location)
 	if err != nil {
@@ -91,6 +102,51 @@ func (s *WorkspaceStager) StageIn(ctx context.Context, location string, destPath
 		return fmt.Errorf("workspace stager: no authentication token available")
 	}
 
+	isDir, err := s.isFolder(ctx, wsPath, token)
+	if err != nil {
+		return fmt.Errorf("workspace stager: determine object type for %s: %w", wsPath, err)
+	}
+	if isDir {
+		return s.stageInDirectory(ctx, wsPath, destPath, token)
+	}
+	return s.stageInFile(ctx, wsPath, destPath, token)
+}
+
+// isFolderLikeType reports whether a workspace object type should be
+// recursed into as a directory. Plain "folder" is the obvious case; BV-BRC
+// job-result containers ("job_result") are the most common real-world case
+// of a ws:// Directory input in practice (a job's `{output_path}/{output_file}`
+// object) and are containers holding files the same way a folder is, even
+// though their type string differs — confirmed against a live service during
+// the #154/#198 promotion round-trip.
+func isFolderLikeType(t bvbrc.WorkspaceObjectType) bool {
+	return t == bvbrc.WorkspaceTypeFolder || t == bvbrc.WorkspaceTypeJobResult
+}
+
+// isFolder reports whether the workspace object at wsPath is a folder (or
+// folder-like container — see isFolderLikeType), via a metadata-only
+// Workspace.get (the same call deletePlaceholder uses to check an object's
+// identity). Verified against a live BV-BRC service — including on an actual
+// folder path — by the gated integration test in
+// internal/executor/bvbrc_integration_test.go.
+func (s *WorkspaceStager) isFolder(ctx context.Context, wsPath, token string) (bool, error) {
+	objs, err := s.newClient(token).WorkspaceGet(ctx, bvbrc.WorkspaceGetInput{
+		Objects:      []string{wsPath},
+		MetadataOnly: true,
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(objs) == 0 {
+		return false, fmt.Errorf("workspace object not found: %s", wsPath)
+	}
+	return isFolderLikeType(objs[0].Type), nil
+}
+
+// stageInFile downloads a single workspace file to destPath, retrying
+// transient failures. This is the original (pre-Directory-awareness) StageIn
+// body, and is also the leaf downloader stageInDirectory calls per file.
+func (s *WorkspaceStager) stageInFile(ctx context.Context, wsPath string, destPath string, token string) error {
 	// Ensure destination directory exists.
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("workspace stager: mkdir: %w", err)
@@ -117,6 +173,116 @@ func (s *WorkspaceStager) StageIn(ctx context.Context, location string, destPath
 	}
 
 	return fmt.Errorf("workspace stager: download failed after %d attempts: %w", s.config.MaxRetries, lastErr)
+}
+
+// stageInDirectory recursively downloads every file under the workspace
+// folder at wsPath into destPath, preserving the relative tree. It walks one
+// directory level at a time via Workspace.ls (rather than relying on the
+// service's own "recursive" ls flag, whose exact response shape for a large
+// tree is undocumented), so maxDirectoryEntries/maxDirectoryDepth apply
+// uniformly regardless of folder size. Each file is downloaded through the
+// same verified stageInFile path used for a plain File input.
+func (s *WorkspaceStager) stageInDirectory(ctx context.Context, wsPath string, destPath string, token string) error {
+	if err := os.MkdirAll(destPath, 0o755); err != nil {
+		return fmt.Errorf("workspace stager: mkdir %s: %w", destPath, err)
+	}
+
+	client := s.newClient(token)
+
+	type dirEntry struct {
+		wsPath string
+		dest   string
+		depth  int
+	}
+
+	queue := []dirEntry{{wsPath: wsPath, dest: destPath, depth: 0}}
+	total := 0
+
+	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		dir := queue[0]
+		queue = queue[1:]
+
+		if dir.depth > maxDirectoryDepth {
+			return fmt.Errorf("workspace stager: directory %s exceeds max depth %d while staging %s", dir.wsPath, maxDirectoryDepth, wsPath)
+		}
+
+		listing, err := client.WorkspaceLs(ctx, bvbrc.WorkspaceLsInput{Paths: []string{dir.wsPath}})
+		if err != nil {
+			return fmt.Errorf("workspace stager: list %s: %w", dir.wsPath, err)
+		}
+
+		entries := lookupWorkspaceListing(listing, dir.wsPath)
+		// Checked against the whole level before touching any entry in it,
+		// so a directory that blows the cap does no mkdir/download work at
+		// all for that level.
+		total += len(entries)
+		if total > maxDirectoryEntries {
+			return fmt.Errorf("workspace stager: directory %s has more than %d entries, aborting recursive stage-in", wsPath, maxDirectoryEntries)
+		}
+
+		for _, obj := range entries {
+			// Defensive: skip a listing entry that is the queried directory
+			// itself (a self-reference), should the service ever include
+			// one — recursing into it would otherwise re-list the same
+			// directory forever. Not observed against the live service (its
+			// listings only contain children), but cheap to guard.
+			if obj.Path == dir.wsPath {
+				s.logger.Debug("workspace listing entry references its own parent directory; skipping",
+					"parent", dir.wsPath, "name", obj.Name)
+				continue
+			}
+
+			name := obj.Name
+			if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+				s.logger.Warn("workspace listing entry has an unusable name; skipping",
+					"parent", dir.wsPath, "name", name)
+				continue
+			}
+			childDest := filepath.Join(dir.dest, name)
+
+			if isFolderLikeType(obj.Type) {
+				if err := os.MkdirAll(childDest, 0o755); err != nil {
+					return fmt.Errorf("workspace stager: mkdir %s: %w", childDest, err)
+				}
+				queue = append(queue, dirEntry{wsPath: obj.Path, dest: childDest, depth: dir.depth + 1})
+				continue
+			}
+
+			if err := s.stageInFile(ctx, obj.Path, childDest, token); err != nil {
+				return fmt.Errorf("workspace stager: stage %s: %w", obj.Path, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// lookupWorkspaceListing finds the listing for dir in a WorkspaceLs result,
+// tolerating the service's trailing-slash inconsistency on the response key
+// (mirrors internal/ui's listWorkspaceDir and internal/executor's identical
+// helper — duplicated here rather than shared, since pkg/bvbrc is out of
+// scope for this change).
+func lookupWorkspaceListing(result map[string][]bvbrc.WorkspaceObject, dir string) []bvbrc.WorkspaceObject {
+	if items, ok := result[dir]; ok {
+		return items
+	}
+	trimmed := strings.TrimSuffix(dir, "/")
+	if items, ok := result[trimmed]; ok {
+		return items
+	}
+	if items, ok := result[trimmed+"/"]; ok {
+		return items
+	}
+	if len(result) == 1 {
+		for _, items := range result {
+			return items
+		}
+	}
+	return nil
 }
 
 // StageOut uploads a file to the BV-BRC Workspace.

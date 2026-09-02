@@ -311,12 +311,27 @@ func findWSLocations(inputs map[string]any) []wsLocation {
 }
 
 // walkLocations visits all "location" fields in File/Directory CWL objects.
+//
+// A Directory input carrying its own ws:// location is handled as a unit:
+// prestageWorkspaceInputs' StageIn recursively downloads its whole tree
+// (pkg/staging's stageInDirectory), so this stops descending into that
+// object once its location is queued — it must not also walk into a
+// pre-populated "listing" and queue each nested File's location as a
+// separate top-level download. That would both duplicate the transfer and,
+// since the sibling's destPath is derived from its own basename alone,
+// flatten it out of the tree the recursive download just reconstructed. A
+// Directory with no location of its own (only a "listing") still falls
+// through to the recursive walk below, so its nested File locations are
+// still found and staged individually.
 func walkLocations(v any, fn func(string)) {
 	switch val := v.(type) {
 	case map[string]any:
 		if class, ok := val["class"].(string); ok && (class == "File" || class == "Directory") {
 			if loc, ok := val["location"].(string); ok && loc != "" {
 				fn(loc)
+				if class == "Directory" {
+					return
+				}
 			}
 		}
 		for _, item := range val {

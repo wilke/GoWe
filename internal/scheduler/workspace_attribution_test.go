@@ -2,13 +2,19 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/me/gowe/pkg/bvbrc"
+	"github.com/me/gowe/pkg/bvbrc/bvbrctest"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -204,14 +210,15 @@ func TestPrestageWorkspaceInputs_CancelNotClobbered(t *testing.T) {
 }
 
 // cancelingStager builds a real *staging.WorkspaceStager pointed at an
-// httptest server that answers the two network calls StageIn makes (the
-// Workspace.get_download_url JSON-RPC call, then the plain HTTP GET of the
-// returned download URL) with a SUCCESSFUL download — but the GET handler
-// first cancels subID in the store, synchronously, before writing any
-// response bytes. Because the Go HTTP client only unblocks once the handler
-// has produced a response, this deterministically interleaves the store
-// write between StageIn's success return and the caller's next CAS attempt:
-// no sleeps, no goroutines racing the scheduler tick.
+// httptest server that answers the network calls StageIn makes for a plain
+// File input — first a metadata-only Workspace.get (StageIn's folder-vs-file
+// check), then the Workspace.get_download_url JSON-RPC call, then the plain
+// HTTP GET of the returned download URL — with a SUCCESSFUL download, but
+// the GET handler first cancels subID in the store, synchronously, before
+// writing any response bytes. Because the Go HTTP client only unblocks once
+// the handler has produced a response, this deterministically interleaves
+// the store write between StageIn's success return and the caller's next CAS
+// attempt: no sleeps, no goroutines racing the scheduler tick.
 func cancelingStager(t *testing.T, st interface {
 	GetSubmission(ctx context.Context, id string) (*model.Submission, error)
 	FinalizeSubmission(ctx context.Context, sub *model.Submission) (bool, error)
@@ -221,9 +228,22 @@ func cancelingStager(t *testing.T, st interface {
 	var tsURL string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Workspace.get_download_url JSON-RPC response: [[url]].
+		var req struct {
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"id":"1","version":"1.1","result":[["%s/download"]]}`, tsURL)
+		switch req.Method {
+		case "Workspace.get":
+			// Metadata-only get: a plain file object (not a folder), so
+			// StageIn takes the single-file path this test exercises.
+			fmt.Fprint(w, `{"id":"1","version":"1.1","result":[[[["reads.fastq","reads","/user@bvbrc/home/","2026-08-20T12:00:00Z","uuid1","user@bvbrc",0,{},{},"o","n"],""]]]}`)
+		default:
+			// Workspace.get_download_url JSON-RPC response: [[url]].
+			fmt.Fprintf(w, `{"id":"1","version":"1.1","result":[["%s/download"]]}`, tsURL)
+		}
 	})
 	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
@@ -418,5 +438,149 @@ func TestPoststageWorkspaceOutputs_FailureStampsCompletedAt(t *testing.T) {
 	}
 	if got.PoststageCompletedAt.Before(*got.PoststageStartedAt) {
 		t.Errorf("poststage_completed_at %v before poststage_started_at %v", got.PoststageCompletedAt, got.PoststageStartedAt)
+	}
+}
+
+// wsDirectoryInputSubmission is wsInputSubmission's sibling for a ws://
+// Directory input instead of a File input, so prestageWorkspaceInputs'
+// Directory-awareness (recursive StageIn) can be exercised at the scheduler
+// level, not just inside pkg/staging.
+func wsDirectoryInputSubmission(t *testing.T, st interface {
+	CreateWorkflow(ctx context.Context, wf *model.Workflow) error
+	CreateSubmission(ctx context.Context, sub *model.Submission) error
+	CreateStepInstance(ctx context.Context, si *model.StepInstance) error
+}, wsDir string) string {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wfID := "wf_ws_dir_test"
+	subID := "sub_ws_dir_test"
+
+	wf := &model.Workflow{
+		ID:         wfID,
+		Name:       "ws-dir-test",
+		CWLVersion: "v1.2",
+		Steps: []model.Step{
+			{ID: "s1", ToolRef: "#t", DependsOn: []string{"blocker"}},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+
+	sub := &model.Submission{
+		ID:           subID,
+		WorkflowID:   wfID,
+		WorkflowName: wf.Name,
+		State:        model.SubmissionStatePending,
+		UserToken:    "un=tester|sig=abc",
+		Inputs: map[string]any{
+			"reads_dir": map[string]any{
+				"class":    "Directory",
+				"location": "ws://" + wsDir,
+			},
+		},
+		Outputs:   map[string]any{},
+		Labels:    map[string]string{},
+		CreatedAt: now,
+	}
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create submission: %v", err)
+	}
+
+	blocker := &model.StepInstance{
+		ID: "si_blocker", SubmissionID: subID, StepID: "blocker",
+		State: model.StepStateWaiting, Outputs: map[string]any{}, CreatedAt: now,
+	}
+	if err := st.CreateStepInstance(ctx, blocker); err != nil {
+		t.Fatalf("create blocker step instance: %v", err)
+	}
+
+	si := &model.StepInstance{
+		ID: "si_ws_dir_test", SubmissionID: subID, StepID: "s1",
+		State: model.StepStateWaiting, Outputs: map[string]any{}, CreatedAt: now,
+	}
+	if err := st.CreateStepInstance(ctx, si); err != nil {
+		t.Fatalf("create step instance: %v", err)
+	}
+
+	return subID
+}
+
+// TestPrestageWorkspaceInputs_DirectoryInputRecursivelyStaged is the
+// scheduler-level counterpart of pkg/staging's recursive-StageIn unit tests:
+// a submission with a ws:// Directory input, pre-staged against a real fake
+// Workspace service (bvbrctest), ends up with the whole tree downloaded
+// under the per-submission stage directory and the input rewritten to a
+// file:// location pointing at it.
+func TestPrestageWorkspaceInputs_DirectoryInputRecursivelyStaged(t *testing.T) {
+	f := bvbrctest.New(t)
+	seedClient := bvbrc.NewClient(bvbrc.Config{
+		WorkspaceURL: f.WorkspaceURL(),
+		Token:        "un=tester|sig=abc",
+		MaxRetries:   1,
+	}, nil)
+
+	const wsDir = "/tester@bvbrc/home/reads"
+	ctx := context.Background()
+	if _, err := seedClient.WorkspaceCreateFolder(ctx, wsDir); err != nil {
+		t.Fatalf("seed folder: %v", err)
+	}
+	if _, err := seedClient.WorkspaceUploadFile(ctx, wsDir+"/r1.fastq", []byte("read one"), bvbrc.WorkspaceTypeUnspecified); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if _, err := seedClient.WorkspaceCreateFolder(ctx, wsDir+"/sub"); err != nil {
+		t.Fatalf("seed subfolder: %v", err)
+	}
+	if _, err := seedClient.WorkspaceUploadFile(ctx, wsDir+"/sub/r2.fastq", []byte("read two"), bvbrc.WorkspaceTypeUnspecified); err != nil {
+		t.Fatalf("seed nested file: %v", err)
+	}
+
+	l, st := testSetup(t)
+	l.SetWorkspaceStager(staging.NewWorkspaceStager(staging.WorkspaceConfig{
+		WorkspaceURL: f.WorkspaceURL(),
+		MaxRetries:   1,
+	}, slog.Default()))
+
+	subID := wsDirectoryInputSubmission(t, st, wsDir)
+
+	if err := l.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	got, err := st.GetSubmission(context.Background(), subID)
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+
+	readsDir, ok := got.Inputs["reads_dir"].(map[string]any)
+	if !ok {
+		t.Fatalf("inputs missing reads_dir entry: %#v", got.Inputs)
+	}
+	loc, _ := readsDir["location"].(string)
+	if loc == "" || loc[:7] != "file://" {
+		t.Fatalf("reads_dir.location = %q, want a file:// location (rewritten after successful pre-stage)", loc)
+	}
+
+	stageDir := loc[len("file://"):]
+	for rel, want := range map[string]string{
+		"r1.fastq":     "read one",
+		"sub/r2.fastq": "read two",
+	} {
+		gotBytes, err := os.ReadFile(filepath.Join(stageDir, rel))
+		if err != nil {
+			t.Errorf("read %s: %v", rel, err)
+			continue
+		}
+		if string(gotBytes) != want {
+			t.Errorf("%s content = %q, want %q", rel, gotBytes, want)
+		}
+	}
+
+	if got.PrestageCompletedAt == nil {
+		t.Error("expected prestage_completed_at to be stamped after a successful directory pre-stage")
 	}
 }
