@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/cwloutput"
 	"github.com/me/gowe/pkg/cwl"
 )
 
@@ -29,6 +30,11 @@ func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 		}
 		// Process File/Directory objects to resolve paths and add metadata.
 		processOutputObjects(outputs, workDir)
+		// A hand-written cwl.output.json can declare a basename that
+		// disagrees with the file it names on disk; honor basename (#212).
+		if err := cwloutput.NormalizeOutputFiles(outputs, workDir); err != nil {
+			return nil, fmt.Errorf("normalize output file basenames: %w", err)
+		}
 		return outputs, nil
 	}
 
@@ -144,6 +150,16 @@ func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 		// Apply format to collected File objects.
 		applyFormatToOutput(collected, output.Format, inputs, namespaces)
 		outputs[outputID] = collected
+	}
+
+	// outputEval may have mutated a File's basename in memory without the
+	// staged file following it (#212). Per the CWL spec basename is
+	// authoritative for a materialized file, so rename on disk to match and
+	// keep path/location/nameroot/nameext consistent. Scoped to workDir so
+	// outputEval returning a passthrough input File (staged elsewhere) is
+	// never renamed.
+	if err := cwloutput.NormalizeOutputFiles(outputs, workDir); err != nil {
+		return nil, fmt.Errorf("normalize output file basenames: %w", err)
 	}
 
 	return outputs, nil

@@ -1231,7 +1231,20 @@ func downloadFileOutput(fileMap map[string]any, outDir string) map[string]any {
 		return fileMap
 	}
 
+	// Prefer the File object's basename field for the local filename: per the
+	// CWL spec it is authoritative for a materialized file, and it also fixes
+	// downloads of submissions staged before #212 (whose on-disk name and
+	// basename could diverge after an outputEval rename). Fall back to the
+	// location-derived name when basename is absent. filepath.Base both
+	// strips any directory components an untrusted basename might carry and
+	// rejects "." / ".."-only values, so the result always stays inside
+	// outDir.
 	basename := filepath.Base(strings.TrimPrefix(location, "file://"))
+	if b, ok := fileMap["basename"].(string); ok && b != "" {
+		if sanitized := filepath.Base(b); sanitized != "" && sanitized != "." && sanitized != ".." && sanitized != string(filepath.Separator) {
+			basename = sanitized
+		}
+	}
 	destPath := filepath.Join(outDir, basename)
 
 	// Avoid overwriting existing files (e.g., when scattered outputs share a basename).
