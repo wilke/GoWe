@@ -614,6 +614,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	if !sub.TokenExpiry.IsZero() && time.Now().After(sub.TokenExpiry) {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("submission token expired at %s", sub.TokenExpiry.Format(time.RFC3339))
 		si.CompletedAt = &now
 		l.logger.Warn("step failed due to token expiry", "si_id", si.ID, "submission_id", sub.ID)
 		return l.updateStepInstance(ctx, si)
@@ -699,6 +700,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 				delete(l.deferredSteps, si.ID)
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("no capable worker: %s (deferred %d ticks)", reason, count)
 				si.CompletedAt = &now
 				l.logger.Error("step failed: no capable worker",
 					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
@@ -2791,9 +2793,14 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 				subErr.Context.Stderr = stderr
 			}
 
-			subErr.Message = fmt.Sprintf("step '%s' task failed", failedStep.StepID)
-			if task.ExitCode != nil {
-				subErr.Message = fmt.Sprintf("step '%s' task failed with exit code %d", failedStep.StepID, *task.ExitCode)
+			// A non-empty StepInstance.Error (set above) is more specific than
+			// this generic task-derived message — keep it as Message and let
+			// the task only enrich Context (exit code, stderr). See #205.
+			if failedStep.Error == "" {
+				subErr.Message = fmt.Sprintf("step '%s' task failed", failedStep.StepID)
+				if task.ExitCode != nil {
+					subErr.Message = fmt.Sprintf("step '%s' task failed with exit code %d", failedStep.StepID, *task.ExitCode)
+				}
 			}
 			break
 		}
