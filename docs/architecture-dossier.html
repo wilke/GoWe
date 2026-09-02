@@ -288,7 +288,7 @@
 <div class="wrap">
 
   <header>
-    <div class="eyebrow">GoWe · Architecture Dossier · v0.15.0 · 2026-08-26</div>
+    <div class="eyebrow">GoWe · Architecture Dossier · v0.16.2 · 2026-09-01</div>
     <h1>Parsing, Scheduling&nbsp;&amp; Placement</h1>
     <p class="lede">A per-layer deep dive into the CWL&nbsp;v1.2 workflow engine — how a
       workflow parses into a DAG, ticks through a scheduler, and lands on one of five
@@ -318,6 +318,8 @@
       <a href="#s7"><span class="tn">7</span><span>Package map</span></a>
       <a href="#s8"><span class="tn">8</span><span>Routing hints</span></a>
       <a href="#s9"><span class="tn">9</span><span>Inputs &amp; storage</span></a>
+      <a href="#s10"><span class="tn">10</span><span>Registry &amp; versions</span></a>
+      <a href="#s11"><span class="tn">11</span><span>Observability</span></a>
     </nav>
 
     <div class="content">
@@ -387,7 +389,7 @@
               <p>A six-phase tick advances the whole hierarchy: resolve dependencies, dispatch, retry, poll, finalize.</p></div></div>
           <div class="node"><div class="rail"><span class="stage">expand</span><span class="marker"></span></div>
             <div class="body"><h3><code>StepInstance</code> · per step, per submission</h3>
-              <p>One instance per step; a scatter step fans out into <b>N</b> instances, each carrying its own tasks.</p></div></div>
+              <p>One instance per step — a scatter step keeps <b>one</b> instance that fans out into <b>N</b> indexed tasks.</p></div></div>
           <div class="node"><div class="rail"><span class="stage">work unit</span><span class="marker"></span></div>
             <div class="body"><h3><code>Task</code></h3>
               <p>The concrete, schedulable unit of work handed to an executor.</p></div></div>
@@ -422,7 +424,7 @@
             </div>
           </div>
           <div class="card track">
-            <div class="track-lab"><b>StepInstance</b><code>step_instance.go</code><span class="lvl">Level 2 · per step · scatter = 1 instance, N indexed tasks</span></div>
+            <div class="track-lab"><b>StepInstance</b><code>step_instance.go</code><span class="lvl">Level 2 · per step · scatter = 1 instance, N indexed tasks · FAILED carries a persisted error message</span></div>
             <div class="states">
               <span class="st wait">WAITING</span><span class="arw">→</span>
               <span class="st ready">READY</span><span class="arw">→</span>
@@ -462,6 +464,7 @@
         <div class="cols">
           <ol class="ladder card">
             <li><span class="k">1</span><span class="t"><b>Advance waiting</b> — <code>WAITING → READY</code> once every dependency is met.
+              <p>Per CWL there is <b>no skip cascade</b>: a <code>when</code>-skipped producer <i>satisfies</i> its consumers (its outputs resolve to null; step-level <code>pickValue</code> selects among sources). Only a <code>FAILED</code> dependency blocks — the consumer is then <code>SKIPPED</code>.</p>
               <p>1.5 · pre-stage workspace inputs for pending submissions (server mode).</p></span></li>
             <li><span class="k">2</span><span class="t"><b>Dispatch</b> — resolve inputs, create <code>Task</code>s, submit to executors.
               <p>Sub-workflow steps: all proxy tasks + the <code>DISPATCHED</code> transition in one transaction, then one child submission per task — non-blocking.</p>
@@ -476,7 +479,8 @@
             <li><span class="k">5</span><span class="t"><b>Finalize</b> — settle submissions once every step instance is terminal.
               <p>Terminal writes are compare-and-set — the loop never overwrites a submission a concurrent cancel already settled.</p>
               <p>5.5 · post-stage outputs to the workspace (server mode).</p></span></li>
-            <li><span class="k">6</span><span class="t"><b>Retries</b> — send newly-<code>FAILED</code> tasks to <code>RETRYING</code> while attempts remain.</span></li>
+            <li><span class="k">6</span><span class="t"><b>Retries</b> — send newly-<code>FAILED</code> tasks to <code>RETRYING</code> while attempts remain.
+              <p>Every terminal write across the tick is compare-and-set (state-guarded), so concurrent cancels, worker reports, and the loop can never clobber each other; a failed dispatch or evaluation persists a per-step error message surfaced through the submission's error record.</p></span></li>
           </ol>
         </div>
       </section>
@@ -614,7 +618,9 @@
             <tr><td class="pkg">internal/cwltool</td><td class="role">Full CommandLineTool executor — bindings, globbing, JS, IWDR.</td></tr>
             <tr><td class="pkg">internal/toolexec</td><td class="role">Shared execution: command building, mounts, GPU, secrets.</td></tr>
             <tr><td class="pkg">internal/cwlexpr</td><td class="role">CWL expression evaluation via the goja JS engine.</td></tr>
-            <tr><td class="pkg">internal/cwlrunner</td><td class="role">Standalone runner (no server) behind <code>bin/cwl-runner</code>.</td></tr>
+            <tr><td class="pkg">internal/cwlrunner</td><td class="role">Standalone runner (no server) behind <code>bin/cwl-runner</code> — <code>--parallel</code> applies at every nesting depth; one global <code>-j</code> tool-execution cap; opt-in <code>--cores</code> weighted budget.</td></tr>
+            <tr><td class="pkg">internal/metrics</td><td class="role">Prometheus registry: duration histograms, state gauges, cardinality-capped labels.</td></tr>
+            <tr><td class="pkg">internal/bundle</td><td class="role">Packs multi-file CWL into one <code>$graph</code> document — deterministic byte output.</td></tr>
             <tr><td class="pkg">internal/worker</td><td class="role">Remote worker loop: poll, execute, stage outputs, heartbeat.</td></tr>
             <tr><td class="pkg">internal/server</td><td class="role">HTTP handlers (go-chi), middleware, auth, SSE.</td></tr>
             <tr><td class="pkg">internal/store</td><td class="role">SQLite persistence (pure Go, WAL, single writer).</td></tr>
@@ -799,11 +805,68 @@ gowe submit workflow.cwl <span class="k">--inputs</span> <span class="v">job.yam
           backend (<code>--upload-backend shock|s3|local</code>); otherwise outputs are staged by the workers.</p>
       </section>
 
+      <section id="s10">
+        <div class="shead"><span class="sn">10</span><h2>Registry &amp; versions</h2>
+          <span class="ss">by name → latest · by id → immutable</span></div>
+        <div class="cols">
+          <ol class="ladder card">
+            <li><span class="k">reg</span><span class="t"><b>Register</b> — the bundler packs to <b>deterministic bytes</b>; the server dedupes on
+              <code>sha256(parseSchemaVersion + cwl)</code>. Identical content returns the existing row
+              (<code>deduplicated: true</code>); <code>gowe register --force</code> always creates a fresh row.</span></li>
+            <li><span class="k">ver</span><span class="t"><b>Versioned hash</b> — <code>parseSchemaVersion</code> is bumped whenever parser semantics
+              change, so a server upgrade automatically misses pre-upgrade rows: re-registration is guaranteed a
+              fresh parse, and a dedup hit can never resurrect a stale one.</span></li>
+            <li><span class="k">put</span><span class="t"><b>Update</b> — <code>PUT /workflows/{id}</code> with <code>cwl</code> publishes a
+              <b>new</b> row (new id, fresh parse) rather than mutating in place; metadata-only PUT edits in place.</span></li>
+          </ol>
+          <div>
+            <div class="card back"><div class="bn">resolution contract</div><div class="bd">
+              <b>By name</b> — always the newest registration (<code>ORDER BY created_at DESC</code>): what
+              <code>submit --workflow &lt;name&gt;</code> and <code>gowe://</code> references resolve.<br>
+              <b>By id</b> — immutable: a running submission's definition can never change beneath it, and any
+              recorded id replays the exact bytes it was registered with.</div></div>
+            <p class="snote"><code>content_hash</code> is intentionally non-unique — <code>--force</code> and
+              PUT-as-new-version both create legitimate duplicates; dedup lookups resolve newest-first.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="s11">
+        <div class="shead"><span class="sn">11</span><h2>Observability</h2>
+          <span class="ss">metrics · timing · health</span></div>
+        <div class="cols">
+          <ol class="ladder card">
+            <li><span class="k">/metrics</span><span class="t"><b>Prometheus</b> — a second, unauthenticated listener bound to
+              <code>--metrics-addr</code> (default off; bind loopback). Task queue/run/staging histograms,
+              submission wall-time by outcome, per-phase scheduler tick histograms, retry/failure/skip counters,
+              task/submission/worker/queue-depth gauges. User-authored labels
+              (<code>workflow</code>, <code>step</code>) are cardinality-capped (default 200 → <code>_other</code>).</span></li>
+            <li><span class="k">/timing</span><span class="t"><b>Per-submission breakdown</b> —
+              <code>GET /submissions/{id}/timing</code>: wall/scheduling/compute and the critical path;
+              per-step fan-in; per-task queue, dispatch, checkout-wait, stage-in/out, and compute, from
+              per-attempt <code>dispatched_at</code> and worker-reported staging durations.</span></li>
+            <li><span class="k">health</span><span class="t"><b>Liveness</b> — <code>/api/v1/health</code> reports the scheduler's real
+              lifecycle state (<code>not_started · running · stopped</code>) from an atomic on the tick loop, and the
+              stamped build version. Every binary answers <code>--version</code> with the same stamp
+              (<code>semver+shortcommit</code> on releases, <code>git describe</code> on dev builds) — binary provenance
+              without checksums.</span></li>
+          </ol>
+          <div>
+            <p class="snote"><b>Exactly-once metrics.</b> Duration observations are gated on the same
+              compare-and-set writes that settle states — a metric is recorded only by the writer whose
+              transition actually applied, so retries and concurrent cancels never double-count.</p>
+            <p class="snote"><b>Zero-infrastructure default.</b> The endpoint is plain text — <code>curl</code>
+              works with nothing installed; Prometheus/Grafana are optional companions for retention and
+              dashboards, deployed separately from the engine.</p>
+          </div>
+        </div>
+      </section>
+
     </div>
   </div>
 
   <footer class="foot">
-    <span>GoWe · CWL v1.2 workflow engine · Go · dossier refreshed for v0.15.0</span>
+    <span>GoWe · CWL v1.2 workflow engine · Go · dossier refreshed for v0.16.2</span>
     <span>parser → scheduler → executor · <a href="https://github.com/wilke/GoWe">github.com/wilke/GoWe</a></span>
   </footer>
 
