@@ -41,7 +41,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:     "cwl-runner [flags] <cwl-file> [job-file]",
 		Short:   "CWL v1.2 reference runner",
-		Version: version,
+		Version: fmt.Sprintf("%s (CWL spec %s)", Version, version),
 		Long: `cwl-runner executes CWL v1.2 tools and workflows.
 
 Examples:

@@ -276,8 +276,10 @@ func TestHealth(t *testing.T) {
 	if data.Status != "healthy" {
 		t.Errorf("health status = %q, want healthy", data.Status)
 	}
-	if data.Version != "0.1.0" {
-		t.Errorf("version = %q, want 0.1.0", data.Version)
+	if data.Version != "dev" {
+		// #208: health reports the stamped build version (cfg.Version),
+		// falling back to "dev" when the test config leaves it unset.
+		t.Errorf("version = %q, want dev", data.Version)
 	}
 }
 

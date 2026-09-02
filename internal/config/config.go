@@ -8,6 +8,7 @@ type ServerConfig struct {
 	DBPath          string // SQLite database path (default ~/.gowe/gowe.db, ":memory:" for testing)
 	DefaultExecutor string // Default executor when no CWL hint is set: "local", "docker", "worker", "" (auto)
 	ForceExecutor   string // Force all tasks to this executor, ignoring CWL hints (testing only)
+	Version         string // Build version stamped into the binary (surfaced by /api/v1/health); "dev" when unset
 
 	// TLS termination. When both TLSCertFile and TLSKeyFile are set, the server
 	// terminates TLS itself (ListenAndServeTLS). When empty, the server serves

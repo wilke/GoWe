@@ -16,7 +16,7 @@ builds:
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+    ldflags: ["-s -w -X main.Version={{ .Version }}+{{ .ShortCommit }}"]
   - id: gowe-server
     main: ./cmd/server
     binary: gowe-server
@@ -24,7 +24,7 @@ builds:
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+    ldflags: ["-s -w -X main.Version={{ .Version }}+{{ .ShortCommit }}"]
   # Linux only: workers run container/Apptainer workloads on Linux/HPC, so a
   # macOS worker binary isn't a useful artifact. (The code cross-compiles fine.)
   - id: gowe-worker
@@ -34,7 +34,7 @@ builds:
     goos: [linux]
     goarch: [amd64, arm64]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+    ldflags: ["-s -w -X main.Version={{ .Version }}+{{ .ShortCommit }}"]
   - id: cwl-runner
     main: ./cmd/cwl-runner
     binary: cwl-runner
@@ -42,7 +42,7 @@ builds:
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.Version={{ .Version }}"]
+    ldflags: ["-s -w -X main.Version={{ .Version }}+{{ .ShortCommit }}"]
 
 # One archive per binary (per OS/arch). Per-binary rather than a single bundle so
 # the Linux-only worker doesn't produce archives with different binary counts

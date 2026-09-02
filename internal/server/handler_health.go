@@ -102,9 +102,13 @@ func (s *Server) schedulerStatus() string {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+	version := s.config.Version
+	if version == "" {
+		version = "dev"
+	}
 	respondOK(w, reqID, healthResponse{
 		Status:    "healthy",
-		Version:   "0.1.0",
+		Version:   version,
 		GoVersion: runtime.Version(),
 		Uptime:    time.Since(s.startTime).Round(time.Second).String(),
 		Scheduler: s.schedulerStatus(),
