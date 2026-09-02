@@ -359,3 +359,100 @@ func TestNormalizeOutputFiles_OutsideRootDirSkipped(t *testing.T) {
 	}
 }
 
+// TestNormalizeOutputFiles_DirectoryRenameUpdatesDescendantDirname is the
+// regression test for GoWe#214 (gap 2): when a Directory is renamed,
+// rewritePathPrefix updates descendants' path/location, and must also keep a
+// present `dirname` field consistent rather than leaving it pointing at the
+// directory's old (pre-rename) location.
+func TestNormalizeOutputFiles_DirectoryRenameUpdatesDescendantDirname(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "olddir")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	childPath := writeFile(t, subDir, "child.txt", "content")
+
+	child := fileNode(childPath, "child.txt") // Not itself renamed.
+	child["dirname"] = subDir
+
+	dirNode := map[string]any{
+		"class":    "Directory",
+		"path":     subDir,
+		"location": "file://" + subDir,
+		"basename": "newdir", // Directory itself renamed.
+		"listing":  []any{child},
+	}
+
+	if err := NormalizeOutputFiles(dirNode, dir); err != nil {
+		t.Fatalf("NormalizeOutputFiles: %v", err)
+	}
+
+	wantDirPath := filepath.Join(dir, "newdir")
+	wantChildPath := filepath.Join(wantDirPath, "child.txt")
+	if child["path"] != wantChildPath {
+		t.Fatalf("child path = %v, want %v", child["path"], wantChildPath)
+	}
+	wantChildDirname := filepath.Dir(wantChildPath)
+	if child["dirname"] != wantChildDirname {
+		t.Errorf("child dirname = %v, want %v (must not still reference the pre-rename directory %q)", child["dirname"], wantChildDirname, subDir)
+	}
+	wantChildLoc := "file://" + wantChildPath
+	if child["location"] != wantChildLoc {
+		t.Errorf("child location = %v, want %v", child["location"], wantChildLoc)
+	}
+}
+
+// TestNormalizeOutputFiles_DirectoryRenameNestedDescendantDirname covers a
+// descendant one level deeper than the renamed directory's immediate
+// listing, confirming rewritePathPrefix's recursive walk keeps `dirname` in
+// sync at every level, not just the top of the listing.
+func TestNormalizeOutputFiles_DirectoryRenameNestedDescendantDirname(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "olddir")
+	nestedDir := filepath.Join(subDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	grandchildPath := writeFile(t, nestedDir, "leaf.txt", "content")
+
+	grandchild := fileNode(grandchildPath, "leaf.txt")
+	grandchild["dirname"] = nestedDir
+
+	nestedDirNode := map[string]any{
+		"class":    "Directory",
+		"path":     nestedDir,
+		"location": "file://" + nestedDir,
+		"basename": "nested", // Not itself renamed.
+		"listing":  []any{grandchild},
+		"dirname":  subDir,
+	}
+
+	dirNode := map[string]any{
+		"class":    "Directory",
+		"path":     subDir,
+		"location": "file://" + subDir,
+		"basename": "newdir", // Renamed.
+		"listing":  []any{nestedDirNode},
+	}
+
+	if err := NormalizeOutputFiles(dirNode, dir); err != nil {
+		t.Fatalf("NormalizeOutputFiles: %v", err)
+	}
+
+	wantDirPath := filepath.Join(dir, "newdir")
+	wantNestedPath := filepath.Join(wantDirPath, "nested")
+	wantGrandchildPath := filepath.Join(wantNestedPath, "leaf.txt")
+
+	if nestedDirNode["path"] != wantNestedPath {
+		t.Fatalf("nested dir path = %v, want %v", nestedDirNode["path"], wantNestedPath)
+	}
+	if nestedDirNode["dirname"] != wantDirPath {
+		t.Errorf("nested dir dirname = %v, want %v", nestedDirNode["dirname"], wantDirPath)
+	}
+	if grandchild["path"] != wantGrandchildPath {
+		t.Fatalf("grandchild path = %v, want %v", grandchild["path"], wantGrandchildPath)
+	}
+	if grandchild["dirname"] != wantNestedPath {
+		t.Errorf("grandchild dirname = %v, want %v", grandchild["dirname"], wantNestedPath)
+	}
+}
