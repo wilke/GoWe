@@ -205,13 +205,26 @@ func (s *ShockStager) download(ctx context.Context, downloadURL string, destPath
 		return fmt.Errorf("create file: %w", err)
 	}
 
-	_, err = io.Copy(f, resp.Body)
+	// A completed copy and a correct copy are different claims: a nil error
+	// from io.Copy only means the write syscalls were accepted, not that the
+	// bytes reached stable storage (delayed-write errors surface at
+	// Sync/Close) and not that the byte count matches what the server
+	// advertised. Sync and Close are both checked, and when Shock sent
+	// Content-Length, the written count is verified against it.
+	written, err := io.Copy(f, resp.Body)
+	if err == nil {
+		err = f.Sync()
+	}
 	if closeErr := f.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("write file: %w", err)
+	}
+	if resp.ContentLength >= 0 && written != resp.ContentLength {
+		os.Remove(tmpPath)
+		return fmt.Errorf("shock download truncated for %s: expected %d bytes (Content-Length), got %d bytes", destPath, resp.ContentLength, written)
 	}
 
 	// Atomic rename.

@@ -131,8 +131,16 @@ func (c *Client) UploadFile(filePath string) (*UploadResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create form file: %w", err)
 	}
-	if _, err := io.Copy(part, f); err != nil {
+	srcInfo, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat file: %w", err)
+	}
+	written, err := io.Copy(part, f)
+	if err != nil {
 		return nil, fmt.Errorf("copy file data: %w", err)
+	}
+	if written != srcInfo.Size() {
+		return nil, fmt.Errorf("copy file data: read %d bytes but %s is %d bytes on disk (short read)", written, filePath, srcInfo.Size())
 	}
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("close multipart writer: %w", err)
@@ -211,10 +219,44 @@ func (c *Client) DownloadFile(location, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("create dest file: %w", err)
 	}
-	defer out.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return fmt.Errorf("write file: %w", err)
+	// A completed download and a correct file are different claims: io.Copy
+	// returning nil only means the body was drained and the writes were
+	// accepted, not that the bytes reached stable storage (delayed-write
+	// errors on network filesystems surface at Sync/Close) and not that the
+	// byte count matches what the server advertised. This is the exact
+	// signature seen in production: a file truncated at a 256 KiB buffer
+	// boundary, checksummed and accepted as complete. Sync+Close are
+	// checked, and when the server sent Content-Length, the written count
+	// is verified against it so a short transfer fails loudly instead of
+	// silently.
+	written, copyErr := io.Copy(out, resp.Body)
+	if copyErr != nil {
+		out.Close()
+		// io.Copy reports bytes written even on error, so a body that ends
+		// early (Go's transport surfaces this as io.ErrUnexpectedEOF when
+		// Content-Length is known) still gets both sizes in the error.
+		if resp.ContentLength >= 0 {
+			return fmt.Errorf("download truncated for %s: expected %d bytes (Content-Length), got %d bytes: %w", destPath, resp.ContentLength, written, copyErr)
+		}
+		return fmt.Errorf("write file %s: %w", destPath, copyErr)
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return fmt.Errorf("sync file %s: %w", destPath, err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close file %s: %w", destPath, err)
+	}
+
+	if resp.ContentLength >= 0 && written != resp.ContentLength {
+		return fmt.Errorf("download truncated for %s: expected %d bytes (Content-Length), got %d bytes", destPath, resp.ContentLength, written)
+	}
+
+	if info, statErr := os.Stat(destPath); statErr == nil {
+		if info.Size() != written {
+			return fmt.Errorf("download truncated for %s: copied %d bytes but %d bytes on disk", destPath, written, info.Size())
+		}
 	}
 
 	return nil
