@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.17.2](https://github.com/wilke/GoWe/compare/v0.17.1...v0.17.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **scheduler:** annotate token-expiry and preflight failures; specific step errors win in submission messages ([#218](https://github.com/wilke/GoWe/issues/218)) ([153c2d9](https://github.com/wilke/GoWe/commit/153c2d9a875e1a011ef1da49d612175057f34056))
+* **staging,server,cli:** verify transfer sizes and surface close/sync errors — no silent truncation ([#219](https://github.com/wilke/GoWe/issues/219)) ([b375948](https://github.com/wilke/GoWe/commit/b37594847f0be0abf2d0a34dcdbbb137437ba44e))
+* **toolexec,cwloutput:** keep intentional basename renames on record outputs; fix stale dirname on renamed directories ([#217](https://github.com/wilke/GoWe/issues/217)) ([96ee609](https://github.com/wilke/GoWe/commit/96ee609015679e7649b1c4ac677b1ea6716e9a19))
+
 ## [0.17.1](https://github.com/wilke/GoWe/compare/v0.17.0...v0.17.1) (2026-09-02)
 
 
