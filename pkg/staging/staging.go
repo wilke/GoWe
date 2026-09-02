@@ -105,6 +105,13 @@ func BuildLocation(scheme string, path string) string {
 }
 
 // CopyFile copies a file from src to dst, creating parent directories as needed.
+//
+// A completed copy and a correct copy are different claims: io.Copy returning
+// nil only means the write syscalls were accepted, not that the bytes reached
+// stable storage (buffered/NFS writers can report success and then lose data
+// on a delayed-write error surfaced at Close/fsync) and not that the byte
+// count matches. CopyFile therefore fsyncs and checks the Close error, then
+// verifies src and dst are the same size before returning success.
 func CopyFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -120,10 +127,46 @@ func CopyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, in)
-	return err
+	written, copyErr := io.Copy(out, in)
+	if copyErr != nil {
+		out.Close()
+		return fmt.Errorf("copy %s to %s: %w", src, dst, copyErr)
+	}
+
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return fmt.Errorf("sync %s: %w", dst, err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", dst, err)
+	}
+
+	return verifyCopySize(src, dst, written)
+}
+
+// verifyCopySize confirms that src and dst report the same size, and that
+// written (the byte count io.Copy reported transferring) matches dst's size
+// on disk. A mismatch means the copy was accepted but truncated -- exactly
+// the failure mode of the 256 KiB boundary transfers this guards against.
+func verifyCopySize(src, dst string, written int64) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat src %s after copy: %w", src, err)
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		return fmt.Errorf("stat dst %s after copy: %w", dst, err)
+	}
+
+	if dstInfo.Size() != written {
+		return fmt.Errorf("copy %s to %s: wrote %d bytes but dst is %d bytes on disk (truncated write)", src, dst, written, dstInfo.Size())
+	}
+	if srcInfo.Size() != dstInfo.Size() {
+		return fmt.Errorf("copy %s to %s: size mismatch after copy: src=%d bytes dst=%d bytes", src, dst, srcInfo.Size(), dstInfo.Size())
+	}
+
+	return nil
 }
 
 // CopyDirectory recursively copies a directory from src to dst.

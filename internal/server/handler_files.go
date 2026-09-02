@@ -144,17 +144,59 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
-	// Copy uploaded file to temp
-	if _, err := io.Copy(tmpFile, file); err != nil {
+	// Copy uploaded file to temp. A completed copy and a correct copy are
+	// different claims: io.Copy succeeding only means the write syscalls
+	// were accepted, not that the bytes reached stable storage (a delayed
+	// write can fail at fsync/Close) and not that the byte count matches
+	// what the client sent. Sync and check Close, then verify the temp
+	// file's on-disk size against the multipart part's known size
+	// (header.Size, already known because ParseMultipartForm fully
+	// materialized the part before handing it back).
+	written, err := io.Copy(tmpFile, file)
+	if err != nil {
 		tmpFile.Close()
 		s.logger.Error("write temp file", "error", err)
 		respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
 			Code:    model.ErrInternal,
-			Message: "failed to write temp file",
+			Message: fmt.Sprintf("failed to write temp file: %v", err),
 		})
 		return
 	}
-	tmpFile.Close()
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		s.logger.Error("sync temp file", "error", err)
+		respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+			Code:    model.ErrInternal,
+			Message: fmt.Sprintf("failed to sync temp file: %v", err),
+		})
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		s.logger.Error("close temp file", "error", err)
+		respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+			Code:    model.ErrInternal,
+			Message: fmt.Sprintf("failed to close temp file: %v", err),
+		})
+		return
+	}
+	if info, statErr := os.Stat(tmpPath); statErr == nil {
+		if info.Size() != written {
+			s.logger.Error("upload short write", "filename", header.Filename, "copied", written, "on_disk", info.Size())
+			respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+				Code:    model.ErrInternal,
+				Message: fmt.Sprintf("upload truncated for %s: copied %d bytes but %d bytes on disk", header.Filename, written, info.Size()),
+			})
+			return
+		}
+	}
+	if header.Size > 0 && written != header.Size {
+		s.logger.Error("upload size mismatch", "filename", header.Filename, "expected", header.Size, "got", written)
+		respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+			Code:    model.ErrInternal,
+			Message: fmt.Sprintf("upload truncated for %s: expected %d bytes, got %d bytes", header.Filename, header.Size, written),
+		})
+		return
+	}
 
 	// Stage to configured backend
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
