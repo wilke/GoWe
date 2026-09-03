@@ -269,6 +269,14 @@ func (s *Server) routes() {
 
 	// API routes (JSON)
 	r.Route("/api/v1", func(r chi.Router) {
+		// Opt-in CORS (--cors-origins). Off by default: a token-issuing API
+		// must not become browser-reachable by accident. Mounted first in
+		// this scope so a preflight OPTIONS request from a listed origin is
+		// answered before it ever reaches worker/user auth middleware below.
+		if len(s.config.CORSOrigins) > 0 {
+			r.Use(corsMiddleware(s.config.CORSOrigins))
+		}
+
 		// Public endpoints (no auth required)
 		r.Get("/", s.handleDiscovery)
 		r.Get("/health", s.handleHealth)

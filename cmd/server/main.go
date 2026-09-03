@@ -50,6 +50,7 @@ func main() {
 	flag.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "Path to PEM private key; enables native HTTPS when set together with --tls-cert")
 	flag.BoolVar(&cfg.SecureCookies, "secure-cookies", cfg.SecureCookies, "Always set the Secure attribute on session cookies (implied by --tls-cert/--tls-key)")
 	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Server sits behind a trusted TLS-terminating proxy: force Secure cookies and emit HSTS (enable only when the public leg is HTTPS)")
+	corsOrigins := flag.String("cors-origins", "", "Comma-separated list of exact browser origins allowed to call /api/v1 cross-origin (e.g. https://app.example.com); empty disables CORS entirely (default: no CORS headers, OPTIONS 405s as before). Prefer a same-origin reverse proxy that injects the token server-side over this flag for browser clients — see docs/PRODUCTION.md")
 
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
@@ -135,6 +136,22 @@ func main() {
 		// means browsers will refuse to send the cookie over plain HTTP,
 		// breaking sessions. Warn so misconfiguration is visible.
 		logger.Warn("--secure-cookies is set without native TLS or --behind-proxy; session cookies will not be sent over plain HTTP")
+	}
+
+	// CORS is opt-in: a token-issuing API must not become browser-reachable
+	// by accident. Empty (the default) leaves /api/v1 exactly as it always
+	// behaved. When set, only the listed exact origins get CORS headers.
+	if *corsOrigins != "" {
+		var origins []string
+		for _, o := range strings.Split(*corsOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		cfg.CORSOrigins = origins
+		if len(origins) > 0 {
+			logger.Info("CORS enabled for /api/v1", "origins", origins)
+		}
 	}
 
 	// Resolve database path.
