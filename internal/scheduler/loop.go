@@ -1643,11 +1643,16 @@ func (l *Loop) hasOnlineWorkers() bool {
 }
 
 // addUserToken adds user authentication token to task runtime hints.
-// Worker and BV-BRC executor tasks always receive the submitter's token so
-// that tools can make authenticated downstream calls (workspace, AppService).
-// For other executor types, the token is only embedded when server-side
-// workspace staging is disabled (wsStager == nil) or when the step has the
-// InjectBVBRCToken hint.
+// BV-BRC executor tasks always receive the submitter's token so that tools
+// can make authenticated downstream calls (workspace, AppService). For other
+// executor types (including worker), the token is only embedded when
+// server-side workspace staging is disabled (wsStager == nil), the step has
+// the InjectBVBRCToken hint, or the task's worker group is opted into
+// automatic injection via --token-inject-groups (SPECIFICATION.md §13.5,
+// #133). The worker itself only ever injects BVBRC_TOKEN/KB_AUTH_TOKEN into a
+// tool's environment when RuntimeHints.InjectBVBRCToken is set, so a
+// group-policy grant is mirrored onto that hint here — otherwise the token
+// would be embedded in the task row but never reach the tool's environment.
 // groupAutoInjectsToken reports whether a worker task's target group is one the
 // operator has opted into automatic token injection via --token-inject-groups.
 // Tasks in other groups (including the default group) get the token only when
@@ -1670,10 +1675,11 @@ func (l *Loop) groupAutoInjectsToken(task *model.Task) bool {
 }
 
 func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
+	groupOptIn := task.ExecutorType == model.ExecutorTypeWorker && l.groupAutoInjectsToken(task)
 	needsToken := l.wsStager == nil ||
 		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
 		task.ExecutorType == model.ExecutorTypeBVBRC ||
-		(task.ExecutorType == model.ExecutorTypeWorker && l.groupAutoInjectsToken(task))
+		groupOptIn
 	if sub.UserToken != "" && needsToken {
 		if task.RuntimeHints == nil {
 			task.RuntimeHints = &model.RuntimeHints{}
@@ -1684,6 +1690,12 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 		task.RuntimeHints.StagerOverrides.HTTPCredential = &model.HTTPCredential{
 			Type:  "bearer",
 			Token: sub.UserToken,
+		}
+		// A group-policy grant must also flip the hint the worker enforces
+		// (internal/worker/worker.go), otherwise the token lands in the task
+		// row but the worker never injects it into the tool's environment.
+		if groupOptIn {
+			task.RuntimeHints.InjectBVBRCToken = true
 		}
 	}
 
