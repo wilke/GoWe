@@ -22,6 +22,7 @@ import (
 	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/timing"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
 )
@@ -55,6 +56,9 @@ type UI struct {
 	// Session cookie hardening.
 	secureCookies       bool // Always set the Secure attribute on session cookies
 	trustForwardedProto bool // Honor X-Forwarded-Proto when deciding the Secure attribute
+
+	// grafanaURL is rendered as a nav link (target _blank) when non-empty.
+	grafanaURL string
 }
 
 // Config holds UI configuration.
@@ -75,6 +79,9 @@ type Config struct {
 	// UploadMaxSize is the largest workspace upload request body accepted,
 	// in bytes. Zero selects DefaultUploadMaxSize.
 	UploadMaxSize int64
+	// GrafanaURL is an external link to a Grafana instance, rendered in the
+	// nav/header when non-empty (target _blank). Empty hides the link.
+	GrafanaURL string
 }
 
 // DefaultUploadMaxSize is the workspace upload cap when none is configured.
@@ -99,6 +106,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		trustForwardedProto: cfg.TrustForwardedProto,
 		workspaceURL:        workspaceURL,
 		uploadMaxSize:       uploadMaxSize,
+		grafanaURL:          cfg.GrafanaURL,
 	}
 }
 
@@ -569,11 +577,31 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #225: sub-workflow proxy tasks (executor_type "subworkflow") get a
+	// recursive descendant task count so the Tasks panel can show "N total,
+	// +M in sub-workflows" and each proxy row its own branch's count, without
+	// eagerly fetching every descendant row (only proxy nodes are walked).
+	descendants := ui.buildSubworkflowDescendants(r.Context(), sub.Tasks)
+
+	// #226: the timing panel is backed by the exact same computation as
+	// GET /api/v1/submissions/{id}/timing (internal/timing.BuildReport),
+	// scoped to this submission's own tasks; the "include sub-workflows"
+	// toggle re-fetches via HandleSubmissionTimingPanel.
+	timingReport, err := timing.BuildReport(r.Context(), ui.store, ui.logger, sub, time.Now().UTC(), false, map[string]bool{}, 0)
+	if err != nil {
+		slog.Error("submission detail: failed to build timing report", "submission_id", sub.ID, "error", err)
+		timingReport = nil
+	}
+
 	data := map[string]any{
-		"Title":      fmt.Sprintf("Submission %s - GoWe", sub.ID),
-		"Session":    sess,
-		"Submission": sub,
-		"Workflow":   workflow,
+		"Title":                      fmt.Sprintf("Submission %s - GoWe", sub.ID),
+		"Session":                    sess,
+		"Submission":                 sub,
+		"Workflow":                   workflow,
+		"SubworkflowDescendants":     descendants,
+		"SubworkflowDescendantTotal": subworkflowDescendantTotal(descendants),
+		"Timing":                     timingReport,
+		"TimingBars":                 buildTimingBars(timingReport),
 	}
 	ui.render(w, "submissions/detail", data)
 }
@@ -1886,9 +1914,33 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 	// This will be replaced with templ templates.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	// GrafanaURL is nav-level chrome shared by the layout template on every
+	// page; inject it here rather than in each handler. A handler that
+	// already set it (none currently do) is left alone.
+	if _, ok := data["GrafanaURL"]; !ok {
+		data["GrafanaURL"] = ui.grafanaURL
+	}
+
 	var buf bytes.Buffer
 	if err := renderTemplate(&buf, template, data); err != nil {
 		ui.logger.Error("template render failed", "template", template, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	buf.WriteTo(w)
+}
+
+// renderFragment renders a standalone "components/" partial (no layout
+// wrapper) for an HTMX fragment-swap response. See renderFragment in
+// templates.go for the naming convention.
+func (ui *UI) renderFragment(w http.ResponseWriter, template string, data map[string]any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	var buf bytes.Buffer
+	if err := renderFragment(&buf, template, data); err != nil {
+		ui.logger.Error("fragment render failed", "template", template, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}

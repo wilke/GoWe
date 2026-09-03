@@ -19,6 +19,11 @@ type ServerConfig struct {
 	// Session cookie hardening.
 	SecureCookies bool // Force the Secure attribute on session cookies regardless of per-request detection
 	BehindProxy   bool // Trust X-Forwarded-Proto to decide the Secure attribute (only enable behind a trusted proxy)
+
+	// GrafanaURL is an external link to a Grafana instance (e.g. the "GoWe
+	// Overview" dashboard fed by --metrics-addr) surfaced in the web UI's
+	// nav/header. Empty hides the link entirely.
+	GrafanaURL string
 }
 
 // TLSEnabled reports whether native in-process TLS is configured.

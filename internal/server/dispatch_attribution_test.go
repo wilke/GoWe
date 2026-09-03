@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/me/gowe/internal/timing"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -70,12 +71,12 @@ func TestWorkerTaskComplete_StageMsRoundTrip(t *testing.T) {
 
 	// Verify they surface through the timing view.
 	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/timing")
-	var rep timingReport
+	var rep timing.Report
 	if err := json.Unmarshal(env.Data, &rep); err != nil {
 		t.Fatalf("unmarshal timing report: %v", err)
 	}
 
-	var row *taskTiming
+	var row *timing.TaskTiming
 	for i := range rep.Tasks {
 		if rep.Tasks[i].TaskID == taskID {
 			row = &rep.Tasks[i]

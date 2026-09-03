@@ -53,9 +53,11 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 				r.Delete("/", ui.HandleSubmissionDelete)
 				r.Post("/resume", ui.HandleSubmissionResume)
 				r.Post("/recompute-failed", ui.HandleRecomputeFailed)
+				r.Get("/timing-panel", ui.HandleSubmissionTimingPanel)
 				r.Route("/tasks/{tid}", func(r chi.Router) {
 					r.Get("/logs", ui.HandleTaskLogs)
 					r.Post("/recompute", ui.HandleTaskRecompute)
+					r.Get("/children", ui.HandleSubmissionTaskChildren)
 				})
 			})
 		})
