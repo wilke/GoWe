@@ -181,6 +181,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		TrustForwardedProto: cfg.BehindProxy,
 		WorkspaceURL:        s.workspaceURL,
 		UploadMaxSize:       s.uiUploadMaxSize,
+		GrafanaURL:          cfg.GrafanaURL,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)

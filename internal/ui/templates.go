@@ -345,6 +345,36 @@ var templateFuncs = template.FuncMap{
 			return "bg-gray-100 text-gray-800"
 		}
 	},
+	"isExpandableSubworkflowProxy": isExpandableSubworkflowProxy,
+	"subworkflowDescendantTotal":   subworkflowDescendantTotal,
+	"buildTimingBars":              buildTimingBars,
+	// intOrZero and descendantCount tolerate a data map that never set the
+	// corresponding key (e.g. a template render in tests that only exercises
+	// the timing columns, predating #225/#226) — an absent map[string]any
+	// key comes back as an untyped nil, which gt/index would otherwise error
+	// on rather than treating as "no sub-workflow descendants".
+	"intOrZero": func(v any) int {
+		if n, ok := v.(int); ok {
+			return n
+		}
+		return 0
+	},
+	"descendantCount": func(m any, id string) int {
+		dm, ok := m.(map[string]int)
+		if !ok || dm == nil {
+			return 0
+		}
+		return dm[id]
+	},
+	// fmtSecs formats a *float64 seconds value ("12.3s"), or "—" for nil —
+	// used throughout the timing panel since Go templates cannot dereference
+	// pointers for numeric verbs directly.
+	"fmtSecs": func(v *float64) string {
+		if v == nil {
+			return "—"
+		}
+		return fmt.Sprintf("%.1fs", *v)
+	},
 	"labelBorderColor": func(color string) string {
 		switch color {
 		case "blue":
@@ -409,6 +439,34 @@ func renderTemplate(w io.Writer, name string, data map[string]any) error {
 	}
 
 	return tmpl.Execute(w, data)
+}
+
+// renderFragment renders one named "components/" template standalone — no
+// layout/nav wrapper — for an HTMX partial-swap response (e.g. lazily
+// expanding a sub-workflow node, or the timing panel's include-children
+// toggle). Every shared component is registered first, same as
+// renderTemplate, so a fragment may reference another; the requested
+// fragment is then invoked by its {{define}} name, which by convention
+// equals its map key with the "components/" prefix stripped.
+func renderFragment(w io.Writer, name string, data map[string]any) error {
+	if _, ok := templates[name]; !ok {
+		return fmt.Errorf("fragment not found: %s", name)
+	}
+	defineName := strings.TrimPrefix(name, "components/")
+
+	tmpl := template.New("fragment-root").Funcs(templateFuncs)
+	for compName, compContent := range templates {
+		if !strings.HasPrefix(compName, "components/") {
+			continue
+		}
+		var err error
+		tmpl, err = tmpl.New(filepath.Base(compName)).Parse(compContent)
+		if err != nil {
+			return fmt.Errorf("parse component %s: %w", compName, err)
+		}
+	}
+
+	return tmpl.ExecuteTemplate(w, defineName, data)
 }
 
 // templates holds all template content. In a production app, these would be
@@ -594,6 +652,14 @@ var templates = map[string]string{
                             Admin
                         </a>
                         {{end}}
+                        {{if .GrafanaURL}}
+                        <a href="{{.GrafanaURL}}" target="_blank" rel="noopener noreferrer" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Grafana
+                            <svg class="w-3.5 h-3.5 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                        </a>
+                        {{end}}
                     </div>
                 </div>
                 <div class="flex items-center">
@@ -626,6 +692,187 @@ var templates = map[string]string{
     </main>
 </body>
 </html>`,
+
+	// Sub-workflow expansion fragment (#225). Rendered both as an HTMX
+	// partial (HandleSubmissionTaskChildren, no layout wrapper — see
+	// renderFragment) and, recursively, when a nested proxy row is itself
+	// expanded. Data: {RootID string, Pending bool, Node *subworkflowNode}.
+	"components/subworkflow_children": `{{define "subworkflow_children"}}
+{{if .Pending}}
+<div class="text-xs text-gray-400 italic py-2 px-2">Child submission not created yet — refresh in a moment.</div>
+{{else}}
+{{$root := .RootID}}
+{{$descendants := .Node.Descendants}}
+<div class="py-2">
+    <div class="flex items-center justify-between mb-2 px-1">
+        <div>
+            <a href="/submissions/{{.Node.Submission.ID}}" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">{{.Node.Submission.WorkflowName}}</a>
+            <span class="ml-2 text-xs text-gray-400 font-mono">{{.Node.Submission.ID}}</span>
+        </div>
+        <div class="flex items-center space-x-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium text-white"
+                  style="{{statePillGradient .Node.Submission.State.String}}">
+                {{.Node.Submission.State}}
+            </span>
+            <span class="text-xs text-gray-500">
+                {{.Node.TaskSummary.Success}}/{{.Node.TaskSummary.Total}} tasks{{$dtotal := subworkflowDescendantTotal $descendants}}{{if gt $dtotal 0}}
+                <span class="text-gray-400">(+{{$dtotal}} in sub-workflows)</span>{{end}}
+            </span>
+        </div>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-100">
+            <tr>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Step</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Executor</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-100">
+            {{range .Node.Tasks}}
+            {{$isSub := isExpandableSubworkflowProxy .}}
+            <tr class="hover:bg-gray-50{{if $isSub}} cursor-pointer{{end}}"
+                {{if $isSub}}
+                onclick="document.getElementById('sw-row-{{.ID}}').classList.toggle('hidden')"
+                hx-get="/submissions/{{$root}}/tasks/{{.ID}}/children"
+                hx-trigger="click once"
+                hx-target="#sw-content-{{.ID}}"
+                hx-swap="innerHTML"
+                {{end}}>
+                <td class="px-3 py-2 whitespace-nowrap">
+                    <div class="flex items-center">
+                        <div class="w-2.5 h-2.5 rounded-full mr-2 {{stateDotColor .State.String}}"></div>
+                        <span class="font-medium text-gray-900">{{.StepID}}</span>
+                        {{if $isSub}}<span class="ml-1 text-xs text-indigo-500">(sub-workflow &#9656;)</span>{{end}}
+                    </div>
+                </td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{.State}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{.ExecutorType}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{taskQueueDisplay .}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{taskRunDisplay .}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">
+                    {{if $isSub}}{{$dn := index $descendants .ID}}{{if gt $dn 0}}<span class="text-gray-400">+{{$dn}} in sub-workflows</span>{{end}}{{end}}
+                    <a href="/submissions/{{$root}}/tasks/{{.ID}}/logs" class="text-indigo-600 hover:text-indigo-500 ml-2">Logs</a>
+                </td>
+            </tr>
+            {{if $isSub}}
+            <tr id="sw-row-{{.ID}}" class="hidden">
+                <td colspan="6" class="p-0 border-t-0">
+                    <div id="sw-content-{{.ID}}" class="bg-gray-50 border-l-2 border-indigo-200 ml-4 pl-3 py-1">
+                        <span class="text-xs text-gray-400">Loading…</span>
+                    </div>
+                </td>
+            </tr>
+            {{end}}
+            {{else}}
+            <tr><td colspan="6" class="px-3 py-2 text-gray-400 text-center">No tasks</td></tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+{{end}}`,
+
+	// Timing panel component (#226): submission-level wall/scheduling/compute
+	// aggregates, critical path and per-task queue/run bars, backed by the
+	// exact math GET /api/v1/submissions/{id}/timing exposes
+	// (internal/timing.BuildReport). Rendered both inline on initial page
+	// load and as the HandleSubmissionTimingPanel HTMX fragment (the
+	// "include sub-workflows" toggle re-fetches and swaps this whole block).
+	// Data: {SubmissionID string, Report *timing.Report (may be nil),
+	// IncludeChildren bool, TimingBars []timingBarRow}.
+	"components/timing_panel": `{{define "timing_panel"}}
+<div id="timing-panel-{{.SubmissionID}}" class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+    <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
+        <h3 class="text-lg leading-6 font-medium text-gray-900">Timing</h3>
+        {{if .Report}}
+        <button hx-get="/submissions/{{.SubmissionID}}/timing-panel?include_children={{if .IncludeChildren}}false{{else}}true{{end}}"
+                hx-target="#timing-panel-{{.SubmissionID}}"
+                hx-swap="outerHTML"
+                class="inline-flex items-center px-3 py-1 text-xs border border-gray-300 rounded text-gray-700 bg-white hover:bg-gray-50">
+            {{if .IncludeChildren}}Hide sub-workflow trees{{else}}Include sub-workflow trees{{end}}
+        </button>
+        {{end}}
+    </div>
+    {{if not .Report}}
+    <div class="border-t border-gray-200 px-4 py-4 text-sm text-gray-500">Timing data unavailable.</div>
+    {{else}}
+    <div class="border-t border-gray-200 px-4 py-4">
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Wall</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.WallS}}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Scheduling</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.SchedulingS}}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Compute</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{printf "%.1fs" .Report.Submission.ComputeS}}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Critical Path</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.CriticalPathS}}</dd>
+            </div>
+            {{if .Report.Submission.PrestageS}}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Prestage</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.PrestageS}}</dd>
+            </div>
+            {{end}}
+            {{if .Report.Submission.PoststageS}}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Poststage</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.PoststageS}}</dd>
+            </div>
+            {{end}}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Queue (sum)</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{printf "%.1fs" .Report.Submission.QueueS}}</dd>
+            </div>
+        </dl>
+
+        {{if gt (len .TimingBars) 0}}
+        <div class="space-y-1.5">
+            {{range .TimingBars}}
+            <div class="flex items-center text-xs">
+                <div class="w-40 truncate pr-2 text-gray-600" title="{{.StepID}} ({{.TaskID}})">
+                    {{.StepID}}{{if eq .Kind "subworkflow"}} <span class="text-indigo-500">(sub-wf)</span>{{end}}
+                </div>
+                <div class="flex-1 h-4 bg-gray-100 rounded overflow-hidden flex">
+                    {{if gt .QueuePct 0}}<div class="h-full bg-amber-400" style="width: {{.QueuePct}}%" title="queue: {{fmtSecs .QueueS}}"></div>{{end}}
+                    {{if gt .RunPct 0}}<div class="h-full bg-blue-500" style="width: {{.RunPct}}%" title="run: {{fmtSecs .RunS}}"></div>{{end}}
+                </div>
+                <div class="w-32 pl-2 text-gray-500 text-right">
+                    {{if .QueueS}}q {{fmtSecs .QueueS}}{{end}}{{if .RunS}} / r {{fmtSecs .RunS}}{{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+        <div class="flex items-center gap-4 mt-3 text-xs text-gray-500">
+            <div class="flex items-center"><div class="w-3 h-3 rounded mr-1 bg-amber-400"></div>Queue</div>
+            <div class="flex items-center"><div class="w-3 h-3 rounded mr-1 bg-blue-500"></div>Run</div>
+        </div>
+        {{else}}
+        <div class="text-sm text-gray-500">No task timing to show yet.</div>
+        {{end}}
+
+        {{if .Report.Children}}
+        <div class="mt-6 space-y-4 border-t border-gray-100 pt-4">
+            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Sub-workflow trees</h4>
+            {{range .Report.Children}}
+            {{template "timing_panel" dict "SubmissionID" .Submission.ID "Report" . "IncludeChildren" true "TimingBars" (buildTimingBars .)}}
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}`,
 
 	"login": `{{define "content"}}
 <div class="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
@@ -1716,7 +1963,10 @@ var templates = map[string]string{
     <!-- Tasks -->
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Tasks ({{len .Submission.Tasks}})</h3>
+            <h3 class="text-lg leading-6 font-medium text-gray-900">
+                {{$swTotal := intOrZero .SubworkflowDescendantTotal}}
+                Tasks ({{len .Submission.Tasks}}{{if gt $swTotal 0}} total, +{{$swTotal}} in sub-workflows{{end}})
+            </h3>
             {{if eq .Submission.State.String "FAILED"}}
             <div class="flex space-x-2">
                 <button hx-post="/submissions/{{.Submission.ID}}/recompute-failed"
@@ -1742,12 +1992,26 @@ var templates = map[string]string{
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                     {{range .Submission.Tasks}}
-                    <tr class="hover:bg-gray-50">
+                    {{$isSub := isExpandableSubworkflowProxy .}}
+                    <tr class="hover:bg-gray-50{{if $isSub}} cursor-pointer{{end}}"
+                        {{if $isSub}}
+                        onclick="document.getElementById('sw-row-{{.ID}}').classList.toggle('hidden')"
+                        hx-get="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/children"
+                        hx-trigger="click once"
+                        hx-target="#sw-content-{{.ID}}"
+                        hx-swap="innerHTML"
+                        {{end}}>
                         <td class="px-6 py-4 whitespace-nowrap">
                             <div class="flex items-center">
                                 <div class="w-3 h-3 rounded-full mr-2 {{stateDotColor .State.String}}"></div>
                                 <div>
-                                    <div class="text-sm font-medium text-gray-900">{{.StepID}}</div>
+                                    <div class="text-sm font-medium text-gray-900">
+                                        {{.StepID}}
+                                        {{if $isSub}}
+                                        <span class="text-xs text-indigo-500">(sub-workflow &#9656;)</span>
+                                        {{$dn := descendantCount $.SubworkflowDescendants .ID}}{{if gt $dn 0}}<span class="text-xs text-gray-400">+{{$dn}} in sub-workflows</span>{{end}}
+                                        {{end}}
+                                    </div>
                                     <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
                                 </div>
                             </div>
@@ -1794,6 +2058,15 @@ var templates = map[string]string{
                             {{end}}
                         </td>
                     </tr>
+                    {{if $isSub}}
+                    <tr id="sw-row-{{.ID}}" class="hidden">
+                        <td colspan="7" class="p-0 border-t-0">
+                            <div id="sw-content-{{.ID}}" class="bg-gray-50 border-l-2 border-indigo-200 ml-6 pl-3 py-1">
+                                <span class="text-xs text-gray-400">Loading…</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {{end}}
                     {{else}}
                     <tr>
                         <td colspan="7" class="px-6 py-4 text-sm text-gray-500 text-center">No tasks</td>
@@ -1803,6 +2076,9 @@ var templates = map[string]string{
             </table>
         </div>
     </div>
+
+    <!-- Timing -->
+    {{template "timing_panel" dict "SubmissionID" .Submission.ID "Report" .Timing "IncludeChildren" false "TimingBars" .TimingBars}}
 
     <!-- Submission Details -->
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">

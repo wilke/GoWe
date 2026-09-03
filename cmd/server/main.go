@@ -50,6 +50,7 @@ func main() {
 	flag.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "Path to PEM private key; enables native HTTPS when set together with --tls-cert")
 	flag.BoolVar(&cfg.SecureCookies, "secure-cookies", cfg.SecureCookies, "Always set the Secure attribute on session cookies (implied by --tls-cert/--tls-key)")
 	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Server sits behind a trusted TLS-terminating proxy: force Secure cookies and emit HSTS (enable only when the public leg is HTTPS)")
+	flag.StringVar(&cfg.GrafanaURL, "grafana-url", cfg.GrafanaURL, "External Grafana URL, linked from the web UI nav (e.g. the GoWe Overview dashboard fed by --metrics-addr); empty hides the link")
 	corsOrigins := flag.String("cors-origins", "", "Comma-separated list of exact browser origins allowed to call /api/v1 cross-origin (e.g. https://app.example.com); empty disables CORS entirely (default: no CORS headers, OPTIONS 405s as before). Prefer a same-origin reverse proxy that injects the token server-side over this flag for browser clients — see docs/PRODUCTION.md")
 
 	// Scheduler options

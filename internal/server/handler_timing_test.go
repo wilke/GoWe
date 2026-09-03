@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/timing"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -67,17 +68,17 @@ func seedTimingTask(t *testing.T, st store.Store, task *model.Task) {
 	}
 }
 
-func getTiming(t *testing.T, srv *Server, id, query string) *timingReport {
+func getTiming(t *testing.T, srv *Server, id, query string) *timing.Report {
 	t.Helper()
 	env := doGet(t, srv, "/api/v1/submissions/"+id+"/timing"+query)
-	var rep timingReport
+	var rep timing.Report
 	if err := json.Unmarshal(env.Data, &rep); err != nil {
 		t.Fatalf("unmarshal timing report: %v", err)
 	}
 	return &rep
 }
 
-func findTaskRow(t *testing.T, rep *timingReport, id string) *taskTiming {
+func findTaskRow(t *testing.T, rep *timing.Report, id string) *timing.TaskTiming {
 	t.Helper()
 	for i := range rep.Tasks {
 		if rep.Tasks[i].TaskID == id {
@@ -88,7 +89,7 @@ func findTaskRow(t *testing.T, rep *timingReport, id string) *taskTiming {
 	return nil
 }
 
-func findStepRow(t *testing.T, rep *timingReport, stepID string) *stepTiming {
+func findStepRow(t *testing.T, rep *timing.Report, stepID string) *timing.StepTiming {
 	t.Helper()
 	for i := range rep.Steps {
 		if rep.Steps[i].StepID == stepID {
@@ -200,7 +201,7 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_success")
-		if r.Kind != timingKindTask {
+		if r.Kind != timing.KindTask {
 			t.Errorf("kind = %q, want task", r.Kind)
 		}
 		assertSecs("queue_s", r.QueueS, 10)
@@ -236,7 +237,7 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	t.Run("cancelled never started", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_cancelled")
-		if r.Kind != timingKindCancelled {
+		if r.Kind != timing.KindCancelled {
 			t.Errorf("kind = %q, want cancelled", r.Kind)
 		}
 		assertSecs("queue_s", r.QueueS, 20)
@@ -245,7 +246,7 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	t.Run("cancelled after start", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_cancelled_started")
-		if r.Kind != timingKindCancelled {
+		if r.Kind != timing.KindCancelled {
 			t.Errorf("kind = %q, want cancelled", r.Kind)
 		}
 		assertNil("queue_s", r.QueueS)
@@ -254,7 +255,7 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	t.Run("when-skip synthetic", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_synthetic")
-		if r.Kind != timingKindSkippedIteration {
+		if r.Kind != timing.KindSkippedIteration {
 			t.Errorf("kind = %q, want skipped-iteration", r.Kind)
 		}
 		assertNil("queue_s", r.QueueS)
@@ -303,7 +304,7 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	t.Run("failed at submit", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_failed_submit")
-		if r.Kind != timingKindTask {
+		if r.Kind != timing.KindTask {
 			t.Errorf("kind = %q, want task", r.Kind)
 		}
 		assertSecs("queue_s", r.QueueS, 15)
@@ -312,7 +313,7 @@ func TestTimingPerStateRules(t *testing.T) {
 
 	t.Run("subworkflow proxy runs over child wall", func(t *testing.T) {
 		r := findTaskRow(t, rep, "t_proxy")
-		if r.Kind != timingKindSubworkflow {
+		if r.Kind != timing.KindSubworkflow {
 			t.Errorf("kind = %q, want subworkflow", r.Kind)
 		}
 		if r.ChildSubmissionID != "sub_child_rules" {
@@ -628,23 +629,24 @@ func TestTimingIncludeChildren(t *testing.T) {
 }
 
 // TestBuildSubmissionTimingExcludesSkippedIterationDurations kills the
-// mutant that would delete buildSubmissionTiming's own aggregate-exclusion
-// `continue` for skipped-iteration rows. taskTimingRow's early return
-// already guarantees a real skipped-iteration row's RunS/QueueS are nil, so
-// exercising the endpoint end-to-end can never distinguish "the continue
-// works" from "the continue is dead code". buildSubmissionTiming takes
-// already-projected []taskTiming and is package-visible, so this test
-// bypasses taskTimingRow entirely and hands it a skipped-iteration row with
+// mutant that would delete timing.BuildSubmissionTiming's own
+// aggregate-exclusion `continue` for skipped-iteration rows.
+// timing.TaskTimingRow's early return already guarantees a real
+// skipped-iteration row's RunS/QueueS are nil, so exercising the endpoint
+// end-to-end can never distinguish "the continue works" from "the continue
+// is dead code". timing.BuildSubmissionTiming takes already-projected
+// []timing.TaskTiming and is exported, so this test bypasses
+// timing.TaskTimingRow entirely and hands it a skipped-iteration row with
 // durations that WOULD leak into the aggregates if the continue were
-// removed — a direct test of buildSubmissionTiming's own guard.
+// removed — a direct test of timing.BuildSubmissionTiming's own guard.
 func TestBuildSubmissionTimingExcludesSkippedIterationDurations(t *testing.T) {
 	sub := &model.Submission{
 		ID: "sub_mutant", State: model.SubmissionStateRunning, CreatedAt: at(0),
 	}
-	rows := []taskTiming{
+	rows := []timing.TaskTiming{
 		{
 			TaskID: "t_real", StepID: "s1", State: string(model.TaskStateSuccess),
-			Kind: timingKindTask, CreatedAt: at(0),
+			Kind: timing.KindTask, CreatedAt: at(0),
 			RunS: floatp(30), QueueS: floatp(5),
 		},
 		{
@@ -652,12 +654,12 @@ func TestBuildSubmissionTimingExcludesSkippedIterationDurations(t *testing.T) {
 			// fired: a skipped-iteration row carrying non-nil durations.
 			// buildSubmissionTiming must still exclude it.
 			TaskID: "t_fake_synthetic", StepID: "s2", State: string(model.TaskStateSuccess),
-			Kind: timingKindSkippedIteration, CreatedAt: at(0),
+			Kind: timing.KindSkippedIteration, CreatedAt: at(0),
 			RunS: floatp(999), QueueS: floatp(999),
 		},
 	}
 
-	out := buildSubmissionTiming(sub, rows, at(60))
+	out := timing.BuildSubmissionTiming(sub, rows, at(60))
 
 	if !almostEq(out.ComputeS, 30) {
 		t.Errorf("compute_s = %v, want 30 (fake synthetic's 999 must be excluded)", out.ComputeS)

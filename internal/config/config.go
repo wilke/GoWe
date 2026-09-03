@@ -20,6 +20,10 @@ type ServerConfig struct {
 	SecureCookies bool // Force the Secure attribute on session cookies regardless of per-request detection
 	BehindProxy   bool // Trust X-Forwarded-Proto to decide the Secure attribute (only enable behind a trusted proxy)
 
+	// GrafanaURL is an external link to a Grafana instance (e.g. the "GoWe
+	// Overview" dashboard fed by --metrics-addr) surfaced in the web UI's
+	// nav/header. Empty hides the link entirely.
+	GrafanaURL string
 	// CORS. Empty (the default) disables CORS entirely for /api/v1: no
 	// Access-Control-* headers are ever emitted and OPTIONS preflight
 	// requests 405, exactly like before this option existed. When set, only
