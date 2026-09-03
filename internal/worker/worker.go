@@ -724,6 +724,37 @@ func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task
 	}
 }
 
+// injectBVBRCTokenEnv returns secretEnvVars with BVBRC_TOKEN and its
+// KB_AUTH_TOKEN alias added when, and only when, the tool explicitly opted in
+// via gowe:Execution.inject_bvbrc_token (RuntimeHints.InjectBVBRCToken) and a
+// user token is present. This is the sole gate on which worker-executed tools
+// receive the submitter's BV-BRC credential in their environment; a token
+// merely being present in RuntimeHints.StagerOverrides (e.g. embedded for
+// staging under wsStager==nil, or for a BV-BRC executor task) is NOT
+// sufficient by itself — least privilege requires per-tool opt-in
+// (SPECIFICATION.md §13.5, #133). secretEnvVars is never mutated in place
+// (it may be the worker's shared w.secrets map); a copy is made only when a
+// token is actually injected.
+func injectBVBRCTokenEnv(secretEnvVars map[string]string, hints *model.RuntimeHints) map[string]string {
+	if hints == nil || !hints.InjectBVBRCToken {
+		return secretEnvVars
+	}
+	if hints.StagerOverrides == nil || hints.StagerOverrides.HTTPCredential == nil {
+		return secretEnvVars
+	}
+	token := hints.StagerOverrides.HTTPCredential.Token
+	if token == "" {
+		return secretEnvVars
+	}
+	copied := make(map[string]string, len(secretEnvVars)+2)
+	for k, v := range secretEnvVars {
+		copied[k] = v
+	}
+	copied["BVBRC_TOKEN"] = token
+	copied["KB_AUTH_TOKEN"] = token
+	return copied
+}
+
 // executeWithCWLTool executes a task using the cwltool package with full CWL support.
 func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string) error {
 	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
@@ -782,22 +813,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
-		// Inject BV-BRC token as env vars when a user token is available.
-		if task.RuntimeHints.StagerOverrides != nil &&
-			task.RuntimeHints.StagerOverrides.HTTPCredential != nil &&
-			task.RuntimeHints.StagerOverrides.HTTPCredential.Token != "" {
-			if cfg.SecretEnvVars == nil {
-				cfg.SecretEnvVars = make(map[string]string)
-			} else {
-				copied := make(map[string]string, len(cfg.SecretEnvVars)+1)
-				for k, v := range cfg.SecretEnvVars {
-					copied[k] = v
-				}
-				cfg.SecretEnvVars = copied
-			}
-			cfg.SecretEnvVars["BVBRC_TOKEN"] = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
-			cfg.SecretEnvVars["KB_AUTH_TOKEN"] = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
-		}
+		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
 	}
 
 	// Execute the tool.
