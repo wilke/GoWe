@@ -207,6 +207,46 @@ location / {
 
 Running with `--secure-cookies` but neither native TLS nor `--behind-proxy` logs a warning: browsers will refuse to send `Secure` cookies over plain HTTP, breaking login.
 
+## Browser Clients & CORS
+
+`/api/v1` accepts a bearer token via `Authorization`. GoWe's own web UI (mounted at `/`) is
+server-rendered and same-origin, so it never needs CORS — this section is only about a
+**separate** browser-based client (a standalone SPA, a third-party dashboard, etc.) that talks
+to `/api/v1` directly.
+
+**The intended story: a same-origin reverse proxy.** Never ship a bearer token to a browser.
+The token must live server-side; the browser calls the proxy's own origin, and the proxy
+injects `Authorization` (or the session mechanism of your choice) before forwarding to
+`gowe-server`. From the browser's point of view the API is same-origin, so no CORS
+configuration is needed at all — this is the deployment shape to prefer, and the one GoWe's
+own UI already follows. It also means a captured request/response body from the browser side
+never contains the token.
+
+**`--cors-origins` exists for deliberate cross-origin deployments, and is off by default.**
+Sometimes a same-origin proxy genuinely isn't practical (e.g. a client hosted on a different
+domain than the API, with its own separate auth flow that already keeps the token out of
+client-side JS via other means). For that case:
+
+```bash
+gowe-server ... --cors-origins https://app.example.com,https://staging.example.com
+```
+
+- Comma-separated **exact** origins (scheme + host + port); no wildcards, no suffix matching.
+- Empty (the default) disables CORS entirely: `/api/v1` emits no `Access-Control-*` headers,
+  and `OPTIONS` on any API route 405s — exactly as it always has.
+- When set, only listed origins get `Access-Control-Allow-Origin` (echoed verbatim, never `*`
+  — a token-bearing API cannot safely pair a wildcard origin with `Authorization`) plus
+  `Vary: Origin` on normal responses, and a full `OPTIONS` preflight response (204,
+  `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers: Authorization, Content-Type`,
+  `Access-Control-Max-Age`) for preflighted requests. Unlisted origins receive no CORS headers
+  at all and behave exactly like the disabled case.
+- Scoped to `/api/v1` only — the web UI and `/metrics` (a separate, unauthenticated listener;
+  see [Metrics](#metrics) above) are untouched either way.
+
+Treat `--cors-origins` the same way you'd treat any other widening of the API's reachable
+surface: only list origins you control, and prefer the reverse-proxy story above whenever it's
+an option.
+
 ## Secrets
 
 Worker secrets live in `/scout/wf/gowe/secrets.env` (mode `600`, never committed):

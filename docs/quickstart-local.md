@@ -42,6 +42,13 @@ level=INFO msg="scheduler started" tick=2s
 
 Open http://localhost:8080 in a browser to see the web UI.
 
+> **Building a separate browser client?** The built-in UI above is server-rendered and
+> same-origin, so it needs no configuration. A standalone browser client calling `/api/v1`
+> directly is different: it should sit behind a same-origin reverse proxy that injects the
+> bearer token server-side (never ship the token to the browser). `--cors-origins` exists for
+> deliberate cross-origin deployments and is off by default. See
+> [`docs/PRODUCTION.md`](PRODUCTION.md#browser-clients--cors) for the full story.
+
 ## 2. Run a Simple Echo Workflow
 
 In a second terminal:
@@ -95,6 +102,14 @@ curl -s -X POST http://localhost:8080/api/v1/submissions/ \
   -d '{"workflow_id": "simple-echo", "inputs": {"message": "Hello again!"}}' \
   | python3 -m json.tool
 ```
+
+> **Submit-by-name is sharper than it looks.** Workflow registration is append-only: each
+> `POST /api/v1/workflows` under an existing name creates a new version rather than replacing
+> it, and submitting by name always resolves to the *newest* version registered under that
+> name — not a pinned one. That's fine for a quickstart where you're the only one registering
+> `simple-echo`. Once a name might be re-registered by someone (or something) else — CI
+> re-publishing the same workflow, another user reusing the name — submit by the concrete
+> `wf_...` ID returned at registration instead, so you know exactly which version ran.
 
 ## What Happened
 

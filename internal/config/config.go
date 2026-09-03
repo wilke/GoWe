@@ -19,6 +19,14 @@ type ServerConfig struct {
 	// Session cookie hardening.
 	SecureCookies bool // Force the Secure attribute on session cookies regardless of per-request detection
 	BehindProxy   bool // Trust X-Forwarded-Proto to decide the Secure attribute (only enable behind a trusted proxy)
+
+	// CORS. Empty (the default) disables CORS entirely for /api/v1: no
+	// Access-Control-* headers are ever emitted and OPTIONS preflight
+	// requests 405, exactly like before this option existed. When set, only
+	// these exact origins receive CORS headers; browser clients holding a
+	// bearer token should generally prefer a same-origin reverse proxy over
+	// this flag (see docs/PRODUCTION.md).
+	CORSOrigins []string // Exact allowed browser origins for /api/v1 (e.g. "https://app.example.com"); empty disables CORS
 }
 
 // TLSEnabled reports whether native in-process TLS is configured.
