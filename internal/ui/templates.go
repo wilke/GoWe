@@ -2321,6 +2321,9 @@ var templates = map[string]string{
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
@@ -2486,6 +2489,9 @@ var templates = map[string]string{
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
+        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
@@ -2820,7 +2826,11 @@ var templates = map[string]string{
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Labels</a>
+        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">Label Vocabulary</h1>
@@ -2924,6 +2934,9 @@ var templates = map[string]string{
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
         <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
         <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="/admin/tasks" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Tasks</a>
     </div>

@@ -24,6 +24,13 @@ type ServerConfig struct {
 	// Overview" dashboard fed by --metrics-addr) surfaced in the web UI's
 	// nav/header. Empty hides the link entirely.
 	GrafanaURL string
+	// CORS. Empty (the default) disables CORS entirely for /api/v1: no
+	// Access-Control-* headers are ever emitted and OPTIONS preflight
+	// requests 405, exactly like before this option existed. When set, only
+	// these exact origins receive CORS headers; browser clients holding a
+	// bearer token should generally prefer a same-origin reverse proxy over
+	// this flag (see docs/PRODUCTION.md).
+	CORSOrigins []string // Exact allowed browser origins for /api/v1 (e.g. "https://app.example.com"); empty disables CORS
 }
 
 // TLSEnabled reports whether native in-process TLS is configured.

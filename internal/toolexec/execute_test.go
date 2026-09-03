@@ -1,8 +1,16 @@
 package toolexec
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"log/slog"
+	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/me/gowe/internal/cmdline"
+	"github.com/me/gowe/pkg/cwl"
 )
 
 func TestResolveApptainerImage(t *testing.T) {
@@ -68,79 +76,81 @@ func TestResolveApptainerImage(t *testing.T) {
 	}
 }
 
-func TestTailString(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		limit int
-		want  string
-	}{
-		{
-			name:  "empty buffer",
-			input: "",
-			limit: 100,
-			want:  "",
-		},
-		{
-			name:  "under limit returns full content",
-			input: "hello world",
-			limit: 100,
-			want:  "hello world",
-		},
-		{
-			name:  "exactly at limit returns full content",
-			input: "12345",
-			limit: 5,
-			want:  "12345",
-		},
-		{
-			name:  "over limit truncates with marker",
-			input: "abcdefghij",
-			limit: 5,
-			want:  "... [truncated] ...\nfghij",
-		},
-		{
-			name:  "large content keeps tail",
-			input: strings.Repeat("x", 1000) + "TAIL",
-			limit: 10,
-			want:  "... [truncated] ...\nxxxxxxTAIL",
-		},
+// TestExecuteLocal_LogCaptureBounded is an integration-style test through the
+// local execute path (GoWe#134): a command that emits far more than
+// maxLogCapture bytes to stdout and stderr must still produce a Result whose
+// Stdout/Stderr equal exactly the tail the old bytes.Buffer+tailString
+// approach would have produced, while the capture writer itself never grows
+// past the bounded tailBuffer allocation (verified in tailwriter_test.go).
+func TestExecuteLocal_LogCaptureBounded(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := newTailBuffer(tt.limit)
-			_, _ = buf.Write([]byte(tt.input))
-			got := buf.String()
-			if got != tt.want {
-				t.Errorf("tailBuffer(%d bytes, limit=%d) = %q, want %q",
-					len(tt.input), tt.limit, got, tt.want)
-			}
-		})
+	workDir := t.TempDir()
+
+	// Emit well over maxLogCapture (256KB) bytes to both stdout and stderr,
+	// each ending in a distinctive, known sentinel so we can assert the exact
+	// tail was preserved rather than merely "some truncated content".
+	const totalBytes = maxLogCapture * 3
+	script := fmt.Sprintf(
+		`yes 0123456789 | head -c %d; printf 'STDOUT-END'; (yes 0123456789 | head -c %d; printf 'STDERR-END') 1>&2`,
+		totalBytes, totalBytes,
+	)
+
+	tool := &cwl.CommandLineTool{}
+	cmdResult := &cmdline.BuildResult{Command: []string{"sh", "-c", script}}
+	opts := &Options{
+		Tool:    tool,
+		Command: cmdResult,
+		Inputs:  map[string]any{},
+		WorkDir: workDir,
+		OutDir:  workDir,
+	}
+
+	e := NewExecutor(slog.Default())
+	result, err := e.executeLocal(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("executeLocal: %v", err)
+	}
+
+	// Reproduce the pre-fix behavior (buffer the full stream, then take the
+	// tail) independently, by re-running the same script and feeding its full
+	// output through a fresh tailBuffer, to confirm byte-for-byte parity.
+	verify := exec.Command("sh", "-c", script)
+	var fullStdout, fullStderr bytes.Buffer
+	verify.Stdout = &fullStdout
+	verify.Stderr = &fullStderr
+	if err := verify.Run(); err != nil {
+		t.Fatalf("verify run: %v", err)
+	}
+	wantStdout := newTailBuffer(maxLogCapture)
+	wantStdout.Write(fullStdout.Bytes())
+	wantStderr := newTailBuffer(maxLogCapture)
+	wantStderr.Write(fullStderr.Bytes())
+
+	if result.Stdout != wantStdout.String() {
+		t.Errorf("Stdout mismatch: got %d bytes, want %d bytes (got suffix %q, want suffix %q)",
+			len(result.Stdout), len(wantStdout.String()), tailSuffix(result.Stdout, 20), tailSuffix(wantStdout.String(), 20))
+	}
+	if result.Stderr != wantStderr.String() {
+		t.Errorf("Stderr mismatch: got %d bytes, want %d bytes (got suffix %q, want suffix %q)",
+			len(result.Stderr), len(wantStderr.String()), tailSuffix(result.Stderr, 20), tailSuffix(wantStderr.String(), 20))
+	}
+	if !strings.HasSuffix(result.Stdout, "STDOUT-END") {
+		t.Errorf("Stdout lost the final sentinel: suffix %q", tailSuffix(result.Stdout, 20))
+	}
+	if !strings.HasSuffix(result.Stderr, "STDERR-END") {
+		t.Errorf("Stderr lost the final sentinel: suffix %q", tailSuffix(result.Stderr, 20))
+	}
+	if !strings.HasPrefix(result.Stdout, "... [truncated] ...\n") {
+		t.Errorf("Stdout missing truncation marker: prefix %q", result.Stdout[:min(30, len(result.Stdout))])
 	}
 }
 
-// TestTailBufferChunkedWritesBounded verifies the tail is retained across many
-// small writes and that the backing buffer stays bounded (the property that
-// prevents a streaming tool from OOMing the worker).
-func TestTailBufferChunkedWritesBounded(t *testing.T) {
-	tb := newTailBuffer(1024)
-	// Stream 1 MB in 4KB chunks.
-	chunk := []byte(strings.Repeat("a", 4096))
-	for i := 0; i < 256; i++ {
-		_, _ = tb.Write(chunk)
+func tailSuffix(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	// Final marker of known content so we can assert the tail is preserved.
-	_, _ = tb.Write([]byte("ENDSENTINEL"))
-
-	if len(tb.buf) > 2*tb.limit {
-		t.Errorf("backing buffer grew to %d bytes, want <= %d (unbounded growth)", len(tb.buf), 2*tb.limit)
-	}
-	got := tb.String()
-	if !strings.HasSuffix(got, "ENDSENTINEL") {
-		t.Errorf("tail lost the final content: got suffix %q", got[len(got)-20:])
-	}
-	if !strings.HasPrefix(got, "... [truncated] ...\n") {
-		t.Errorf("expected truncation marker, got %q", got[:30])
-	}
+	return s[len(s)-n:]
 }

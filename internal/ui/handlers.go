@@ -59,6 +59,11 @@ type UI struct {
 
 	// grafanaURL is rendered as a nav link (target _blank) when non-empty.
 	grafanaURL string
+	// apiBaseURL overrides the base URL used for the admin outputs
+	// loopback calls (see admin_outputs.go). Empty (the production default)
+	// derives it per-request from the connection's local address; tests set
+	// this to an httptest.Server URL instead.
+	apiBaseURL string
 }
 
 // Config holds UI configuration.
@@ -951,6 +956,28 @@ func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resetFailedTaskForQueue prepares a FAILED task snapshot for re-execution
+// (QUEUED, cleared retry/output bookkeeping) and writes it back only while
+// the task is still exactly FAILED in the store — a guarded full-row write
+// in the same style as CASTaskState, reusing the exact-state primitive
+// TerminalizeTaskFrom (see its stuck-task caller in
+// internal/scheduler/loop.go) instead of an unconditional UpdateTask. A
+// concurrent scheduler write (markRetries' FAILED→RETRYING CAS, or a cancel
+// SKIP) between the caller's read and this write makes the guard reject the
+// write (applied=false, no error) instead of the stale UI snapshot
+// clobbering the winning state — the caller must skip/count/report that
+// task rather than treat it as reset.
+func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (bool, error) {
+	task.State = model.TaskStateQueued
+	task.RetryCount = 0
+	task.Stdout = ""
+	task.Stderr = ""
+	task.ExitCode = nil
+	task.StartedAt = nil
+	task.CompletedAt = nil
+	return ui.store.TerminalizeTaskFrom(ctx, &task, model.TaskStateFailed)
+}
+
 // HandleSubmissionResume resumes a failed submission.
 func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
@@ -974,22 +1001,26 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reset failed tasks to QUEUED and their parent step instances to DISPATCHED.
+	requeuedCount := 0
+	skippedCount := 0
 	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
-		if task.State == model.TaskStateFailed {
-			task.State = model.TaskStateQueued
-			task.RetryCount = 0
-			task.Stdout = ""
-			task.Stderr = ""
-			task.ExitCode = nil
-			task.StartedAt = nil
-			task.CompletedAt = nil
-			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
-				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
-			}
-			if task.StepInstanceID != "" {
-				resetSteps[task.StepInstanceID] = true
-			}
+		if task.State != model.TaskStateFailed {
+			continue
+		}
+		applied, err := ui.resetFailedTaskForQueue(r.Context(), task)
+		if err != nil {
+			ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
+			continue
+		}
+		if !applied {
+			skippedCount++
+			ui.logger.Info("resume: task no longer FAILED, skipping", "task_id", task.ID, "submission_id", id)
+			continue
+		}
+		requeuedCount++
+		if task.StepInstanceID != "" {
+			resetSteps[task.StepInstanceID] = true
 		}
 	}
 	// Reset parent step instances so scheduler re-evaluates them.
@@ -1013,9 +1044,13 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ui.logger.Info("submission resumed", "id", id)
+	ui.logger.Info("submission resumed", "id", id, "requeued", requeuedCount, "skipped", skippedCount)
 	w.Header().Set("HX-Redirect", "/submissions/"+id)
 	w.WriteHeader(http.StatusOK)
+	// HTMX discards the body when HX-Redirect is set (it drives a full-page
+	// navigation instead), so this is purely for API/test observability of
+	// any CAS misses skipped above.
+	fmt.Fprintf(w, "requeued %d, skipped %d", requeuedCount, skippedCount)
 }
 
 // HandleRecomputeFailed recomputes all failed tasks in a submission.
@@ -1028,26 +1063,35 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Gate on submission state: a cancelled submission is not actionable —
+	// re-queuing its failed tasks would resurrect work the user explicitly
+	// tore down (mirrors the cancel handler's terminal-state gate).
+	if sub.State == model.SubmissionStateCancelled {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	// Reset all failed tasks and their parent step instances.
 	recomputeCount := 0
+	skippedCount := 0
 	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
-		if task.State == model.TaskStateFailed {
-			task.State = model.TaskStateQueued
-			task.RetryCount = 0
-			task.Stdout = ""
-			task.Stderr = ""
-			task.ExitCode = nil
-			task.StartedAt = nil
-			task.CompletedAt = nil
-			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
-				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
-			} else {
-				recomputeCount++
-			}
-			if task.StepInstanceID != "" {
-				resetSteps[task.StepInstanceID] = true
-			}
+		if task.State != model.TaskStateFailed {
+			continue
+		}
+		applied, err := ui.resetFailedTaskForQueue(r.Context(), task)
+		if err != nil {
+			ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
+			continue
+		}
+		if !applied {
+			skippedCount++
+			ui.logger.Info("recompute: task no longer FAILED, skipping", "task_id", task.ID, "submission_id", id)
+			continue
+		}
+		recomputeCount++
+		if task.StepInstanceID != "" {
+			resetSteps[task.StepInstanceID] = true
 		}
 	}
 	for siID := range resetSteps {
@@ -1071,9 +1115,13 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount)
+	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount, "skipped", skippedCount)
 	w.Header().Set("HX-Redirect", "/submissions/"+id)
 	w.WriteHeader(http.StatusOK)
+	// HTMX discards the body when HX-Redirect is set (it drives a full-page
+	// navigation instead), so this is purely for API/test observability of
+	// any CAS misses skipped above.
+	fmt.Fprintf(w, "recomputed %d, skipped %d", recomputeCount, skippedCount)
 }
 
 // HandleTaskRecompute recomputes a single task.
@@ -1092,16 +1140,34 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset the task.
-	task.State = model.TaskStateQueued
-	task.RetryCount = 0
-	task.Stdout = ""
-	task.Stderr = ""
-	task.ExitCode = nil
-	task.StartedAt = nil
-	task.CompletedAt = nil
-	if err := ui.store.UpdateTask(r.Context(), task); err != nil {
+	// Gate on submission state before writing: a cancelled submission is not
+	// actionable (mirrors the cancel handler's terminal-state gate). Fetched
+	// up front so the CANCELLED check happens before any task write.
+	sub, err := ui.store.GetSubmission(r.Context(), subID)
+	if err != nil || sub == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if sub.State == model.SubmissionStateCancelled {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Reset the task via a guarded write: only applies while the task is
+	// still exactly FAILED. A concurrent scheduler write (e.g. markRetries'
+	// FAILED→RETRYING CAS winning the race against this handler's read
+	// above) makes the guard reject the write instead of this stale
+	// snapshot resurrecting/double-executing a task the scheduler already
+	// claimed.
+	applied, err := ui.resetFailedTaskForQueue(r.Context(), *task)
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !applied {
+		ui.logger.Info("task recompute: task no longer FAILED, skipping", "task_id", taskID, "submission_id", subID)
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprintf(w, "task %s is no longer FAILED, skipped", taskID)
 		return
 	}
 
@@ -1118,11 +1184,7 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set submission back to RUNNING if it was terminal.
-	sub, err := ui.store.GetSubmission(r.Context(), subID)
-	if err != nil {
-		slog.Error("task recompute: failed to get submission", "submission_id", subID, "error", err)
-	}
-	if sub != nil && sub.State.IsTerminal() {
+	if sub.State.IsTerminal() {
 		sub.State = model.SubmissionStateRunning
 		sub.CompletedAt = nil
 		if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
