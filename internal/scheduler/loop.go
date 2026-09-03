@@ -117,6 +117,12 @@ type Loop struct {
 	// pre-flight check failure (no capable worker). Key = stepInstanceID.
 	deferredSteps map[string]int
 
+	// missingWorkflowTicks tracks how many consecutive ticks a submission's
+	// workflow has failed to load (deleted, or a store error), so
+	// getWorkflowOrFail can bound the retry and FAIL the submission instead of
+	// looping forever. Key = submissionID. See #128.
+	missingWorkflowTicks map[string]int
+
 	// stuckTracker detects classes of QUEUED tasks making zero progress.
 	stuck stuckTracker
 
@@ -177,14 +183,15 @@ type stuckTracker struct {
 // NewLoop creates a new scheduler loop.
 func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Logger) *Loop {
 	return &Loop{
-		store:            st,
-		registry:         reg,
-		config:           cfg,
-		logger:           logger.With("component", "scheduler"),
-		stopCh:           make(chan struct{}),
-		doneCh:           make(chan struct{}),
-		deferredSteps:    make(map[string]int),
-		unsupportedSteps: make(map[string]string),
+		store:                st,
+		registry:             reg,
+		config:               cfg,
+		logger:               logger.With("component", "scheduler"),
+		stopCh:               make(chan struct{}),
+		doneCh:               make(chan struct{}),
+		deferredSteps:        make(map[string]int),
+		missingWorkflowTicks: make(map[string]int),
+		unsupportedSteps:     make(map[string]string),
 		stuck: stuckTracker{
 			lastCounts: make(map[taskRequirementKey]int),
 			staleTicks: make(map[taskRequirementKey]int),
@@ -476,6 +483,110 @@ func (l *Loop) refreshGauges(ctx context.Context) {
 	l.metrics.RefreshGauges(taskCounts, subCounts, workers, queueDepth)
 }
 
+// missingWorkflowFailThreshold is the number of consecutive ticks a
+// non-terminal submission's workflow may fail to load (deleted, or a store
+// error) before the submission itself is FAILED. Mirrors the deferredSteps /
+// PreflightDeferralTicks bounded-retry pattern. See #128: without a bound, a
+// submission whose workflow was deleted out from under it re-attempted the
+// load, logged an error, and gave up for the tick — forever, at 100ms/tick in
+// production (304 identical log lines for a single submission).
+const missingWorkflowFailThreshold = 10
+
+// orphanedByTerminalSubmission marks si SKIPPED with a diagnostic Error
+// explaining that its owning submission is already terminal
+// (COMPLETED/FAILED/CANCELLED). Every phase that selects step instances
+// purely by state (advanceWaiting, dispatchReady, advanceSteps) must run this
+// instead of its normal processing when it discovers the owning submission is
+// terminal — otherwise a submission that finalized (or was cancelled) without
+// its cancellation cascading to every step instance leaves orphans that get
+// re-selected, and re-fail identically, every tick forever (#128).
+func (l *Loop) orphanedByTerminalSubmission(ctx context.Context, si *model.StepInstance, sub *model.Submission) {
+	now := time.Now().UTC()
+	si.State = model.StepStateSkipped
+	si.CompletedAt = &now
+	si.Error = fmt.Sprintf("orphaned by terminal submission: submission %s is %s", sub.ID, sub.State)
+	if err := l.updateStepInstance(ctx, si); err != nil {
+		l.logger.Error("terminalize orphaned step instance", "si_id", si.ID, "submission_id", sub.ID, "error", err)
+		return
+	}
+	l.logger.Warn("step instance orphaned by terminal submission; skipped",
+		"si_id", si.ID, "step_id", si.StepID, "submission_id", sub.ID, "submission_state", sub.State)
+}
+
+// getWorkflowOrFail resolves sub's workflow through the tick cache. The
+// caller must already have confirmed sub is non-terminal (terminal
+// submissions are handled by orphanedByTerminalSubmission instead). When the
+// workflow cannot be loaded, it tracks consecutive-tick failures per
+// submission (deduped within a single tick via the tick cache — see
+// tickCache.workflowLoadFailureSeen) and, once missingWorkflowFailThreshold is
+// reached, FAILs the submission outright via failSubmissionMissingWorkflow so
+// the retry is bounded (#128). Logging is rate-limited: a full Warn only on
+// the first occurrence and every Nth tick thereafter, so a stuck submission
+// cannot flood the log the way #128's production evidence showed. Returns nil
+// on any failure — callers should skip the step instance(s) for this tick
+// exactly as before.
+func (l *Loop) getWorkflowOrFail(ctx context.Context, sub *model.Submission, phase string) *model.Workflow {
+	wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
+	if err == nil && wf != nil {
+		delete(l.missingWorkflowTicks, sub.ID)
+		return wf
+	}
+
+	if l.cache.workflowLoadFailureSeen[sub.ID] {
+		return nil
+	}
+	l.cache.workflowLoadFailureSeen[sub.ID] = true
+
+	l.missingWorkflowTicks[sub.ID]++
+	count := l.missingWorkflowTicks[sub.ID]
+
+	if count == 1 {
+		l.logger.Warn("get workflow for "+phase, "submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err)
+	} else if count%missingWorkflowFailThreshold == 0 {
+		l.logger.Warn("get workflow for "+phase, "submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err, "consecutive_ticks", count)
+	} else {
+		l.logger.Debug("get workflow for "+phase, "submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err, "consecutive_ticks", count)
+	}
+
+	if count >= missingWorkflowFailThreshold {
+		l.failSubmissionMissingWorkflow(ctx, sub)
+	}
+
+	return nil
+}
+
+// failSubmissionMissingWorkflow FAILs sub after its workflow has been
+// unreachable for missingWorkflowFailThreshold consecutive ticks (see
+// getWorkflowOrFail), persisting a diagnostic Error so the reason survives
+// for API/UI consumers. Any of sub's other non-terminal step instances are
+// left for the terminal-submission guard (orphanedByTerminalSubmission) to
+// pick up and skip — on a later phase this same tick, or the next tick at the
+// latest, once the cache reflects the FAILED state (#128).
+func (l *Loop) failSubmissionMissingWorkflow(ctx context.Context, sub *model.Submission) {
+	now := time.Now().UTC()
+	sub.State = model.SubmissionStateFailed
+	sub.CompletedAt = &now
+	sub.Error = &model.SubmissionError{
+		Code:    "WORKFLOW_UNAVAILABLE",
+		Message: fmt.Sprintf("workflow %s missing/unloadable", sub.WorkflowID),
+	}
+
+	applied, err := l.finalizeSubmissionCAS(ctx, sub)
+	if err != nil {
+		l.logger.Error("fail submission: workflow missing/unloadable",
+			"submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err)
+		return
+	}
+	delete(l.missingWorkflowTicks, sub.ID)
+	if !applied {
+		// Lost the race to a concurrent terminal write (e.g. a cancel) — that
+		// write wins, nothing more to do.
+		return
+	}
+	l.logger.Error("submission failed: workflow missing/unloadable",
+		"submission_id", sub.ID, "workflow_id", sub.WorkflowID, "consecutive_ticks", missingWorkflowFailThreshold)
+}
+
 // advanceWaiting transitions WAITING StepInstances to READY (deps met) or SKIPPED (blocked).
 func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) error {
 	waiting, err := l.store.ListStepsByState(ctx, model.StepStateWaiting)
@@ -493,6 +604,23 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 	}
 
 	for subID, steps := range bySubmission {
+		sub, err := l.cache.getSubmission(ctx, l.store, subID)
+		if err != nil || sub == nil {
+			l.logger.Error("get submission for advance", "submission_id", subID, "error", err)
+			continue
+		}
+
+		// A terminal submission (COMPLETED/FAILED/CANCELLED) can never make
+		// progress: these WAITING step instances are orphans (e.g. a cancel
+		// whose cascade missed them). Terminalize them once instead of
+		// re-selecting and re-attempting them every tick (#128).
+		if sub.State.IsTerminal() {
+			for _, si := range steps {
+				l.orphanedByTerminalSubmission(ctx, si, sub)
+			}
+			continue
+		}
+
 		// Load all step instances for this submission to check dependencies.
 		allSteps, err := l.cache.listStepsBySubmission(ctx, l.store, subID)
 		if err != nil {
@@ -505,14 +633,8 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 		}
 
 		// Load workflow to get step dependencies.
-		sub, err := l.cache.getSubmission(ctx, l.store, subID)
-		if err != nil || sub == nil {
-			l.logger.Error("get submission for advance", "submission_id", subID, "error", err)
-			continue
-		}
-		wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
-		if err != nil || wf == nil {
-			l.logger.Error("get workflow for advance", "submission_id", subID, "error", err)
+		wf := l.getWorkflowOrFail(ctx, sub, "advance")
+		if wf == nil {
 			continue
 		}
 		stepDefs := make(map[string]*model.Step)
@@ -592,9 +714,17 @@ func (l *Loop) dispatchReady(ctx context.Context, affected map[string]bool) erro
 			l.logger.Error("get submission for dispatch", "si_id", si.ID, "error", err)
 			continue
 		}
-		wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
-		if err != nil || wf == nil {
-			l.logger.Error("get workflow for dispatch", "si_id", si.ID, "error", err)
+
+		// A terminal submission can never make progress: this READY step
+		// instance is an orphan. Terminalize it once instead of re-attempting
+		// dispatch every tick (#128).
+		if sub.State.IsTerminal() {
+			l.orphanedByTerminalSubmission(ctx, si, sub)
+			continue
+		}
+
+		wf := l.getWorkflowOrFail(ctx, sub, "dispatch")
+		if wf == nil {
 			continue
 		}
 		if err := l.dispatchStep(ctx, si, wf, sub); err != nil {
@@ -2513,6 +2643,22 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 		}
 
 		for _, si := range steps {
+			sub, err := l.cache.getSubmission(ctx, l.store, si.SubmissionID)
+			if err != nil || sub == nil {
+				l.logger.Error("get submission for advance steps", "si_id", si.ID, "error", err)
+				continue
+			}
+
+			// A terminal submission can never make progress: this
+			// DISPATCHED/RUNNING step instance is an orphan (e.g. a cancel
+			// whose cascade missed it, or its workflow was deleted after
+			// finalization). Terminalize it once instead of re-selecting and
+			// re-processing it every tick (#128).
+			if sub.State.IsTerminal() {
+				l.orphanedByTerminalSubmission(ctx, si, sub)
+				continue
+			}
+
 			tasks, err := l.store.ListTasksByStepInstance(ctx, si.ID)
 			if err != nil {
 				l.logger.Error("list tasks for step", "si_id", si.ID, "error", err)
