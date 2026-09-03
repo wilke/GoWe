@@ -820,45 +820,6 @@ func ResolveSymlinks(path string) string {
 	return staging.ResolveSymlinks(path)
 }
 
-// tailBuffer is an io.Writer that retains only roughly the last `limit` bytes
-// written, bounding memory even when a tool streams unbounded output to
-// stdout/stderr. The earlier `bytes.Buffer` + post-hoc tail slice buffered the
-// entire stream first, which could OOM the worker. Compaction is amortized:
-// the backing slice is allowed to grow to 2*limit before the oldest bytes are
-// dropped, so steady-state writes don't reallocate on every call. Not safe for
-// concurrent writers (os/exec copies each stream from a single goroutine).
-type tailBuffer struct {
-	limit     int
-	buf       []byte
-	truncated bool
-}
-
-func newTailBuffer(limit int) *tailBuffer { return &tailBuffer{limit: limit} }
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.limit {
-		t.truncated = true
-		if len(t.buf) > 2*t.limit {
-			t.buf = append([]byte(nil), t.buf[len(t.buf)-t.limit:]...)
-		}
-	}
-	return len(p), nil
-}
-
-// String returns the retained tail, prefixed with a truncation marker when
-// earlier output was dropped.
-func (t *tailBuffer) String() string {
-	b := t.buf
-	if len(b) > t.limit {
-		b = b[len(b)-t.limit:]
-	}
-	if t.truncated {
-		return "... [truncated] ...\n" + string(b)
-	}
-	return string(b)
-}
-
 // translateDockerPath translates a container path to the Docker host path.
 // This is needed for Docker-in-Docker scenarios where the worker container
 // uses the host's Docker socket. Paths in docker run commands must be valid
