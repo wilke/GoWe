@@ -138,6 +138,12 @@ curl -X POST http://localhost:8080/api/v1/submissions \
 
 `workflow_id` accepts either a workflow ID (`wf_...`) or a workflow name.
 
+> **Submit-by-name is sharper than it looks:** workflow registration is append-only — each
+> `POST /api/v1/workflows` to an existing name creates a new version, never overwrites one.
+> Submitting by name always resolves to the *newest* version under that name; it does not
+> pin a specific one. If a shared name might be re-registered under you (CI re-publishing a
+> workflow, another user reusing a name), submit by the concrete `wf_...` ID instead.
+
 ### 4. Check status
 
 ```bash
@@ -242,6 +248,14 @@ The default `docker-compose.yml` uses fast poll intervals (`500ms`) for testing.
 - Remove `--debug` flags
 - Set `--worker-keys` for worker authentication
 - Configure `--upload-backend` for file management (`s3` or `shock`)
+
+**Browser clients:** GoWe's own web UI is server-rendered and same-origin, so it needs no CORS
+configuration. If you're building a separate browser-based client against `/api/v1`, the
+intended story is a **same-origin reverse proxy** that injects the bearer token server-side —
+the browser never sees the credential. `--cors-origins` exists for deliberate cross-origin
+deployments and is **off by default**: a token-issuing API shouldn't become browser-reachable
+by accident. See [`docs/PRODUCTION.md`](docs/PRODUCTION.md#browser-clients--cors) for the full
+writeup.
 
 ## Architecture
 
@@ -425,6 +439,7 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `--workspace-url` | `""` | BV-BRC Workspace URL for server-side staging and the web UI (default: production) |
 | `--redeliver-source-dirs` | `""` | Directories the admin `redeliver` endpoint may read staged originals from (empty refuses re-upload) |
 | `--token-key-file` | `""` | File holding the token-encryption key (or `GOWE_TOKEN_KEY`) |
+| `--cors-origins` | `""` | Comma-separated exact origins allowed to call `/api/v1` cross-origin. Empty (default) disables CORS entirely. See [Production Considerations](#production-considerations) below — prefer a same-origin reverse proxy for browser clients holding a bearer token. |
 
 ### Worker Flags
 
