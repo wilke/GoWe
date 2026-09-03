@@ -55,6 +55,12 @@ type UI struct {
 	// Session cookie hardening.
 	secureCookies       bool // Always set the Secure attribute on session cookies
 	trustForwardedProto bool // Honor X-Forwarded-Proto when deciding the Secure attribute
+
+	// apiBaseURL overrides the base URL used for the admin outputs
+	// loopback calls (see admin_outputs.go). Empty (the production default)
+	// derives it per-request from the connection's local address; tests set
+	// this to an httptest.Server URL instead.
+	apiBaseURL string
 }
 
 // Config holds UI configuration.

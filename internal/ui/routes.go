@@ -77,6 +77,19 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Get("/labels", ui.HandleAdminLabels)
 			r.Post("/labels", ui.HandleAdminLabelCreate)
 			r.Delete("/labels/{id}", ui.HandleAdminLabelDelete)
+
+			// Worker fleet (full listing, unpaginated, admin-only).
+			r.Get("/fleet", ui.HandleAdminFleet)
+
+			// Worker keys.
+			r.Get("/worker-keys", ui.HandleAdminWorkerKeys)
+			r.Post("/worker-keys", ui.HandleAdminWorkerKeyCreate)
+			r.Delete("/worker-keys/{id}", ui.HandleAdminWorkerKeyRevoke)
+
+			// Output verification / redelivery.
+			r.Get("/outputs", ui.HandleAdminOutputs)
+			r.Post("/outputs/verify", ui.HandleAdminOutputsVerify)
+			r.Post("/outputs/redeliver", ui.HandleAdminOutputsRedeliver)
 		})
 	})
 }
