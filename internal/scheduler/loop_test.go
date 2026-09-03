@@ -1381,6 +1381,109 @@ func TestGroupAutoInjectsToken(t *testing.T) {
 	}
 }
 
+// TestAddUserToken verifies the least-privilege gate on embedding the
+// submitter's token into a task's RuntimeHints (#133 — PR #132 had briefly
+// made this unconditional for every worker task). BV-BRC executor tasks and
+// the legacy wsStager==nil case always receive the token; worker tasks only
+// receive it when the step opted in via gowe:Execution.inject_bvbrc_token, or
+// when the task's worker group is in the operator's --token-inject-groups
+// policy (in which case InjectBVBRCToken must also be set, so
+// internal/worker/worker.go actually honors the grant).
+func TestAddUserToken(t *testing.T) {
+	tests := []struct {
+		name         string
+		executorType model.ExecutorType
+		hint         bool
+		group        string
+		wsStagerNil  bool
+		tokenInject  []string
+		wantToken    bool
+		wantHintSet  bool // RuntimeHints.InjectBVBRCToken after the call
+	}{
+		{
+			name:         "bvbrc executor always gets token, regardless of staging mode",
+			executorType: model.ExecutorTypeBVBRC,
+			wantToken:    true,
+		},
+		{
+			name:         "worker with opt-in hint gets token",
+			executorType: model.ExecutorTypeWorker,
+			hint:         true,
+			wantToken:    true,
+			wantHintSet:  true,
+		},
+		{
+			name:         "worker without hint and without group policy gets no token",
+			executorType: model.ExecutorTypeWorker,
+			wantToken:    false,
+		},
+		{
+			name:         "wsStager nil (legacy passthrough) always gets token",
+			executorType: model.ExecutorTypeWorker,
+			wsStagerNil:  true,
+			wantToken:    true,
+		},
+		{
+			name:         "worker in an opted-in group gets token and hint is set",
+			executorType: model.ExecutorTypeWorker,
+			group:        "esmfold",
+			tokenInject:  []string{"esmfold"},
+			wantToken:    true,
+			wantHintSet:  true,
+		},
+		{
+			name:         "worker in a non-opted-in group gets no token",
+			executorType: model.ExecutorTypeWorker,
+			group:        "default",
+			tokenInject:  []string{"esmfold"},
+			wantToken:    false,
+		},
+		{
+			name:         "local executor without hint gets no token",
+			executorType: model.ExecutorTypeLocal,
+			wantToken:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := &Loop{config: Config{TokenInjectGroups: tt.tokenInject}}
+			if !tt.wsStagerNil {
+				l.wsStager = unreachableStager()
+			}
+			task := &model.Task{
+				ExecutorType: tt.executorType,
+				RuntimeHints: &model.RuntimeHints{InjectBVBRCToken: tt.hint, WorkerGroup: tt.group},
+			}
+			sub := &model.Submission{UserToken: "the-token"}
+
+			l.addUserToken(task, sub)
+
+			gotToken := task.RuntimeHints.StagerOverrides != nil &&
+				task.RuntimeHints.StagerOverrides.HTTPCredential != nil &&
+				task.RuntimeHints.StagerOverrides.HTTPCredential.Token == "the-token"
+			if gotToken != tt.wantToken {
+				t.Errorf("token embedded = %v, want %v (hints: %+v)", gotToken, tt.wantToken, task.RuntimeHints)
+			}
+			if task.RuntimeHints.InjectBVBRCToken != tt.wantHintSet {
+				t.Errorf("InjectBVBRCToken = %v, want %v", task.RuntimeHints.InjectBVBRCToken, tt.wantHintSet)
+			}
+		})
+	}
+
+	// No submitter token: nothing embedded regardless of policy.
+	t.Run("no submitter token: nothing embedded", func(t *testing.T) {
+		l := &Loop{config: Config{}}
+		l.wsStager = unreachableStager()
+		task := &model.Task{ExecutorType: model.ExecutorTypeBVBRC}
+		sub := &model.Submission{UserToken: ""}
+		l.addUserToken(task, sub)
+		if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+			t.Errorf("expected no token embedded, got %+v", task.RuntimeHints.StagerOverrides)
+		}
+	})
+}
+
 // TestAreStepDependenciesSatisfied covers the CWL v1.2 "no skip cascade"
 // semantics: a SKIPPED dependency must count as satisfied (its outputs
 // resolve to null downstream), while a FAILED dependency must still block
