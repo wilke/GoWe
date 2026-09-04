@@ -28,18 +28,19 @@ const MaxListLimit = 100
 
 // ListOptions configures list queries with pagination and filtering.
 type ListOptions struct {
-	Limit       int
-	Offset      int
-	State       string   // Optional state filter
-	WorkflowID  string   // Optional workflow ID filter
-	DateStart   string   // Optional start date filter (YYYY-MM-DD)
-	DateEnd     string   // Optional end date filter (YYYY-MM-DD)
-	Search      string   // Optional search term (name, ID)
-	Class       string   // Optional class filter: Workflow, CommandLineTool, ExpressionTool, or Tool (matches both CommandLineTool and ExpressionTool)
-	Labels      []string // Optional label filters: "key:value" (exact) or "value" (any key match)
-	SubmittedBy string   // Filter submissions by owner (empty = no filter)
-	SortBy      string   // Optional column to sort by (validated per-query)
-	SortDir     string   // Sort direction: "asc" or "desc" (default: "desc")
+	Limit        int
+	Offset       int
+	State        string   // Optional state filter
+	WorkflowID   string   // Optional workflow ID filter (exact match, single workflow version)
+	WorkflowName string   // Optional workflow name filter (matches all versions/IDs sharing this name)
+	DateStart    string   // Optional start date filter (YYYY-MM-DD)
+	DateEnd      string   // Optional end date filter (YYYY-MM-DD)
+	Search       string   // Optional search term (name, ID)
+	Class        string   // Optional class filter: Workflow, CommandLineTool, ExpressionTool, or Tool (matches both CommandLineTool and ExpressionTool)
+	Labels       []string // Optional label filters: "key:value" (exact) or "value" (any key match)
+	SubmittedBy  string   // Filter submissions by owner (empty = no filter)
+	SortBy       string   // Optional column to sort by (validated per-query)
+	SortDir      string   // Sort direction: "asc" or "desc" (default: "desc")
 	// ExcludeChildren omits child submissions (those spawned by a parent's
 	// sub-workflow proxy task, i.e. parent_task_id set) from submission
 	// listings. User-facing lists set this so scatter fan-out does not flood
