@@ -724,6 +724,114 @@ func TestListSubmissions_ExcludeChildren(t *testing.T) {
 	})
 }
 
+// TestListSubmissions_WorkflowNameFilter pins #240: the workflow_id list
+// filter used to resolve a workflow *name* to a single newest ID
+// (GetWorkflowByName), silently dropping submissions created against earlier
+// versions registered under the same name. Filtering by name must match
+// submissions across every workflow ID sharing that name; filtering by an
+// exact ID must keep single-version semantics.
+func TestListSubmissions_WorkflowNameFilter(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	// Three workflow versions sharing the name "vaxpipe", distinct IDs.
+	vax1 := sampleWorkflow()
+	vax1.ID = "wf_vax-1"
+	vax1.Name = "vaxpipe"
+	if err := st.CreateWorkflow(ctx, vax1); err != nil {
+		t.Fatalf("create vax1: %v", err)
+	}
+
+	vax2 := sampleWorkflow()
+	vax2.ID = "wf_vax-2"
+	vax2.Name = "vaxpipe"
+	if err := st.CreateWorkflow(ctx, vax2); err != nil {
+		t.Fatalf("create vax2: %v", err)
+	}
+
+	vax3 := sampleWorkflow()
+	vax3.ID = "wf_vax-3"
+	vax3.Name = "vaxpipe"
+	if err := st.CreateWorkflow(ctx, vax3); err != nil {
+		t.Fatalf("create vax3: %v", err)
+	}
+
+	// A different workflow with a different name.
+	other := sampleWorkflow()
+	other.ID = "wf_other-1"
+	other.Name = "other-pipeline"
+	if err := st.CreateWorkflow(ctx, other); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	// 2 submissions against vax1, 3 against vax2, 1 against vax3, 2 against other.
+	counts := map[string]int{vax1.ID: 2, vax2.ID: 3, vax3.ID: 1, other.ID: 2}
+	i := 0
+	for wfID, n := range counts {
+		for j := 0; j < n; j++ {
+			sub := sampleSubmission(wfID)
+			sub.ID = fmt.Sprintf("sub_wnf-%d", i)
+			i++
+			if err := st.CreateSubmission(ctx, sub); err != nil {
+				t.Fatalf("create submission for %s: %v", wfID, err)
+			}
+		}
+	}
+
+	tests := []struct {
+		name      string
+		opts      model.ListOptions
+		wantTotal int
+		wantIDs   map[string]bool // expected distinct workflow IDs among results, nil = don't check
+	}{
+		{
+			name:      "name filter matches all versions",
+			opts:      model.ListOptions{WorkflowName: "vaxpipe", Limit: 20},
+			wantTotal: 6,
+			wantIDs:   map[string]bool{vax1.ID: true, vax2.ID: true, vax3.ID: true},
+		},
+		{
+			name:      "exact id filter matches only that version",
+			opts:      model.ListOptions{WorkflowID: vax2.ID, Limit: 20},
+			wantTotal: 3,
+			wantIDs:   map[string]bool{vax2.ID: true},
+		},
+		{
+			name:      "name filter matching nothing returns zero rows without error",
+			opts:      model.ListOptions{WorkflowName: "no-such-workflow", Limit: 20},
+			wantTotal: 0,
+			wantIDs:   map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subs, total, err := st.ListSubmissions(ctx, tt.opts)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if total != tt.wantTotal {
+				t.Errorf("total = %d, want %d", total, tt.wantTotal)
+			}
+			if len(subs) != tt.wantTotal {
+				t.Errorf("len(subs) = %d, want %d", len(subs), tt.wantTotal)
+			}
+			gotIDs := map[string]bool{}
+			for _, s := range subs {
+				gotIDs[s.WorkflowID] = true
+				if unwanted := !tt.wantIDs[s.WorkflowID] && len(tt.wantIDs) > 0; unwanted {
+					t.Errorf("unexpected workflow id %q in results", s.WorkflowID)
+				}
+			}
+			for id := range tt.wantIDs {
+				if !gotIDs[id] {
+					t.Errorf("expected results to include workflow id %q, got none", id)
+				}
+			}
+		})
+	}
+}
+
 func TestUpdateSubmission(t *testing.T) {
 	st := testStore(t)
 	ctx := context.Background()

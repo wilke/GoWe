@@ -1056,6 +1056,76 @@ func TestListSubmissions_ExcludeChildrenByDefault(t *testing.T) {
 	}
 }
 
+// TestListSubmissions_WorkflowIDFilter pins #240: GET
+// /api/v1/submissions/?workflow_id=<name> used to resolve the name to a
+// single newest workflow ID (via resolveWorkflow/GetWorkflowByName) and drop
+// submissions created against earlier workflow versions sharing that name.
+// An exact workflow ID must still return only that version's submissions.
+func TestListSubmissions_WorkflowIDFilter(t *testing.T) {
+	srv := testServer()
+	cwlStr := loadPackedCWL(t)
+
+	registerVersion := func(name string, force bool) string {
+		t.Helper()
+		bodyJSON, _ := json.Marshal(map[string]any{
+			"name":  name,
+			"cwl":   cwlStr,
+			"force": force,
+		})
+		w, env := doPost(t, srv, "/api/v1/workflows/", string(bodyJSON))
+		if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+			t.Fatalf("register workflow %s (force=%v): status=%d, body=%s", name, force, w.Code, w.Body.String())
+		}
+		var data map[string]any
+		json.Unmarshal(env.Data, &data)
+		id, ok := data["id"].(string)
+		if !ok {
+			t.Fatalf("registered workflow missing id, data=%v", data)
+		}
+		return id
+	}
+
+	createSub := func(wfID string) string {
+		t.Helper()
+		bodyJSON, _ := json.Marshal(map[string]any{
+			"workflow_id": wfID,
+			"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		})
+		w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create submission for %s: status=%d, body=%s", wfID, w.Code, w.Body.String())
+		}
+		var data map[string]any
+		json.Unmarshal(env.Data, &data)
+		return data["id"].(string)
+	}
+
+	// Two versions of "vaxpipe" (distinct IDs, first via normal registration,
+	// second via force:true to bypass content-hash dedup).
+	vax1 := registerVersion("vaxpipe", false)
+	vax2 := registerVersion("vaxpipe", true)
+
+	createSub(vax1)
+	createSub(vax1)
+	createSub(vax2)
+	createSub(vax2)
+	createSub(vax2)
+
+	t.Run("exact id returns only that version", func(t *testing.T) {
+		env := doGet(t, srv, "/api/v1/submissions/?workflow_id="+vax1)
+		if env.Pagination.Total != 2 {
+			t.Errorf("total = %d, want 2 (only vax1)", env.Pagination.Total)
+		}
+	})
+
+	t.Run("name returns all versions", func(t *testing.T) {
+		env := doGet(t, srv, "/api/v1/submissions/?workflow_id=vaxpipe")
+		if env.Pagination.Total != 5 {
+			t.Errorf("total = %d, want 5 (vax1 + vax2 submissions)", env.Pagination.Total)
+		}
+	})
+}
+
 func TestGetSubmission(t *testing.T) {
 	srv := testServer()
 	_, subID := createTestSubmission(t, srv)

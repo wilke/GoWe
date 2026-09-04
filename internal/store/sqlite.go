@@ -629,6 +629,14 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		whereClauses = append(whereClauses, "workflow_id = ?")
 		countArgs = append(countArgs, opts.WorkflowID)
 	}
+	if opts.WorkflowName != "" {
+		// Match submissions against every workflow ID ever registered under
+		// this name, not just the newest one — re-registering a workflow
+		// under the same name creates a new ID/row, and earlier submissions
+		// still reference the older IDs.
+		whereClauses = append(whereClauses, "workflow_id IN (SELECT id FROM workflows WHERE name = ?)")
+		countArgs = append(countArgs, opts.WorkflowName)
+	}
 	if opts.DateStart != "" {
 		whereClauses = append(whereClauses, "created_at >= ?")
 		countArgs = append(countArgs, opts.DateStart+"T00:00:00Z")
