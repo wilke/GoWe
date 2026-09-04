@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ func newSubmitCmd() *cobra.Command {
 	var debug bool
 	var workflowRef string
 	var workspaceURL string
+	var labelFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "submit [<workflow.cwl>]",
@@ -142,7 +144,13 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 			}
 
 			// 4. POST /api/v1/submissions
-			labels := map[string]string{}
+			labels, err := parseLabelFlags(labelFlags)
+			if err != nil {
+				return err
+			}
+			// Implicit labels from their own flags are applied last, so they
+			// win over any --label with the same key (worker_group, debug are
+			// reserved).
 			if workerGroup != "" {
 				labels["worker_group"] = workerGroup
 			}
@@ -196,7 +204,23 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 	cmd.Flags().StringVar(&outputDest, "output-destination", "", "Target URI for uploading outputs (e.g., ws:///user@bvbrc/home/results/)")
 	cmd.Flags().StringVar(&workflowRef, "workflow", "", "Submit using an already-registered workflow (by ID or name)")
 	cmd.Flags().StringVar(&workspaceURL, "workspace-url", defaultWorkspaceURL(), "BV-BRC Workspace service URL for --workspace-upload (or GOWE_WORKSPACE_URL env)")
+	cmd.Flags().StringArrayVar(&labelFlags, "label", nil, "Attach a label to the submission (repeatable, key=value); reserved keys worker_group/debug are set by their own flags")
 	return cmd
+}
+
+// parseLabelFlags parses repeatable --label key=value flags into a labels
+// map. Each entry must contain '=' with a non-empty key; the value may be
+// empty. Later entries with the same key overwrite earlier ones.
+func parseLabelFlags(raw []string) (map[string]string, error) {
+	labels := map[string]string{}
+	for _, entry := range raw {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || key == "" {
+			return nil, fmt.Errorf("invalid --label %q: expected key=value with a non-empty key", entry)
+		}
+		labels[key] = value
+	}
+	return labels, nil
 }
 
 // defaultWorkspaceURL returns the Workspace service URL, checking GOWE_WORKSPACE_URL first.
