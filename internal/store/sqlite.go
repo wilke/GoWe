@@ -2901,9 +2901,13 @@ func (s *SQLiteStore) GetOrCreateUser(ctx context.Context, username string, prov
 		LastLoginAt: now,
 	}
 
+	// Upsert: concurrent first requests for the same username race this
+	// insert (SELECT above saw no row for both). ON CONFLICT lets the loser
+	// land as a last_login touch instead of a UNIQUE-constraint error.
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO users (id, username, provider, role, created_at, last_login)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET last_login = excluded.last_login`,
 		user.ID, user.Username, user.Provider, user.Role,
 		user.CreatedAt.Unix(), user.LastLoginAt.Unix(),
 	)
@@ -2911,8 +2915,18 @@ func (s *SQLiteStore) GetOrCreateUser(ctx context.Context, username string, prov
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 
-	s.logger.Info("user created", "id", user.ID, "username", username, "provider", provider)
-	return user, nil
+	// Re-read so the caller gets the winning row (ID/role of the row that
+	// actually exists, whichever request created it).
+	existing, err := s.GetUser(ctx, username)
+	if err != nil {
+		return nil, fmt.Errorf("read user after upsert: %w", err)
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("user %s missing after upsert", username)
+	}
+
+	s.logger.Info("user created", "id", existing.ID, "username", username, "provider", provider)
+	return existing, nil
 }
 
 func (s *SQLiteStore) UpdateUser(ctx context.Context, user *model.User) error {
