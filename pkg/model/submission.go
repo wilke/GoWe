@@ -4,20 +4,26 @@ import "time"
 
 // Submission is a specific execution of a Workflow with concrete input values.
 type Submission struct {
-	ID            string            `json:"id"`
-	WorkflowID    string            `json:"workflow_id"`
-	WorkflowName  string            `json:"workflow_name"`
-	State         SubmissionState   `json:"state"`
-	Inputs        map[string]any    `json:"inputs"`
-	Outputs       map[string]any    `json:"outputs,omitempty"`
-	Error         *SubmissionError  `json:"error,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	SubmittedBy   string            `json:"submitted_by,omitempty"`
-	Tasks         []Task            `json:"tasks,omitempty"`
-	TaskSummary   TaskSummary       `json:"task_summary,omitempty"`   // Computed field, not stored
-	QueuePosition int               `json:"queue_position,omitempty"` // Computed field for pending submissions
-	CreatedAt     time.Time         `json:"created_at"`
-	CompletedAt   *time.Time        `json:"completed_at"`
+	ID           string          `json:"id"`
+	WorkflowID   string          `json:"workflow_id"`
+	WorkflowName string          `json:"workflow_name"`
+	State        SubmissionState `json:"state"`
+	Inputs       map[string]any  `json:"inputs"`
+	// SubmittedInputs is an immutable, verbatim copy of Inputs as it was at
+	// submission creation time, captured once by store.CreateSubmission.
+	// Inputs is mutated afterward (e.g. ws:// pre-staging rewrites locations
+	// to transient file:// paths); SubmittedInputs never is, so it always
+	// reflects exactly what the caller submitted.
+	SubmittedInputs map[string]any    `json:"submitted_inputs,omitempty"`
+	Outputs         map[string]any    `json:"outputs,omitempty"`
+	Error           *SubmissionError  `json:"error,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	SubmittedBy     string            `json:"submitted_by,omitempty"`
+	Tasks           []Task            `json:"tasks,omitempty"`
+	TaskSummary     TaskSummary       `json:"task_summary,omitempty"`   // Computed field, not stored
+	QueuePosition   int               `json:"queue_position,omitempty"` // Computed field for pending submissions
+	CreatedAt       time.Time         `json:"created_at"`
+	CompletedAt     *time.Time        `json:"completed_at"`
 
 	// Child submission linkage: if set, this submission was created by the
 	// scheduler to execute a sub-workflow step on behalf of a parent task.
