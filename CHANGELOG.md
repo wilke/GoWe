@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.18.0](https://github.com/wilke/GoWe/compare/v0.17.2...v0.18.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** tokens that fail signature verification are rejected with 401. Deployments without outbound access to the BV-BRC key servers can set `--insecure-skip-token-verify` to restore the previous behavior.
+* **worker,scheduler:** restore opt-in gate for BV-BRC token injection ([#229](https://github.com/wilke/GoWe/issues/229))
+
+### Features
+
+* **bvbrc,staging:** resolve wildcard-glob outputs and recursive ws:// directories; promote workspace staging to supported ([#223](https://github.com/wilke/GoWe/issues/223)) ([3025ad9](https://github.com/wilke/GoWe/commit/3025ad92445a32eab304c471b150bce6d8593a63))
+* **server:** opt-in --cors-origins with proper preflight; document the reverse-proxy browser story ([#231](https://github.com/wilke/GoWe/issues/231)) ([f6c84de](https://github.com/wilke/GoWe/commit/f6c84de732feee16e4d2b4ec05b3e553f542a64b))
+* **store,server,cli:** preserve as-submitted inputs; add gowe submit --label ([#242](https://github.com/wilke/GoWe/issues/242)) ([aad4cef](https://github.com/wilke/GoWe/commit/aad4cef7d2aaeb0f3658ae970df9d90ce2d7d40a))
+* **ui,server:** expandable sub-workflow trees, timing panel, and Grafana link ([#235](https://github.com/wilke/GoWe/issues/235)) ([706270b](https://github.com/wilke/GoWe/commit/706270be30dd9e8143b7b3b968dc643be3cf11bf))
+* **ui:** admin view — worker fleet, keys, output verification, redelivery, labels ([#234](https://github.com/wilke/GoWe/issues/234)) ([1d35eff](https://github.com/wilke/GoWe/commit/1d35eff7701ecf2b50b44dd2a8fc78f42f5d2299))
+
+
+### Bug Fixes
+
+* **scheduler:** stop hot-looping on orphaned step instances and missing workflows ([#232](https://github.com/wilke/GoWe/issues/232)) ([5e56b7f](https://github.com/wilke/GoWe/commit/5e56b7f32bd1756df47e80b5283546a2e09fa2c4))
+* **server,store:** submissions list workflow filter matches all versions of a name ([#241](https://github.com/wilke/GoWe/issues/241)) ([1cea960](https://github.com/wilke/GoWe/commit/1cea960f0921ba59611e37cdf945c84e3faeae71))
+* **server:** verify BV-BRC token signatures against pinned issuer keys ([#243](https://github.com/wilke/GoWe/issues/243)) ([a12f703](https://github.com/wilke/GoWe/commit/a12f7036c2cff893df3d5f3d937db9d0590e2ee0))
+* **ui:** guard resume/recompute task transitions with CAS and submission-state gates ([#233](https://github.com/wilke/GoWe/issues/233)) ([3e7d22c](https://github.com/wilke/GoWe/commit/3e7d22ca767a11f85e7831222c7ffeac87feada9))
+* **worker,scheduler:** restore opt-in gate for BV-BRC token injection ([#229](https://github.com/wilke/GoWe/issues/229)) ([3709601](https://github.com/wilke/GoWe/commit/3709601407c76923e9f59a817e5d2c1d3abf7c90))
+
 ## [0.17.2](https://github.com/wilke/GoWe/compare/v0.17.1...v0.17.2) (2026-09-02)
 
 
