@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/wilke/GoWe/compare/v0.18.0...v0.18.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **store:** upsert in GetOrCreateUser to survive concurrent first logins ([#245](https://github.com/wilke/GoWe/issues/245)) ([61d551f](https://github.com/wilke/GoWe/commit/61d551f693b35e1218ee8fab773967897ef5222d))
+
 ## [0.18.0](https://github.com/wilke/GoWe/compare/v0.17.2...v0.18.0) (2026-09-04)
 
 
