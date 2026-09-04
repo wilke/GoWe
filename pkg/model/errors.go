@@ -13,6 +13,11 @@ const (
 	ErrForbidden              ErrorCode = "FORBIDDEN"
 	ErrInternal               ErrorCode = "INTERNAL_ERROR"
 	ErrUnsupportedRequirement ErrorCode = "UNSUPPORTED_REQUIREMENT"
+	// ErrUnavailable marks a dependency outage (e.g. the provider-token
+	// key server is unreachable) that keeps authentication from being
+	// evaluated at all, as distinct from a token that was evaluated and
+	// rejected (ErrUnauthorized).
+	ErrUnavailable ErrorCode = "UNAVAILABLE"
 )
 
 // APIError is a structured error returned by the GoWe API.

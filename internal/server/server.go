@@ -23,28 +23,31 @@ import (
 
 // Server is the GoWe REST API server.
 type Server struct {
-	router           chi.Router
-	logger           *slog.Logger
-	config           config.ServerConfig
-	startTime        time.Time
-	parser           *parser.Parser
-	validator        *parser.Validator
-	store            store.Store
-	scheduler        scheduler.Scheduler
-	registry         *executor.Registry       // optional; used by dry-run to check executor availability
-	bvbrcCaller      bvbrc.RPCCaller          // optional; AppService caller, nil when no BV-BRC token
-	workspaceURL     string                   // optional; BV-BRC Workspace endpoint for the UI (empty = production)
-	uiUploadMaxSize  int64                    // optional; cap on UI workspace upload bodies (0 = ui default)
-	testApps         []map[string]any         // optional; static app list for testing without BV-BRC
-	ui               *ui.UI                   // UI handler for web interface
-	adminConfig      *AdminConfig             // optional; admin role configuration
-	anonConfig       *AnonymousConfig         // optional; anonymous access configuration
-	workerKeyConfig  *WorkerKeyConfig         // optional; static worker keys (file/env)
-	workerAuth       *WorkerKeyAuthenticator  // validates static + DB-backed worker keys
-	fileUploadConfig *FileUploadConfig        // optional; file upload proxy configuration
-	wsStager         *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
-	metrics          *metrics.Registry        // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
-	workflowNames    *workflowNameCache       // LRU backing workflowNameFor, the worker-report path's metric label lookup
+	router                chi.Router
+	logger                *slog.Logger
+	config                config.ServerConfig
+	startTime             time.Time
+	parser                *parser.Parser
+	validator             *parser.Validator
+	store                 store.Store
+	scheduler             scheduler.Scheduler
+	registry              *executor.Registry       // optional; used by dry-run to check executor availability
+	bvbrcCaller           bvbrc.RPCCaller          // optional; AppService caller, nil when no BV-BRC token
+	workspaceURL          string                   // optional; BV-BRC Workspace endpoint for the UI (empty = production)
+	uiUploadMaxSize       int64                    // optional; cap on UI workspace upload bodies (0 = ui default)
+	testApps              []map[string]any         // optional; static app list for testing without BV-BRC
+	ui                    *ui.UI                   // UI handler for web interface
+	adminConfig           *AdminConfig             // optional; admin role configuration
+	anonConfig            *AnonymousConfig         // optional; anonymous access configuration
+	workerKeyConfig       *WorkerKeyConfig         // optional; static worker keys (file/env)
+	workerAuth            *WorkerKeyAuthenticator  // validates static + DB-backed worker keys
+	tokenVerifier         *bvbrc.Verifier          // optional; verifies BV-BRC provider token signatures (nil = verification disabled)
+	allowUnverifiedMGRAST bool                     // allow the unverified X-MG-RAST-Token path even when tokenVerifier is set
+	authDenylist          *AuthDenylist            // optional; local username/token-id denylist checked after identity is established
+	fileUploadConfig      *FileUploadConfig        // optional; file upload proxy configuration
+	wsStager              *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+	metrics               *metrics.Registry        // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
+	workflowNames         *workflowNameCache       // LRU backing workflowNameFor, the worker-report path's metric label lookup
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -148,6 +151,36 @@ func WithAnonymousConfig(cfg *AnonymousConfig) Option {
 func WithWorkerKeyConfig(cfg *WorkerKeyConfig) Option {
 	return func(s *Server) {
 		s.workerKeyConfig = cfg
+	}
+}
+
+// WithTokenVerifier enables cryptographic verification of BV-BRC provider
+// token signatures against a pinned issuer allowlist. Passing nil (or
+// omitting this option) disables verification and preserves the previous
+// behavior of trusting the un= field as claimed.
+func WithTokenVerifier(v *bvbrc.Verifier) Option {
+	return func(s *Server) {
+		s.tokenVerifier = v
+	}
+}
+
+// WithAllowUnverifiedMGRAST permits the X-MG-RAST-Token header path — which
+// establishes identity with no signature check — even when a token
+// verifier is configured. Has no effect when no verifier is set (that path
+// is already unverified in that case).
+func WithAllowUnverifiedMGRAST(allow bool) Option {
+	return func(s *Server) {
+		s.allowUnverifiedMGRAST = allow
+	}
+}
+
+// WithAuthDenylist sets a local, immediate-effect denylist of usernames and
+// provider token IDs. Requests from a denylisted user or token are
+// rejected after identity is established, whether or not the token
+// signature was verified.
+func WithAuthDenylist(users, tokenIDs []string) Option {
+	return func(s *Server) {
+		s.authDenylist = NewAuthDenylist(users, tokenIDs)
 	}
 }
 
@@ -300,7 +333,7 @@ func (s *Server) routes() {
 
 		// Protected endpoints (user auth required)
 		r.Group(func(r chi.Router) {
-			r.Use(apiAuthMiddleware(s.store, s.adminConfig, s.anonConfig, s.logger))
+			r.Use(apiAuthMiddleware(s.store, s.adminConfig, s.anonConfig, s.logger, s.tokenVerifier, s.allowUnverifiedMGRAST, s.authDenylist))
 
 			// Workflows
 			r.Route("/workflows", func(r chi.Router) {

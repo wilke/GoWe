@@ -207,6 +207,82 @@ location / {
 
 Running with `--secure-cookies` but neither native TLS nor `--behind-proxy` logs a warning: browsers will refuse to send `Secure` cookies over plain HTTP, breaking login.
 
+## Provider Token Verification
+
+`gowe-server` cryptographically verifies inbound BV-BRC provider token signatures (RSA
+PKCS#1 v1.5 over SHA-1) against a hard-pinned set of issuer keys before trusting the
+identity a token claims. This is **on by default**.
+
+**Pinned issuers.** Only a token whose `SigningSubject` field matches one of these four
+canonical BV-BRC key-server URLs is ever checked — the issuer is never taken from the
+token itself:
+
+- `https://user.patricbrc.org/public_key`
+- `https://user.bv-brc.org/public_key`
+- `https://user.alpha.patricbrc.org/public_key`
+- `https://user.beta.patricbrc.org/public_key`
+
+The verifying key for each is fetched over HTTPS, cached for 24h, and refetched (rate
+limited to once per minute per issuer) on a signature failure to accommodate key
+rotation.
+
+**Key-server outage semantics.** If a pinned key server is unreachable and no cached key
+is available, requests using that issuer fail with `503` (`UNAVAILABLE`) rather than
+`401` — this is a dependency outage, not a rejected credential, and is meant to be
+distinguishable from mass credential failure in monitoring. If a cached key exists but
+has passed its TTL and a refetch fails, the server logs a warning and verifies against
+the stale cached key rather than failing requests — a transient outage during the
+refetch window does not itself cause an outage of authentication.
+
+**Air-gapped / dev escape hatch.** Deployments with no outbound access to the BV-BRC key
+servers can disable verification:
+
+```bash
+gowe-server ... --insecure-skip-token-verify
+```
+
+This restores the previous behavior of trusting a token's `un=` field as claimed, with
+no signature check. Use only where the deployment cannot reach the pinned key servers,
+or for local/testing purposes.
+
+**Local denylist.** `--auth-denylist <file>` rejects specific usernames or provider
+token IDs immediately, independent of token expiry — useful for revoking access to a
+compromised account or token before its natural expiry:
+
+```bash
+gowe-server ... --auth-denylist /scout/wf/gowe/auth-denylist.txt
+```
+
+File format, one entry per line (`#` comments and blank lines ignored):
+
+```
+# Compromised account, revoked ahead of expiry
+user:alice@patricbrc.org
+tokenid:11111111-1111-1111-1111-111111111111
+```
+
+The denylist is checked after identity is established and applies whether or not the
+token's signature was verified.
+
+**MG-RAST gating.** The `X-MG-RAST-Token` header establishes identity with no signature
+check (MG-RAST does not currently offer a verifiable token format). When provider token
+verification is enabled (the default), that header is rejected with `401` unless
+explicitly re-enabled:
+
+```bash
+gowe-server ... --allow-unverified-mgrast
+```
+
+**Known limits, by design of the token format:**
+
+- **No revocation before expiry**, beyond the local `--auth-denylist`. BV-BRC tokens
+  carry no introspection or revocation endpoint; a compromised token remains valid at
+  the platform level until it expires unless you add it to the denylist.
+- **No audience claim.** A BV-BRC token is not scoped to GoWe specifically — the same
+  token is equally valid at any BV-BRC-integrated service. Verification here confirms
+  the token was issued by a pinned BV-BRC issuer and is unmodified, not that it was
+  issued for use with this server.
+
 ## Browser Clients & CORS
 
 `/api/v1` accepts a bearer token via `Authorization`. GoWe's own web UI (mounted at `/`) is

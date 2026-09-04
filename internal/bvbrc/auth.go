@@ -14,12 +14,19 @@ import (
 type TokenInfo struct {
 	Raw      string
 	Username string
+	TokenID  string
 	Expiry   time.Time
 }
 
-// ParseToken extracts username and expiry from a pipe-delimited BV-BRC token.
-// Format: un=<user>|tokenid=<uuid>|expiry=<unix>|...
+// ParseToken extracts username, token ID, and expiry from a pipe-delimited
+// BV-BRC token. Format: un=<user>|tokenid=<uuid>|expiry=<unix>|...
 // Returns a zero-value TokenInfo for empty or malformed tokens.
+//
+// ParseToken performs no signature verification; it is used for the
+// unverified/legacy identity path (e.g. X-MG-RAST-Token) and to populate
+// fields, such as TokenID, that a denylist check needs regardless of
+// whether verification is enabled. See Verifier for signature-checked
+// token handling.
 func ParseToken(raw string) TokenInfo {
 	info := TokenInfo{Raw: strings.TrimSpace(raw)}
 	for _, field := range strings.Split(info.Raw, "|") {
@@ -30,6 +37,8 @@ func ParseToken(raw string) TokenInfo {
 		switch k {
 		case "un":
 			info.Username = v
+		case "tokenid":
+			info.TokenID = v
 		case "expiry":
 			if ts, err := strconv.ParseInt(v, 10, 64); err == nil {
 				info.Expiry = time.Unix(ts, 0)

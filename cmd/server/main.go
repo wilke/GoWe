@@ -74,6 +74,9 @@ func main() {
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
 	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
+	insecureSkipTokenVerify := flag.Bool("insecure-skip-token-verify", false, "Disable cryptographic verification of provider token signatures (testing/air-gapped only); identities are then trusted as claimed")
+	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
+	authDenylistFile := flag.String("auth-denylist", "", "Path to a file of denylisted users/tokens, one entry per line as 'user:<username>' or 'tokenid:<uuid>' ('#' comments allowed); empty disables the denylist")
 
 	// Provider-token encryption at rest
 	tokenKeyFile := flag.String("token-key-file", "", "Path to a file holding the token-encryption key (base64 or hex, 32 bytes); overrides GOWE_TOKEN_KEY")
@@ -297,6 +300,33 @@ func main() {
 		}
 		serverOpts = append(serverOpts, server.WithAnonymousConfig(anonConfig))
 		logger.Info("anonymous access enabled", "allowed_executors", allowedExecutors)
+	}
+
+	// Configure provider token signature verification. On by default:
+	// inbound BV-BRC tokens are cryptographically verified against a
+	// hard-pinned set of issuer keys before any identity is trusted.
+	if *insecureSkipTokenVerify {
+		logger.Warn("provider token signature verification is DISABLED (--insecure-skip-token-verify); identities are trusted as claimed")
+	} else {
+		verifier := bvbrc.NewVerifier(bvbrc.WithLogger(logger))
+		serverOpts = append(serverOpts, server.WithTokenVerifier(verifier))
+	}
+	if *allowUnverifiedMGRAST {
+		serverOpts = append(serverOpts, server.WithAllowUnverifiedMGRAST(true))
+		logger.Warn("X-MG-RAST-Token authentication is unverified and enabled (--allow-unverified-mgrast)")
+	}
+
+	// Configure the local auth denylist.
+	if *authDenylistFile != "" {
+		denyUsers, denyTokenIDs, err := server.LoadAuthDenylistFile(*authDenylistFile)
+		if err != nil {
+			// Fail closed: a configured denylist we cannot load must not be
+			// silently skipped.
+			fmt.Fprintf(os.Stderr, "auth denylist configuration: %v\n", err)
+			os.Exit(1)
+		}
+		serverOpts = append(serverOpts, server.WithAuthDenylist(denyUsers, denyTokenIDs))
+		logger.Info("auth denylist loaded", "users", len(denyUsers), "tokenids", len(denyTokenIDs))
 	}
 
 	// Configure worker key authentication.

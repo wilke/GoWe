@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -55,11 +56,23 @@ func (c *AnonymousConfig) IsExecutorAllowed(execType model.ExecutorType) bool {
 
 // apiAuthMiddleware validates tokens and manages user accounts.
 // It supports multiple auth providers (BV-BRC, MG-RAST) and anonymous access.
+//
+// verifier, when non-nil, enables cryptographic verification of BV-BRC
+// provider token signatures against a pinned issuer allowlist; nil disables
+// verification and preserves the previous (un-verified) behavior. When
+// verification is enabled, the X-MG-RAST-Token header path — which
+// establishes identity with no signature check — is rejected unless
+// allowUnverifiedMGRAST is set. denylist, when non-nil, rejects requests
+// from specific usernames or token IDs after identity is established,
+// whether or not the token was cryptographically verified.
 func apiAuthMiddleware(
 	st store.Store,
 	adminConfig *AdminConfig,
 	anonConfig *AnonymousConfig,
 	logger *slog.Logger,
+	verifier *bvbrc.Verifier,
+	allowUnverifiedMGRAST bool,
+	denylist *AuthDenylist,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +91,14 @@ func apiAuthMiddleware(
 					return
 				}
 
+				if denylist.Denied(model.AnonymousUser.Username, "") {
+					respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+						Code:    model.ErrUnauthorized,
+						Message: "invalid token format",
+					})
+					return
+				}
+
 				// Use anonymous user.
 				userCtx := &UserContext{
 					User:     model.AnonymousUser,
@@ -88,12 +109,58 @@ func apiAuthMiddleware(
 				return
 			}
 
-			// Parse and validate token based on provider.
-			var tokenInfo bvbrc.TokenInfo
+			// MG-RAST establishes identity with no signature verification.
+			// Gate that path behind an explicit opt-in once verification is
+			// enabled, so enabling the verifier doesn't leave an unverified
+			// side door open.
+			if provider == model.ProviderMGRAST && verifier != nil && !allowUnverifiedMGRAST {
+				respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+					Code:    model.ErrUnauthorized,
+					Message: "unverified MG-RAST authentication is disabled",
+				})
+				return
+			}
+
+			var username, tokenID string
+			var expiry time.Time
+
 			switch provider {
-			case model.ProviderBVBRC, model.ProviderMGRAST:
-				// Both use the same pipe-delimited format.
-				tokenInfo = bvbrc.ParseToken(token)
+			case model.ProviderBVBRC:
+				if verifier != nil {
+					verified, err := verifier.Verify(r.Context(), token)
+					if err != nil {
+						switch {
+						case errors.Is(err, bvbrc.ErrTokenInvalid):
+							respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+								Code:    model.ErrUnauthorized,
+								Message: "invalid token format",
+							})
+						case errors.Is(err, bvbrc.ErrKeyUnavailable):
+							logger.Error("token verification unavailable", "error", err)
+							respondError(w, reqID, http.StatusServiceUnavailable, &model.APIError{
+								Code:    model.ErrUnavailable,
+								Message: "authentication temporarily unavailable",
+							})
+						default:
+							logger.Error("token verification failed", "error", err)
+							respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
+								Code:    model.ErrInternal,
+								Message: "authentication error",
+							})
+						}
+						return
+					}
+					username, tokenID, expiry = verified.Username, verified.TokenID, verified.Expiry
+				} else {
+					// Verification disabled: preserve prior behavior.
+					tokenInfo := bvbrc.ParseToken(token)
+					username, tokenID, expiry = tokenInfo.Username, tokenInfo.TokenID, tokenInfo.Expiry
+				}
+			case model.ProviderMGRAST:
+				// Unverified path (reached only when verifier is nil, or
+				// verifier is set and allowUnverifiedMGRAST is true).
+				tokenInfo := bvbrc.ParseToken(token)
+				username, tokenID, expiry = tokenInfo.Username, tokenInfo.TokenID, tokenInfo.Expiry
 			default:
 				respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
 					Code:    model.ErrUnauthorized,
@@ -103,7 +170,7 @@ func apiAuthMiddleware(
 			}
 
 			// Check token validity.
-			if tokenInfo.Username == "" {
+			if username == "" {
 				respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
 					Code:    model.ErrUnauthorized,
 					Message: "invalid token format",
@@ -111,7 +178,7 @@ func apiAuthMiddleware(
 				return
 			}
 
-			if tokenInfo.IsExpired() {
+			if !expiry.IsZero() && time.Now().After(expiry) {
 				respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
 					Code:    model.ErrUnauthorized,
 					Message: "token expired",
@@ -119,10 +186,18 @@ func apiAuthMiddleware(
 				return
 			}
 
+			if denylist.Denied(username, tokenID) {
+				respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+					Code:    model.ErrUnauthorized,
+					Message: "invalid token format",
+				})
+				return
+			}
+
 			// Lookup or create GoWe user account.
-			user, err := st.GetOrCreateUser(r.Context(), tokenInfo.Username, provider)
+			user, err := st.GetOrCreateUser(r.Context(), username, provider)
 			if err != nil {
-				logger.Error("user lookup/create failed", "username", tokenInfo.Username, "error", err)
+				logger.Error("user lookup/create failed", "username", username, "error", err)
 				respondError(w, reqID, http.StatusInternalServerError, &model.APIError{
 					Code:    model.ErrInternal,
 					Message: "authentication error",
@@ -131,10 +206,10 @@ func apiAuthMiddleware(
 			}
 
 			// Check and update admin status.
-			if adminConfig != nil && adminConfig.IsAdmin(tokenInfo.Username) && user.Role != model.RoleAdmin {
+			if adminConfig != nil && adminConfig.IsAdmin(username) && user.Role != model.RoleAdmin {
 				user.Role = model.RoleAdmin
 				if err := st.UpdateUser(r.Context(), user); err != nil {
-					logger.Warn("failed to update user role", "username", tokenInfo.Username, "error", err)
+					logger.Warn("failed to update user role", "username", username, "error", err)
 				}
 			}
 
@@ -143,7 +218,7 @@ func apiAuthMiddleware(
 				User:     user,
 				Token:    token,
 				Provider: provider,
-				Expiry:   tokenInfo.Expiry,
+				Expiry:   expiry,
 			}
 
 			ctx := context.WithValue(r.Context(), ctxKeyUserAuth, userCtx)
