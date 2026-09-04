@@ -354,6 +354,14 @@ var alterStatements = []struct {
 		column:   "error",
 		alterSQL: "ALTER TABLE step_instances ADD COLUMN error TEXT",
 	},
+	// Immutable as-submitted inputs snapshot (#239). Nullable: NULL means no
+	// snapshot was captured (pre-#239 row); written once by CreateSubmission,
+	// never updated afterward.
+	{
+		table:    "submissions",
+		column:   "submitted_inputs",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN submitted_inputs TEXT",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

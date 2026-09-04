@@ -457,6 +457,21 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 	if err != nil {
 		return fmt.Errorf("marshal inputs: %w", err)
 	}
+
+	// submitted_inputs is an immutable snapshot captured ONCE, here, at
+	// creation time. It defaults to a verbatim copy of Inputs unless the
+	// caller has already set SubmittedInputs explicitly (e.g. a test
+	// constructing a submission directly). No other write path may touch
+	// this column — see UpdateSubmissionInputs, which rewrites Inputs alone.
+	submittedInputs := sub.SubmittedInputs
+	if submittedInputs == nil {
+		submittedInputs = sub.Inputs
+	}
+	submittedInputsJSON, err := json.Marshal(submittedInputs)
+	if err != nil {
+		return fmt.Errorf("marshal submitted_inputs: %w", err)
+	}
+
 	outputsJSON, err := json.Marshal(sub.Outputs)
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
@@ -487,8 +502,8 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state,
-		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
@@ -496,6 +511,7 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 		sub.OutputDestination, sub.OutputState,
 		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
 		formatTimePtr(sub.PoststageStartedAt), formatTimePtr(sub.PoststageCompletedAt),
+		string(submittedInputsJSON),
 	)
 	return err
 }
@@ -536,17 +552,19 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var completedAt *string
 	var tokenExpiry int64
 	var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
+	var submittedInputsJSON *string
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state,
-		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
 		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON,
 		&sub.OutputDestination, &sub.OutputState,
-		&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt)
+		&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt,
+		&submittedInputsJSON)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -567,6 +585,13 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	}
 	if err := unmarshalJSON(labelsJSON, &sub.Labels, "labels"); err != nil {
 		return nil, err
+	}
+	// submitted_inputs is nullable: NULL means no snapshot (pre-#239 row),
+	// scanned as nil and left as a nil map, no error.
+	if submittedInputsJSON != nil {
+		if err := unmarshalJSON(*submittedInputsJSON, &sub.SubmittedInputs, "submitted_inputs"); err != nil {
+			return nil, err
+		}
 	}
 	if errorJSON != "" {
 		var subErr model.SubmissionError
@@ -628,6 +653,14 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	if opts.WorkflowID != "" {
 		whereClauses = append(whereClauses, "workflow_id = ?")
 		countArgs = append(countArgs, opts.WorkflowID)
+	}
+	if opts.WorkflowName != "" {
+		// Match submissions against every workflow ID ever registered under
+		// this name, not just the newest one — re-registering a workflow
+		// under the same name creates a new ID/row, and earlier submissions
+		// still reference the older IDs.
+		whereClauses = append(whereClauses, "workflow_id IN (SELECT id FROM workflows WHERE name = ?)")
+		countArgs = append(countArgs, opts.WorkflowName)
 	}
 	if opts.DateStart != "" {
 		whereClauses = append(whereClauses, "created_at >= ?")

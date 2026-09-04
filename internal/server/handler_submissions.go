@@ -174,9 +174,18 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if opts.WorkflowID != "" {
-		// Resolve workflow name to ID: try by ID first, fall back to name.
-		if wf, err := s.resolveWorkflow(r.Context(), opts.WorkflowID); err == nil && wf != nil {
+		// workflow_id may be an exact workflow ID (single version — keep
+		// current single-version semantics) or a workflow name (which is not
+		// unique: re-registering under the same name creates a new ID/row).
+		// Resolve by ID only; if that fails, filter by name so submissions
+		// across every version sharing that name are returned. Do not use
+		// resolveWorkflow/GetWorkflowByName here — that resolves a name to a
+		// single newest ID and would silently drop older submissions.
+		if wf, err := s.store.GetWorkflow(r.Context(), opts.WorkflowID); err == nil && wf != nil {
 			opts.WorkflowID = wf.ID
+		} else {
+			opts.WorkflowName = opts.WorkflowID
+			opts.WorkflowID = ""
 		}
 	}
 
