@@ -429,6 +429,11 @@ func (s *Server) routes() {
 				})
 			})
 
+			// Fleet roster: slim, read-only worker status for any signed-in user
+			// (no worker key required). Distinct from GET /workers, which sits
+			// behind workerAuthMiddleware and returns the full record.
+			r.Get("/fleet", s.handleFleetRoster)
+
 			// Apps (BV-BRC proxy)
 			r.Route("/apps", func(r chi.Router) {
 				r.Get("/", s.handleListApps)

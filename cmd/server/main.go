@@ -358,6 +358,8 @@ func main() {
 	if workerKeyConfig.IsEnabled() {
 		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
 		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
+	} else if workerAPIIsKeyless(context.Background(), st, workerKeyConfig) {
+		logger.Warn("worker API (/api/v1/workers) is running WITHOUT authentication: any client can register workers and receive task checkouts; set --worker-keys to require a worker key")
 	}
 
 	// Configure file upload proxy.
@@ -600,6 +602,26 @@ func normalizeBasePath(p string) (string, error) {
 		return "", fmt.Errorf("must not be just \"/\" (omit --base-path/GOWE_BASE_PATH instead)")
 	}
 	return trimmed, nil
+}
+
+// workerAPIIsKeyless reports whether the worker API (/api/v1/workers/*, guarded
+// by workerAuthMiddleware) would run with no authentication: no static worker
+// keys (from --worker-keys/GOWE_WORKER_KEYS) and no DB-backed keys minted via
+// the admin API. Extracted for testability. A store lookup failure is treated
+// as "unknown" (not keyless) rather than triggering a possibly-wrong warning —
+// callers elsewhere already fail closed on genuine key-config load errors.
+func workerAPIIsKeyless(ctx context.Context, st store.Store, cfg *server.WorkerKeyConfig) bool {
+	if cfg.IsEnabled() {
+		return false
+	}
+	if st == nil {
+		return true
+	}
+	n, err := st.CountWorkerKeys(ctx)
+	if err != nil {
+		return false
+	}
+	return n == 0
 }
 
 // loadTokenCipher builds the at-rest token cipher from --token-key-file (if set)
