@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.0](https://github.com/wilke/GoWe/compare/v0.18.1...v0.19.0) (2026-09-09)
+
+
+### Features
+
+* **server,ui:** --base-path to mount the web UI behind a reverse-proxy path prefix ([#253](https://github.com/wilke/GoWe/issues/253)) ([df7e8e8](https://github.com/wilke/GoWe/commit/df7e8e87543e9ae510efc5d4d469a835ed34e839))
+* **server:** user-authenticated fleet roster endpoint; warn when worker API is keyless ([#256](https://github.com/wilke/GoWe/issues/256)) ([0f7342e](https://github.com/wilke/GoWe/commit/0f7342ee2c65d44a637d39e5ac20b00102066be1))
+
 ## [0.18.1](https://github.com/wilke/GoWe/compare/v0.18.0...v0.18.1) (2026-09-04)
 
 
