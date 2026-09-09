@@ -67,13 +67,13 @@ func (ui *UI) HandleAdminWorkerKeyCreate(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			qv := url.Values{}
 			qv.Set("error", "invalid expiry date")
-			http.Redirect(w, r, "/admin/worker-keys?"+qv.Encode(), http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/admin/worker-keys?"+qv.Encode()), http.StatusSeeOther)
 			return
 		}
 		if !t.After(time.Now()) {
 			qv := url.Values{}
 			qv.Set("error", "expiry must be in the future")
-			http.Redirect(w, r, "/admin/worker-keys?"+qv.Encode(), http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/admin/worker-keys?"+qv.Encode()), http.StatusSeeOther)
 			return
 		}
 		expiresAt = &t

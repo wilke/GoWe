@@ -64,6 +64,15 @@ type UI struct {
 	// derives it per-request from the connection's local address; tests set
 	// this to an httptest.Server URL instead.
 	apiBaseURL string
+
+	// basePath mounts the UI under this path prefix (e.g. "/gowe") behind a
+	// reverse proxy. Empty (the default) is root-mounted, byte-identical to
+	// pre-#250 behavior. Already normalized by the caller (leading "/", no
+	// trailing "/", never just "/") — see cmd/server's normalizeBasePath.
+	// Every URL, redirect, and session-cookie path the UI emits goes
+	// through href (or the "base" template func) so it lands under this
+	// prefix when set.
+	basePath string
 }
 
 // Config holds UI configuration.
@@ -87,6 +96,11 @@ type Config struct {
 	// GrafanaURL is an external link to a Grafana instance, rendered in the
 	// nav/header when non-empty (target _blank). Empty hides the link.
 	GrafanaURL string
+	// BasePath mounts the UI under this path prefix behind a reverse proxy.
+	// Empty (the default) is root-mounted, byte-identical to pre-#250
+	// behavior. Must already be normalized — see cmd/server's
+	// normalizeBasePath (leading "/", no trailing "/", never just "/").
+	BasePath string
 }
 
 // DefaultUploadMaxSize is the workspace upload cap when none is configured.
@@ -112,7 +126,18 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		workspaceURL:        workspaceURL,
 		uploadMaxSize:       uploadMaxSize,
 		grafanaURL:          cfg.GrafanaURL,
+		basePath:            cfg.BasePath,
 	}
+}
+
+// href prepends the configured base path (empty when unset) to a
+// root-absolute path, e.g. href("/login") -> "/gowe/login" when mounted
+// under "/gowe", or "/login" unchanged when unset. Every redirect and
+// cookie path the UI emits goes through this (or the equivalent "base"
+// template func for HTML emitted from the template constants) so it lands
+// under the prefix when one is configured.
+func (ui *UI) href(p string) string {
+	return ui.basePath + p
 }
 
 // resolveSecureCookie decides whether a session cookie should carry the Secure
@@ -161,7 +186,7 @@ func (ui *UI) WithMetrics(m *metrics.Registry) {
 func (ui *UI) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// If already logged in, redirect to dashboard.
 	if sess, _ := ui.sessions.GetSessionFromRequest(r); sess != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/"), http.StatusSeeOther)
 		return
 	}
 
@@ -175,7 +200,7 @@ func (ui *UI) HandleLogin(w http.ResponseWriter, r *http.Request) {
 // HandleLoginPost processes the login form.
 func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/login?error=Invalid+request", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Invalid+request"), http.StatusSeeOther)
 		return
 	}
 
@@ -183,7 +208,7 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 
 	if username == "" || password == "" {
-		http.Redirect(w, r, "/login?error=Username+and+password+required", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Username+and+password+required"), http.StatusSeeOther)
 		return
 	}
 
@@ -191,7 +216,7 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	token, err := ui.authenticateBVBRC(r.Context(), username, password)
 	if err != nil {
 		ui.logger.Warn("login failed", "username", username, "error", err)
-		http.Redirect(w, r, "/login?error=Invalid+credentials", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Invalid+credentials"), http.StatusSeeOther)
 		return
 	}
 
@@ -214,15 +239,15 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	sess, err := ui.sessions.CreateSession(r.Context(), sessionUsername, sessionUsername, string(role), token, tokenInfo.Expiry)
 	if err != nil {
 		ui.logger.Error("create session failed", "error", err)
-		http.Redirect(w, r, "/login?error=Session+creation+failed", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Session+creation+failed"), http.StatusSeeOther)
 		return
 	}
 
 	// Set session cookie.
-	SetSessionCookie(w, sess, ui.secureCookie(r))
+	SetSessionCookie(w, sess, ui.secureCookie(r), ui.basePath)
 
 	ui.logger.Info("user logged in", "username", username, "session", sess.ID)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, ui.href("/"), http.StatusSeeOther)
 }
 
 // HandleLogout clears the session and redirects to login.
@@ -233,8 +258,8 @@ func (ui *UI) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		ui.logger.Info("user logged out", "username", sess.Username, "session", sess.ID)
 	}
-	ClearSessionCookie(w)
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	ClearSessionCookie(w, ui.basePath)
+	http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 }
 
 // HandleDashboard renders the main dashboard.
@@ -668,19 +693,19 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/submissions/new?error=Invalid+request", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?error=Invalid+request"), http.StatusSeeOther)
 		return
 	}
 
 	workflowID := r.FormValue("workflow_id")
 	if workflowID == "" {
-		http.Redirect(w, r, "/submissions/new?error=Workflow+is+required", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?error=Workflow+is+required"), http.StatusSeeOther)
 		return
 	}
 
 	wf, err := ui.store.GetWorkflow(r.Context(), workflowID)
 	if err != nil || wf == nil {
-		http.Redirect(w, r, "/submissions/new?error=Workflow+not+found", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?error=Workflow+not+found"), http.StatusSeeOther)
 		return
 	}
 
@@ -751,7 +776,7 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 
 	if err := ui.store.CreateSubmission(r.Context(), sub); err != nil {
 		ui.logger.Error("create submission failed", "error", err)
-		http.Redirect(w, r, "/submissions/new?workflow_id="+workflowID+"&error=Failed+to+create+submission", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+workflowID+"&error=Failed+to+create+submission"), http.StatusSeeOther)
 		return
 	}
 
@@ -770,12 +795,12 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	if err := ui.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {
 		ui.logger.Error("batch create step instances failed", "error", err, "submission_id", sub.ID)
 		// Submission with zero steps is an orphan the scheduler can't progress — treat as hard failure.
-		http.Redirect(w, r, "/submissions/new?workflow_id="+workflowID+"&error=Failed+to+initialize+submission", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+workflowID+"&error=Failed+to+initialize+submission"), http.StatusSeeOther)
 		return
 	}
 
 	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)
-	http.Redirect(w, r, "/submissions/"+sub.ID, http.StatusSeeOther)
+	http.Redirect(w, r, ui.href("/submissions/"+sub.ID), http.StatusSeeOther)
 }
 
 // HandleSubmissionCancel cancels a running submission (HTMX).
@@ -817,7 +842,7 @@ func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect to refresh the page.
-	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -856,7 +881,7 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect to the submission list after deletion.
-	w.Header().Set("HX-Redirect", "/submissions")
+	w.Header().Set("HX-Redirect", ui.href("/submissions"))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1045,7 +1070,7 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("submission resumed", "id", id, "requeued", requeuedCount, "skipped", skippedCount)
-	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
 	// HTMX discards the body when HX-Redirect is set (it drives a full-page
 	// navigation instead), so this is purely for API/test observability of
@@ -1116,7 +1141,7 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount, "skipped", skippedCount)
-	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
 	// HTMX discards the body when HX-Redirect is set (it drives a full-page
 	// navigation instead), so this is purely for API/test observability of
@@ -1193,7 +1218,7 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("task recomputed", "task_id", taskID, "submission_id", subID)
-	w.Header().Set("HX-Redirect", "/submissions/"+subID)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+subID))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1296,7 +1321,7 @@ func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("purged offline workers via UI", "count", count)
-	w.Header().Set("HX-Redirect", "/workers")
+	w.Header().Set("HX-Redirect", ui.href("/workers"))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1457,7 +1482,7 @@ func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.FormValue("key"))
 	value := strings.TrimSpace(r.FormValue("value"))
 	if key == "" || value == "" {
-		http.Redirect(w, r, "/admin/labels?error=Key+and+value+are+required", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/admin/labels?error=Key+and+value+are+required"), http.StatusSeeOther)
 		return
 	}
 
@@ -1474,14 +1499,14 @@ func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			qv := url.Values{}
 			qv.Set("error", fmt.Sprintf("Entry already exists for %s:%s", key, value))
-			http.Redirect(w, r, "/admin/labels?"+qv.Encode(), http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/admin/labels?"+qv.Encode()), http.StatusSeeOther)
 			return
 		}
 		ui.renderError(w, "Failed to create label", err)
 		return
 	}
 
-	http.Redirect(w, r, "/admin/labels", http.StatusSeeOther)
+	http.Redirect(w, r, ui.href("/admin/labels"), http.StatusSeeOther)
 }
 
 // HandleAdminLabelDelete deletes a CV entry (HTMX DELETE).
@@ -1809,7 +1834,7 @@ func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
 	client, err := ui.workspaceClient(sess)
 	if err != nil {
 		// The browser page needs a BV-BRC login; send the user there.
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 		return
 	}
 
@@ -1982,6 +2007,9 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 	if _, ok := data["GrafanaURL"]; !ok {
 		data["GrafanaURL"] = ui.grafanaURL
 	}
+	if _, ok := data["BasePath"]; !ok {
+		data["BasePath"] = ui.basePath
+	}
 
 	var buf bytes.Buffer
 	if err := renderTemplate(&buf, template, data); err != nil {
@@ -1999,6 +2027,10 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 // templates.go for the naming convention.
 func (ui *UI) renderFragment(w http.ResponseWriter, template string, data map[string]any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if _, ok := data["BasePath"]; !ok {
+		data["BasePath"] = ui.basePath
+	}
 
 	var buf bytes.Buffer
 	if err := renderFragment(&buf, template, data); err != nil {

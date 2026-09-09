@@ -52,6 +52,7 @@ func main() {
 	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Server sits behind a trusted TLS-terminating proxy: force Secure cookies and emit HSTS (enable only when the public leg is HTTPS)")
 	flag.StringVar(&cfg.GrafanaURL, "grafana-url", cfg.GrafanaURL, "External Grafana URL, linked from the web UI nav (e.g. the GoWe Overview dashboard fed by --metrics-addr); empty hides the link")
 	corsOrigins := flag.String("cors-origins", "", "Comma-separated list of exact browser origins allowed to call /api/v1 cross-origin (e.g. https://app.example.com); empty disables CORS entirely (default: no CORS headers, OPTIONS 405s as before). Prefer a same-origin reverse proxy that injects the token server-side over this flag for browser clients — see docs/PRODUCTION.md")
+	basePath := flag.String("base-path", "", "Mount the web UI and API under this path prefix (e.g. /gowe) behind a path-preserving reverse proxy; also read from GOWE_BASE_PATH (flag wins). Must start with / and must not be exactly /; root paths keep working unchanged for workers/CLI/API clients")
 
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
@@ -140,6 +141,22 @@ func main() {
 		// means browsers will refuse to send the cookie over plain HTTP,
 		// breaking sessions. Warn so misconfiguration is visible.
 		logger.Warn("--secure-cookies is set without native TLS or --behind-proxy; session cookies will not be sent over plain HTTP")
+	}
+
+	// --base-path (or GOWE_BASE_PATH) mounts the web UI/API under a path
+	// prefix behind a path-preserving reverse proxy. Empty (the default)
+	// preserves today's root-mounted behavior exactly.
+	rawBasePath := *basePath
+	if rawBasePath == "" {
+		rawBasePath = os.Getenv("GOWE_BASE_PATH")
+	}
+	normalizedBasePath, err := normalizeBasePath(rawBasePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--base-path: %v\n", err)
+		os.Exit(1)
+	}
+	if normalizedBasePath != "" {
+		logger.Info("web UI/API mounted under base path", "base_path", normalizedBasePath)
 	}
 
 	// CORS is opt-in: a token-issuing API must not become browser-reachable
@@ -260,6 +277,7 @@ func main() {
 		server.WithWorkspaceURL(*wsStagingURL),
 		server.WithUIUploadMaxSize(*uploadMaxSize),
 		server.WithMetrics(metricsReg),
+		server.WithBasePath(normalizedBasePath),
 	}
 
 	// Configure admin role assignment.
@@ -562,6 +580,26 @@ func withHSTS(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// normalizeBasePath validates and normalizes a --base-path/GOWE_BASE_PATH
+// value. Empty is unset (root-mounted, today's behavior). Otherwise the
+// value must start with "/"; any trailing "/" is trimmed; and the trimmed
+// result must not be exactly "/" (that's just the root, i.e. unset) — both
+// are rejected as configuration errors so a typo fails loudly at startup
+// rather than silently mis-mounting the UI.
+func normalizeBasePath(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("must start with \"/\", got %q", p)
+	}
+	trimmed := strings.TrimRight(p, "/")
+	if trimmed == "" {
+		return "", fmt.Errorf("must not be just \"/\" (omit --base-path/GOWE_BASE_PATH instead)")
+	}
+	return trimmed, nil
 }
 
 // loadTokenCipher builds the at-rest token cipher from --token-key-file (if set)

@@ -1,5 +1,13 @@
 // GoWe UI JavaScript
 
+// GOWE_BASE_PATH is set by the layout template (empty string when the
+// server is root-mounted) so this static asset's own fetch() calls land
+// under a reverse-proxy prefix too — a root-absolute fetch('/api/...')
+// resolves against the browser's origin root, which a path-preserving
+// proxy that only forwards "<base>/*" never routes to this server. See
+// internal/ui/templates.go's "layout" template and #250.
+const GOWE_BASE_PATH = window.GOWE_BASE_PATH || '';
+
 // Toast notification system
 const Toast = {
   container: null,
@@ -268,7 +276,7 @@ const FilePicker = {
     console.log('FilePicker.loadFolder called with path:', path);
 
     try {
-      const url = path ? `/api/workspace/ls?path=${encodeURIComponent(path)}` : '/api/workspace/ls';
+      const url = path ? `${GOWE_BASE_PATH}/api/workspace/ls?path=${encodeURIComponent(path)}` : `${GOWE_BASE_PATH}/api/workspace/ls`;
       console.log('FilePicker fetching URL:', url);
       const resp = await fetch(url);
       const data = await resp.json();
@@ -369,7 +377,7 @@ const FilePicker = {
     formData.append('folder', this.currentPath);
 
     try {
-      const resp = await fetch('/api/workspace/upload', {
+      const resp = await fetch(`${GOWE_BASE_PATH}/api/workspace/upload`, {
         method: 'POST',
         body: formData
       });
@@ -407,7 +415,7 @@ const FolderCreator = {
     const folderPath = (basePath || '') + '/' + name.trim();
 
     try {
-      const resp = await fetch('/api/workspace/create-folder', {
+      const resp = await fetch(`${GOWE_BASE_PATH}/api/workspace/create-folder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: folderPath })
