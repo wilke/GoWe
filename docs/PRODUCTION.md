@@ -500,3 +500,51 @@ apptainer exec --nv docker://nvidia/cuda:12.0-base nvidia-smi  # Test inside con
 
 **Database locked:**
 GoWe uses `max_open_conns=1` with WAL mode. If the database reports "locked", ensure only one server instance is running against the same `.db` file.
+
+## Reverse-proxy mount, worker keys, and fleet status (v0.19.0+)
+
+### Mounting the web UI under a path prefix
+
+`--base-path /some/prefix` (or `GOWE_BASE_PATH`) lets the UI live behind a **path-preserving** reverse proxy
+(nginx `proxy_pass http://backend;` with no URI part — do *not* strip the prefix, do not set `X-Forwarded-Prefix`).
+The server then:
+
+- answers **both** under the prefix and at the root, so workers, the CLI and existing API clients need no change;
+- emits every UI URL, redirect and form action under the prefix, and scopes the session cookie `Path` to it
+  (so it cannot leak to sibling applications on a shared gateway domain);
+- redirects a bare `<prefix>` to `<prefix>/`; a lookalike such as `<prefix>foo/...` is not treated as the prefix.
+
+Static assets are resolved relative to the **working directory** (`ui/assets`), so start the server from the
+repository/deploy root (see #255). Empty/unset `--base-path` is exactly the previous behavior.
+
+### Worker API authentication
+
+Without `--worker-keys`, the worker endpoints (`/api/v1/workers/*` — registration, task checkout, completion) accept
+**unauthenticated** requests from anything that can reach the listener; the server logs a WARN at startup in that
+state. Production deployments should configure it:
+
+```bash
+# server: a JSON file of static keys (0600). Keys can also be minted per worker via the admin API.
+gowe-server ... --worker-keys /path/worker-keys.json
+#   {"keys": {"<raw-key>": {"id": "prod-shared", "groups": [], "description": "..."}}}
+# every worker:
+gowe-worker ... --worker-key "$(cat /path/worker-key.raw)"     # see #257 for a file/env option
+```
+
+Once keys are on, `GET /api/v1/workers` requires a worker key too. **UIs that show fleet status must use
+`GET /api/v1/fleet`** instead: user-authenticated (the normal provider token), read-only, a slim projection
+(`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no hostnames.
+Migrate UIs before or with enabling keys — otherwise their browser sessions receive 401 from `/workers`.
+At a public gateway, additionally deny `/api/v1/workers` outright (defense in depth).
+
+### Grafana link
+
+`--grafana-url` is rendered in the authenticated nav and may point at a proxied public Grafana. Grafana itself
+should then run with `GF_SERVER_ROOT_URL=<public url>` and `GF_SERVER_SERVE_FROM_SUB_PATH=true` rather than
+relying on proxy-side HTML rewriting.
+
+### Nothing here is boot-persistent by default
+
+The reference deployment launches the server and workers with `setsid nohup` from an idempotent start script and
+has no systemd/cron hook; after a host reboot an operator runs the start script(s) explicitly. If unattended
+recovery matters for your deployment, wrap the same invocations in a systemd unit or an `@reboot` cron entry.
