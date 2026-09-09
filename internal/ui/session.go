@@ -99,12 +99,27 @@ func (sm *SessionManager) GetSessionFromRequest(r *http.Request) (*model.Session
 	return sm.GetSession(r.Context(), cookie.Value)
 }
 
-// SetSessionCookie sets the session cookie on the response.
-func SetSessionCookie(w http.ResponseWriter, sess *model.Session, secure bool) {
+// cookiePath returns the Path attribute for the session cookie: the
+// configured base path when set, else "/" (today's behavior). Shared by
+// SetSessionCookie and ClearSessionCookie so they always agree — a mismatch
+// here would mean logout clears a different Path than login set, leaving
+// the original cookie behind under a reverse-proxy prefix.
+func cookiePath(basePath string) string {
+	if basePath == "" {
+		return "/"
+	}
+	return basePath
+}
+
+// SetSessionCookie sets the session cookie on the response. basePath is the
+// server's configured --base-path/GOWE_BASE_PATH ("" when unset), used as
+// the cookie's Path so it round-trips correctly behind a reverse-proxy
+// prefix; see cookiePath.
+func SetSessionCookie(w http.ResponseWriter, sess *model.Session, secure bool, basePath string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sess.ID,
-		Path:     "/",
+		Path:     cookiePath(basePath),
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
@@ -112,12 +127,13 @@ func SetSessionCookie(w http.ResponseWriter, sess *model.Session, secure bool) {
 	})
 }
 
-// ClearSessionCookie removes the session cookie.
-func ClearSessionCookie(w http.ResponseWriter) {
+// ClearSessionCookie removes the session cookie. basePath must match the
+// value passed to SetSessionCookie — see cookiePath.
+func ClearSessionCookie(w http.ResponseWriter, basePath string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    "",
-		Path:     "/",
+		Path:     cookiePath(basePath),
 		HttpOnly: true,
 		MaxAge:   -1,
 	})

@@ -48,6 +48,7 @@ type Server struct {
 	wsStager              *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
 	metrics               *metrics.Registry        // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
 	workflowNames         *workflowNameCache       // LRU backing workflowNameFor, the worker-report path's metric label lookup
+	basePath              string                   // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -174,6 +175,21 @@ func WithAllowUnverifiedMGRAST(allow bool) Option {
 	}
 }
 
+// WithBasePath mounts the web UI and API under the given path prefix (e.g.
+// "/gowe"), for deployment behind a path-preserving reverse proxy (nginx
+// proxy_pass with no URI part, where the prefix arrives in the request
+// path). The server answers BOTH at root paths (unchanged, for workers/CLI/
+// existing API clients) and under the prefix; every URL, redirect, and
+// session-cookie path the UI emits is rendered under the prefix. Empty (the
+// default) is root-mounted only, byte-identical to pre-#250 behavior. The
+// value must already be normalized (leading "/", no trailing "/", not just
+// "/") — see cmd/server's normalizeBasePath.
+func WithBasePath(p string) Option {
+	return func(s *Server) {
+		s.basePath = p
+	}
+}
+
 // WithAuthDenylist sets a local, immediate-effect denylist of usernames and
 // provider token IDs. Requests from a denylisted user or token are
 // rejected after identity is established, whether or not the token
@@ -215,6 +231,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		WorkspaceURL:        s.workspaceURL,
 		UploadMaxSize:       s.uiUploadMaxSize,
 		GrafanaURL:          cfg.GrafanaURL,
+		BasePath:            s.basePath,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)
@@ -281,9 +298,50 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// Handler returns the http.Handler for this server.
+// Handler returns the http.Handler for this server. When WithBasePath is
+// set, the returned handler answers both at root paths (unchanged) and
+// under the configured prefix — see withBasePath.
 func (s *Server) Handler() http.Handler {
-	return s.router
+	if s.basePath == "" {
+		return s.router
+	}
+	return withBasePath(s.basePath, s.router)
+}
+
+// withBasePath wraps next so it is dual-mounted: requests are served both at
+// root paths exactly as before, and under the "base" prefix by stripping the
+// prefix and re-routing through the same handler. The prefix is stripped
+// only on a real path-segment boundary — for base "/a/b", "/a/b" and
+// "/a/b/..." are stripped, but "/a/bfoo" is left untouched (and falls
+// through to next unmodified, which 404s exactly like any other unmatched
+// root path). "GET <base>" (no trailing slash) redirects to "<base>/"
+// rather than 404ing, matching the usual trailing-slash-canonicalization
+// pattern for a mount point.
+func withBasePath(base string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+
+		if p == base {
+			http.Redirect(w, r, base+"/", http.StatusMovedPermanently)
+			return
+		}
+
+		if p == base+"/" || strings.HasPrefix(p, base+"/") {
+			stripped := strings.TrimPrefix(p, base)
+			if stripped == "" {
+				stripped = "/"
+			}
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = stripped
+			r2.URL.RawPath = ""
+			next.ServeHTTP(w, r2)
+			return
+		}
+
+		// Not under the prefix (or only a lookalike, e.g. "/a/bfoo" against
+		// base "/a/b"): serve unchanged at the root path.
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routes() {

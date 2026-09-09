@@ -27,12 +27,12 @@ func (ui *UI) AuthMiddleware(next http.Handler) http.Handler {
 		sess, err := ui.sessions.GetSessionFromRequest(r)
 		if err != nil {
 			ui.logger.Error("session lookup failed", "error", err)
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 			return
 		}
 
 		if sess == nil {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 			return
 		}
 
@@ -48,7 +48,7 @@ func (ui *UI) AdminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess := SessionFromContext(r.Context())
 		if sess == nil {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 			return
 		}
 

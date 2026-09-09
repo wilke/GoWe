@@ -19,13 +19,13 @@ func init() {
 const adminFleetTemplate = `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
-        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Fleet</a>
-        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
-        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
-        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">Worker Fleet</h1>
@@ -35,7 +35,7 @@ const adminFleetTemplate = `{{define "content"}}
             &middot; {{.DrainingCount}} draining
             &middot; {{.OfflineCount}} offline
             &middot; {{.GPUCount}} GPU-enabled
-            &middot; <a href="/workers" class="text-indigo-600 hover:text-indigo-500">manage individual workers &rarr;</a>
+            &middot; <a href="{{base}}/workers" class="text-indigo-600 hover:text-indigo-500">manage individual workers &rarr;</a>
         </p>
     </div>
 
@@ -78,7 +78,7 @@ const adminFleetTemplate = `{{define "content"}}
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {{if .CurrentTask}}
                         {{$subID := index $.TaskSubmission .CurrentTask}}
-                        {{if $subID}}<a href="/submissions/{{$subID}}" class="text-blue-600 hover:text-blue-800 hover:underline" title="{{.CurrentTask}}">{{truncate .CurrentTask 12}}</a>{{else}}<span class="text-blue-600">{{truncate .CurrentTask 12}}</span>{{end}}
+                        {{if $subID}}<a href="{{base}}/submissions/{{$subID}}" class="text-blue-600 hover:text-blue-800 hover:underline" title="{{.CurrentTask}}">{{truncate .CurrentTask 12}}</a>{{else}}<span class="text-blue-600">{{truncate .CurrentTask 12}}</span>{{end}}
                         {{else}}
                         <span class="text-gray-400">idle</span>
                         {{end}}
@@ -102,13 +102,13 @@ const adminFleetTemplate = `{{define "content"}}
 const adminKeysTemplate = `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
-        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
-        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Keys</a>
-        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
-        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Keys</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">Worker Keys</h1>
@@ -126,7 +126,7 @@ const adminKeysTemplate = `{{define "content"}}
     <div class="bg-white shadow sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:p-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Issue Key</h3>
-            <form method="POST" action="/admin/worker-keys" class="flex flex-wrap items-end gap-4">
+            <form method="POST" action="{{base}}/admin/worker-keys" class="flex flex-wrap items-end gap-4">
                 <div>
                     <label class="block text-xs font-medium text-gray-500 mb-1">Label</label>
                     <input type="text" name="label" placeholder="e.g. gpu-node-3"
@@ -189,7 +189,7 @@ const adminKeysTemplate = `{{define "content"}}
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTimePtr .ExpiresAt}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTimePtr .LastUsedAt}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-right">
-                        <button hx-delete="/admin/worker-keys/{{.ID}}"
+                        <button hx-delete="{{base}}/admin/worker-keys/{{.ID}}"
                                 hx-target="#key-{{.ID}}"
                                 hx-swap="outerHTML"
                                 hx-confirm="Revoke key {{if .Label}}{{.Label}}{{else}}{{.KeyPrefix}}&hellip;{{end}}? This permanently deletes it; any worker using it will be unable to authenticate."
@@ -214,13 +214,13 @@ const adminKeysTemplate = `{{define "content"}}
 const adminOutputsTemplate = `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
-        <a href="/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
-        <a href="/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
-        <a href="/admin/outputs" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Outputs</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
-        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">Output Verification &amp; Redelivery</h1>
@@ -240,7 +240,7 @@ const adminOutputsTemplate = `{{define "content"}}
     <div class="bg-white shadow sm:rounded-lg mb-8">
         <div class="px-4 py-5 sm:p-6">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <form method="POST" action="/admin/outputs/verify" class="space-y-3">
+                <form method="POST" action="{{base}}/admin/outputs/verify" class="space-y-3">
                     <div>
                         <label class="block text-xs font-medium text-gray-500 mb-1">Submission ID</label>
                         <input type="text" name="submission_id" required value="{{.SubmissionID}}" placeholder="sub_..."
@@ -251,7 +251,7 @@ const adminOutputsTemplate = `{{define "content"}}
                         Verify Outputs (read-only)
                     </button>
                 </form>
-                <form method="POST" action="/admin/outputs/redeliver" class="space-y-3"
+                <form method="POST" action="{{base}}/admin/outputs/redeliver" class="space-y-3"
                       onsubmit="return confirm('Re-deliver mismatched outputs for this submission? This re-uploads files and updates submission state.');">
                     <div>
                         <label class="block text-xs font-medium text-gray-500 mb-1">Submission ID</label>
