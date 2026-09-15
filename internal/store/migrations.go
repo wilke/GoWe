@@ -388,6 +388,15 @@ var alterStatements = []struct {
 		column:   "secrets_purged_at",
 		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets_purged_at TEXT",
 	},
+	// Workflow input IDs declared secret via a top-level cwltool:Secrets
+	// hint (#260). Plaintext JSON array of input ids — never a value, so it
+	// carries no encryption requirement. NULL/empty means the workflow
+	// declares no secret inputs (the overwhelming majority).
+	{
+		table:    "workflows",
+		column:   "secret_inputs",
+		alterSQL: "ALTER TABLE workflows ADD COLUMN secret_inputs TEXT",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

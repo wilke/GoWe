@@ -2135,6 +2135,41 @@ var templates = map[string]string{
         </div>
     </div>
 
+    <!-- Secrets (metadata only: names, state, retention, purged_at — never values) -->
+    {{if .Submission.SecretNames}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Secrets</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <dl>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">State</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SecretsState}}</dd>
+                </div>
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Names</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
+                        {{range .Submission.SecretNames}}<span class="inline-block mr-2">{{.}}</span>{{end}}
+                    </dd>
+                </div>
+                {{if .Submission.SecretsRetention}}
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Retention</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SecretsRetention}}</dd>
+                </div>
+                {{end}}
+                {{if .Submission.SecretsPurgedAt}}
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Purged</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTimePtr .Submission.SecretsPurgedAt}}</dd>
+                </div>
+                {{end}}
+            </dl>
+        </div>
+    </div>
+    {{end}}
+
     <!-- Inputs -->
     {{if .Submission.Inputs}}
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
