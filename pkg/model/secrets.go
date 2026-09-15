@@ -118,3 +118,26 @@ func ParseSecretsRetention(s string) (SecretsRetentionPolicy, error) {
 		return SecretsRetentionPolicy{}, fmt.Errorf("invalid secrets retention %q: must be \"keep\", \"ttl:<duration>\", \"on_success\", or \"on_terminal\"", s)
 	}
 }
+
+// SecretNameForInput derives the Secrets key under which a workflow input
+// declared secret via cwltool:Secrets is stored: "INPUT_" + the input id
+// upper-cased with every character outside [A-Z0-9] replaced by '_'. The
+// mapping is deterministic so the server (which strips the value at
+// submission) and the worker (which re-injects it into the job) agree
+// without exchanging anything but the input id.
+func SecretNameForInput(inputID string) string {
+	b := make([]byte, 0, len(inputID)+6)
+	b = append(b, "INPUT_"...)
+	for _, r := range strings.ToUpper(inputID) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b = append(b, byte(r))
+		} else {
+			b = append(b, '_')
+		}
+	}
+	return string(b)
+}
+
+// SecretInputPlaceholder is the value persisted in inputs/submitted_inputs in
+// place of a cwltool:Secrets-declared input; the real value lives in Secrets.
+const SecretInputPlaceholder = "<secret>"

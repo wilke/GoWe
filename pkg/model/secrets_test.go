@@ -183,3 +183,23 @@ func TestSubmissionSecretsState(t *testing.T) {
 		}
 	})
 }
+
+func TestSecretNameForInput(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"pw", "INPUT_PW"},
+		{"db-password", "INPUT_DB_PASSWORD"},
+		{"api.key/2", "INPUT_API_KEY_2"},
+		{"MixedCase_ok", "INPUT_MIXEDCASE_OK"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := SecretNameForInput(tt.in)
+			if got != tt.want {
+				t.Fatalf("SecretNameForInput(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if err := ValidateSecretName(got); err != nil {
+				t.Fatalf("derived name %q is not a valid secret name: %v", got, err)
+			}
+		})
+	}
+}
