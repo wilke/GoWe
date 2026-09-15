@@ -328,6 +328,118 @@ func TestCreateSubmission_CwltoolSecretsStripped(t *testing.T) {
 	}
 }
 
+// cwltoolSecretsCWL is a minimal single-file CWL v1.2 Workflow declaring a
+// top-level cwltool:Secrets hint (shorthand key, no $namespaces block —
+// see internal/parser.TestToModel_CwltoolSecrets_Shorthand for the same
+// shape at the parser-unit level). "password" is wired into the step (as
+// an unused-by-argv tool input) so the validator doesn't flag it as a
+// dangling top-level input.
+const cwltoolSecretsCWL = `#!/usr/bin/env cwl-runner
+cwlVersion: v1.2
+class: Workflow
+
+hints:
+  cwltool:Secrets:
+    secrets: [password]
+
+inputs:
+  password:
+    type: string
+  message:
+    type: string
+
+steps:
+  echo:
+    run:
+      class: CommandLineTool
+      baseCommand: echo
+      inputs:
+        msg:
+          type: string
+          inputBinding:
+            position: 1
+        pw:
+          type: string
+      outputs:
+        out:
+          type: stdout
+      stdout: output.txt
+    in:
+      msg: message
+      pw: password
+    out: [out]
+
+outputs:
+  result:
+    type: File
+    outputSource: echo/out
+`
+
+// TestCreateSubmission_CwltoolSecretsStripped_ViaCWLRegistration is the full
+// end-to-end path for cwltool:Secrets stripping: real CWL text with an
+// actual `cwltool:Secrets` hint, parsed and persisted through
+// POST /api/v1/workflows/ (internal/parser.ParseGraph + ToModel +
+// store.CreateWorkflow — the exact path that used to silently drop
+// SecretInputs because workflows.secret_inputs was never wired), then a
+// submission created by referencing that workflow's id (store.GetWorkflow
+// round trip), asserting the stripping happens exactly as in the
+// in-memory-workflow variant above.
+func TestCreateSubmission_CwltoolSecretsStripped_ViaCWLRegistration(t *testing.T) {
+	srv := testServer()
+
+	wfBody, _ := json.Marshal(map[string]any{"cwl": cwltoolSecretsCWL})
+	wfW, wfEnv := doPostAs(t, srv, "/api/v1/workflows/", string(wfBody), secretsTestToken)
+	if wfW.Code != http.StatusCreated {
+		t.Fatalf("register workflow: status=%d, body=%s", wfW.Code, wfW.Body.String())
+	}
+	var wfData map[string]any
+	json.Unmarshal(wfEnv.Data, &wfData)
+	wfID, _ := wfData["id"].(string)
+	if wfID == "" {
+		t.Fatalf("registered workflow missing id: %v", wfData)
+	}
+	secretInputs, _ := wfData["secret_inputs"].([]any)
+	if len(secretInputs) != 1 || secretInputs[0] != "password" {
+		t.Fatalf("registered workflow secret_inputs = %v, want [password] (parser -> store round trip)", wfData["secret_inputs"])
+	}
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs": map[string]any{
+			"password": "hunter2-e2e",
+			"message":  "hello",
+		},
+	})
+	w, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create submission: status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if bodyContainsValue(w.Body.Bytes(), "hunter2-e2e") {
+		t.Fatalf("create response leaks the stripped secret value: %s", w.Body.String())
+	}
+
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	subID, _ := data["id"].(string)
+
+	inputs, _ := data["inputs"].(map[string]any)
+	if inputs["password"] != model.SecretInputPlaceholder {
+		t.Errorf("inputs[password] = %v, want placeholder %q", inputs["password"], model.SecretInputPlaceholder)
+	}
+	if data["secrets_state"] != "present" {
+		t.Errorf("secrets_state = %v, want present", data["secrets_state"])
+	}
+
+	sub, err := srv.store.GetSubmission(context.Background(), subID)
+	if err != nil || sub == nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	wantName := model.SecretNameForInput("password")
+	if sub.Secrets[wantName] != "hunter2-e2e" {
+		t.Errorf("stored secret %s = %q, want hunter2-e2e", wantName, sub.Secrets[wantName])
+	}
+}
+
 func TestCreateSubmission_CwltoolSecretsNonStringRejected(t *testing.T) {
 	srv := testServer()
 	wfID := registerSecretInputWorkflow(t, srv)
