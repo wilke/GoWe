@@ -44,6 +44,17 @@ type Store interface {
 	// PurgeSubmissionSecrets clears a submission's secret values (keeping
 	// SecretNames for auditability) and stamps SecretsPurgedAt=at.
 	PurgeSubmissionSecrets(ctx context.Context, id string, at time.Time) error
+	// ScrubTaskSecretsForSubmission clears RuntimeHints.Secrets and any
+	// StagerOverrides.HTTPCredential from every task belonging to
+	// submissionID, persisting the change. CancelNonTerminalTasks (a
+	// state-only bulk UPDATE) and PurgeSubmissionSecrets (which only touches
+	// the submissions row) never reach tasks.runtime_hints, so the per-task
+	// subset of secrets delivered to a task can otherwise survive a cancel
+	// or a manual/retention purge indefinitely (#260 H2/H3). Returns the
+	// number of task rows actually rewritten (tasks with nothing to scrub
+	// are skipped). Safe to call on a submission with no tasks or no
+	// secret-bearing tasks (returns 0, nil).
+	ScrubTaskSecretsForSubmission(ctx context.Context, submissionID string) (int, error)
 	// ListSubmissionsWithSecretsForRetention returns terminal-state
 	// submissions that still carry secret values, for the scheduler's
 	// retention sweep. Secret values are never decrypted here (Secrets is

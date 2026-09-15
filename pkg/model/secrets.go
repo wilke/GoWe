@@ -27,13 +27,22 @@ func ValidateSecretName(n string) error {
 // MaxSecretValueBytes caps the size of a single secret value.
 const MaxSecretValueBytes = 64 * 1024
 
+// MinSecretValueBytes is the minimum length of a submission-time secret
+// value. Below this, the masking thresholds used at the execution boundary
+// (toolexec/worker: values shorter than 6 bytes are never masked in logs or
+// the container process table) would let a short secret through unmasked
+// everywhere it is surfaced. Rejecting anything shorter than the masking
+// threshold at validation time is simpler than lowering the threshold.
+const MinSecretValueBytes = 8
+
 // MaxSecretCount caps the number of secrets a single submission may carry.
 const MaxSecretCount = 64
 
 // ValidateSecrets validates a submission's secrets map: every name must
-// satisfy ValidateSecretName, every value must be non-empty and no larger
-// than MaxSecretValueBytes, and the map may carry at most MaxSecretCount
-// entries. Returns nil for a nil/empty map.
+// satisfy ValidateSecretName, every value must be at least MinSecretValueBytes
+// and no larger than MaxSecretValueBytes, and the map may carry at most
+// MaxSecretCount entries. Returns nil for a nil/empty map. Error messages
+// name only the secret NAME, never its value.
 func ValidateSecrets(m map[string]string) error {
 	if len(m) == 0 {
 		return nil
@@ -45,8 +54,8 @@ func ValidateSecrets(m map[string]string) error {
 		if err := ValidateSecretName(name); err != nil {
 			return err
 		}
-		if value == "" {
-			return fmt.Errorf("secret %q: value must not be empty", name)
+		if len(value) < MinSecretValueBytes {
+			return fmt.Errorf("secret %q: value must be at least %d bytes", name, MinSecretValueBytes)
 		}
 		if len(value) > MaxSecretValueBytes {
 			return fmt.Errorf("secret %q: value exceeds %d bytes", name, MaxSecretValueBytes)
@@ -61,7 +70,9 @@ type SecretsRetentionKind int
 const (
 	// SecretsRetentionKeep never purges secret values automatically.
 	SecretsRetentionKeep SecretsRetentionKind = iota
-	// SecretsRetentionTTL purges secret values TTL after submission creation.
+	// SecretsRetentionTTL purges secret values TTL after the submission
+	// reaches a terminal state (measured from CompletedAt, falling back to
+	// CreatedAt when CompletedAt is unset — see secretsPurgeDue).
 	SecretsRetentionTTL
 	// SecretsRetentionOnSuccess purges secret values once the submission
 	// reaches SubmissionStateCompleted.

@@ -252,10 +252,18 @@ func parseSecretFlags(file string, flags []string) (map[string]string, error) {
 			secrets[k] = v
 		}
 	}
-	for _, entry := range flags {
+	for i, entry := range flags {
 		key, value, found := strings.Cut(entry, "=")
 		if !found || key == "" {
-			return nil, fmt.Errorf("invalid --secret %q: expected NAME=value with a non-empty name", key)
+			// Never print the raw entry: a mistyped "--secret value" (no
+			// "=") would otherwise print the secret value itself to
+			// stderr. Name the NAME when we have one (found but empty
+			// value is fine — only a missing "=" or empty name is an
+			// error), otherwise fall back to a 1-based position.
+			if found {
+				return nil, fmt.Errorf("invalid --secret entry with name %q: name must be non-empty", key)
+			}
+			return nil, fmt.Errorf("invalid --secret entry #%d: expected NAME=value", i+1)
 		}
 		secrets[key] = value
 	}

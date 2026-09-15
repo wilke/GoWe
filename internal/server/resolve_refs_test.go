@@ -51,6 +51,9 @@ func (m *mockStore) FinalizeSubmission(context.Context, *model.Submission) (bool
 }
 func (m *mockStore) ActivateSubmission(context.Context, string) (bool, error)        { return true, nil }
 func (m *mockStore) PurgeSubmissionSecrets(context.Context, string, time.Time) error { return nil }
+func (m *mockStore) ScrubTaskSecretsForSubmission(context.Context, string) (int, error) {
+	return 0, nil
+}
 func (m *mockStore) ListSubmissionsWithSecretsForRetention(context.Context) ([]*model.Submission, error) {
 	return nil, nil
 }

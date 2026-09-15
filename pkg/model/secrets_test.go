@@ -40,14 +40,14 @@ func TestValidateSecrets(t *testing.T) {
 	})
 
 	t.Run("valid map", func(t *testing.T) {
-		m := map[string]string{"HF_TOKEN": "abc123", "API_KEY": "xyz"}
+		m := map[string]string{"HF_TOKEN": "abc12345", "API_KEY": "xyz789ab"}
 		if err := ValidateSecrets(m); err != nil {
 			t.Errorf("ValidateSecrets(valid) = %v, want nil", err)
 		}
 	})
 
 	t.Run("invalid name", func(t *testing.T) {
-		m := map[string]string{"bad-name": "value"}
+		m := map[string]string{"bad-name": "valuevalue"}
 		if err := ValidateSecrets(m); err == nil {
 			t.Error("expected error for invalid name")
 		}
@@ -57,6 +57,27 @@ func TestValidateSecrets(t *testing.T) {
 		m := map[string]string{"HF_TOKEN": ""}
 		if err := ValidateSecrets(m); err == nil {
 			t.Error("expected error for empty value")
+		}
+	})
+
+	t.Run("value below minimum length", func(t *testing.T) {
+		m := map[string]string{"HF_TOKEN": "short12"} // 7 bytes, MinSecretValueBytes is 8
+		err := ValidateSecrets(m)
+		if err == nil {
+			t.Fatal("expected error for undersized value")
+		}
+		if !strings.Contains(err.Error(), "HF_TOKEN") {
+			t.Errorf("error = %q, want it to name the secret", err.Error())
+		}
+		if strings.Contains(err.Error(), "short12") {
+			t.Errorf("error = %q, must not contain the secret value", err.Error())
+		}
+	})
+
+	t.Run("value at minimum length is fine", func(t *testing.T) {
+		m := map[string]string{"HF_TOKEN": "exactly8"} // 8 bytes
+		if err := ValidateSecrets(m); err != nil {
+			t.Errorf("ValidateSecrets(8-byte value) = %v, want nil", err)
 		}
 	})
 
@@ -80,7 +101,7 @@ func TestValidateSecrets(t *testing.T) {
 	t.Run("at max entries is fine", func(t *testing.T) {
 		m := make(map[string]string, MaxSecretCount)
 		for i := 0; i < MaxSecretCount; i++ {
-			m[secretNameForIndex(i)] = "v"
+			m[secretNameForIndex(i)] = "valuevalue"
 		}
 		if err := ValidateSecrets(m); err != nil {
 			t.Errorf("ValidateSecrets(%d entries) = %v, want nil", MaxSecretCount, err)

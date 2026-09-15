@@ -32,7 +32,23 @@ func newSubmissionResponse(sub *model.Submission) *submissionResponse {
 	if sub == nil {
 		return nil
 	}
+	sub = sanitizeSubmissionTasks(sub)
 	return &submissionResponse{Submission: sub, SecretsState: sub.SecretsState()}
+}
+
+// sanitizeSubmissionTasks returns a copy of sub with its embedded Tasks
+// (populated by GetSubmission, never by the list/create paths) sanitized via
+// sanitizeTaskValueSlice — the same RuntimeHints.Secrets/HTTPCredential
+// stripping applied to every other task-serializing surface (C1). Returns
+// sub itself, unmodified, when there are no tasks to scrub. sub and its
+// original Tasks slice are left untouched either way.
+func sanitizeSubmissionTasks(sub *model.Submission) *model.Submission {
+	if sub == nil || len(sub.Tasks) == 0 {
+		return sub
+	}
+	out := *sub
+	out.Tasks = sanitizeTaskValueSlice(sub.Tasks)
+	return &out
 }
 
 func newSubmissionListResponse(subs []*model.Submission) []*submissionResponse {
@@ -164,6 +180,35 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 			Message: err.Error(),
 		})
 		return
+	}
+
+	// SecretNameForInput derives a name by collapsing every character
+	// outside [A-Z0-9] to '_', so distinct input ids (e.g. "pw-1" and
+	// "pw_1") — or an input id and a user-supplied secrets key — can
+	// collide on the same derived name. Detect that up front, before
+	// mutating req.Secrets/req.Inputs below, and refuse the submission
+	// rather than let one value silently overwrite another (#260 M12).
+	derivedFrom := make(map[string]string, len(wf.SecretInputs)) // derived name -> input id that claimed it
+	for _, id := range wf.SecretInputs {
+		if _, ok := req.Inputs[id]; !ok {
+			continue // optional input, not supplied: nothing to derive.
+		}
+		derived := model.SecretNameForInput(id)
+		if other, taken := derivedFrom[derived]; taken {
+			msg := fmt.Sprintf("declared secret inputs %q and %q both derive secret name %q",
+				other, id, derived)
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(msg, model.FieldError{Field: id, Message: msg}))
+			return
+		}
+		derivedFrom[derived] = id
+		if _, exists := req.Secrets[derived]; exists {
+			msg := fmt.Sprintf("declared secret input %q derives secret name %q, which is also a key in the supplied secrets map",
+				id, derived)
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(msg, model.FieldError{Field: id, Message: msg}))
+			return
+		}
 	}
 
 	// cwltool:Secrets stripping: move the value of every workflow input
@@ -667,6 +712,21 @@ func (s *Server) handleDeleteSubmissionSecrets(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// A purge while the submission is still non-terminal would delete the
+	// secrets a running task depends on out from under it (and, before H2,
+	// the scheduler's terminal scrub would never even fire to leave a
+	// task-row copy behind — this guard closes that window entirely). The
+	// retention sweep never sees a non-terminal submission in the first
+	// place (ListSubmissionsWithSecretsForRetention only returns terminal
+	// rows), so this only affects the manual DELETE path.
+	if !sub.State.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "submission is not terminal; cancel it first or wait for completion",
+		})
+		return
+	}
+
 	now := time.Now().UTC()
 	purged, err := s.purgeSecretsCascade(r.Context(), sub.ID, now, map[string]bool{})
 	if err != nil {
@@ -707,6 +767,12 @@ func (s *Server) purgeSecretsCascade(ctx context.Context, id string, now time.Ti
 
 	if err := s.store.PurgeSubmissionSecrets(ctx, id, now); err != nil {
 		return 0, fmt.Errorf("purge submission %s: %w", id, err)
+	}
+	// PurgeSubmissionSecrets only clears the submissions row; the per-task
+	// subset of secrets delivered to this submission's tasks lives in
+	// tasks.runtime_hints and survives it untouched otherwise (#260 H3).
+	if _, err := s.store.ScrubTaskSecretsForSubmission(ctx, id); err != nil {
+		return 0, fmt.Errorf("scrub task secrets for submission %s: %w", id, err)
 	}
 	count := 1
 

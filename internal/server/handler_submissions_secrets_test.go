@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -69,6 +70,24 @@ func doPutAs(t *testing.T, srv *Server, path, body, token string) (*httptest.Res
 // regardless of which field it might have leaked through.
 func bodyContainsValue(body []byte, value string) bool {
 	return strings.Contains(string(body), value)
+}
+
+// forceSubmissionTerminal moves a submission directly to a terminal state
+// via the store, bypassing the state-machine-guarded API transitions —
+// standing in for "the scheduler eventually finished it" in tests that only
+// care about post-terminal behavior (e.g. DELETE .../secrets, #260 H3).
+func forceSubmissionTerminal(t *testing.T, st store.Store, id string, state model.SubmissionState) {
+	t.Helper()
+	sub, err := st.GetSubmission(context.Background(), id)
+	if err != nil || sub == nil {
+		t.Fatalf("get submission %s: %v", id, err)
+	}
+	sub.State = state
+	now := time.Now().UTC()
+	sub.CompletedAt = &now
+	if err := st.UpdateSubmission(context.Background(), sub); err != nil {
+		t.Fatalf("force submission %s terminal: %v", id, err)
+	}
 }
 
 func TestCreateSubmission_SecretsNeverEchoed(t *testing.T) {
@@ -207,7 +226,7 @@ func TestCreateSubmission_SecretsRetentionDefaultsToServerPolicy(t *testing.T) {
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
 		"inputs":      map[string]any{"reads_r1": "test.fastq"},
-		"secrets":     map[string]string{"A": "v"},
+		"secrets":     map[string]string{"A": "valuevalue"},
 	})
 	w, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
 	if w.Code != http.StatusCreated {
@@ -223,7 +242,7 @@ func TestCreateSubmission_SecretsRetentionDefaultsToServerPolicy(t *testing.T) {
 	bodyJSON2, _ := json.Marshal(map[string]any{
 		"workflow_id":       wfID,
 		"inputs":            map[string]any{"reads_r1": "test.fastq"},
-		"secrets":           map[string]string{"A": "v"},
+		"secrets":           map[string]string{"A": "valuevalue"},
 		"secrets_retention": "keep",
 	})
 	w2, env2 := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON2), secretsTestToken)
@@ -460,6 +479,96 @@ func TestCreateSubmission_CwltoolSecretsNonStringRejected(t *testing.T) {
 	}
 }
 
+// registerCollidingSecretInputsWorkflow declares two cwltool:Secrets inputs
+// ("pw-1" and "pw_1") whose derived names collide: SecretNameForInput
+// collapses every character outside [A-Z0-9] to '_', so both map to
+// "INPUT_PW_1".
+func registerCollidingSecretInputsWorkflow(t *testing.T, srv *Server) string {
+	t.Helper()
+	wf := &model.Workflow{
+		ID:         "wf_secret_collision_test",
+		Name:       "wf-secret-collision-test",
+		Class:      "Workflow",
+		CWLVersion: "v1.2",
+		RawCWL:     "{}",
+		Inputs: []model.WorkflowInput{
+			{ID: "pw-1", Type: "string"},
+			{ID: "pw_1", Type: "string"},
+			{ID: "reads_r1", Type: "File"},
+		},
+		SecretInputs: []string{"pw-1", "pw_1"},
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	if err := srv.store.CreateWorkflow(context.Background(), wf); err != nil {
+		t.Fatalf("create colliding-secret-inputs workflow: %v", err)
+	}
+	return wf.ID
+}
+
+// TestCreateSubmission_CwltoolSecretsCollidingInputsRejected is the #260 M12
+// regression test: two declared-secret inputs that derive the same name
+// must be rejected with 400 instead of silently overwriting one another in
+// the submission's secrets map.
+func TestCreateSubmission_CwltoolSecretsCollidingInputsRejected(t *testing.T) {
+	srv := testServer()
+	wfID := registerCollidingSecretInputsWorkflow(t, srv)
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs": map[string]any{
+			"pw-1":     "value-one",
+			"pw_1":     "value-two",
+			"reads_r1": "test.fastq",
+		},
+	})
+	w, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrValidation {
+		t.Fatalf("error = %+v, want VALIDATION_ERROR", env.Error)
+	}
+	if !strings.Contains(env.Error.Message, "pw-1") || !strings.Contains(env.Error.Message, "pw_1") {
+		t.Errorf("error message %q does not name both colliding inputs", env.Error.Message)
+	}
+	if bodyContainsValue(w.Body.Bytes(), "value-one") || bodyContainsValue(w.Body.Bytes(), "value-two") {
+		t.Errorf("rejected create response leaks a secret value: %s", w.Body.String())
+	}
+}
+
+// TestCreateSubmission_CwltoolSecretsCollidesWithSuppliedSecret is the #260
+// M12 regression test for the other collision direction: a declared-secret
+// input whose derived name matches a key the caller also supplied directly
+// in "secrets" must be rejected with 400 instead of one silently clobbering
+// the other.
+func TestCreateSubmission_CwltoolSecretsCollidesWithSuppliedSecret(t *testing.T) {
+	srv := testServer()
+	wfID := registerSecretInputWorkflow(t, srv) // declares "password" -> derives INPUT_PASSWORD
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs": map[string]any{
+			"password": "hunter2",
+			"reads_r1": "test.fastq",
+		},
+		"secrets": map[string]string{"INPUT_PASSWORD": "supplied-value"},
+	})
+	w, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrValidation {
+		t.Fatalf("error = %+v, want VALIDATION_ERROR", env.Error)
+	}
+	if !strings.Contains(env.Error.Message, "password") || !strings.Contains(env.Error.Message, "INPUT_PASSWORD") {
+		t.Errorf("error message %q does not name the offending input and derived name", env.Error.Message)
+	}
+	if bodyContainsValue(w.Body.Bytes(), "hunter2") || bodyContainsValue(w.Body.Bytes(), "supplied-value") {
+		t.Errorf("rejected create response leaks a secret value: %s", w.Body.String())
+	}
+}
+
 func TestCreateSubmission_CwltoolSecretsOptionalInputAbsent(t *testing.T) {
 	srv := testServer()
 	wfID := registerSecretInputWorkflow(t, srv)
@@ -485,7 +594,7 @@ func TestCreateSubmission_AnonymousSecretsRefused(t *testing.T) {
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
 		"inputs":      map[string]any{"reads_r1": "test.fastq"},
-		"secrets":     map[string]string{"A": "v"},
+		"secrets":     map[string]string{"A": "valuevalue"},
 	})
 	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
 	if w.Code != http.StatusForbidden {
@@ -523,7 +632,7 @@ func TestRetrySubmission_PurgedSecretsRefused(t *testing.T) {
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
 		"inputs":      map[string]any{"reads_r1": "test.fastq"},
-		"secrets":     map[string]string{"A": "v"},
+		"secrets":     map[string]string{"A": "valuevalue"},
 	})
 	_, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
 	var data map[string]any
@@ -555,7 +664,7 @@ func TestRetrySubmission_PurgedSecretsRefused(t *testing.T) {
 }
 
 func TestDeleteSubmissionSecrets_PurgesAndReturns404WhenNone(t *testing.T) {
-	srv := testServer()
+	srv, st := testServerWithStore()
 
 	// No secrets at all: 404.
 	wfID, subID := createTestSubmission(t, srv)
@@ -570,18 +679,22 @@ func TestDeleteSubmissionSecrets_PurgesAndReturns404WhenNone(t *testing.T) {
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
 		"inputs":      map[string]any{"reads_r1": "test.fastq"},
-		"secrets":     map[string]string{"A": "v"},
+		"secrets":     map[string]string{"A": "valuevalue"},
 	})
 	_, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
 	var data map[string]any
 	json.Unmarshal(env.Data, &data)
 	secretSubID := data["id"].(string)
 
+	// DELETE requires a terminal submission (H3): force it there directly
+	// via the store, as the scheduler would once the submission finishes.
+	forceSubmissionTerminal(t, st, secretSubID, model.SubmissionStateCompleted)
+
 	w2 := doDeleteAs(t, srv, "/api/v1/submissions/"+secretSubID+"/secrets", secretsTestToken)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("delete secrets: status=%d, want 200, body=%s", w2.Code, w2.Body.String())
 	}
-	if bodyContainsValue(w2.Body.Bytes(), `"v"`) {
+	if bodyContainsValue(w2.Body.Bytes(), `"valuevalue"`) {
 		t.Errorf("delete secrets response may leak a value: %s", w2.Body.String())
 	}
 
@@ -608,7 +721,7 @@ func TestDeleteSubmissionSecrets_CascadesToChildSubmissions(t *testing.T) {
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
 		"inputs":      map[string]any{"reads_r1": "test.fastq"},
-		"secrets":     map[string]string{"A": "v"},
+		"secrets":     map[string]string{"A": "valuevalue"},
 	})
 	_, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
 	var data map[string]any
@@ -648,6 +761,11 @@ func TestDeleteSubmissionSecrets_CascadesToChildSubmissions(t *testing.T) {
 		t.Fatalf("seed child submission: %v", err)
 	}
 
+	// The top-level DELETE requires the parent to be terminal (H3); the
+	// cascade purges children unconditionally regardless of their own state
+	// (see purgeSecretsCascade), so the still-RUNNING child above is left as is.
+	forceSubmissionTerminal(t, st, parentID, model.SubmissionStateCompleted)
+
 	w := doDeleteAs(t, srv, "/api/v1/submissions/"+parentID+"/secrets", secretsTestToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete secrets: status=%d, want 200, body=%s", w.Code, w.Body.String())
@@ -659,5 +777,104 @@ func TestDeleteSubmissionSecrets_CascadesToChildSubmissions(t *testing.T) {
 	}
 	if gotChild.SecretsState() != "purged" {
 		t.Errorf("child SecretsState() = %q, want purged (cascade)", gotChild.SecretsState())
+	}
+}
+
+// TestDeleteSubmissionSecrets_NonTerminalRefused verifies the #260 H3 state
+// guard: purging a submission that is still non-terminal is refused with
+// 409 rather than deleting secrets a running task may still depend on.
+func TestDeleteSubmissionSecrets_NonTerminalRefused(t *testing.T) {
+	srv := testServer()
+	wfID := createTestWorkflow(t, srv)
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"secrets":     map[string]string{"A": "valuevalue"},
+	})
+	_, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	subID := data["id"].(string)
+
+	// A freshly-created submission is PENDING (non-terminal): DELETE must
+	// refuse it with 409, and the secrets must remain present.
+	w := doDeleteAs(t, srv, "/api/v1/submissions/"+subID+"/secrets", secretsTestToken)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("delete secrets on non-terminal submission: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	getW, getEnv := doGetAs(t, srv, "/api/v1/submissions/"+subID, secretsTestToken)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("get submission: status=%d, body=%s", getW.Code, getW.Body.String())
+	}
+	var getData map[string]any
+	json.Unmarshal(getEnv.Data, &getData)
+	if getData["secrets_state"] != "present" {
+		t.Errorf("secrets_state after refused purge = %v, want present", getData["secrets_state"])
+	}
+}
+
+// TestDeleteSubmissionSecrets_ScrubsTaskRows verifies the #260 H3 fix:
+// purging a submission's secrets must also clear the per-task secret copy
+// embedded in tasks.runtime_hints (PurgeSubmissionSecrets only clears the
+// submissions row), for both the submission itself and every cascaded
+// child.
+func TestDeleteSubmissionSecrets_ScrubsTaskRows(t *testing.T) {
+	srv, st := testServerWithStore()
+	wfID := createTestWorkflow(t, srv)
+
+	bodyJSON, _ := json.Marshal(map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"secrets":     map[string]string{"A": "valuevalue"},
+	})
+	_, env := doPostAs(t, srv, "/api/v1/submissions/", string(bodyJSON), secretsTestToken)
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	subID := data["id"].(string)
+
+	ctx := context.Background()
+	task := &model.Task{
+		ID:           "task_purge_scrub",
+		SubmissionID: subID,
+		StepID:       "work",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		Inputs:       map[string]any{},
+		Outputs:      map[string]any{},
+		ScatterIndex: -1,
+		RuntimeHints: &model.RuntimeHints{
+			Secrets:        map[string]string{"A": "valuevalue"},
+			SecretEnvNames: []string{"A"},
+			StagerOverrides: &model.StagerOverrides{
+				HTTPCredential: &model.HTTPCredential{Type: "bearer", Token: "bearer-value"},
+			},
+		},
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	forceSubmissionTerminal(t, st, subID, model.SubmissionStateCompleted)
+
+	w := doDeleteAs(t, srv, "/api/v1/submissions/"+subID+"/secrets", secretsTestToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete secrets: status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := st.GetTask(ctx, task.ID)
+	if err != nil || got == nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if len(got.RuntimeHints.Secrets) != 0 {
+		t.Errorf("task Secrets after purge = %v, want empty", got.RuntimeHints.Secrets)
+	}
+	if got.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+		t.Errorf("task HTTPCredential after purge = %v, want nil", got.RuntimeHints.StagerOverrides.HTTPCredential)
+	}
+	// Metadata must survive.
+	if len(got.RuntimeHints.SecretEnvNames) != 1 || got.RuntimeHints.SecretEnvNames[0] != "A" {
+		t.Errorf("task SecretEnvNames after purge = %v, want [A]", got.RuntimeHints.SecretEnvNames)
 	}
 }

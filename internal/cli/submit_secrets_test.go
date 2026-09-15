@@ -68,6 +68,24 @@ func TestParseSecretFlags(t *testing.T) {
 	}
 }
 
+// TestParseSecretFlags_ErrorNeverPrintsRawValue is the #260 L19 regression
+// test: a mistyped "--secret value" (no "=") must not have its raw text —
+// which the user likely intended as a secret VALUE, not a name — appear in
+// the error message.
+func TestParseSecretFlags_ErrorNeverPrintsRawValue(t *testing.T) {
+	const mistypedValue = "super-secret-value-mistyped-as-a-name"
+	_, err := parseSecretFlags("", []string{mistypedValue})
+	if err == nil {
+		t.Fatal("expected an error for a --secret entry with no '='")
+	}
+	if strings.Contains(err.Error(), mistypedValue) {
+		t.Errorf("error = %q, must not contain the raw --secret entry", err.Error())
+	}
+	if !strings.Contains(err.Error(), "entry #1") {
+		t.Errorf("error = %q, want it to name the entry position", err.Error())
+	}
+}
+
 // TestSubmitCommand_SecretsNotEchoedAndDelivered submits with both
 // --secret-file and an overriding --secret flag, and verifies: (1) the CLI's
 // captured stdout never contains the secret value, and (2) the server
