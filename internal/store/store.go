@@ -41,6 +41,14 @@ type Store interface {
 	// ActivateSubmission moves a submission PENDING→RUNNING; applied=false
 	// (no error) when it is no longer PENDING.
 	ActivateSubmission(ctx context.Context, id string) (bool, error)
+	// PurgeSubmissionSecrets clears a submission's secret values (keeping
+	// SecretNames for auditability) and stamps SecretsPurgedAt=at.
+	PurgeSubmissionSecrets(ctx context.Context, id string, at time.Time) error
+	// ListSubmissionsWithSecretsForRetention returns terminal-state
+	// submissions that still carry secret values, for the scheduler's
+	// retention sweep. Secret values are never decrypted here (Secrets is
+	// always nil on the results).
+	ListSubmissionsWithSecretsForRetention(ctx context.Context) ([]*model.Submission, error)
 	// ListSubmissionsAwaitingOutputStaging returns COMPLETED submissions with
 	// an output destination and no recorded delivery outcome (SQL-filtered so
 	// the post-stage phase's cost is bounded by pending deliveries).

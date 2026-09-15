@@ -51,6 +51,32 @@ type Submission struct {
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time
 	AuthProvider string    `json:"-"` // Provider name (bvbrc, mgrast)
+
+	// Secrets are submitter-supplied secret values (name → value) delivered only to
+	// opted-in tasks. Never serialized to API clients; encrypted at rest.
+	Secrets map[string]string `json:"-"`
+	// SecretNames lists the names of Secrets (or of purged secrets) for auditability.
+	SecretNames []string `json:"secret_names,omitempty"`
+	// SecretsRetention is the retention policy: "keep" | "ttl:<duration>" | "on_success" | "on_terminal".
+	SecretsRetention string `json:"secrets_retention,omitempty"`
+	// SecretsPurgedAt is set when the secret values were purged (values gone, names kept).
+	SecretsPurgedAt *time.Time `json:"secrets_purged_at,omitempty"`
+}
+
+// SecretsState reports the lifecycle state of this submission's secrets:
+// "none" (never had secrets), "present" (secret names recorded and not yet
+// purged), or "purged" (values removed, SecretNames retained for
+// auditability). Computed from SecretNames/SecretsPurgedAt rather than
+// stored — the server populates an API response field from this at request
+// time; see handleGet/list wiring (owned by another agent, not this package).
+func (s *Submission) SecretsState() string {
+	if s.SecretsPurgedAt != nil {
+		return "purged"
+	}
+	if len(s.SecretNames) > 0 {
+		return "present"
+	}
+	return "none"
 }
 
 // SubmissionError captures structured failure details when a submission fails.

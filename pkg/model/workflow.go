@@ -18,6 +18,13 @@ type Workflow struct {
 	Steps       []Step            `json:"steps"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
+
+	// SecretInputs lists the workflow input IDs declared secret via a
+	// top-level cwltool:Secrets hint/requirement (namespace prefix
+	// "cwltool:", class "Secrets", field "secrets"). Their values are moved
+	// into the submission's secrets store at submission time and stripped
+	// from the persisted job; see pkg/model/secrets.go.
+	SecretInputs []string `json:"secret_inputs,omitempty"`
 }
 
 // IsTool returns true if this workflow was originally a CommandLineTool or ExpressionTool.
@@ -84,6 +91,13 @@ type StepHints struct {
 	RequiresGPU      bool                 `json:"requires_gpu,omitempty"`
 	InjectBVBRCToken bool                 `json:"inject_bvbrc_token,omitempty"`
 	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`
+
+	// SecretEnv names submission secrets (by name) this step's tool may see,
+	// parsed from gowe:Execution.secret_env.
+	SecretEnv []string `json:"secret_env,omitempty"`
+	// InjectSecrets exposes every submission secret to this step's tool,
+	// parsed from gowe:Execution.inject_secrets.
+	InjectSecrets bool `json:"inject_secrets,omitempty"`
 }
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.

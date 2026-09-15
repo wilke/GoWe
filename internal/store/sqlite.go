@@ -500,10 +500,34 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 		return err
 	}
 
+	// Secrets are write-once here, like submitted_inputs above: no other
+	// write path touches these four columns (secrets_purged_at is later
+	// updated only by the dedicated PurgeSubmissionSecrets). Empty Secrets
+	// encrypts to "" (stored as SQL NULL) and secret_names/secrets_purged_at
+	// follow suit so a submission with no secrets leaves all four columns
+	// NULL/empty.
+	storedSecrets, err := s.encryptSecretsMap(sub.Secrets, submissionSecretsAAD(sub.ID))
+	if err != nil {
+		return err
+	}
+	var secretsCol, secretNamesCol *string
+	if storedSecrets != "" {
+		secretsCol = &storedSecrets
+	}
+	if len(sub.SecretNames) > 0 {
+		b, err := json.Marshal(sub.SecretNames)
+		if err != nil {
+			return fmt.Errorf("marshal secret_names: %w", err)
+		}
+		s := string(b)
+		secretNamesCol = &s
+	}
+
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state,
-		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs,
+		 secrets, secret_names, secrets_retention, secrets_purged_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
@@ -512,6 +536,7 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
 		formatTimePtr(sub.PoststageStartedAt), formatTimePtr(sub.PoststageCompletedAt),
 		string(submittedInputsJSON),
+		secretsCol, secretNamesCol, sub.SecretsRetention, formatTimePtr(sub.SecretsPurgedAt),
 	)
 	return err
 }
@@ -553,10 +578,12 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var tokenExpiry int64
 	var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
 	var submittedInputsJSON *string
+	var secretsCol, secretNamesJSON, secretsPurgedAt *string
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state,
-		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs,
+		 secrets, secret_names, secrets_retention, secrets_purged_at
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
@@ -564,7 +591,8 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON,
 		&sub.OutputDestination, &sub.OutputState,
 		&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt,
-		&submittedInputsJSON)
+		&submittedInputsJSON,
+		&secretsCol, &secretNamesJSON, &sub.SecretsRetention, &secretsPurgedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -576,6 +604,21 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	sub.State = model.SubmissionState(state)
 	if sub.UserToken, err = s.decryptToken(sub.UserToken, submissionTokenAAD(sub.ID)); err != nil {
 		return nil, fmt.Errorf("decrypt user token: %w", err)
+	}
+	var storedSecrets string
+	if secretsCol != nil {
+		storedSecrets = *secretsCol
+	}
+	if sub.Secrets, err = s.decryptSecretsMap(storedSecrets, submissionSecretsAAD(sub.ID)); err != nil {
+		return nil, fmt.Errorf("decrypt submission secrets: %w", err)
+	}
+	if secretNamesJSON != nil {
+		if err := unmarshalJSON(*secretNamesJSON, &sub.SecretNames, "secret_names"); err != nil {
+			return nil, err
+		}
+	}
+	if sub.SecretsPurgedAt, err = scanTimePtr(secretsPurgedAt); err != nil {
+		return nil, err
 	}
 	if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
 		return nil, err
@@ -992,6 +1035,66 @@ func (s *SQLiteStore) ActivateSubmission(ctx context.Context, id string) (bool, 
 	}
 	n, _ := result.RowsAffected()
 	return n > 0, nil
+}
+
+// PurgeSubmissionSecrets clears a submission's secret values (secrets=NULL)
+// while keeping secret_names for auditability, and stamps secrets_purged_at.
+// Used by the scheduler's retention sweep once a submission's
+// SecretsRetention policy says its secret values are due for removal; see
+// ListSubmissionsWithSecretsForRetention.
+func (s *SQLiteStore) PurgeSubmissionSecrets(ctx context.Context, id string, at time.Time) error {
+	s.logger.Debug("sql", "op", "purge_secrets", "table", "submissions", "id", id)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE submissions SET secrets=NULL, secrets_purged_at=? WHERE id=?`,
+		at.Format(time.RFC3339Nano), id)
+	if err != nil {
+		return fmt.Errorf("purge submission secrets %s: %w", id, err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("submission %s not found", id)
+	}
+	return nil
+}
+
+// ListSubmissionsWithSecretsForRetention returns terminal-state submissions
+// that still carry secret values (submissions.secrets IS NOT NULL/non-empty),
+// with just enough loaded (state, created_at, completed_at,
+// secrets_retention) for the scheduler's retention sweep to decide whether to
+// purge. Secret values are never decrypted or returned here — every result's
+// Secrets field is nil — so this query is cheap to run every tick.
+func (s *SQLiteStore) ListSubmissionsWithSecretsForRetention(ctx context.Context) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_secrets_for_retention", "table", "submissions")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workflow_id, workflow_name, state, created_at, completed_at, secrets_retention
+		 FROM submissions
+		 WHERE secrets IS NOT NULL AND secrets != '' AND state IN (?, ?, ?)`,
+		string(model.SubmissionStateCompleted), string(model.SubmissionStateFailed), string(model.SubmissionStateCancelled))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []*model.Submission
+	for rows.Next() {
+		var sub model.Submission
+		var state, createdAt string
+		var completedAt *string
+		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state, &createdAt, &completedAt, &sub.SecretsRetention); err != nil {
+			return nil, err
+		}
+		sub.State = model.SubmissionState(state)
+		if sub.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+			return nil, err
+		}
+		if sub.CompletedAt, err = scanTimePtr(completedAt); err != nil {
+			return nil, err
+		}
+		subs = append(subs, &sub)
+	}
+	return subs, rows.Err()
 }
 
 func (s *SQLiteStore) DeleteSubmission(ctx context.Context, id string) error {
@@ -1425,7 +1528,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
 	}
-	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
+	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
 		return err
 	}
@@ -1590,7 +1693,7 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 	if err != nil {
 		return 0, fmt.Errorf("marshal job: %w", err)
 	}
-	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
+	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -1990,7 +2093,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
 		return nil, err
 	}
-	if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
+	if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
 		return nil, fmt.Errorf("decrypt runtime_hints token: %w", err)
 	}
 	if task.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
@@ -2069,7 +2172,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
 			continue
 		}
-		if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
+		if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
 			slog.Error("skipping task row with undecryptable token", "id", task.ID, "error", err)
 			continue
 		}
@@ -2450,7 +2553,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
 			continue
 		}
-		if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
+		if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
 			slog.Error("skipping task row with undecryptable token in checkout", "id", task.ID, "error", err)
 			continue
 		}

@@ -123,6 +123,15 @@ type RuntimeHints struct {
 	// task working data (no cleanup) so it can be inspected afterwards.
 	// Propagated from the submission's "debug" label.
 	Debug bool `json:"debug,omitempty"`
+
+	// Secrets are the subset of the submission's secrets this task may see (name → value).
+	// Encrypted at rest in tasks.runtime_hints; cleared at terminal state; delivered to the
+	// container by the worker. Never returned by the API.
+	Secrets map[string]string `json:"secrets,omitempty"`
+
+	// SecretInputs names workflow inputs declared secret via cwltool:Secrets whose values
+	// were removed from the persisted job and must be re-injected by the worker from Secrets.
+	SecretInputs []string `json:"secret_inputs,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

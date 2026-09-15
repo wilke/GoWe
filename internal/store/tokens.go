@@ -10,31 +10,36 @@ import (
 )
 
 // ConfigureTokenEncryption sets the at-rest encryption policy for persisted
-// provider tokens: the submitter's BV-BRC/MG-RAST token in
-// submissions.user_token and any HTTP bearer credential embedded in a task's
-// runtime hints (tasks.runtime_hints).
+// provider tokens and submission-time secrets: the submitter's BV-BRC/MG-RAST
+// token in submissions.user_token, any HTTP bearer credential embedded in a
+// task's runtime hints (tasks.runtime_hints), the submission's secrets map
+// (submissions.secrets), and the per-task subset of secrets embedded in a
+// task's runtime hints (tasks.runtime_hints).
 //
-//   - cipher != nil:  tokens are encrypted before persistence and decrypted on
+//   - cipher != nil:  values are encrypted before persistence and decrypted on
 //     read. Rows written in plaintext before encryption was enabled are read
 //     transparently and can be upgraded with ReencryptPlaintextTokens.
 //   - cipher == nil && refusePlaintext:  the store fails closed — persisting a
-//     non-empty token returns an error instead of writing it in the clear.
-//   - cipher == nil && !refusePlaintext: legacy behavior — tokens are stored in
+//     non-empty token/secret returns an error instead of writing it in the clear.
+//   - cipher == nil && !refusePlaintext: legacy behavior — values are stored in
 //     plaintext (a single warning is logged on first write).
 //
-// In-memory Submission/Task values always carry the plaintext token; encryption
-// is confined to the database boundary so the delegated-execution path (local
+// In-memory Submission/Task values always carry plaintext; encryption is
+// confined to the database boundary so the delegated-execution path (local
 // executor and the worker API) is unchanged.
 func (s *SQLiteStore) ConfigureTokenEncryption(cipher *tokencrypt.Cipher, refusePlaintext bool) {
 	s.cipher = cipher
 	s.refusePlaintextTokens = refusePlaintext
 }
 
-// submissionTokenAAD and taskHintsAAD build the context strings that bind a
-// ciphertext to the row/column it is stored in (AES-GCM AAD, see tokencrypt).
-// They MUST be stable for a given row across encrypt and decrypt.
-func submissionTokenAAD(id string) string { return "submission.user_token:" + id }
-func taskHintsAAD(id string) string       { return "task.runtime_hints.http_credential:" + id }
+// submissionTokenAAD, taskHintsAAD, submissionSecretsAAD, and taskSecretsAAD
+// build the context strings that bind a ciphertext to the row/column it is
+// stored in (AES-GCM AAD, see tokencrypt). They MUST be stable for a given
+// row across encrypt and decrypt.
+func submissionTokenAAD(id string) string   { return "submission.user_token:" + id }
+func taskHintsAAD(id string) string         { return "task.runtime_hints.http_credential:" + id }
+func submissionSecretsAAD(id string) string { return "submission.secrets:" + id }
+func taskSecretsAAD(id string) string       { return "task.runtime_hints.secrets:" + id }
 
 // encryptToken prepares a token for persistence per the configured policy,
 // binding aad as the storage context so the ciphertext cannot be relocated to
@@ -72,10 +77,46 @@ func (s *SQLiteStore) decryptToken(stored, aad string) (string, error) {
 	return stored, nil
 }
 
-// marshalRuntimeHints marshals task runtime hints for persistence, encrypting an
-// embedded HTTP bearer token when required by policy.
-func (s *SQLiteStore) marshalRuntimeHints(h *model.RuntimeHints, aad string) (string, error) {
-	stored, err := s.runtimeHintsForStorage(h, aad)
+// encryptSecretsMap marshals a secrets map (name -> value) to JSON and
+// encrypts it under aad per the configured token policy, following the same
+// fail-closed/plaintext-warning rules as encryptToken. A nil/empty map
+// encrypts to "" (the caller stores that as SQL NULL).
+func (s *SQLiteStore) encryptSecretsMap(m map[string]string, aad string) (string, error) {
+	if len(m) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal secrets: %w", err)
+	}
+	return s.encryptToken(string(b), aad)
+}
+
+// decryptSecretsMap reverses encryptSecretsMap. An empty stored value decodes
+// to a nil map, no error.
+func (s *SQLiteStore) decryptSecretsMap(stored, aad string) (map[string]string, error) {
+	if stored == "" {
+		return nil, nil
+	}
+	pt, err := s.decryptToken(stored, aad)
+	if err != nil {
+		return nil, err
+	}
+	if pt == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(pt), &m); err != nil {
+		return nil, fmt.Errorf("corrupt secrets JSON: %w", err)
+	}
+	return m, nil
+}
+
+// marshalRuntimeHints marshals task runtime hints for persistence, encrypting
+// an embedded HTTP bearer token and/or the task's delivered secrets subset
+// when required by policy. id is the task ID, used to derive both AADs.
+func (s *SQLiteStore) marshalRuntimeHints(h *model.RuntimeHints, id string) (string, error) {
+	stored, err := s.runtimeHintsForStorage(h, id)
 	if err != nil {
 		return "", err
 	}
@@ -87,54 +128,81 @@ func (s *SQLiteStore) marshalRuntimeHints(h *model.RuntimeHints, aad string) (st
 }
 
 // runtimeHintsForStorage returns a value equivalent to h but with any embedded
-// HTTP bearer token encrypted for storage. The input is never mutated, so
-// callers keep operating on the live, plaintext token in memory. Returns h
-// unchanged when there is no token to protect.
-func (s *SQLiteStore) runtimeHintsForStorage(h *model.RuntimeHints, aad string) (*model.RuntimeHints, error) {
-	if h == nil || h.StagerOverrides == nil || h.StagerOverrides.HTTPCredential == nil {
+// HTTP bearer token encrypted, and h.Secrets (if non-empty) replaced by the
+// single-entry map {"__enc__": "<encrypted-or-passthrough JSON blob>"} — see
+// revealRuntimeHints for the read-side counterpart. The input is never
+// mutated, so callers keep operating on the live, plaintext values in memory.
+// Returns h unchanged when there is nothing to protect.
+func (s *SQLiteStore) runtimeHintsForStorage(h *model.RuntimeHints, id string) (*model.RuntimeHints, error) {
+	if h == nil {
 		return h, nil
 	}
-	if h.StagerOverrides.HTTPCredential.Token == "" {
+	hasCred := h.StagerOverrides != nil && h.StagerOverrides.HTTPCredential != nil && h.StagerOverrides.HTTPCredential.Token != ""
+	hasSecrets := len(h.Secrets) > 0
+	if !hasCred && !hasSecrets {
 		return h, nil
 	}
-	enc, err := s.encryptToken(h.StagerOverrides.HTTPCredential.Token, aad)
-	if err != nil {
-		return nil, err
-	}
-	// Copy only along the path we mutate; everything else is shared.
+
+	// Copy only along the paths we mutate; everything else is shared.
 	hc := *h
-	so := *h.StagerOverrides
-	cred := *h.StagerOverrides.HTTPCredential
-	cred.Token = enc
-	so.HTTPCredential = &cred
-	hc.StagerOverrides = &so
+
+	if hasCred {
+		enc, err := s.encryptToken(h.StagerOverrides.HTTPCredential.Token, taskHintsAAD(id))
+		if err != nil {
+			return nil, err
+		}
+		so := *h.StagerOverrides
+		cred := *h.StagerOverrides.HTTPCredential
+		cred.Token = enc
+		so.HTTPCredential = &cred
+		hc.StagerOverrides = &so
+	}
+
+	if hasSecrets {
+		enc, err := s.encryptSecretsMap(h.Secrets, taskSecretsAAD(id))
+		if err != nil {
+			return nil, err
+		}
+		hc.Secrets = map[string]string{"__enc__": enc}
+	}
+
 	return &hc, nil
 }
 
-// revealRuntimeHints decrypts an embedded HTTP bearer token in freshly-scanned
-// task runtime hints, in place. Safe because each read produces a fresh object.
-func (s *SQLiteStore) revealRuntimeHints(h *model.RuntimeHints, aad string) error {
-	if h == nil || h.StagerOverrides == nil || h.StagerOverrides.HTTPCredential == nil {
+// revealRuntimeHints decrypts an embedded HTTP bearer token and/or the
+// task's secrets subset in freshly-scanned task runtime hints, in place.
+// Safe because each read produces a fresh object. id is the task ID, used to
+// derive both AADs.
+func (s *SQLiteStore) revealRuntimeHints(h *model.RuntimeHints, id string) error {
+	if h == nil {
 		return nil
 	}
-	cred := h.StagerOverrides.HTTPCredential
-	if cred.Token == "" {
-		return nil
+	if h.StagerOverrides != nil && h.StagerOverrides.HTTPCredential != nil && h.StagerOverrides.HTTPCredential.Token != "" {
+		pt, err := s.decryptToken(h.StagerOverrides.HTTPCredential.Token, taskHintsAAD(id))
+		if err != nil {
+			return err
+		}
+		h.StagerOverrides.HTTPCredential.Token = pt
 	}
-	pt, err := s.decryptToken(cred.Token, aad)
-	if err != nil {
-		return err
+	if enc, ok := h.Secrets["__enc__"]; ok {
+		m, err := s.decryptSecretsMap(enc, taskSecretsAAD(id))
+		if err != nil {
+			return err
+		}
+		h.Secrets = m
 	}
-	cred.Token = pt
 	return nil
 }
 
-// ReencryptPlaintextTokens upgrades provider tokens that were written in
-// plaintext (before encryption was enabled) to ciphertext, in both
-// submissions.user_token and tasks.runtime_hints. It is a no-op when no cipher
-// is configured. Per-row failures are logged (never the token value) and
-// skipped so one bad row does not abort startup. Returns the number of
-// submission and task rows rewritten.
+// ReencryptPlaintextTokens upgrades provider tokens and submission-time
+// secrets that were written in plaintext (before encryption was enabled) to
+// ciphertext, across submissions.user_token, submissions.secrets, and
+// tasks.runtime_hints (both the embedded HTTP bearer token and the embedded
+// secrets subset). It is a no-op when no cipher is configured. Per-row
+// failures are logged (never the secret value) and skipped so one bad row
+// does not abort startup. Returns the number of submission and task rows
+// rewritten (a row counts once even if it needed more than one field
+// upgraded).
 func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, tasks int, err error) {
 	if s.cipher == nil {
 		return 0, 0, nil
@@ -145,7 +213,7 @@ func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, t
 	// --- submissions.user_token ---
 	// Collect first, then write: with a single writer connection we must finish
 	// iterating before issuing UPDATEs.
-	var subUpdates []update
+	var subTokenUpdates []update
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_token FROM submissions WHERE user_token != ''`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("scan submissions: %w", err)
@@ -173,23 +241,65 @@ func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, t
 			s.logger.Error("re-encrypt submission token", "id", id, "error", encErr)
 			continue
 		}
-		subUpdates = append(subUpdates, update{id, enc})
+		subTokenUpdates = append(subTokenUpdates, update{id, enc})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return subs, tasks, err
 	}
-	for _, u := range subUpdates {
+	subRewritten := make(map[string]bool, len(subTokenUpdates))
+	for _, u := range subTokenUpdates {
 		if _, err := s.db.ExecContext(ctx, `UPDATE submissions SET user_token=? WHERE id=?`, u.val, u.id); err != nil {
 			s.logger.Error("update submission token", "id", u.id, "error", err)
 			continue
 		}
-		subs++
+		subRewritten[u.id] = true
 	}
 
-	// --- tasks.runtime_hints (embedded bearer token) ---
+	// --- submissions.secrets ---
+	var subSecretsUpdates []update
+	srows, err := s.db.QueryContext(ctx, `SELECT id, secrets FROM submissions WHERE secrets IS NOT NULL AND secrets != ''`)
+	if err != nil {
+		return subs, tasks, fmt.Errorf("scan submission secrets: %w", err)
+	}
+	for srows.Next() {
+		var id, val string
+		if err := srows.Scan(&id, &val); err != nil {
+			srows.Close()
+			return subs, tasks, fmt.Errorf("scan submission secrets: %w", err)
+		}
+		if tokencrypt.IsEncrypted(val) && !tokencrypt.NeedsAADUpgrade(val) {
+			continue
+		}
+		aad := submissionSecretsAAD(id)
+		pt, decErr := s.cipher.Decrypt(val, aad)
+		if decErr != nil {
+			s.logger.Error("re-encrypt submission secrets", "id", id, "error", decErr)
+			continue
+		}
+		enc, encErr := s.cipher.Encrypt(pt, aad)
+		if encErr != nil {
+			s.logger.Error("re-encrypt submission secrets", "id", id, "error", encErr)
+			continue
+		}
+		subSecretsUpdates = append(subSecretsUpdates, update{id, enc})
+	}
+	srows.Close()
+	if err := srows.Err(); err != nil {
+		return subs, tasks, err
+	}
+	for _, u := range subSecretsUpdates {
+		if _, err := s.db.ExecContext(ctx, `UPDATE submissions SET secrets=? WHERE id=?`, u.val, u.id); err != nil {
+			s.logger.Error("update submission secrets", "id", u.id, "error", err)
+			continue
+		}
+		subRewritten[u.id] = true
+	}
+	subs = len(subRewritten)
+
+	// --- tasks.runtime_hints (embedded bearer token and/or secrets) ---
 	var taskUpdates []update
-	trows, err := s.db.QueryContext(ctx, `SELECT id, runtime_hints FROM tasks WHERE runtime_hints LIKE '%http_credential%'`)
+	trows, err := s.db.QueryContext(ctx, `SELECT id, runtime_hints FROM tasks WHERE runtime_hints LIKE '%http_credential%' OR runtime_hints LIKE '%__enc__%'`)
 	if err != nil {
 		return subs, tasks, fmt.Errorf("scan tasks: %w", err)
 	}
@@ -203,25 +313,46 @@ func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, t
 		if err := json.Unmarshal([]byte(hintsJSON), &h); err != nil {
 			continue
 		}
-		if h.StagerOverrides == nil || h.StagerOverrides.HTTPCredential == nil {
+		changed := false
+
+		if h.StagerOverrides != nil && h.StagerOverrides.HTTPCredential != nil {
+			tok := h.StagerOverrides.HTTPCredential.Token
+			if tok != "" && !(tokencrypt.IsEncrypted(tok) && !tokencrypt.NeedsAADUpgrade(tok)) {
+				aad := taskHintsAAD(id)
+				pt, decErr := s.cipher.Decrypt(tok, aad)
+				if decErr != nil {
+					s.logger.Error("re-encrypt task token", "id", id, "error", decErr)
+				} else {
+					enc, encErr := s.cipher.Encrypt(pt, aad)
+					if encErr != nil {
+						s.logger.Error("re-encrypt task token", "id", id, "error", encErr)
+					} else {
+						h.StagerOverrides.HTTPCredential.Token = enc
+						changed = true
+					}
+				}
+			}
+		}
+
+		if enc, ok := h.Secrets["__enc__"]; ok && enc != "" && !(tokencrypt.IsEncrypted(enc) && !tokencrypt.NeedsAADUpgrade(enc)) {
+			aad := taskSecretsAAD(id)
+			pt, decErr := s.cipher.Decrypt(enc, aad)
+			if decErr != nil {
+				s.logger.Error("re-encrypt task secrets", "id", id, "error", decErr)
+			} else {
+				reenc, encErr := s.cipher.Encrypt(pt, aad)
+				if encErr != nil {
+					s.logger.Error("re-encrypt task secrets", "id", id, "error", encErr)
+				} else {
+					h.Secrets["__enc__"] = reenc
+					changed = true
+				}
+			}
+		}
+
+		if !changed {
 			continue
 		}
-		tok := h.StagerOverrides.HTTPCredential.Token
-		if tok == "" || (tokencrypt.IsEncrypted(tok) && !tokencrypt.NeedsAADUpgrade(tok)) {
-			continue
-		}
-		aad := taskHintsAAD(id)
-		pt, decErr := s.cipher.Decrypt(tok, aad)
-		if decErr != nil {
-			s.logger.Error("re-encrypt task token", "id", id, "error", decErr)
-			continue
-		}
-		enc, encErr := s.cipher.Encrypt(pt, aad)
-		if encErr != nil {
-			s.logger.Error("re-encrypt task token", "id", id, "error", encErr)
-			continue
-		}
-		h.StagerOverrides.HTTPCredential.Token = enc
 		nb, mErr := json.Marshal(&h)
 		if mErr != nil {
 			s.logger.Error("marshal re-encrypted task hints", "id", id, "error", mErr)
