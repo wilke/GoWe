@@ -29,7 +29,7 @@ const MaxSecretValueBytes = 64 * 1024
 
 // MinSecretValueBytes is the minimum length of a submission-time secret
 // value. Below this, the masking thresholds used at the execution boundary
-// (toolexec/worker: values shorter than 6 bytes are never masked in logs or
+// (toolexec/worker: values shorter than 8 bytes are never masked in logs or
 // the container process table) would let a short secret through unmasked
 // everywhere it is surfaced. Rejecting anything shorter than the masking
 // threshold at validation time is simpler than lowering the threshold.

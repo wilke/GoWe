@@ -454,7 +454,7 @@ func TestE2E_CwltoolSecrets_Argument_RealWorkerExecution_LoggingRedaction(t *tes
 	// that lands this assertion is expected to fail here.
 	t.Run("debug_logs_never_leak_value", func(t *testing.T) {
 		if strings.Contains(h.logs.String(), e2eSecretArg) {
-			t.Skip("known: #260 review H6 — toolexec/cwltool argv debug logs are not masked on the local/bare execution path yet; fixed in feat/260-fixes; un-skip at integration")
+			t.Fatal("#260 H6 REGRESSION — toolexec/cwltool argv debug logs are not masked on the local/bare execution path yet; fixed in feat/260-fixes; un-skip at integration")
 		}
 	})
 }
@@ -634,8 +634,8 @@ func TestE2E_ScrubAfterTerminal_WorkerExecutedTask(t *testing.T) {
 	sub := h.storeSubmission(subID)
 	step1 := e2eTaskByStep(sub)["step1"]
 
-	if step1.RuntimeHints != nil && (len(step1.RuntimeHints.Secrets) != 0 || len(step1.RuntimeHints.SecretInputs) != 0) {
-		t.Skip("known: #260 review H2 — worker-executed tasks are never scrubbed of RuntimeHints.Secrets/SecretInputs at terminal state; fixed in feat/260-fixes; un-skip at integration")
+	if step1.RuntimeHints != nil && (len(step1.RuntimeHints.Secrets) != 0 || (step1.RuntimeHints.StagerOverrides != nil && step1.RuntimeHints.StagerOverrides.HTTPCredential != nil)) {
+		t.Fatal("#260 H2 REGRESSION: worker-executed task still carries secret values at terminal state (SecretInputs/SecretEnvNames metadata is expected to remain)")
 	}
 }
 
@@ -665,7 +665,7 @@ func TestE2E_TaskAPI_SecretsNeverEchoed(t *testing.T) {
 			t.Fatalf("get task: status=%d body=%s", status, raw)
 		}
 		if bodyLeaks(t, raw, e2eSecretIWDR) {
-			t.Skip("known: #260 review C1 — GET .../tasks/{tid} echoes RuntimeHints.Secrets values (sanitizeTaskCredentials only strips StagerOverrides.HTTPCredential); fixed in feat/260-fixes; un-skip at integration")
+			t.Fatal("#260 review C1: REGRESSION — GET .../tasks/{tid} echoes RuntimeHints.Secrets values (sanitizeTaskCredentials only strips StagerOverrides.HTTPCredential); fixed in feat/260-fixes; un-skip at integration")
 		}
 	})
 
@@ -675,7 +675,7 @@ func TestE2E_TaskAPI_SecretsNeverEchoed(t *testing.T) {
 			t.Fatalf("list tasks: status=%d body=%s", status, raw)
 		}
 		if bodyLeaks(t, raw, e2eSecretIWDR) {
-			t.Skip("known: #260 review C1 — GET .../tasks/ echoes RuntimeHints.Secrets values; fixed in feat/260-fixes; un-skip at integration")
+			t.Fatal("#260 review C1: REGRESSION — GET .../tasks/ echoes RuntimeHints.Secrets values; fixed in feat/260-fixes; un-skip at integration")
 		}
 	})
 
@@ -685,7 +685,7 @@ func TestE2E_TaskAPI_SecretsNeverEchoed(t *testing.T) {
 			t.Fatalf("get submission: status=%d body=%s", status, raw)
 		}
 		if bodyLeaks(t, raw, e2eSecretIWDR) {
-			t.Skip("known: #260 review C1 — GET /submissions/{id}'s embedded tasks echo RuntimeHints.Secrets values; fixed in feat/260-fixes; un-skip at integration")
+			t.Fatal("#260 review C1: REGRESSION — GET /submissions/{id}'s embedded tasks echo RuntimeHints.Secrets values; fixed in feat/260-fixes; un-skip at integration")
 		}
 	})
 }
@@ -821,6 +821,6 @@ func TestE2E_DeleteSecrets_NonTerminal_Refused(t *testing.T) {
 	// window right after create is reliably non-terminal).
 	delStatus, delRaw, _ := h.do("DELETE", "/api/v1/submissions/"+subID+"/secrets", nil)
 	if delStatus != http.StatusConflict {
-		t.Skip("known: #260 review — manual secrets purge is not yet restricted to terminal submissions (currently succeeds on a non-terminal submission); fixed alongside H3 in feat/260-fixes; un-skip at integration. got status=" + fmt.Sprint(delStatus) + " body=" + string(delRaw))
+		t.Fatal("#260 review: manual secrets purge REGRESSION — is not yet restricted to terminal submissions (currently succeeds on a non-terminal submission); fixed alongside H3 in feat/260-fixes; un-skip at integration. got status=" + fmt.Sprint(delStatus) + " body=" + string(delRaw))
 	}
 }
