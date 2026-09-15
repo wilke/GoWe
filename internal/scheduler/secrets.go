@@ -38,6 +38,12 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 	// must never leave the first two already attached to task.RuntimeHints.
 	var newSecrets map[string]string
 	var newSecretInputs []string
+	// newSecretEnvNames accumulates the keys of newSecrets that the executor
+	// is allowed to expose as container environment variables (M13): only
+	// names that came from secret_env/inject_secrets, never the derived
+	// INPUT_* names added below for cwltool:Secrets re-injection, which must
+	// stay job-only.
+	var newSecretEnvNames []string
 
 	// Deliberately not guarded on len(sub.Secrets): a tool that names a
 	// secret in secret_env must fail pre-dispatch when the submission
@@ -49,6 +55,9 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 		switch {
 		case hints.InjectSecrets:
 			newSecrets = mergeSecretsInto(newSecrets, sub.Secrets)
+			for name := range sub.Secrets {
+				newSecretEnvNames = append(newSecretEnvNames, name)
+			}
 
 		case len(hints.SecretEnv) > 0:
 			for _, name := range hints.SecretEnv {
@@ -60,16 +69,20 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 					newSecrets = map[string]string{}
 				}
 				newSecrets[name] = v
+				newSecretEnvNames = append(newSecretEnvNames, name)
 			}
 		}
 	}
 
 	// cwltool:Secrets re-injection. Only direct `in: x: <workflow-input>`
 	// sourcing (a single source with no "/", i.e. not a step-output
-	// reference) is handled — nested/expression-derived sourcing (valueFrom,
-	// multiple sources, sourcing through an intermediate step output) is out
-	// of scope for this change. Such an input keeps carrying the literal
-	// model.SecretInputPlaceholder value and is never re-injected.
+	// reference) is handled — nested/expression-derived sourcing (multiple
+	// sources, sourcing through an intermediate step output) is out of scope
+	// for this change, as is any step input that also carries a `valueFrom`
+	// (M9: valueFrom on a secret-sourced step input is unsupported in this
+	// release — it would silently overwrite the valueFrom-derived job value
+	// with the raw secret on re-injection, so such an input is left alone
+	// and keeps carrying the literal model.SecretInputPlaceholder value).
 	if len(wf.SecretInputs) > 0 {
 		if step := findStep(wf, task.StepID); step != nil {
 			secretWfInputs := make(map[string]bool, len(wf.SecretInputs))
@@ -77,7 +90,7 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 				secretWfInputs[id] = true
 			}
 			for _, in := range step.In {
-				if len(in.Sources) != 1 {
+				if len(in.Sources) != 1 || in.ValueFrom != "" {
 					continue
 				}
 				src := in.Sources[0]
@@ -87,6 +100,17 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 				secretName := model.SecretNameForInput(src)
 				value, ok := sub.Secrets[secretName]
 				if !ok {
+					// M8: an optional workflow input the submitter left
+					// unsupplied never gets a placeholder/secret written at
+					// submission time (handler_submissions.go skips it), so
+					// there is legitimately nothing to re-inject here — leave
+					// the step input's job value (null/default) exactly as
+					// resolved and keep dispatching. A required input with no
+					// value is still a hard pre-dispatch failure: it can only
+					// mean the submission never supplied the secret at all.
+					if !wfInputRequired(wf, src) {
+						continue
+					}
 					return fmt.Errorf("cwltool:Secrets: workflow input %q (step input %q) has no value in submission secrets (want %q)", src, in.ID, secretName)
 				}
 				if newSecrets == nil {
@@ -97,8 +121,10 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 				// re-injects by looking up task.Job[stepInputID] and
 				// overwriting it (in memory only) with
 				// task.RuntimeHints.Secrets[SECRET_NAME]. See
-				// internal/worker/worker.go's re-injection step and the doc
-				// comment on model.RuntimeHints.SecretInputs.
+				// internal/cwltool.ApplySecrets and the doc comment on
+				// model.RuntimeHints.SecretInputs. Deliberately NOT added to
+				// newSecretEnvNames (M13): this value exists only for job
+				// re-injection and must never reach the container env.
 				newSecretInputs = append(newSecretInputs, in.ID+"="+secretName)
 			}
 		}
@@ -110,7 +136,23 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 	ensureTaskRuntimeHints(task)
 	task.RuntimeHints.Secrets = mergeSecretsInto(task.RuntimeHints.Secrets, newSecrets)
 	task.RuntimeHints.SecretInputs = append(task.RuntimeHints.SecretInputs, newSecretInputs...)
+	task.RuntimeHints.SecretEnvNames = append(task.RuntimeHints.SecretEnvNames, newSecretEnvNames...)
 	return nil
+}
+
+// wfInputRequired reports whether the workflow input id is required (no "?"
+// type suffix, no default) — mirrors internal/parser's Required derivation
+// (parser.go's toolInputToWorkflowInput-equivalent path sets Required:
+// !strings.HasSuffix(inp.Type, "?") && inp.Default == nil). An id not found
+// among wf.Inputs conservatively counts as required, preserving the
+// fail-loud behavior for any input whose definition cannot be located.
+func wfInputRequired(wf *model.Workflow, id string) bool {
+	for _, in := range wf.Inputs {
+		if in.ID == id {
+			return in.Required
+		}
+	}
+	return true
 }
 
 // ensureTaskRuntimeHints allocates task.RuntimeHints if it is nil, mirroring

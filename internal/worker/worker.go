@@ -608,21 +608,53 @@ func outputsReferenceDir(v any, dir string) bool {
 	return walk(v)
 }
 
+// redactSecretsMinLength is the minimum secret value length eligible for
+// redaction, tied to model.MinSecretValueBytes (matching
+// toolexec.secretMaskMinLength) — submission secrets are validated to be at
+// least this long (model.ValidateSecrets, #260 fix round), so every real
+// secret is coverable.
+const redactSecretsMinLength = model.MinSecretValueBytes
+
 // redactSecrets replaces every non-trivial secret value in s with a placeholder,
 // so an injected credential a tool echoed into its output (e.g. via `env` or
-// `set -x`) is never transmitted to the server or shown in logs. Values shorter
-// than 6 bytes are skipped to avoid pathological over-redaction of common
-// substrings; real tokens are far longer.
+// `set -x`) is never transmitted to the server or shown in logs. Values
+// shorter than redactSecretsMinLength bytes are skipped to avoid
+// pathological over-redaction of common substrings; real tokens are far
+// longer.
 func redactSecrets(s string, secrets map[string]string) string {
 	if s == "" || len(secrets) == 0 {
 		return s
 	}
 	for _, v := range secrets {
-		if len(v) >= 6 {
+		if len(v) >= redactSecretsMinLength {
 			s = strings.ReplaceAll(s, v, "***REDACTED***")
 		}
 	}
 	return s
+}
+
+// mergeSecretsForRedaction unions a and b into one map for use with
+// redactSecrets, so callers can cover both cfg.SecretEnvVars (worker-level
+// --secret defaults, injected BVBRC_TOKEN/KB_AUTH_TOKEN, env-exposed task
+// secrets) and cfg.SecretValues (the full task secret set, including
+// job-only cwltool:Secrets values ApplySecrets never puts in SecretEnvVars)
+// in one redaction pass without either map having to be a superset of the
+// other.
+func mergeSecretsForRedaction(a, b map[string]string) map[string]string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	merged := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		merged[k] = v
+	}
+	for k, v := range b {
+		merged[k] = v
+	}
+	return merged
 }
 
 // reportRetryBackoff is the base delay between report attempts (attempt n
@@ -755,55 +787,6 @@ func injectBVBRCTokenEnv(secretEnvVars map[string]string, hints *model.RuntimeHi
 	return copied
 }
 
-// mergeTaskSecrets returns secretEnvVars with taskSecrets merged in, task
-// entries winning on a name collision with a worker-level (--secret/
-// --secret-file) entry of the same name — a task's delivered submission
-// secrets are per-task, opted-in, and more specific than a global worker
-// default. A collision logs a WARN naming the NAME only, never a value.
-// secretEnvVars is never mutated in place (it may be the worker's shared
-// w.secrets map); a copy is made only when there is something to merge.
-func mergeTaskSecrets(secretEnvVars, taskSecrets map[string]string, logger *slog.Logger) map[string]string {
-	if len(taskSecrets) == 0 {
-		return secretEnvVars
-	}
-	copied := make(map[string]string, len(secretEnvVars)+len(taskSecrets))
-	for k, v := range secretEnvVars {
-		copied[k] = v
-	}
-	for k, v := range taskSecrets {
-		if _, exists := copied[k]; exists {
-			logger.Warn("task secret overrides worker-level secret with the same name", "name", k)
-		}
-		copied[k] = v
-	}
-	return copied
-}
-
-// reinjectSecretInputs re-injects cwltool:Secrets-declared workflow inputs
-// into task.Job (in memory only — task.Job is never sent back to the server;
-// the server-persisted job keeps model.SecretInputPlaceholder). Each entry
-// of task.RuntimeHints.SecretInputs has the form "<stepInputID>=<SECRET_NAME>"
-// (see internal/scheduler/secrets.go, which builds them); the real value
-// comes from task.RuntimeHints.Secrets[SECRET_NAME]. Returns an error naming
-// the step input id when an entry is malformed or its value is missing.
-func reinjectSecretInputs(task *model.Task) error {
-	if task.RuntimeHints == nil {
-		return nil
-	}
-	for _, entry := range task.RuntimeHints.SecretInputs {
-		stepInputID, secretName, ok := strings.Cut(entry, "=")
-		if !ok || stepInputID == "" || secretName == "" {
-			return fmt.Errorf("malformed secret input entry %q", entry)
-		}
-		value, ok := task.RuntimeHints.Secrets[secretName]
-		if !ok {
-			return fmt.Errorf("secret input %q: secret %q not delivered to this task", stepInputID, secretName)
-		}
-		task.Job[stepInputID] = value
-	}
-	return nil
-}
-
 // executeWithCWLTool executes a task using the cwltool package with full CWL support.
 func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string) error {
 	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
@@ -815,37 +798,6 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		} else {
 			task.Job[k] = rematerialized
 		}
-	}
-
-	// Re-inject cwltool:Secrets-declared inputs stripped from the persisted
-	// job at submission time — must happen before tool evaluation (parameter
-	// references, JS, InitialWorkDirRequirement) sees task.Job/job below.
-	if err := reinjectSecretInputs(task); err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("re-inject secret inputs: %w", err))
-	}
-
-	// Remap input paths if configured (host->container translation).
-	job := task.Job
-	if len(w.inputPathMap) > 0 {
-		job = cwltool.RemapInputPaths(job, w.inputPathMap)
-		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
-	}
-
-	// Stage-in remote files (worker owns this step).
-	stager := w.stager
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
-	}
-	stageInStart := time.Now()
-	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
-	}
-	stageInMs := time.Since(stageInStart).Milliseconds()
-
-	// Parse tool from task.Tool map using the proper parser.
-	tool, err := w.parser.ParseToolFromMap(task.Tool)
-	if err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
 	}
 
 	// Build cwltool configuration.
@@ -870,23 +822,61 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
 		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
-		// Deliver the task's opted-in submission secrets (gowe:Execution
-		// secret_env/inject_secrets) as container env vars. redactSecrets
-		// below covers these values in captured stdout/stderr because it
-		// operates on the final cfg.SecretEnvVars.
-		cfg.SecretEnvVars = mergeTaskSecrets(cfg.SecretEnvVars, task.RuntimeHints.Secrets, w.logger)
+	}
+
+	// Deliver the task's opted-in submission secrets (gowe:Execution
+	// secret_env/inject_secrets, limited to SecretEnvNames — M13) as
+	// container env vars, and re-inject cwltool:Secrets-declared inputs
+	// stripped from the persisted job at submission time into a COPY of
+	// task.Job (task.Job itself is never mutated) — this is the same
+	// internal/cwltool.ApplySecrets path local/docker executors now use
+	// (H4), so all three deliver secrets identically. Must happen before
+	// tool evaluation (parameter references, JS,
+	// InitialWorkDirRequirement) sees the job below.
+	job, err := cwltool.ApplySecrets(&cfg, task, w.logger)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("apply secrets: %w", err))
+	}
+
+	// Remap input paths if configured (host->container translation).
+	if len(w.inputPathMap) > 0 {
+		job = cwltool.RemapInputPaths(job, w.inputPathMap)
+		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
+	}
+
+	// Stage-in remote files (worker owns this step).
+	stager := w.stager
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
+	}
+	stageInStart := time.Now()
+	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
+	}
+	stageInMs := time.Since(stageInStart).Milliseconds()
+
+	// Parse tool from task.Tool map using the proper parser.
+	tool, err := w.parser.ParseToolFromMap(task.Tool)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
 	}
 
 	// Execute the tool.
 	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
 
-	// Redact any injected secret values (e.g. BVBRC_TOKEN/KB_AUTH_TOKEN) a tool
-	// may have echoed into its captured stdout/stderr before those logs leave the
-	// worker for the server. The trust-boundary invariant (SPECIFICATION.md §13.2)
-	// requires injected secrets never be transmitted to or persisted by the server.
+	// Redact any injected secret values (e.g. BVBRC_TOKEN/KB_AUTH_TOKEN, task
+	// secrets, and job-only cwltool:Secrets values) a tool may have echoed
+	// into its captured stdout/stderr before those logs leave the worker for
+	// the server. cfg.SecretValues (populated by ApplySecrets) is the full
+	// set in play, a superset of cfg.SecretEnvVars — using it here keeps
+	// redaction coverage exactly as broad as before M13 narrowed
+	// SecretEnvVars to the env-exposed subset. The trust-boundary invariant
+	// (SPECIFICATION.md §13.2) requires injected secrets never be
+	// transmitted to or persisted by the server.
 	if result != nil {
-		result.Stdout = redactSecrets(result.Stdout, cfg.SecretEnvVars)
-		result.Stderr = redactSecrets(result.Stderr, cfg.SecretEnvVars)
+		maskSet := mergeSecretsForRedaction(cfg.SecretEnvVars, cfg.SecretValues)
+		result.Stdout = redactSecrets(result.Stdout, maskSet)
+		result.Stderr = redactSecrets(result.Stderr, maskSet)
 	}
 
 	// Handle execution errors.

@@ -204,6 +204,90 @@ func TestAddSecrets_CwltoolSecrets_MissingValue_Errors(t *testing.T) {
 	}
 }
 
+// TestAddSecrets_CwltoolSecrets_OptionalMissingValue_SkippedNotError is the
+// M8 regression test: an optional workflow input (nullable "?" type, or a
+// default) left unsupplied by the submitter never gets a placeholder/secret
+// written at submission time (handler_submissions.go skips it), so there is
+// nothing to re-inject — addSecrets must skip it, not fail the task
+// pre-dispatch as it did before the fix.
+func TestAddSecrets_CwltoolSecrets_OptionalMissingValue_SkippedNotError(t *testing.T) {
+	l := &Loop{}
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	sub := &model.Submission{ID: "sub_1", Secrets: map[string]string{}} // no value for "pw"
+	wf := &model.Workflow{
+		ID:           "wf_1",
+		SecretInputs: []string{"pw"},
+		Inputs:       []model.WorkflowInput{{ID: "pw", Type: "string?", Required: false}},
+		Steps:        []model.Step{*secretStep("step1", "password", "pw")},
+	}
+
+	if err := l.addSecrets(task, sub, nil, wf); err != nil {
+		t.Fatalf("addSecrets: unexpected error for an optional unsupplied secret input: %v", err)
+	}
+	if task.RuntimeHints != nil && len(task.RuntimeHints.SecretInputs) != 0 {
+		t.Errorf("task.RuntimeHints.SecretInputs = %v, want empty — nothing to re-inject", task.RuntimeHints.SecretInputs)
+	}
+}
+
+// TestAddSecrets_CwltoolSecrets_RequiredMissingValue_StillErrors pins the
+// M8 fix's boundary: a REQUIRED workflow input with no value in submission
+// secrets is still a hard pre-dispatch failure — it can only mean the
+// submission never supplied the secret at all, not "legitimately absent".
+func TestAddSecrets_CwltoolSecrets_RequiredMissingValue_StillErrors(t *testing.T) {
+	l := &Loop{}
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	sub := &model.Submission{ID: "sub_1", Secrets: map[string]string{}}
+	wf := &model.Workflow{
+		ID:           "wf_1",
+		SecretInputs: []string{"pw"},
+		Inputs:       []model.WorkflowInput{{ID: "pw", Type: "string", Required: true}},
+		Steps:        []model.Step{*secretStep("step1", "password", "pw")},
+	}
+
+	err := l.addSecrets(task, sub, nil, wf)
+	if err == nil {
+		t.Fatal("expected an error for a required cwltool:Secrets input with no value in submission secrets")
+	}
+	if task.RuntimeHints != nil {
+		t.Errorf("task.RuntimeHints = %+v, want nil (no partial attachment)", task.RuntimeHints)
+	}
+}
+
+// TestAddSecrets_CwltoolSecrets_ValueFrom_Skipped is the M9 regression test:
+// a step input that sources a cwltool:Secrets-declared workflow input AND
+// carries a valueFrom expression must NOT be re-injected — doing so would
+// silently overwrite the valueFrom-derived job value with the raw secret.
+// Such an input keeps carrying the literal model.SecretInputPlaceholder.
+func TestAddSecrets_CwltoolSecrets_ValueFrom_Skipped(t *testing.T) {
+	l := &Loop{}
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	sub := &model.Submission{ID: "sub_1", Secrets: map[string]string{
+		model.SecretNameForInput("pw"): "hunter2",
+	}}
+	wf := &model.Workflow{
+		ID:           "wf_1",
+		SecretInputs: []string{"pw"},
+		Steps: []model.Step{
+			{
+				ID: "step1",
+				In: []model.StepInput{
+					{ID: "password", Sources: []string{"pw"}, ValueFrom: "$(self.toUpperCase())"},
+				},
+			},
+		},
+	}
+
+	if err := l.addSecrets(task, sub, nil, wf); err != nil {
+		t.Fatalf("addSecrets: %v", err)
+	}
+	if task.RuntimeHints != nil && len(task.RuntimeHints.SecretInputs) != 0 {
+		t.Errorf("task.RuntimeHints.SecretInputs = %v, want empty — valueFrom inputs are unsupported for re-injection", task.RuntimeHints.SecretInputs)
+	}
+	if task.RuntimeHints != nil && len(task.RuntimeHints.Secrets) != 0 {
+		t.Errorf("task.RuntimeHints.Secrets = %v, want empty — nothing should be attached for a valueFrom-skipped input", task.RuntimeHints.Secrets)
+	}
+}
+
 // TestAddSecrets_Atomic_NoPartialOnLaterFailure verifies that when a workflow
 // declares multiple cwltool:Secrets inputs and only a later one is missing
 // its value, the earlier (valid) one is NOT left attached to the task —
@@ -235,6 +319,66 @@ func TestAddSecrets_Atomic_NoPartialOnLaterFailure(t *testing.T) {
 	}
 	if task.RuntimeHints != nil {
 		t.Errorf("task.RuntimeHints = %+v, want nil — pw1 must not leak through despite succeeding before pw2 failed", task.RuntimeHints)
+	}
+}
+
+// TestAddSecrets_PopulatesSecretEnvNames is a direct M13 unit test: the
+// names attached to RuntimeHints.SecretEnvNames must be exactly the
+// secret_env/inject_secrets names — never the derived cwltool:Secrets
+// INPUT_* name, which exists only for job re-injection.
+func TestAddSecrets_PopulatesSecretEnvNames(t *testing.T) {
+	l := &Loop{}
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	sub := &model.Submission{ID: "sub_1", Secrets: map[string]string{
+		"HF_TOKEN":                     "hf_abc",
+		model.SecretNameForInput("pw"): "hunter2",
+	}}
+	wf := &model.Workflow{
+		ID:           "wf_1",
+		SecretInputs: []string{"pw"},
+		Steps:        []model.Step{*secretStep("step1", "password", "pw")},
+	}
+	hints := &model.StepHints{SecretEnv: []string{"HF_TOKEN"}}
+
+	if err := l.addSecrets(task, sub, hints, wf); err != nil {
+		t.Fatalf("addSecrets: %v", err)
+	}
+	if task.RuntimeHints == nil {
+		t.Fatal("expected RuntimeHints to be allocated")
+	}
+	if len(task.RuntimeHints.SecretEnvNames) != 1 || task.RuntimeHints.SecretEnvNames[0] != "HF_TOKEN" {
+		t.Errorf("task.RuntimeHints.SecretEnvNames = %v, want [HF_TOKEN] (not the INPUT_PW re-injection name)", task.RuntimeHints.SecretEnvNames)
+	}
+	// Both values are still attached to Secrets (env delivery + job
+	// re-injection both read from the same map) — only SecretEnvNames gates
+	// what the executor is allowed to put in the container env.
+	if len(task.RuntimeHints.Secrets) != 2 {
+		t.Errorf("task.RuntimeHints.Secrets = %v, want both HF_TOKEN and %s", task.RuntimeHints.Secrets, model.SecretNameForInput("pw"))
+	}
+}
+
+// TestAddSecrets_InjectSecrets_PopulatesSecretEnvNames verifies
+// inject_secrets exposes every submission secret name (not just a
+// SecretEnv-named subset).
+func TestAddSecrets_InjectSecrets_PopulatesSecretEnvNames(t *testing.T) {
+	l := &Loop{}
+	task := &model.Task{ID: "task_1", StepID: "step1"}
+	sub := &model.Submission{ID: "sub_1", Secrets: map[string]string{"A": "va", "B": "vb"}}
+	wf := &model.Workflow{ID: "wf_1"}
+	hints := &model.StepHints{InjectSecrets: true}
+
+	if err := l.addSecrets(task, sub, hints, wf); err != nil {
+		t.Fatalf("addSecrets: %v", err)
+	}
+	if task.RuntimeHints == nil {
+		t.Fatal("expected RuntimeHints to be allocated")
+	}
+	got := map[string]bool{}
+	for _, n := range task.RuntimeHints.SecretEnvNames {
+		got[n] = true
+	}
+	if !got["A"] || !got["B"] || len(got) != 2 {
+		t.Errorf("task.RuntimeHints.SecretEnvNames = %v, want exactly [A B]", task.RuntimeHints.SecretEnvNames)
 	}
 }
 
@@ -663,5 +807,100 @@ func TestAddSecrets_SecretEnvWithNoSubmissionSecrets_Fails(t *testing.T) {
 	task2 := &model.Task{ID: "task_y", StepID: "s1"}
 	if err := l.addSecrets(task2, sub, &model.StepHints{InjectSecrets: true}, wf); err != nil {
 		t.Fatalf("inject_secrets with no submission secrets should be a no-op, got %v", err)
+	}
+}
+
+// TestResubmitRetrying_ReattachesSecrets is the LOW regression test: a task
+// that expected a delivered secret (secret_env) has that secret scrubbed the
+// moment it first reaches a terminal FAILED state (scrubTaskToken, called
+// from submitAndUpdateTask). Before the fix, resubmitRetrying resubmitted
+// the same task object straight out of RETRYING with no call back into
+// addSecrets, so the retried attempt ran with RuntimeHints.Secrets == nil —
+// silently missing the secret it declared it needed, on the second attempt
+// instead of the first.
+//
+// The tool's first invocation always fails (regardless of secrets), leaving
+// a "seen" marker file in its task working directory (stable across
+// retries: resubmitRetrying reuses the same task ID / working directory).
+// The retried (second) invocation succeeds if and only if HF_TOKEN is set in
+// its environment — which only happens if addSecrets ran again for the
+// retry.
+// retrySecretEnvCWL: a CommandLineTool whose first invocation always fails
+// (leaving a "seen" marker file behind in its task working directory, which
+// is stable across retries — resubmitRetrying reuses the same task ID) and
+// whose retried (second) invocation succeeds if and only if HF_TOKEN is set
+// in its environment. Registered via ParseGraph (not a bare model.Step
+// pipeline) so the step dispatches through populateToolAndJob's real
+// task.Tool/cwltool.ExecuteTool path — a bare-Step pipeline with no RawCWL
+// falls back to the legacy _base_command executor path, which bypasses
+// addSecrets/ApplySecrets entirely and would make this test pass for the
+// wrong reason.
+const retrySecretEnvCWL = `
+cwlVersion: v1.2
+$graph:
+  - id: main
+    class: Workflow
+    inputs: []
+    outputs: []
+    steps:
+      retry_step:
+        run: "#retry-tool"
+        in: []
+        out: [out]
+  - id: retry-tool
+    class: CommandLineTool
+    baseCommand: [sh, -c, 'test -f seen || { touch seen; exit 1; }; test -n "$HF_TOKEN"']
+    hints:
+      "gowe:Execution":
+        secret_env: [HF_TOKEN]
+    inputs: []
+    outputs:
+      out:
+        type: string
+`
+
+func TestResubmitRetrying_ReattachesSecrets(t *testing.T) {
+	sched, st := testSetup(t)
+	sched.config.MaxRetries = 2
+	ctx := context.Background()
+
+	subID := registerGraphWorkflowWithSecrets(t, st, retrySecretEnvCWL,
+		map[string]any{}, map[string]string{"HF_TOKEN": "hf_super_secret_value"})
+
+	// Tick 1: dispatch (addSecrets attaches HF_TOKEN) -> tool fails (no
+	// "seen" marker yet) -> scrubTaskToken clears RuntimeHints.Secrets ->
+	// markRetries -> RETRYING.
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatalf("Tick 1: %v", err)
+	}
+	tasks, err := st.ListTasksBySubmission(ctx, subID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("ListTasksBySubmission after tick 1: err=%v, count=%d", err, len(tasks))
+	}
+	taskID := tasks[0].ID
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetTask after tick 1: %v", err)
+	}
+	if task.State != model.TaskStateRetrying {
+		t.Fatalf("after tick 1: state = %q (stderr=%q), want RETRYING", task.State, task.Stderr)
+	}
+	if task.RuntimeHints != nil && len(task.RuntimeHints.Secrets) != 0 {
+		t.Fatalf("after tick 1: RuntimeHints.Secrets = %v, want nil (scrubbed at the terminal FAILED state before RETRYING)", task.RuntimeHints.Secrets)
+	}
+
+	// Tick 2: resubmitRetrying must re-attach the secret before resubmitting
+	// — the tool's second invocation only succeeds if HF_TOKEN reached its
+	// environment.
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatalf("Tick 2: %v", err)
+	}
+	task, err = st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetTask after tick 2: %v", err)
+	}
+	if task.State != model.TaskStateSuccess {
+		t.Fatalf("after tick 2: state = %q (stderr=%q), want SUCCESS — the retry must have re-attached HF_TOKEN for the tool to see it",
+			task.State, task.Stderr)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/iwdr"
+	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
 
@@ -34,20 +35,28 @@ func resolveApptainerImage(dockerImage, imageDir string) string {
 	return "docker://" + dockerImage
 }
 
-// maskSecretValues returns a copy of args with every occurrence of a secret
+// secretMaskMinLength is the minimum secret value length eligible for
+// masking, to avoid pathological over-redaction of common short substrings
+// (e.g. a 2-byte value matching part of an unrelated argument). Tied to
+// model.MinSecretValueBytes: submission secrets are validated to be at least
+// that long (model.ValidateSecrets, #260 fix round), so every real secret is
+// coverable; a worker-operator --secret shorter than this is a configuration
+// choice outside GoWe's control.
+const secretMaskMinLength = model.MinSecretValueBytes
+
+// MaskSecretValues returns a copy of args with every occurrence of a secret
 // value replaced by "***REDACTED***", for logging only. The real argv (args)
 // is never mutated — callers must keep using the original slice to actually
-// run the command. Values shorter than 6 bytes are skipped (same threshold
-// as worker.redactSecrets) to avoid pathological over-redaction of common
-// short substrings.
-func maskSecretValues(args []string, secrets map[string]string) []string {
+// run the command. Values shorter than secretMaskMinLength bytes are
+// skipped.
+func MaskSecretValues(args []string, secrets map[string]string) []string {
 	if len(secrets) == 0 {
 		return args
 	}
 	masked := make([]string, len(args))
 	copy(masked, args)
 	for _, v := range secrets {
-		if len(v) < 6 {
+		if len(v) < secretMaskMinLength {
 			continue
 		}
 		for i, a := range masked {
@@ -59,10 +68,52 @@ func maskSecretValues(args []string, secrets map[string]string) []string {
 	return masked
 }
 
+// combinedMaskSecrets unions opts.MaskSecrets (the full secret-value set,
+// including job-only values that never reach the container env) with
+// opts.SecretEnvVars (env-exposed values), so every log-masking call site
+// covers both without every caller having to populate MaskSecrets — a
+// caller that only ever sets SecretEnvVars (e.g. existing tests, or a
+// worker-level --secret with no task involved) still gets full coverage of
+// what it set.
+func combinedMaskSecrets(opts *Options) map[string]string {
+	if len(opts.MaskSecrets) == 0 {
+		return opts.SecretEnvVars
+	}
+	if len(opts.SecretEnvVars) == 0 {
+		return opts.MaskSecrets
+	}
+	merged := make(map[string]string, len(opts.MaskSecrets)+len(opts.SecretEnvVars))
+	for k, v := range opts.SecretEnvVars {
+		merged[k] = v
+	}
+	for k, v := range opts.MaskSecrets {
+		merged[k] = v
+	}
+	return merged
+}
+
+// secretEnvAssignments returns "<prefix><NAME>=<value>" environment
+// assignments for every secret, meant to be appended to an exec.Cmd's Env so
+// the container runtime's CLI (docker, or Apptainer via the APPTAINERENV_
+// prefix) forwards the value from its own process environment rather than
+// having it appear on the child process's argv (H5). Order is
+// non-deterministic (map iteration) — callers that need to compare output in
+// tests should treat the result as a set.
+func secretEnvAssignments(secrets map[string]string, prefix string) []string {
+	if len(secrets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(secrets))
+	for name, value := range secrets {
+		out = append(out, prefix+name+"="+value)
+	}
+	return out
+}
+
 // executeLocal executes a tool locally without Docker in the specified work directory.
 func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
-	e.logger.Info("executing locally", "command", opts.Command.Command)
+	e.logger.Info("executing locally", "command", MaskSecretValues(opts.Command.Command, combinedMaskSecrets(opts)))
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -249,7 +300,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
 	dockerImage := opts.DockerImage
-	e.logger.Info("executing in Docker", "image", dockerImage, "command", opts.Command.Command)
+	e.logger.Info("executing in Docker", "image", dockerImage, "command", MaskSecretValues(opts.Command.Command, combinedMaskSecrets(opts)))
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -434,8 +485,13 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	for name, value := range opts.EnvVars {
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
-	for name, value := range opts.SecretEnvVars {
-		dockerArgs = append(dockerArgs, "-e", name+"="+value)
+	// H5: secret values never go on the argv (readable for the lifetime of
+	// the container launch via `ps auxww` / `/proc/<pid>/cmdline` by any
+	// local user on the worker host) — pass "-e NAME" (name only) and let
+	// the docker CLI forward the value from its OWN process environment,
+	// which we set below via cmd.Env.
+	for name := range opts.SecretEnvVars {
+		dockerArgs = append(dockerArgs, "-e", name)
 	}
 
 	// Add image.
@@ -449,9 +505,14 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, cmdResult.Command...)
 	}
 
-	e.logger.Debug("docker command", "args", maskSecretValues(dockerArgs, opts.SecretEnvVars))
+	e.logger.Debug("docker command", "args", MaskSecretValues(dockerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	// cmd.Env must start from the current environment (matching executeLocal)
+	// so nothing else breaks, plus one NAME=value assignment per secret for
+	// the bare "-e NAME" entries above — docker forwards the value from its
+	// own environment rather than ever seeing it on dockerArgs.
+	cmd.Env = append(os.Environ(), secretEnvAssignments(opts.SecretEnvVars, "")...)
 
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
@@ -565,7 +626,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
 	dockerImage := opts.DockerImage
-	e.logger.Info("executing in Apptainer", "image", dockerImage, "image_dir", opts.ImageDir, "command", opts.Command.Command)
+	e.logger.Info("executing in Apptainer", "image", dockerImage, "image_dir", opts.ImageDir, "command", MaskSecretValues(opts.Command.Command, combinedMaskSecrets(opts)))
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -657,9 +718,11 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	for name, value := range opts.EnvVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
-	for name, value := range opts.SecretEnvVars {
-		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
-	}
+	// H5: no --env for secrets at all (unlike Docker's "-e NAME" bare-name
+	// form, Apptainer's --env has no way to name-without-value). Instead set
+	// APPTAINERENV_<NAME>=<value> in cmd.Env below — Apptainer auto-injects
+	// any APPTAINERENV_* variable from its own process environment into the
+	// container, so the value never appears on apptainerArgs / `ps auxww`.
 
 	// GPU support: use --nv for NVIDIA GPU passthrough.
 	if opts.GPU.Enabled {
@@ -702,9 +765,13 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerArgs = append(apptainerArgs, cmdResult.Command...)
 	}
 
-	e.logger.Debug("apptainer command", "args", maskSecretValues(apptainerArgs, opts.SecretEnvVars))
+	e.logger.Debug("apptainer command", "args", MaskSecretValues(apptainerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
+	// cmd.Env must start from the current environment (matching executeLocal)
+	// so nothing else breaks, plus one APPTAINERENV_NAME=value assignment per
+	// secret — see the H5 note above the (removed) --env loop.
+	cmd.Env = append(os.Environ(), secretEnvAssignments(opts.SecretEnvVars, "APPTAINERENV_")...)
 
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
