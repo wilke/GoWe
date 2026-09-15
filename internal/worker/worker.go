@@ -755,6 +755,55 @@ func injectBVBRCTokenEnv(secretEnvVars map[string]string, hints *model.RuntimeHi
 	return copied
 }
 
+// mergeTaskSecrets returns secretEnvVars with taskSecrets merged in, task
+// entries winning on a name collision with a worker-level (--secret/
+// --secret-file) entry of the same name — a task's delivered submission
+// secrets are per-task, opted-in, and more specific than a global worker
+// default. A collision logs a WARN naming the NAME only, never a value.
+// secretEnvVars is never mutated in place (it may be the worker's shared
+// w.secrets map); a copy is made only when there is something to merge.
+func mergeTaskSecrets(secretEnvVars, taskSecrets map[string]string, logger *slog.Logger) map[string]string {
+	if len(taskSecrets) == 0 {
+		return secretEnvVars
+	}
+	copied := make(map[string]string, len(secretEnvVars)+len(taskSecrets))
+	for k, v := range secretEnvVars {
+		copied[k] = v
+	}
+	for k, v := range taskSecrets {
+		if _, exists := copied[k]; exists {
+			logger.Warn("task secret overrides worker-level secret with the same name", "name", k)
+		}
+		copied[k] = v
+	}
+	return copied
+}
+
+// reinjectSecretInputs re-injects cwltool:Secrets-declared workflow inputs
+// into task.Job (in memory only — task.Job is never sent back to the server;
+// the server-persisted job keeps model.SecretInputPlaceholder). Each entry
+// of task.RuntimeHints.SecretInputs has the form "<stepInputID>=<SECRET_NAME>"
+// (see internal/scheduler/secrets.go, which builds them); the real value
+// comes from task.RuntimeHints.Secrets[SECRET_NAME]. Returns an error naming
+// the step input id when an entry is malformed or its value is missing.
+func reinjectSecretInputs(task *model.Task) error {
+	if task.RuntimeHints == nil {
+		return nil
+	}
+	for _, entry := range task.RuntimeHints.SecretInputs {
+		stepInputID, secretName, ok := strings.Cut(entry, "=")
+		if !ok || stepInputID == "" || secretName == "" {
+			return fmt.Errorf("malformed secret input entry %q", entry)
+		}
+		value, ok := task.RuntimeHints.Secrets[secretName]
+		if !ok {
+			return fmt.Errorf("secret input %q: secret %q not delivered to this task", stepInputID, secretName)
+		}
+		task.Job[stepInputID] = value
+	}
+	return nil
+}
+
 // executeWithCWLTool executes a task using the cwltool package with full CWL support.
 func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string) error {
 	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
@@ -766,6 +815,13 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		} else {
 			task.Job[k] = rematerialized
 		}
+	}
+
+	// Re-inject cwltool:Secrets-declared inputs stripped from the persisted
+	// job at submission time — must happen before tool evaluation (parameter
+	// references, JS, InitialWorkDirRequirement) sees task.Job/job below.
+	if err := reinjectSecretInputs(task); err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("re-inject secret inputs: %w", err))
 	}
 
 	// Remap input paths if configured (host->container translation).
@@ -814,6 +870,11 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
 		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
+		// Deliver the task's opted-in submission secrets (gowe:Execution
+		// secret_env/inject_secrets) as container env vars. redactSecrets
+		// below covers these values in captured stdout/stderr because it
+		// operates on the final cfg.SecretEnvVars.
+		cfg.SecretEnvVars = mergeTaskSecrets(cfg.SecretEnvVars, task.RuntimeHints.Secrets, w.logger)
 	}
 
 	// Execute the tool.
