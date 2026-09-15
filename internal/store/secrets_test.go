@@ -331,6 +331,104 @@ func TestTaskRuntimeHintsSecretsAndCredentialBothEncrypt(t *testing.T) {
 	}
 }
 
+// TestScrubTaskSecretsForSubmission verifies the #260 H2/H3 fix: neither
+// CancelNonTerminalTasks (a state-only bulk UPDATE) nor
+// PurgeSubmissionSecrets (which only clears the submissions row) reaches
+// tasks.runtime_hints, so the per-task secret subset needs its own scrub
+// path. This test exercises that path directly.
+func TestScrubTaskSecretsForSubmission(t *testing.T) {
+	st := testStore(t)
+	st.ConfigureTokenEncryption(testTokenCipher(t), true)
+	ctx := context.Background()
+
+	// Task with a secret + an HTTP credential override: both must be
+	// cleared, metadata (SecretEnvNames/SecretInputs) must survive.
+	withSecret := secretsTask("task_scrub_1", map[string]string{"HF_TOKEN": "worker-secret-value"})
+	withSecret.SubmissionID = "sub_scrub"
+	withSecret.RuntimeHints.SecretEnvNames = []string{"HF_TOKEN"}
+	withSecret.RuntimeHints.SecretInputs = []string{"pw"}
+	withSecret.RuntimeHints.StagerOverrides = &model.StagerOverrides{
+		HTTPCredential: &model.HTTPCredential{Type: "bearer", Token: "bearer-value"},
+	}
+	if err := st.CreateTask(ctx, withSecret); err != nil {
+		t.Fatalf("create task with secret: %v", err)
+	}
+
+	// Task with no secrets at all: must be left alone (not even rewritten).
+	noSecret := secretsTask("task_scrub_2", nil)
+	noSecret.SubmissionID = "sub_scrub"
+	noSecret.RuntimeHints = &model.RuntimeHints{DockerImage: "ubuntu:22.04"}
+	if err := st.CreateTask(ctx, noSecret); err != nil {
+		t.Fatalf("create task without secret: %v", err)
+	}
+
+	// Task belonging to a different submission: must be untouched.
+	other := secretsTask("task_scrub_other_sub", map[string]string{"A": "should-survive"})
+	other.SubmissionID = "sub_other"
+	if err := st.CreateTask(ctx, other); err != nil {
+		t.Fatalf("create task on other submission: %v", err)
+	}
+
+	scrubbed, err := st.ScrubTaskSecretsForSubmission(ctx, "sub_scrub")
+	if err != nil {
+		t.Fatalf("ScrubTaskSecretsForSubmission: %v", err)
+	}
+	if scrubbed != 1 {
+		t.Errorf("scrubbed = %d, want 1 (only task_scrub_1 carries a secret)", scrubbed)
+	}
+
+	got1, err := st.GetTask(ctx, "task_scrub_1")
+	if err != nil {
+		t.Fatalf("get task_scrub_1: %v", err)
+	}
+	if len(got1.RuntimeHints.Secrets) != 0 {
+		t.Errorf("Secrets after scrub = %v, want empty", got1.RuntimeHints.Secrets)
+	}
+	if got1.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+		t.Errorf("HTTPCredential after scrub = %v, want nil", got1.RuntimeHints.StagerOverrides.HTTPCredential)
+	}
+	// Metadata must survive the scrub.
+	if len(got1.RuntimeHints.SecretEnvNames) != 1 || got1.RuntimeHints.SecretEnvNames[0] != "HF_TOKEN" {
+		t.Errorf("SecretEnvNames after scrub = %v, want [HF_TOKEN]", got1.RuntimeHints.SecretEnvNames)
+	}
+	if len(got1.RuntimeHints.SecretInputs) != 1 || got1.RuntimeHints.SecretInputs[0] != "pw" {
+		t.Errorf("SecretInputs after scrub = %v, want [pw]", got1.RuntimeHints.SecretInputs)
+	}
+
+	raw1 := rawTaskHints(t, st, "task_scrub_1")
+	if strings.Contains(raw1, "worker-secret-value") || strings.Contains(raw1, "bearer-value") {
+		t.Fatalf("stored runtime_hints for task_scrub_1 still leaks a secret: %q", raw1)
+	}
+	if strings.Contains(raw1, "__enc__") {
+		t.Fatalf("stored runtime_hints for task_scrub_1 still carries an encrypted secrets blob: %q", raw1)
+	}
+
+	got2, err := st.GetTask(ctx, "task_scrub_2")
+	if err != nil {
+		t.Fatalf("get task_scrub_2: %v", err)
+	}
+	if got2.RuntimeHints.DockerImage != "ubuntu:22.04" {
+		t.Errorf("task_scrub_2 RuntimeHints unexpectedly rewritten: %+v", got2.RuntimeHints)
+	}
+
+	gotOther, err := st.GetTask(ctx, "task_scrub_other_sub")
+	if err != nil {
+		t.Fatalf("get task_scrub_other_sub: %v", err)
+	}
+	if gotOther.RuntimeHints.Secrets["A"] != "should-survive" {
+		t.Errorf("task on a different submission was scrubbed: %+v", gotOther.RuntimeHints.Secrets)
+	}
+
+	// Idempotent: a second scrub finds nothing left to do.
+	scrubbedAgain, err := st.ScrubTaskSecretsForSubmission(ctx, "sub_scrub")
+	if err != nil {
+		t.Fatalf("second ScrubTaskSecretsForSubmission: %v", err)
+	}
+	if scrubbedAgain != 0 {
+		t.Errorf("second scrub = %d, want 0", scrubbedAgain)
+	}
+}
+
 func TestListSubmissionsWithSecretsForRetention(t *testing.T) {
 	st := testStore(t)
 	st.ConfigureTokenEncryption(testTokenCipher(t), true)

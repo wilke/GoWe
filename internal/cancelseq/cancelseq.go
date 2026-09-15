@@ -73,6 +73,14 @@ func Run(ctx context.Context, st store.Store, reg *metrics.Registry, logger *slo
 	}
 	reg.AddTasksSkipped(tasksCancelled)
 
+	// CancelNonTerminalTasks is a state-only bulk UPDATE — it never touches
+	// tasks.runtime_hints, so any per-task secret copy delivered to this
+	// submission's tasks would otherwise survive the cancel indefinitely
+	// (#260 H2). Best-effort: errors are logged, not fatal to the cancel.
+	if _, err := st.ScrubTaskSecretsForSubmission(ctx, sub.ID); err != nil {
+		logger.Error("cancel: scrub task secrets", "submission_id", sub.ID, "error", err)
+	}
+
 	childrenCancelled := CancelDescendants(ctx, st, reg, logger, sub.ID, now, map[string]bool{})
 
 	return Result{
@@ -161,6 +169,11 @@ func CancelDescendants(ctx context.Context, st store.Store, reg *metrics.Registr
 				logger.Error("cancel fan-out: cancel child tasks", "child_id", child.ID, "error", err)
 			}
 			reg.AddTasksSkipped(childTasksCancelled)
+
+			// Same task-row secret scrub as the top-level cancel above (#260 H2).
+			if _, err := st.ScrubTaskSecretsForSubmission(ctx, child.ID); err != nil {
+				logger.Error("cancel fan-out: scrub child task secrets", "child_id", child.ID, "error", err)
+			}
 
 			// Recurse even into already-terminal children: grandchildren may
 			// still be active (e.g. a scheduler cascade cancelled the child

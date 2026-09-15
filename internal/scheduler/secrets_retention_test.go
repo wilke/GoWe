@@ -136,6 +136,70 @@ func TestSweepSecretsRetention_RateLimited(t *testing.T) {
 	}
 }
 
+// TestSecretsPurgeDue_TTLFallsBackToCreatedAtWhenCompletedAtNil verifies the
+// #260 L15 fix directly: a terminal submission with a NULL CompletedAt (a
+// pre-#239 row, or any path that terminalizes without stamping it) must
+// still age out under a TTL policy, measured from CreatedAt instead of
+// being retained forever.
+func TestSecretsPurgeDue_TTLFallsBackToCreatedAtWhenCompletedAtNil(t *testing.T) {
+	policy, err := model.ParseSecretsRetention("ttl:1h")
+	if err != nil {
+		t.Fatalf("ParseSecretsRetention: %v", err)
+	}
+
+	now := time.Now().UTC()
+	sub := &model.Submission{
+		ID:          "sub_nil_completed_at",
+		State:       model.SubmissionStateCompleted,
+		CreatedAt:   now.Add(-2 * time.Hour),
+		CompletedAt: nil,
+	}
+
+	if due := secretsPurgeDue(policy, sub, now); !due {
+		t.Error("secretsPurgeDue = false, want true (TTL should fall back to CreatedAt when CompletedAt is nil)")
+	}
+
+	// Not yet due when CreatedAt is recent.
+	sub.CreatedAt = now.Add(-10 * time.Minute)
+	if due := secretsPurgeDue(policy, sub, now); due {
+		t.Error("secretsPurgeDue = true, want false (CreatedAt fallback is recent, TTL not elapsed)")
+	}
+}
+
+// TestSweepSecretsRetention_NilCompletedAtStillPurges is the end-to-end
+// counterpart: a terminal submission persisted with no CompletedAt must
+// still be purged by the sweep once its CreatedAt-based age exceeds the TTL.
+func TestSweepSecretsRetention_NilCompletedAtStillPurges(t *testing.T) {
+	l, st := testSetup(t)
+	ctx := context.Background()
+
+	sub := &model.Submission{
+		ID:               "sub_nil_completed_at_sweep",
+		WorkflowID:       "wf_1",
+		WorkflowName:     "wf",
+		State:            model.SubmissionStateCompleted,
+		Inputs:           map[string]any{},
+		Secrets:          map[string]string{"A": "secret-value"},
+		SecretNames:      []string{"A"},
+		SecretsRetention: "ttl:1h",
+		CreatedAt:        time.Now().UTC().Add(-2 * time.Hour),
+		CompletedAt:      nil,
+	}
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create submission: %v", err)
+	}
+
+	l.sweepSecretsRetention(ctx, time.Now())
+
+	got, err := st.GetSubmission(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("get submission: %v", err)
+	}
+	if got.SecretsState() != "purged" {
+		t.Errorf("SecretsState() = %q, want purged (nil CompletedAt must fall back to CreatedAt)", got.SecretsState())
+	}
+}
+
 // TestSweepSecretsRetention_InvalidPolicySkipped verifies an unparseable
 // secrets_retention string is logged and skipped rather than crashing the
 // sweep or purging by accident.

@@ -983,7 +983,10 @@ func TestExtractStepHints(t *testing.T) {
 			"executor":     "bvbrc",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -996,15 +999,15 @@ func TestExtractStepHints(t *testing.T) {
 }
 
 func TestExtractStepHints_Nil(t *testing.T) {
-	if got := extractStepHints(nil, nil); got != nil {
-		t.Errorf("extractStepHints(nil) = %v, want nil", got)
+	if got, err := extractStepHints(nil, nil); got != nil || err != nil {
+		t.Errorf("extractStepHints(nil) = (%v, %v), want (nil, nil)", got, err)
 	}
 }
 
 func TestExtractStepHints_NoGoweHint(t *testing.T) {
 	hints := map[string]any{"DockerRequirement": map[string]any{}}
-	if got := extractStepHints(hints, nil); got != nil {
-		t.Errorf("extractStepHints = %v, want nil", got)
+	if got, err := extractStepHints(hints, nil); got != nil || err != nil {
+		t.Errorf("extractStepHints = (%v, %v), want (nil, nil)", got, err)
 	}
 }
 
@@ -1014,7 +1017,10 @@ func TestExtractStepHints_DockerRequirement(t *testing.T) {
 			"dockerPull": "ubuntu:22.04",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1036,7 +1042,10 @@ func TestExtractStepHints_GoweDockerOverridesDockerRequirement(t *testing.T) {
 			"dockerPull": "ubuntu:22.04",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1052,7 +1061,10 @@ func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
 			"docker_image": "biocontainers/samtools:1.17",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1071,7 +1083,10 @@ func TestExtractStepHints_LegacyGoweHint(t *testing.T) {
 			"executor":     "bvbrc",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("expected non-nil StepHints from legacy goweHint")
 	}
@@ -1090,7 +1105,10 @@ func TestExtractStepHints_DockerRequirementInRequirements(t *testing.T) {
 			"dockerPull": "all-2026-0224b.sif",
 		},
 	}
-	got := extractStepHints(nil, requirements)
+	got, err := extractStepHints(nil, requirements)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil for DockerRequirement in requirements")
 	}
@@ -1113,7 +1131,10 @@ func TestExtractStepHints_HintsDockerTakesPrecedenceOverRequirements(t *testing.
 			"dockerPull": "requirements-image:latest",
 		},
 	}
-	got := extractStepHints(hints, requirements)
+	got, err := extractStepHints(hints, requirements)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1128,7 +1149,10 @@ func TestExtractStepHints_SecretEnv(t *testing.T) {
 			"secret_env": []any{"HF_TOKEN", "API_KEY"},
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1146,7 +1170,10 @@ func TestExtractStepHints_InjectSecrets(t *testing.T) {
 			"inject_secrets": true,
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1155,6 +1182,28 @@ func TestExtractStepHints_InjectSecrets(t *testing.T) {
 	}
 	if len(got.SecretEnv) != 0 {
 		t.Errorf("SecretEnv = %v, want empty", got.SecretEnv)
+	}
+}
+
+func TestExtractStepHints_SecretEnvMappingRejected(t *testing.T) {
+	// secret_env: {ENV_NAME: secret-name} was proposed in #260's discussion
+	// but never implemented as env-name aliasing; silently ignoring the shape
+	// (the pre-fix behavior: stringSlice returns nil for a map) left the
+	// author with no hint and no error. Reject it explicitly instead.
+	hints := map[string]any{
+		"gowe:Execution": map[string]any{
+			"secret_env": map[string]any{"HF_TOKEN": "hf_secret"},
+		},
+	}
+	got, err := extractStepHints(hints, nil)
+	if err == nil {
+		t.Fatal("extractStepHints: expected error for mapping-form secret_env, got nil")
+	}
+	if got != nil {
+		t.Errorf("extractStepHints = %v, want nil on error", got)
+	}
+	if !strings.Contains(err.Error(), "secret_env must be a list") {
+		t.Errorf("error = %q, want it to explain secret_env must be a list", err.Error())
 	}
 }
 
@@ -1167,8 +1216,8 @@ func TestExtractStepHints_SecretEnvOnlyStillNonNil(t *testing.T) {
 			"secret_env": []any{"HF_TOKEN"},
 		},
 	}
-	if got := extractStepHints(hints, nil); got == nil {
-		t.Fatal("extractStepHints returned nil, want non-nil StepHints carrying SecretEnv")
+	if got, err := extractStepHints(hints, nil); got == nil || err != nil {
+		t.Fatalf("extractStepHints = (%v, %v), want non-nil StepHints carrying SecretEnv and nil error", got, err)
 	}
 }
 

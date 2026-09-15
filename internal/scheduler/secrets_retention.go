@@ -57,6 +57,13 @@ func (l *Loop) purgeSubmissionSecretsIfDue(ctx context.Context, sub *model.Submi
 		l.logger.Error("secrets retention sweep: purge failed", "submission_id", sub.ID, "error", err)
 		return
 	}
+	// PurgeSubmissionSecrets only clears the submissions row; the per-task
+	// subset of secrets delivered to this submission's tasks lives in
+	// tasks.runtime_hints and is untouched by it, so a "purged" submission
+	// can still have live secret copies at rest on its task rows (#260 H3).
+	if _, err := l.store.ScrubTaskSecretsForSubmission(ctx, sub.ID); err != nil {
+		l.logger.Error("secrets retention sweep: scrub task secrets failed", "submission_id", sub.ID, "error", err)
+	}
 	// Never log a name or value — only the submission id and how many
 	// names were on it.
 	l.logger.Info("secrets retention sweep: purged submission secrets",
@@ -66,7 +73,12 @@ func (l *Loop) purgeSubmissionSecretsIfDue(ctx context.Context, sub *model.Submi
 // secretsPurgeDue reports whether policy says sub's secret values are due
 // for purge. sub is already known to be in a terminal state — every result
 // from ListSubmissionsWithSecretsForRetention is — so OnTerminal is
-// unconditionally true here.
+// unconditionally true here. TTL is measured from CompletedAt (when the
+// submission reached its terminal state); a terminal submission can still
+// have a NULL CompletedAt (a pre-#239 row, or any path that terminalizes
+// without stamping it), so this falls back to CreatedAt rather than
+// retaining the secret forever (model.Submission carries no UpdatedAt to
+// prefer instead).
 func secretsPurgeDue(policy model.SecretsRetentionPolicy, sub *model.Submission, now time.Time) bool {
 	switch policy.Kind {
 	case model.SecretsRetentionOnTerminal:
@@ -74,7 +86,11 @@ func secretsPurgeDue(policy model.SecretsRetentionPolicy, sub *model.Submission,
 	case model.SecretsRetentionOnSuccess:
 		return sub.State == model.SubmissionStateCompleted
 	case model.SecretsRetentionTTL:
-		return sub.CompletedAt != nil && now.Sub(*sub.CompletedAt) >= policy.TTL
+		completedAt := sub.CompletedAt
+		if completedAt == nil {
+			completedAt = &sub.CreatedAt
+		}
+		return now.Sub(*completedAt) >= policy.TTL
 	default: // SecretsRetentionKeep
 		return false
 	}

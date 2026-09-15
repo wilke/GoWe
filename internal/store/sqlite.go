@@ -1916,6 +1916,45 @@ func (s *SQLiteStore) UpdateTaskPriority(ctx context.Context, id string, priorit
 	return nil
 }
 
+// ScrubTaskSecretsForSubmission clears RuntimeHints.Secrets and any
+// StagerOverrides.HTTPCredential from every task belonging to submissionID,
+// persisting the change with a narrow runtime_hints-only write (see
+// UpdateTaskPriority: a full-row write here could clobber a concurrent
+// checkout/report). Tasks with nothing to scrub are left untouched. Returns
+// the number of task rows actually rewritten.
+func (s *SQLiteStore) ScrubTaskSecretsForSubmission(ctx context.Context, submissionID string) (int, error) {
+	s.logger.Debug("sql", "op", "scrub_secrets", "table", "tasks", "submission_id", submissionID)
+
+	tasks, err := s.ListTasksBySubmission(ctx, submissionID)
+	if err != nil {
+		return 0, fmt.Errorf("list tasks for submission %s: %w", submissionID, err)
+	}
+
+	scrubbed := 0
+	for _, t := range tasks {
+		if t.RuntimeHints == nil {
+			continue
+		}
+		hasSecret := len(t.RuntimeHints.Secrets) > 0 ||
+			(t.RuntimeHints.StagerOverrides != nil && t.RuntimeHints.StagerOverrides.HTTPCredential != nil)
+		if !hasSecret {
+			continue
+		}
+		t.RuntimeHints.ScrubSecrets()
+		runtimeHintsJSON, err := s.marshalRuntimeHints(t.RuntimeHints, t.ID)
+		if err != nil {
+			return scrubbed, fmt.Errorf("marshal scrubbed runtime_hints for task %s: %w", t.ID, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE tasks SET runtime_hints = ? WHERE id = ?`, runtimeHintsJSON, t.ID,
+		); err != nil {
+			return scrubbed, fmt.Errorf("scrub secrets for task %s: %w", t.ID, err)
+		}
+		scrubbed++
+	}
+	return scrubbed, nil
+}
+
 func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "list_by_state", "table", "tasks", "state", state)
 
