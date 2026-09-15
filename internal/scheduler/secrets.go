@@ -39,7 +39,13 @@ func (l *Loop) addSecrets(task *model.Task, sub *model.Submission, hints *model.
 	var newSecrets map[string]string
 	var newSecretInputs []string
 
-	if len(sub.Secrets) > 0 && hints != nil {
+	// Deliberately not guarded on len(sub.Secrets): a tool that names a
+	// secret in secret_env must fail pre-dispatch when the submission
+	// supplied none, exactly as when it supplied the wrong ones — running
+	// the tool without a secret it declared it needs is the silent failure
+	// this whole path exists to prevent. inject_secrets with no secrets is
+	// legitimately a no-op.
+	if hints != nil {
 		switch {
 		case hints.InjectSecrets:
 			newSecrets = mergeSecretsInto(newSecrets, sub.Secrets)

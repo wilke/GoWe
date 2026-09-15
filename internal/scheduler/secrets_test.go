@@ -638,3 +638,30 @@ func TestDispatch_ScatterSecretEnvMissing_FailsIterationPreDispatch(t *testing.T
 		t.Errorf("task.Stderr = %q, want it to name MISSING_SECRET", tasks[0].Stderr)
 	}
 }
+
+// TestAddSecrets_SecretEnvWithNoSubmissionSecrets_Fails pins the guard
+// removed at integration: a tool that names a secret in secret_env must fail
+// pre-dispatch when the submission supplied no secrets at all, not run
+// silently without it.
+func TestAddSecrets_SecretEnvWithNoSubmissionSecrets_Fails(t *testing.T) {
+	l := &Loop{}
+	task := &model.Task{ID: "task_x", StepID: "s1"}
+	sub := &model.Submission{ID: "sub_x"} // no Secrets
+	hints := &model.StepHints{SecretEnv: []string{"DB_DSN"}}
+	wf := &model.Workflow{}
+	err := l.addSecrets(task, sub, hints, wf)
+	if err == nil {
+		t.Fatal("expected error for secret_env with no submission secrets, got nil")
+	}
+	if !strings.Contains(err.Error(), "DB_DSN") {
+		t.Fatalf("error should name the missing secret: %v", err)
+	}
+	if task.RuntimeHints != nil && len(task.RuntimeHints.Secrets) != 0 {
+		t.Fatalf("no secrets must be attached on failure, got %v", task.RuntimeHints.Secrets)
+	}
+	// inject_secrets with no secrets stays a legitimate no-op.
+	task2 := &model.Task{ID: "task_y", StepID: "s1"}
+	if err := l.addSecrets(task2, sub, &model.StepHints{InjectSecrets: true}, wf); err != nil {
+		t.Fatalf("inject_secrets with no submission secrets should be a no-op, got %v", err)
+	}
+}
