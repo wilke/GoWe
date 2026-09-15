@@ -439,3 +439,152 @@ func TestReencryptPlaintextTokensCoversSecrets(t *testing.T) {
 		t.Fatalf("second migration not idempotent: (%d,%d) err=%v", nSub2, nTask2, err)
 	}
 }
+
+// TestListSubmissions_IncludesSecretsMetadata verifies that
+// submissionListColumns/scanSubmissionRows (list path) report secret_names,
+// secrets_retention, and secrets_purged_at just like GetSubmission — the
+// contract's list path deliberately left these out; #260 server work adds
+// them so list rows can compute SecretsState() without a per-row detail
+// fetch. The encrypted secrets column itself must never be part of this
+// list path (only GetSubmission decrypts).
+func TestListSubmissions_IncludesSecretsMetadata(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	sub := secretsSubmission("sub_list_secrets", map[string]string{"A": "1", "B": "2"})
+	sub.State = model.SubmissionStateCompleted
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create submission: %v", err)
+	}
+	if err := st.PurgeSubmissionSecrets(ctx, sub.ID, time.Now().UTC().Truncate(time.Second)); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	subs, total, err := st.ListSubmissions(ctx, model.ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("list submissions: %v", err)
+	}
+	if total < 1 {
+		t.Fatalf("expected at least 1 submission, got total=%d", total)
+	}
+	var got *model.Submission
+	for _, s := range subs {
+		if s.ID == sub.ID {
+			got = s
+		}
+	}
+	if got == nil {
+		t.Fatalf("submission %s not found in list results", sub.ID)
+	}
+	if len(got.SecretNames) != 2 {
+		t.Errorf("SecretNames = %v, want 2 entries", got.SecretNames)
+	}
+	if got.SecretsPurgedAt == nil {
+		t.Errorf("SecretsPurgedAt = nil, want set (purged)")
+	}
+	if got.SecretsState() != "purged" {
+		t.Errorf("SecretsState() = %q, want purged", got.SecretsState())
+	}
+	if got.Secrets != nil {
+		t.Errorf("Secrets = %+v, want nil (list path must never decrypt)", got.Secrets)
+	}
+}
+
+// TestWorkflowSecretInputsRoundTrip verifies a workflow's SecretInputs
+// (cwltool:Secrets-declared input ids) survive Create/Get/GetByName/List/
+// Update — the store persistence #260 server work adds; the contract left
+// the field parsed (internal/parser) but not persisted.
+func TestWorkflowSecretInputsRoundTrip(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := &model.Workflow{
+		ID:           "wf_secret_inputs",
+		Name:         "wf-secret-inputs",
+		Class:        "Workflow",
+		CWLVersion:   "v1.2",
+		RawCWL:       "{}",
+		Inputs:       []model.WorkflowInput{{ID: "password", Type: "string"}},
+		SecretInputs: []string{"password"},
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+
+	got, err := st.GetWorkflow(ctx, wf.ID)
+	if err != nil {
+		t.Fatalf("get workflow: %v", err)
+	}
+	if len(got.SecretInputs) != 1 || got.SecretInputs[0] != "password" {
+		t.Errorf("GetWorkflow SecretInputs = %v, want [password]", got.SecretInputs)
+	}
+
+	gotByName, err := st.GetWorkflowByName(ctx, wf.Name)
+	if err != nil {
+		t.Fatalf("get workflow by name: %v", err)
+	}
+	if len(gotByName.SecretInputs) != 1 || gotByName.SecretInputs[0] != "password" {
+		t.Errorf("GetWorkflowByName SecretInputs = %v, want [password]", gotByName.SecretInputs)
+	}
+
+	list, _, err := st.ListWorkflows(ctx, model.ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("list workflows: %v", err)
+	}
+	found := false
+	for _, w := range list {
+		if w.ID == wf.ID {
+			found = true
+			if len(w.SecretInputs) != 1 || w.SecretInputs[0] != "password" {
+				t.Errorf("ListWorkflows SecretInputs = %v, want [password]", w.SecretInputs)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("workflow %s not found in list results", wf.ID)
+	}
+
+	// Update clears SecretInputs when the new hint declares none.
+	got.SecretInputs = nil
+	got.UpdatedAt = time.Now().UTC()
+	if err := st.UpdateWorkflow(ctx, got); err != nil {
+		t.Fatalf("update workflow: %v", err)
+	}
+	afterUpdate, err := st.GetWorkflow(ctx, wf.ID)
+	if err != nil {
+		t.Fatalf("get workflow after update: %v", err)
+	}
+	if len(afterUpdate.SecretInputs) != 0 {
+		t.Errorf("SecretInputs after clearing update = %v, want empty", afterUpdate.SecretInputs)
+	}
+}
+
+// TestWorkflowSecretInputs_EmptyByDefault verifies a workflow with no
+// cwltool:Secrets declaration round-trips a nil SecretInputs (not an empty
+// non-nil slice), matching the JSON omitempty contract on the field.
+func TestWorkflowSecretInputs_EmptyByDefault(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := &model.Workflow{
+		ID:         "wf_no_secret_inputs",
+		Name:       "wf-no-secret-inputs",
+		Class:      "Workflow",
+		CWLVersion: "v1.2",
+		RawCWL:     "{}",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	got, err := st.GetWorkflow(ctx, wf.ID)
+	if err != nil {
+		t.Fatalf("get workflow: %v", err)
+	}
+	if len(got.SecretInputs) != 0 {
+		t.Errorf("SecretInputs = %v, want empty", got.SecretInputs)
+	}
+}

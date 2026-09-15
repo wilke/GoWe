@@ -143,6 +143,11 @@ type Loop struct {
 	// every Registry method no-ops on a nil receiver, so instrumentation
 	// call sites throughout this file never check for nil themselves.
 	metrics *metrics.Registry
+
+	// lastSecretsSweep rate-limits sweepSecretsRetention (secrets_retention.go,
+	// #260) to once per minute even though Tick() calls it every tick; zero
+	// value runs the sweep on the very first tick.
+	lastSecretsSweep time.Time
 }
 
 // SetMetrics wires the Prometheus metrics registry into the scheduler. Not
@@ -425,6 +430,10 @@ func (l *Loop) Tick(ctx context.Context) error {
 		return fmt.Errorf("phase 5 (finalize): %w", err)
 	}
 	l.metrics.ObserveTickPhase("5", time.Since(phaseStart))
+
+	// Secrets retention sweep (#260): rate-limited internally to once per
+	// minute, so calling it every tick is cheap. See secrets_retention.go.
+	l.sweepSecretsRetention(ctx, time.Now())
 
 	// Phase 5.5: Upload outputs to workspace for completed submissions (server-side mode).
 	if l.wsStager != nil {

@@ -78,6 +78,7 @@ func main() {
 	insecureSkipTokenVerify := flag.Bool("insecure-skip-token-verify", false, "Disable cryptographic verification of provider token signatures (testing/air-gapped only); identities are then trusted as claimed")
 	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
 	authDenylistFile := flag.String("auth-denylist", "", "Path to a file of denylisted users/tokens, one entry per line as 'user:<username>' or 'tokenid:<uuid>' ('#' comments allowed); empty disables the denylist")
+	secretsRetentionFlag := flag.String("secrets-retention", "", "Default secrets_retention policy for a submission that doesn't specify one: keep, ttl:<duration>, on_success, or on_terminal (also: GOWE_SECRETS_RETENTION env, flag wins; default ttl:720h)")
 
 	// Provider-token encryption at rest
 	tokenKeyFile := flag.String("token-key-file", "", "Path to a file holding the token-encryption key (base64 or hex, 32 bytes); overrides GOWE_TOKEN_KEY")
@@ -319,6 +320,25 @@ func main() {
 		serverOpts = append(serverOpts, server.WithAnonymousConfig(anonConfig))
 		logger.Info("anonymous access enabled", "allowed_executors", allowedExecutors)
 	}
+
+	// Default secrets_retention policy (#260): applied to any submission
+	// whose create request leaves secrets_retention empty. --secrets-retention
+	// wins over GOWE_SECRETS_RETENTION; an empty value from both defaults to
+	// "ttl:720h" (30 days after the submission reaches a terminal state).
+	secretsRetentionRaw := *secretsRetentionFlag
+	if secretsRetentionRaw == "" {
+		secretsRetentionRaw = os.Getenv("GOWE_SECRETS_RETENTION")
+	}
+	if secretsRetentionRaw == "" {
+		secretsRetentionRaw = "ttl:720h"
+	}
+	secretsRetentionPolicy, err := model.ParseSecretsRetention(secretsRetentionRaw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--secrets-retention: %v\n", err)
+		os.Exit(1)
+	}
+	serverOpts = append(serverOpts, server.WithSecretsRetention(secretsRetentionPolicy))
+	logger.Info("default secrets retention", "policy", secretsRetentionPolicy.String())
 
 	// Configure provider token signature verification. On by default:
 	// inbound BV-BRC tokens are cryptographically verified against a
