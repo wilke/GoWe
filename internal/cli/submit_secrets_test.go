@@ -93,6 +93,14 @@ func TestParseSecretFlags_ErrorNeverPrintsRawValue(t *testing.T) {
 func TestSubmitCommand_SecretsNotEchoedAndDelivered(t *testing.T) {
 	url, st := startTestServerWithStore(t)
 
+	// Hermetic auth: the CLI resolves its Bearer token from BVBRC_TOKEN, then
+	// ~/.gowe/credentials.json and the ~/.patric_token family. Without these
+	// two lines the test silently uses whatever token the developer's HOME
+	// holds — and on a runner with none it submits anonymously, which the
+	// server refuses for submissions carrying secrets (403).
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BVBRC_TOKEN", "un=cli-tester|tokenid=cli-t1|expiry=4102444800|sig=x")
+
 	dir := t.TempDir()
 	secretFile := filepath.Join(dir, "secrets.env")
 	if err := os.WriteFile(secretFile, []byte("HF_TOKEN=file-value-should-be-overridden\n# comment\nAPI_KEY=file-api-key\n"), 0o600); err != nil {
