@@ -124,10 +124,23 @@ type Options struct {
 
 	// SecretEnvVars are environment variables injected into containers.
 	// These are set by the worker admin and never stored in task data.
+	// Delivered via the process environment (cmd.Env), never on the
+	// container-runtime argv — see H5: docker gets a bare "-e NAME" argv
+	// entry and the value in cmd.Env; apptainer gets an APPTAINERENV_NAME
+	// entry in cmd.Env and no --env for it at all.
 	SecretEnvVars map[string]string
 
 	// EnvVars are non-secret environment variables injected into containers.
 	EnvVars map[string]string
+
+	// MaskSecrets is the full set of secret values (a superset of
+	// SecretEnvVars: it also covers job-only secret values, e.g. a
+	// cwltool:Secrets input consumed via $(inputs.x) in a commandLineBinding,
+	// which never appear in SecretEnvVars but can still land in the built
+	// command argv) used ONLY to redact log lines before they are written —
+	// never for container delivery. Falls back to SecretEnvVars when unset
+	// so callers that only ever set SecretEnvVars keep working.
+	MaskSecrets map[string]string
 }
 
 // Executor executes CWL CommandLineTools.

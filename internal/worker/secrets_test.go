@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -13,48 +12,48 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
-// --- mergeTaskSecrets ---------------------------------------------------
+// --- mergeSecretsForRedaction ------------------------------------------------
 
-func TestMergeTaskSecrets(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
+func TestMergeSecretsForRedaction(t *testing.T) {
 	tests := []struct {
-		name        string
-		base        map[string]string
-		taskSecrets map[string]string
-		want        map[string]string
+		name string
+		a, b map[string]string
+		want map[string]string
 	}{
 		{
-			name:        "no task secrets: base passed through unchanged",
-			base:        map[string]string{"HF_TOKEN": "hf_abc"},
-			taskSecrets: nil,
-			want:        map[string]string{"HF_TOKEN": "hf_abc"},
+			name: "both nil",
+			want: nil,
 		},
 		{
-			name:        "task secrets merged in, disjoint names",
-			base:        map[string]string{"HF_TOKEN": "hf_abc"},
-			taskSecrets: map[string]string{"API_KEY": "sub_xyz"},
-			want:        map[string]string{"HF_TOKEN": "hf_abc", "API_KEY": "sub_xyz"},
+			name: "a empty: b passed through",
+			a:    nil,
+			b:    map[string]string{"X": "vx"},
+			want: map[string]string{"X": "vx"},
 		},
 		{
-			name:        "task secret wins on name collision with worker-level secret",
-			base:        map[string]string{"HF_TOKEN": "worker-level"},
-			taskSecrets: map[string]string{"HF_TOKEN": "submission-level"},
-			want:        map[string]string{"HF_TOKEN": "submission-level"},
+			name: "b empty: a passed through",
+			a:    map[string]string{"X": "vx"},
+			b:    nil,
+			want: map[string]string{"X": "vx"},
 		},
 		{
-			name:        "nil base",
-			base:        nil,
-			taskSecrets: map[string]string{"A": "va"},
-			want:        map[string]string{"A": "va"},
+			name: "disjoint keys: union",
+			a:    map[string]string{"A": "va"},
+			b:    map[string]string{"B": "vb"},
+			want: map[string]string{"A": "va", "B": "vb"},
+		},
+		{
+			name: "overlapping key: b wins",
+			a:    map[string]string{"A": "from-a"},
+			b:    map[string]string{"A": "from-b"},
+			want: map[string]string{"A": "from-b"},
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mergeTaskSecrets(tt.base, tt.taskSecrets, logger)
+			got := mergeSecretsForRedaction(tt.a, tt.b)
 			if len(got) != len(tt.want) {
-				t.Fatalf("mergeTaskSecrets() = %v, want %v", got, tt.want)
+				t.Fatalf("mergeSecretsForRedaction() = %v, want %v", got, tt.want)
 			}
 			for k, v := range tt.want {
 				if got[k] != v {
@@ -65,125 +64,17 @@ func TestMergeTaskSecrets(t *testing.T) {
 	}
 }
 
-// TestMergeTaskSecrets_CollisionLogsWARN_NamesOnly verifies the collision
-// WARN names the secret but never its value.
-func TestMergeTaskSecrets_CollisionLogsWARN_NamesOnly(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+// TestMergeSecretsForRedaction_DoesNotMutateInputs guards against either
+// shared map (e.g. the worker's own w.secrets) being mutated in place.
+func TestMergeSecretsForRedaction_DoesNotMutateInputs(t *testing.T) {
+	a := map[string]string{"A": "va"}
+	b := map[string]string{"B": "vb"}
 
-	got := mergeTaskSecrets(
-		map[string]string{"HF_TOKEN": "worker-level-value-123456"},
-		map[string]string{"HF_TOKEN": "submission-level-value-654321"},
-		logger,
-	)
+	got := mergeSecretsForRedaction(a, b)
+	got["C"] = "leaked-into-a-or-b?"
 
-	logOutput := buf.String()
-	if !strings.Contains(logOutput, "HF_TOKEN") {
-		t.Errorf("log output = %q, want it to name HF_TOKEN", logOutput)
-	}
-	if strings.Contains(logOutput, "worker-level-value-123456") || strings.Contains(logOutput, "submission-level-value-654321") {
-		t.Errorf("log output leaked a secret value: %q", logOutput)
-	}
-	if got["HF_TOKEN"] != "submission-level-value-654321" {
-		t.Errorf("task secret should win: got %q", got["HF_TOKEN"])
-	}
-}
-
-// TestMergeTaskSecrets_DoesNotMutateSharedMap guards against a shared
-// secrets map (e.g. the worker's own w.secrets) being mutated in place.
-func TestMergeTaskSecrets_DoesNotMutateSharedMap(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	shared := map[string]string{"HF_TOKEN": "hf_abc"}
-
-	got := mergeTaskSecrets(shared, map[string]string{"API_KEY": "sub_xyz"}, logger)
-
-	if len(shared) != 1 {
-		t.Fatalf("shared map was mutated: %v", shared)
-	}
-	if _, ok := shared["API_KEY"]; ok {
-		t.Error("shared map leaked API_KEY")
-	}
-	if got["API_KEY"] != "sub_xyz" {
-		t.Errorf("returned map missing merged secret: %v", got)
-	}
-}
-
-// --- reinjectSecretInputs ------------------------------------------------
-
-func TestReinjectSecretInputs(t *testing.T) {
-	tests := []struct {
-		name       string
-		task       *model.Task
-		wantJob    map[string]any
-		wantErrHas string
-	}{
-		{
-			name: "nil RuntimeHints: no-op",
-			task: &model.Task{
-				Job: map[string]any{"password": model.SecretInputPlaceholder},
-			},
-			wantJob: map[string]any{"password": model.SecretInputPlaceholder},
-		},
-		{
-			name: "no SecretInputs entries: no-op",
-			task: &model.Task{
-				Job:          map[string]any{"password": model.SecretInputPlaceholder},
-				RuntimeHints: &model.RuntimeHints{},
-			},
-			wantJob: map[string]any{"password": model.SecretInputPlaceholder},
-		},
-		{
-			name: "matching entry: job value replaced with the real secret",
-			task: &model.Task{
-				Job: map[string]any{"password": model.SecretInputPlaceholder, "other": "unrelated"},
-				RuntimeHints: &model.RuntimeHints{
-					SecretInputs: []string{"password=INPUT_PASSWORD"},
-					Secrets:      map[string]string{"INPUT_PASSWORD": "hunter2"},
-				},
-			},
-			wantJob: map[string]any{"password": "hunter2", "other": "unrelated"},
-		},
-		{
-			name: "missing secret value: error naming the step input id",
-			task: &model.Task{
-				Job: map[string]any{"password": model.SecretInputPlaceholder},
-				RuntimeHints: &model.RuntimeHints{
-					SecretInputs: []string{"password=INPUT_PASSWORD"},
-					Secrets:      map[string]string{}, // scrubbed or never delivered
-				},
-			},
-			wantErrHas: "password",
-		},
-		{
-			name: "malformed entry: error",
-			task: &model.Task{
-				Job: map[string]any{},
-				RuntimeHints: &model.RuntimeHints{
-					SecretInputs: []string{"not-a-kv-pair"},
-				},
-			},
-			wantErrHas: "malformed",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := reinjectSecretInputs(tt.task)
-			if tt.wantErrHas != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErrHas) {
-					t.Fatalf("reinjectSecretInputs() error = %v, want it to contain %q", err, tt.wantErrHas)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("reinjectSecretInputs() unexpected error: %v", err)
-			}
-			for k, want := range tt.wantJob {
-				if got := tt.task.Job[k]; got != want {
-					t.Errorf("task.Job[%q] = %v, want %v", k, got, want)
-				}
-			}
-		})
+	if len(a) != 1 || len(b) != 1 {
+		t.Fatalf("input maps mutated: a=%v b=%v", a, b)
 	}
 }
 
@@ -217,11 +108,99 @@ func TestSecretDelivery_EnvVar_AndRedaction(t *testing.T) {
 	}
 
 	// Mirrors executeWithCWLTool's redaction step.
-	redacted := redactSecrets(result.Stdout, cfg.SecretEnvVars)
+	redacted := redactSecrets(result.Stdout, mergeSecretsForRedaction(cfg.SecretEnvVars, cfg.SecretValues))
 	if strings.Contains(redacted, secretValue) {
 		t.Errorf("redacted stdout still contains the secret value: %q", redacted)
 	}
 	if !strings.Contains(redacted, "***REDACTED***") {
 		t.Errorf("redacted stdout = %q, want a redaction marker", redacted)
+	}
+}
+
+// TestWorkerSecretPath_SecretEnvAndReinjection reproduces the exact call
+// sequence executeWithCWLTool now runs (H4: build cfg with worker-level
+// SecretEnvVars, call cwltool.ApplySecrets, then cwltool.ExecuteTool) end to
+// end: a task carrying both a secret_env-delivered value (visible in the
+// container env) and a cwltool:Secrets re-injected job value (visible via
+// $(inputs.pw) in an InitialWorkDirRequirement-staged file, mirroring
+// cwltool's own secret_job.cwl pattern) must see BOTH the real values, and
+// the captured stdout must come back redacted for both.
+func TestWorkerSecretPath_SecretEnvAndReinjection(t *testing.T) {
+	tool := &cwl.CommandLineTool{
+		ID:          "secret-job",
+		Class:       "CommandLineTool",
+		BaseCommand: []string{"sh", "-c", "echo \"env=$MY_TASK_SECRET\"; cat config.txt"},
+		Inputs: map[string]cwl.ToolInputParam{
+			"pw": {Type: "string"},
+		},
+		Requirements: map[string]any{
+			"InitialWorkDirRequirement": map[string]any{
+				"listing": []any{
+					map[string]any{
+						"entryname": "config.txt",
+						"entry":     "$(inputs.pw)",
+					},
+				},
+			},
+		},
+	}
+
+	const envSecret = "env-secret-value-0123456789"
+	const jobSecret = "job-secret-value-9876543210"
+
+	task := &model.Task{
+		ID:  "task_1",
+		Job: map[string]any{"pw": model.SecretInputPlaceholder},
+		RuntimeHints: &model.RuntimeHints{
+			Secrets: map[string]string{
+				"MY_TASK_SECRET": envSecret,
+				"INPUT_PW":       jobSecret,
+			},
+			SecretEnvNames: []string{"MY_TASK_SECRET"}, // NOT INPUT_PW (M13)
+			SecretInputs:   []string{"pw=INPUT_PW"},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := cwltool.Config{Logger: logger}
+
+	job, err := cwltool.ApplySecrets(&cfg, task, logger)
+	if err != nil {
+		t.Fatalf("ApplySecrets: %v", err)
+	}
+
+	// M13: only the secret_env-named value reaches cfg.SecretEnvVars.
+	if len(cfg.SecretEnvVars) != 1 || cfg.SecretEnvVars["MY_TASK_SECRET"] != envSecret {
+		t.Fatalf("cfg.SecretEnvVars = %v, want only MY_TASK_SECRET", cfg.SecretEnvVars)
+	}
+	if _, leaked := cfg.SecretEnvVars["INPUT_PW"]; leaked {
+		t.Errorf("cfg.SecretEnvVars leaked the job-only INPUT_PW secret: %v", cfg.SecretEnvVars)
+	}
+
+	// task.Job itself must never be mutated — the server-persisted copy
+	// stays the placeholder.
+	if task.Job["pw"] != model.SecretInputPlaceholder {
+		t.Errorf("task.Job was mutated: %v", task.Job)
+	}
+	if job["pw"] != jobSecret {
+		t.Fatalf("returned job[\"pw\"] = %v, want the re-injected secret", job["pw"])
+	}
+
+	workDir := t.TempDir()
+	result, err := cwltool.ExecuteTool(context.Background(), cfg, tool, job, workDir)
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if !strings.Contains(result.Stdout, envSecret) || !strings.Contains(result.Stdout, jobSecret) {
+		t.Fatalf("precondition failed: stdout %q missing one of the real secret values", result.Stdout)
+	}
+
+	// Both the env-exposed value AND the job-only value must be redacted —
+	// cfg.SecretValues (populated by ApplySecrets) covers the job-only one
+	// that cfg.SecretEnvVars alone would miss post-M13.
+	maskSet := mergeSecretsForRedaction(cfg.SecretEnvVars, cfg.SecretValues)
+	redacted := redactSecrets(result.Stdout, maskSet)
+	if strings.Contains(redacted, envSecret) || strings.Contains(redacted, jobSecret) {
+		t.Errorf("redacted stdout still contains a secret value: %q", redacted)
 	}
 }
