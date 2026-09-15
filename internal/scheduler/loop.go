@@ -920,6 +920,11 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Add user token.
 	l.addUserToken(task, sub)
 
+	// Attach opted-in submission secrets / re-inject cwltool:Secrets inputs.
+	if err := l.addSecrets(task, sub, step.Hints, wf); err != nil {
+		return l.failTaskPreDispatch(ctx, task, si, err.Error())
+	}
+
 	if err := l.store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
@@ -1115,6 +1120,11 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task.Inputs = combo
 
 		l.addUserToken(task, sub)
+
+		// Attach opted-in submission secrets / re-inject cwltool:Secrets inputs.
+		if err := l.addSecrets(task, sub, step.Hints, wf); err != nil {
+			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
+		}
 
 		if err := l.store.CreateTask(ctx, task); err != nil {
 			now := time.Now().UTC()
@@ -1396,6 +1406,11 @@ func (l *Loop) createSubworkflowProxyTask(si *model.StepInstance, tmpTask *model
 	// No addUserToken: the proxy never executes, so a token at rest on a
 	// long-lived RUNNING row is pure exposure, and propagating the parent's
 	// OutputDestination here would contradict the child-level drop. [F6]
+	// No addSecrets either, for the same reason: the proxy never executes,
+	// so it carries none of the submission's secrets at rest. The paired
+	// child submission inherits Secrets/SecretNames/SecretsRetention
+	// directly (see createChildSubmission) and re-derives its own tasks'
+	// secret subsets when it dispatches its own steps.
 	return task
 }
 
@@ -1838,14 +1853,21 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	}
 }
 
-// scrubTaskToken removes the user authentication token from a task's runtime
-// hints so that credentials are not persisted in the database after the task
-// reaches a terminal state. The token is only needed while the task is in
-// flight; once complete, keeping it at rest is unnecessary exposure.
+// scrubTaskToken removes the user authentication token and any delivered
+// submission secrets from a task's runtime hints so that credentials are not
+// persisted in the database after the task reaches a terminal state. Both
+// are only needed while the task is in flight; once complete, keeping them
+// at rest is unnecessary exposure. RuntimeHints.SecretInputs (the
+// stepInputID=SECRET_NAME mapping) is deliberately left in place — it names
+// which inputs were secret, not their values, and is not sensitive.
 func scrubTaskToken(task *model.Task) {
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+	if task.RuntimeHints == nil {
+		return
+	}
+	if task.RuntimeHints.StagerOverrides != nil {
 		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
 	}
+	task.RuntimeHints.Secrets = nil
 }
 
 // submitAndUpdateTask submits a task to its executor and updates its state.

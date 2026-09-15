@@ -34,6 +34,31 @@ func resolveApptainerImage(dockerImage, imageDir string) string {
 	return "docker://" + dockerImage
 }
 
+// maskSecretValues returns a copy of args with every occurrence of a secret
+// value replaced by "***REDACTED***", for logging only. The real argv (args)
+// is never mutated — callers must keep using the original slice to actually
+// run the command. Values shorter than 6 bytes are skipped (same threshold
+// as worker.redactSecrets) to avoid pathological over-redaction of common
+// short substrings.
+func maskSecretValues(args []string, secrets map[string]string) []string {
+	if len(secrets) == 0 {
+		return args
+	}
+	masked := make([]string, len(args))
+	copy(masked, args)
+	for _, v := range secrets {
+		if len(v) < 6 {
+			continue
+		}
+		for i, a := range masked {
+			if strings.Contains(a, v) {
+				masked[i] = strings.ReplaceAll(a, v, "***REDACTED***")
+			}
+		}
+	}
+	return masked
+}
+
 // executeLocal executes a tool locally without Docker in the specified work directory.
 func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
@@ -424,7 +449,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, cmdResult.Command...)
 	}
 
-	e.logger.Debug("docker command", "args", dockerArgs)
+	e.logger.Debug("docker command", "args", maskSecretValues(dockerArgs, opts.SecretEnvVars))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 
@@ -677,7 +702,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerArgs = append(apptainerArgs, cmdResult.Command...)
 	}
 
-	e.logger.Debug("apptainer command", "args", apptainerArgs)
+	e.logger.Debug("apptainer command", "args", maskSecretValues(apptainerArgs, opts.SecretEnvVars))
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
 
