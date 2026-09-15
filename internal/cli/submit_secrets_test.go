@@ -93,13 +93,22 @@ func TestParseSecretFlags_ErrorNeverPrintsRawValue(t *testing.T) {
 func TestSubmitCommand_SecretsNotEchoedAndDelivered(t *testing.T) {
 	url, st := startTestServerWithStore(t)
 
-	// Hermetic auth: the CLI resolves its Bearer token from BVBRC_TOKEN, then
-	// ~/.gowe/credentials.json and the ~/.patric_token family. Without these
-	// two lines the test silently uses whatever token the developer's HOME
-	// holds — and on a runner with none it submits anonymously, which the
-	// server refuses for submissions carrying secrets (403).
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("BVBRC_TOKEN", "un=cli-tester|tokenid=cli-t1|expiry=4102444800|sig=x")
+	// Hermetic auth: the CLI takes its Bearer token ONLY from
+	// $HOME/.gowe/credentials.json (LoadToken in login.go). Without an
+	// isolated HOME holding a synthetic token, the test silently uses the
+	// developer's real credentials — and on a runner with none it submits
+	// anonymously, which the server refuses for submissions carrying
+	// secrets (403). The test server has no token verifier, so a synthetic
+	// pipe-format token authenticates as "cli-tester".
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".gowe"), 0o700); err != nil {
+		t.Fatalf("mkdir .gowe: %v", err)
+	}
+	creds := []byte(`{"token":"un=cli-tester|tokenid=cli-t1|expiry=4102444800|sig=x"}`)
+	if err := os.WriteFile(filepath.Join(home, ".gowe", "credentials.json"), creds, 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
 
 	dir := t.TempDir()
 	secretFile := filepath.Join(dir, "secrets.env")
