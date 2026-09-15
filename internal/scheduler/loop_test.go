@@ -1174,6 +1174,91 @@ func TestDetectStuckTasks_ProgressResets(t *testing.T) {
 	}
 }
 
+// TestCancelChildSubmission_ScrubsTaskSecrets is the H2/H3 regression test
+// for the scheduler's own sub-workflow cancel cascade (cancelChildSubmission,
+// called from pollSubworkflowTask's reconciliation branch and
+// reconcileDispatchWithCancel — never through the server's cancel handler,
+// internal/cancelseq, where the equivalent scrub is already wired).
+// CancelNonTerminalTasks is a bulk state/completed_at UPDATE that never
+// touches runtime_hints, so without an explicit scrub call a child
+// submission's non-terminal (e.g. QUEUED, waiting on a worker) task would
+// keep its addSecrets-attached secret values at rest forever once cancelled.
+func TestCancelChildSubmission_ScrubsTaskSecrets(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	parentWF := &model.Workflow{ID: "wf_parent", Name: "parent", CWLVersion: "v1.2", CreatedAt: now, UpdatedAt: now}
+	if err := st.CreateWorkflow(ctx, parentWF); err != nil {
+		t.Fatalf("CreateWorkflow(parent): %v", err)
+	}
+	childWF := &model.Workflow{ID: "wf_child", Name: "child", CWLVersion: "v1.2", CreatedAt: now, UpdatedAt: now}
+	if err := st.CreateWorkflow(ctx, childWF); err != nil {
+		t.Fatalf("CreateWorkflow(child): %v", err)
+	}
+
+	child := &model.Submission{
+		ID:         "sub_child",
+		WorkflowID: childWF.ID,
+		State:      model.SubmissionStateRunning,
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		Labels:     map[string]string{},
+		CreatedAt:  now,
+	}
+	if err := st.CreateSubmission(ctx, child); err != nil {
+		t.Fatalf("CreateSubmission(child): %v", err)
+	}
+
+	// A real (non-proxy) task belonging to the child, still QUEUED (e.g.
+	// waiting on a worker group nothing serves), carrying secrets attached
+	// by addSecrets at its own dispatch time — exactly what
+	// CancelNonTerminalTasks would leave untouched.
+	task := &model.Task{
+		ID:           "task_child_1",
+		SubmissionID: child.ID,
+		StepID:       "child_step",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		RuntimeHints: &model.RuntimeHints{
+			WorkerGroup:    "nonexistent",
+			Secrets:        map[string]string{"HF_TOKEN": "hf_super_secret_value"},
+			SecretEnvNames: []string{"HF_TOKEN"},
+		},
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		MaxRetries: 3,
+		CreatedAt:  now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	sched.cancelChildSubmission(ctx, child)
+
+	updatedChild, err := st.GetSubmission(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("GetSubmission(child): %v", err)
+	}
+	if updatedChild.State != model.SubmissionStateCancelled {
+		t.Fatalf("child.State = %q, want CANCELLED", updatedChild.State)
+	}
+
+	updatedTask, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if updatedTask.State.IsTerminal() != true {
+		t.Errorf("task.State = %q, want a terminal (cancelled/skipped) state", updatedTask.State)
+	}
+	if updatedTask.RuntimeHints != nil && len(updatedTask.RuntimeHints.Secrets) != 0 {
+		t.Errorf("task.RuntimeHints.Secrets = %v, want nil — cancelling the child submission must scrub secrets from its tasks", updatedTask.RuntimeHints.Secrets)
+	}
+	if updatedTask.RuntimeHints == nil || len(updatedTask.RuntimeHints.SecretEnvNames) != 1 || updatedTask.RuntimeHints.SecretEnvNames[0] != "HF_TOKEN" {
+		t.Errorf("task.RuntimeHints.SecretEnvNames = %v, want [HF_TOKEN] (kept)", updatedTask.RuntimeHints)
+	}
+}
+
 func TestDetectStuckTasks_FailAction(t *testing.T) {
 	sched, st := testSetup(t)
 	ctx := context.Background()
@@ -1219,6 +1304,66 @@ func TestDetectStuckTasks_FailAction(t *testing.T) {
 	}
 	if !strings.Contains(updated.Stderr, "Task stuck: no capable worker") {
 		t.Errorf("expected stuck task reason in stderr, got: %s", updated.Stderr)
+	}
+}
+
+// TestDetectStuckTasks_FailAction_ScrubsSecrets is the H2 scrub-consolidation
+// regression test for the gap found while auditing every terminal-marking
+// write in loop.go: detectStuckTasks' StuckTaskAction=="fail" path
+// terminalizes a real (non-proxy) task via TerminalizeTaskFrom without going
+// through submitAndUpdateTask or pollInFlight — the only two call sites
+// scrubTaskToken previously covered — so a stuck QUEUED task carrying
+// RuntimeHints.Secrets (attached by addSecrets at dispatch, exactly like any
+// other worker-bound task) stayed at rest on the FAILED row forever.
+func TestDetectStuckTasks_FailAction_ScrubsSecrets(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	sched.config.StuckTaskThreshold = 2
+	sched.config.StuckTaskAction = "fail"
+
+	now := time.Now().UTC()
+	task := &model.Task{
+		ID:           "task_stuck_fail_secrets",
+		SubmissionID: "sub_test",
+		StepID:       "step1",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		RuntimeHints: &model.RuntimeHints{
+			DockerImage:    "alpine",
+			WorkerGroup:    "nonexistent",
+			Secrets:        map[string]string{"HF_TOKEN": "hf_super_secret_value"},
+			SecretEnvNames: []string{"HF_TOKEN"},
+		},
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		MaxRetries: 3,
+		CreatedAt:  now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected := make(map[string]bool)
+	for i := 0; i < 3; i++ {
+		if err := sched.detectStuckTasks(ctx, affected); err != nil {
+			t.Fatalf("detectStuckTasks tick %d: %v", i, err)
+		}
+	}
+
+	updated, err := st.GetTask(ctx, "task_stuck_fail_secrets")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if updated.State != model.TaskStateFailed {
+		t.Fatalf("expected task to be FAILED, got %s", updated.State)
+	}
+	if updated.RuntimeHints != nil && len(updated.RuntimeHints.Secrets) != 0 {
+		t.Errorf("RuntimeHints.Secrets = %v, want nil — a stuck-then-failed task must not keep secret values at rest", updated.RuntimeHints.Secrets)
+	}
+	// Metadata (which env vars were secret) is not sensitive and should
+	// survive, same as every other scrub call site.
+	if updated.RuntimeHints == nil || len(updated.RuntimeHints.SecretEnvNames) != 1 || updated.RuntimeHints.SecretEnvNames[0] != "HF_TOKEN" {
+		t.Errorf("RuntimeHints.SecretEnvNames = %v, want [HF_TOKEN] (kept)", updated.RuntimeHints)
 	}
 }
 

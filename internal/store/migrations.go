@@ -362,6 +362,41 @@ var alterStatements = []struct {
 		column:   "submitted_inputs",
 		alterSQL: "ALTER TABLE submissions ADD COLUMN submitted_inputs TEXT",
 	},
+	// Submission-time secrets (#260). secrets is the encrypted-at-rest JSON
+	// object of secret values (NULL when the submission has none, or after
+	// purge); secret_names is a plaintext JSON array kept for auditability
+	// even after purge; secrets_retention is the policy string
+	// (SecretsRetentionPolicy.String()); secrets_purged_at is nullable and set
+	// once the values are purged.
+	{
+		table:    "submissions",
+		column:   "secrets",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "secret_names",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secret_names TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "secrets_retention",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets_retention TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		table:    "submissions",
+		column:   "secrets_purged_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets_purged_at TEXT",
+	},
+	// Workflow input IDs declared secret via a top-level cwltool:Secrets
+	// hint (#260). Plaintext JSON array of input ids — never a value, so it
+	// carries no encryption requirement. NULL/empty means the workflow
+	// declares no secret inputs (the overwhelming majority).
+	{
+		table:    "workflows",
+		column:   "secret_inputs",
+		alterSQL: "ALTER TABLE workflows ADD COLUMN secret_inputs TEXT",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

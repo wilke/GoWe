@@ -363,6 +363,41 @@ Behavior:
 Rotating the key requires decrypting with the old key and re-encrypting with the new one;
 there is no in-place multi-key support yet, so rotate during a maintenance window.
 
+### Submission-time secrets (#260)
+
+Distinct from the worker-level `--secret`/`--secret-file` env vars above (which every container
+that worker runs receives, regardless of submitter) and from the provider-token encryption above
+(which protects the submitter's *BV-BRC identity*): a submission may also carry its own
+application secrets — `secrets: {"NAME": "value"}` on `POST /api/v1/submissions` — scoped to that
+one submission and delivered only to steps that opt in (`gowe:Execution.secret_env`/
+`inject_secrets`, or a `cwltool:Secrets`-declared workflow input). Full lifecycle, delivery
+scoping, and the `cwltool:Secrets` extension: [`docs/cwl-hints.md`](cwl-hints.md) and
+[`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260).
+
+**`--secrets-retention <policy>`** sets the server-wide default automatic-purge policy for
+submission secret *values* once a submission is terminal (`secret_names` is always kept for
+auditability):
+
+```bash
+gowe-server ... --secrets-retention ttl:720h    # default: purge 30 days after terminal
+```
+
+| Policy | Behavior |
+|---|---|
+| `keep` | never purged automatically (reproducible-debugging tenants can request this per submission) |
+| `ttl:<duration>` | purged `<duration>` after the submission reaches a terminal state — **default: `ttl:720h`** |
+| `on_success` | purged on COMPLETED only; kept on FAILED/CANCELLED so a retry still has them |
+| `on_terminal` | purged as soon as the submission reaches any terminal state |
+
+A submission's own `secrets_retention` in the create request overrides this default; an operator
+never needs a per-tenant table for it (GoWe sees submitters, not tenants). The scheduler's
+retention sweep runs at most once per minute regardless of `--scheduler-poll`. Manual purge at any
+time: `DELETE /api/v1/submissions/{id}/secrets`.
+
+Uses the same `GOWE_TOKEN_KEY`/`--token-key-file` encryption key as provider tokens above — no
+separate key to manage. With no key configured, a submission carrying `secrets` is refused
+(fail-closed) unless `--allow-plaintext-tokens`, exactly like a delegated provider token.
+
 ## GPU Assignment
 
 GPU 0 is reserved for interactive/other use. The start script assigns workers to GPUs starting at index 1:
@@ -536,6 +571,16 @@ Once keys are on, `GET /api/v1/workers` requires a worker key too. **UIs that sh
 (`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no hostnames.
 Migrate UIs before or with enabling keys — otherwise their browser sessions receive 401 from `/workers`.
 At a public gateway, additionally deny `/api/v1/workers` outright (defense in depth).
+
+**Worker keys/groups and submission-time secrets (#260) are orthogonal controls.** A worker key
+authorizes a *worker process* to pull work at all, and a group scopes *which* tasks it may pull
+(`--group esmfold` / `gowe:Execution.worker_group`); neither has anything to do with *which
+submission's* secrets a task carries. A secret is bound to the submission that supplied it and
+delivered per-task only via that step's own `secret_env`/`inject_secrets`/`cwltool:Secrets` opt-in
+— a worker with a valid key serving the right group still only ever sees the secrets of the
+specific task it checks out, never another submission's, and grouping many submissions onto one
+shared worker group does not widen that. See
+[`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260).
 
 ### Grafana link
 

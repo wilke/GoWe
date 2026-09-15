@@ -983,7 +983,10 @@ func TestExtractStepHints(t *testing.T) {
 			"executor":     "bvbrc",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -996,15 +999,15 @@ func TestExtractStepHints(t *testing.T) {
 }
 
 func TestExtractStepHints_Nil(t *testing.T) {
-	if got := extractStepHints(nil, nil); got != nil {
-		t.Errorf("extractStepHints(nil) = %v, want nil", got)
+	if got, err := extractStepHints(nil, nil); got != nil || err != nil {
+		t.Errorf("extractStepHints(nil) = (%v, %v), want (nil, nil)", got, err)
 	}
 }
 
 func TestExtractStepHints_NoGoweHint(t *testing.T) {
 	hints := map[string]any{"DockerRequirement": map[string]any{}}
-	if got := extractStepHints(hints, nil); got != nil {
-		t.Errorf("extractStepHints = %v, want nil", got)
+	if got, err := extractStepHints(hints, nil); got != nil || err != nil {
+		t.Errorf("extractStepHints = (%v, %v), want (nil, nil)", got, err)
 	}
 }
 
@@ -1014,7 +1017,10 @@ func TestExtractStepHints_DockerRequirement(t *testing.T) {
 			"dockerPull": "ubuntu:22.04",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1036,7 +1042,10 @@ func TestExtractStepHints_GoweDockerOverridesDockerRequirement(t *testing.T) {
 			"dockerPull": "ubuntu:22.04",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1052,7 +1061,10 @@ func TestExtractStepHints_GoweHintDockerImage(t *testing.T) {
 			"docker_image": "biocontainers/samtools:1.17",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
@@ -1071,7 +1083,10 @@ func TestExtractStepHints_LegacyGoweHint(t *testing.T) {
 			"executor":     "bvbrc",
 		},
 	}
-	got := extractStepHints(hints, nil)
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("expected non-nil StepHints from legacy goweHint")
 	}
@@ -1090,7 +1105,10 @@ func TestExtractStepHints_DockerRequirementInRequirements(t *testing.T) {
 			"dockerPull": "all-2026-0224b.sif",
 		},
 	}
-	got := extractStepHints(nil, requirements)
+	got, err := extractStepHints(nil, requirements)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil for DockerRequirement in requirements")
 	}
@@ -1113,12 +1131,259 @@ func TestExtractStepHints_HintsDockerTakesPrecedenceOverRequirements(t *testing.
 			"dockerPull": "requirements-image:latest",
 		},
 	}
-	got := extractStepHints(hints, requirements)
+	got, err := extractStepHints(hints, requirements)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
 	if got == nil {
 		t.Fatal("extractStepHints returned nil")
 	}
 	if got.DockerImage != "hints-image:latest" {
 		t.Errorf("DockerImage = %q, want hints-image:latest (hints should take precedence)", got.DockerImage)
+	}
+}
+
+func TestExtractStepHints_SecretEnv(t *testing.T) {
+	hints := map[string]any{
+		"gowe:Execution": map[string]any{
+			"secret_env": []any{"HF_TOKEN", "API_KEY"},
+		},
+	}
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("extractStepHints returned nil")
+	}
+	if len(got.SecretEnv) != 2 || got.SecretEnv[0] != "HF_TOKEN" || got.SecretEnv[1] != "API_KEY" {
+		t.Errorf("SecretEnv = %v, want [HF_TOKEN API_KEY]", got.SecretEnv)
+	}
+	if got.InjectSecrets {
+		t.Error("InjectSecrets = true, want false")
+	}
+}
+
+func TestExtractStepHints_InjectSecrets(t *testing.T) {
+	hints := map[string]any{
+		"gowe:Execution": map[string]any{
+			"inject_secrets": true,
+		},
+	}
+	got, err := extractStepHints(hints, nil)
+	if err != nil {
+		t.Fatalf("extractStepHints error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("extractStepHints returned nil")
+	}
+	if !got.InjectSecrets {
+		t.Error("InjectSecrets = false, want true")
+	}
+	if len(got.SecretEnv) != 0 {
+		t.Errorf("SecretEnv = %v, want empty", got.SecretEnv)
+	}
+}
+
+func TestExtractStepHints_SecretEnvMappingRejected(t *testing.T) {
+	// secret_env: {ENV_NAME: secret-name} was proposed in #260's discussion
+	// but never implemented as env-name aliasing; silently ignoring the shape
+	// (the pre-fix behavior: stringSlice returns nil for a map) left the
+	// author with no hint and no error. Reject it explicitly instead.
+	hints := map[string]any{
+		"gowe:Execution": map[string]any{
+			"secret_env": map[string]any{"HF_TOKEN": "hf_secret"},
+		},
+	}
+	got, err := extractStepHints(hints, nil)
+	if err == nil {
+		t.Fatal("extractStepHints: expected error for mapping-form secret_env, got nil")
+	}
+	if got != nil {
+		t.Errorf("extractStepHints = %v, want nil on error", got)
+	}
+	if !strings.Contains(err.Error(), "secret_env must be a list") {
+		t.Errorf("error = %q, want it to explain secret_env must be a list", err.Error())
+	}
+}
+
+func TestExtractStepHints_SecretEnvOnlyStillNonNil(t *testing.T) {
+	// A step whose gowe:Execution hint sets ONLY secret_env/inject_secrets
+	// (no bvbrc_app_id/executor/docker_image/worker_group/datasets) must not
+	// be dropped by the final "anything set?" guard in extractStepHints.
+	hints := map[string]any{
+		"gowe:Execution": map[string]any{
+			"secret_env": []any{"HF_TOKEN"},
+		},
+	}
+	if got, err := extractStepHints(hints, nil); got == nil || err != nil {
+		t.Fatalf("extractStepHints = (%v, %v), want non-nil StepHints carrying SecretEnv and nil error", got, err)
+	}
+}
+
+func TestExtractSecretInputs(t *testing.T) {
+	tests := []struct {
+		name         string
+		hints        map[string]any
+		requirements map[string]any
+		namespaces   map[string]string
+		want         []string
+	}{
+		{
+			name: "shorthand cwltool:Secrets key in hints",
+			hints: map[string]any{
+				"cwltool:Secrets": map[string]any{
+					"secrets": []any{"password", "api_key"},
+				},
+			},
+			want: []string{"password", "api_key"},
+		},
+		{
+			name: "shorthand cwltool:Secrets key in requirements",
+			requirements: map[string]any{
+				"cwltool:Secrets": map[string]any{
+					"secrets": []any{"password"},
+				},
+			},
+			want: []string{"password"},
+		},
+		{
+			name: "fully-expanded namespace URI key",
+			hints: map[string]any{
+				"http://commonwl.org/cwltool#Secrets": map[string]any{
+					"secrets": []any{"password"},
+				},
+			},
+			want: []string{"password"},
+		},
+		{
+			name: "custom namespace prefix resolved via $namespaces",
+			hints: map[string]any{
+				"ct:Secrets": map[string]any{
+					"secrets": []any{"password"},
+				},
+			},
+			namespaces: map[string]string{"ct": "http://commonwl.org/cwltool#"},
+			want:       []string{"password"},
+		},
+		{
+			name: "packed-format input IDs normalized",
+			hints: map[string]any{
+				"cwltool:Secrets": map[string]any{
+					"secrets": []any{"#main/password"},
+				},
+			},
+			want: []string{"password"},
+		},
+		{
+			name:  "no declaration",
+			hints: map[string]any{"DockerRequirement": map[string]any{}},
+			want:  nil,
+		},
+		{
+			name:  "nil hints and requirements",
+			hints: nil,
+			want:  nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractSecretInputs(tt.hints, tt.requirements, tt.namespaces)
+			if len(got) != len(tt.want) {
+				t.Fatalf("extractSecretInputs = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("extractSecretInputs[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestToModel_CwltoolSecrets_Shorthand(t *testing.T) {
+	p := testParser()
+	graph := &cwl.GraphDocument{
+		CWLVersion: "v1.2",
+		Workflow: &cwl.Workflow{
+			Inputs: map[string]cwl.InputParam{
+				"password": {Type: "string"},
+				"username": {Type: "string"},
+			},
+			Outputs: map[string]cwl.OutputParam{},
+			Steps:   map[string]cwl.Step{},
+			Hints: map[string]any{
+				"cwltool:Secrets": map[string]any{
+					"secrets": []any{"password"},
+				},
+			},
+		},
+		Tools: map[string]*cwl.CommandLineTool{},
+	}
+
+	mw, err := p.ToModel(graph, "test")
+	if err != nil {
+		t.Fatalf("ToModel: %v", err)
+	}
+	if len(mw.SecretInputs) != 1 || mw.SecretInputs[0] != "password" {
+		t.Errorf("SecretInputs = %v, want [password]", mw.SecretInputs)
+	}
+}
+
+func TestToModel_CwltoolSecrets_ExpandedNamespace(t *testing.T) {
+	p := testParser()
+	graph := &cwl.GraphDocument{
+		CWLVersion: "v1.2",
+		Namespaces: map[string]string{"cwltool": "http://commonwl.org/cwltool#"},
+		Workflow: &cwl.Workflow{
+			Inputs: map[string]cwl.InputParam{
+				"password": {Type: "string"},
+			},
+			Outputs: map[string]cwl.OutputParam{},
+			Steps:   map[string]cwl.Step{},
+			Requirements: map[string]any{
+				"http://commonwl.org/cwltool#Secrets": map[string]any{
+					"secrets": []any{"password"},
+				},
+			},
+		},
+		Tools: map[string]*cwl.CommandLineTool{},
+	}
+
+	mw, err := p.ToModel(graph, "test")
+	if err != nil {
+		t.Fatalf("ToModel: %v", err)
+	}
+	if len(mw.SecretInputs) != 1 || mw.SecretInputs[0] != "password" {
+		t.Errorf("SecretInputs = %v, want [password]", mw.SecretInputs)
+	}
+}
+
+func TestToModel_CwltoolSecrets_UnknownInputErrors(t *testing.T) {
+	p := testParser()
+	graph := &cwl.GraphDocument{
+		CWLVersion: "v1.2",
+		Workflow: &cwl.Workflow{
+			Inputs: map[string]cwl.InputParam{
+				"username": {Type: "string"},
+			},
+			Outputs: map[string]cwl.OutputParam{},
+			Steps:   map[string]cwl.Step{},
+			Hints: map[string]any{
+				"cwltool:Secrets": map[string]any{
+					"secrets": []any{"password"}, // not a declared input
+				},
+			},
+		},
+		Tools: map[string]*cwl.CommandLineTool{},
+	}
+
+	_, err := p.ToModel(graph, "test")
+	if err == nil {
+		t.Fatal("expected error for unknown cwltool:Secrets input, got nil")
+	}
+	if !strings.Contains(err.Error(), "password") {
+		t.Errorf("error %q does not name the offending input %q", err.Error(), "password")
 	}
 }
 

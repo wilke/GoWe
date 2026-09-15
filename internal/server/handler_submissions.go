@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,49 @@ import (
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/pkg/model"
 )
+
+// submissionResponse wraps a submission with secrets_state, computed from
+// SecretNames/SecretsPurgedAt (model.Submission.SecretsState() is a method,
+// not a field, so it is invisible to plain json.Marshal). secret_names,
+// secrets_retention, and secrets_purged_at already carry their own json
+// tags on model.Submission and need no wrapping; Secrets itself is
+// json:"-" and never round-trips through this or any other response type.
+// Used everywhere a full submission is serialized: create, get, list.
+type submissionResponse struct {
+	*model.Submission
+	SecretsState string `json:"secrets_state,omitempty"`
+}
+
+func newSubmissionResponse(sub *model.Submission) *submissionResponse {
+	if sub == nil {
+		return nil
+	}
+	sub = sanitizeSubmissionTasks(sub)
+	return &submissionResponse{Submission: sub, SecretsState: sub.SecretsState()}
+}
+
+// sanitizeSubmissionTasks returns a copy of sub with its embedded Tasks
+// (populated by GetSubmission, never by the list/create paths) sanitized via
+// sanitizeTaskValueSlice — the same RuntimeHints.Secrets/HTTPCredential
+// stripping applied to every other task-serializing surface (C1). Returns
+// sub itself, unmodified, when there are no tasks to scrub. sub and its
+// original Tasks slice are left untouched either way.
+func sanitizeSubmissionTasks(sub *model.Submission) *model.Submission {
+	if sub == nil || len(sub.Tasks) == 0 {
+		return sub
+	}
+	out := *sub
+	out.Tasks = sanitizeTaskValueSlice(sub.Tasks)
+	return &out
+}
+
+func newSubmissionListResponse(subs []*model.Submission) []*submissionResponse {
+	out := make([]*submissionResponse, len(subs))
+	for i, sub := range subs {
+		out[i] = newSubmissionResponse(sub)
+	}
+	return out
+}
 
 // requireSubmissionAccess checks whether the given user context has permission
 // to access the submission. Admins and unauthenticated contexts (nil) are always
@@ -43,6 +87,8 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		Inputs            map[string]any    `json:"inputs"`
 		Labels            map[string]string `json:"labels"`
 		OutputDestination string            `json:"output_destination"`
+		Secrets           map[string]string `json:"secrets"`
+		SecretsRetention  string            `json:"secrets_retention"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -82,11 +128,120 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Anonymous submissions never carry secrets. A submission's secrets are
+	// scoped to its submitter (owner/admin-only purge, retention tied to
+	// the submitting identity); the anonymous identity is shared by every
+	// unauthenticated caller in --allow-anonymous deployments, so there is
+	// no principal to scope that access to. Refuse up front — mirroring how
+	// delegated provider tokens are handled, secrets are a credential and
+	// anonymous submissions carry none today.
+	if userCtx.User.IsAnonymous() {
+		declaresSecretInput := false
+		for _, id := range wf.SecretInputs {
+			if _, ok := req.Inputs[id]; ok {
+				declaresSecretInput = true
+				break
+			}
+		}
+		if len(req.Secrets) > 0 || declaresSecretInput {
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code:    model.ErrForbidden,
+				Message: "anonymous submissions may not include secrets; authenticate first",
+			})
+			return
+		}
+	}
+
 	// Dry-run: validate without creating a submission.
 	if r.URL.Query().Get("dry_run") == "true" {
 		respondOK(w, reqID, s.buildDryRunReport(wf, req.Inputs))
 		return
 	}
+
+	if err := model.ValidateSecrets(req.Secrets); err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError(err.Error()))
+		return
+	}
+
+	// secrets_retention: empty means "use the server default"
+	// (--secrets-retention, see server.WithSecretsRetention); an explicit
+	// value (including "keep", used by dev/demo tenants for reproducible
+	// debugging) always wins. Persist the normalized String() form so later
+	// reads never have to re-parse a client-supplied spelling.
+	retentionStr := req.SecretsRetention
+	if retentionStr == "" {
+		retentionStr = s.secretsRetention.String()
+	}
+	retentionPolicy, err := model.ParseSecretsRetention(retentionStr)
+	if err != nil {
+		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	// SecretNameForInput derives a name by collapsing every character
+	// outside [A-Z0-9] to '_', so distinct input ids (e.g. "pw-1" and
+	// "pw_1") — or an input id and a user-supplied secrets key — can
+	// collide on the same derived name. Detect that up front, before
+	// mutating req.Secrets/req.Inputs below, and refuse the submission
+	// rather than let one value silently overwrite another (#260 M12).
+	derivedFrom := make(map[string]string, len(wf.SecretInputs)) // derived name -> input id that claimed it
+	for _, id := range wf.SecretInputs {
+		if _, ok := req.Inputs[id]; !ok {
+			continue // optional input, not supplied: nothing to derive.
+		}
+		derived := model.SecretNameForInput(id)
+		if other, taken := derivedFrom[derived]; taken {
+			msg := fmt.Sprintf("declared secret inputs %q and %q both derive secret name %q",
+				other, id, derived)
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(msg, model.FieldError{Field: id, Message: msg}))
+			return
+		}
+		derivedFrom[derived] = id
+		if _, exists := req.Secrets[derived]; exists {
+			msg := fmt.Sprintf("declared secret input %q derives secret name %q, which is also a key in the supplied secrets map",
+				id, derived)
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(msg, model.FieldError{Field: id, Message: msg}))
+			return
+		}
+	}
+
+	// cwltool:Secrets stripping: move the value of every workflow input
+	// declared secret out of req.Inputs and into the submission's secrets
+	// store, replacing it with the shared placeholder, BEFORE Inputs /
+	// SubmittedInputs are captured below. A declared-but-absent input
+	// (optional input, not supplied) is left alone. See
+	// pkg/model.SecretNameForInput for the key the worker derives back.
+	secrets := req.Secrets
+	for _, id := range wf.SecretInputs {
+		v, ok := req.Inputs[id]
+		if !ok {
+			continue
+		}
+		strVal, isStr := v.(string)
+		if !isStr {
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError("declared secret input must be a string value",
+					model.FieldError{Field: id, Message: "input is declared secret via cwltool:Secrets and must be a string"}))
+			return
+		}
+		if secrets == nil {
+			secrets = map[string]string{}
+		}
+		secrets[model.SecretNameForInput(id)] = strVal
+		req.Inputs[id] = model.SecretInputPlaceholder
+	}
+
+	var secretNames []string
+	for name := range secrets {
+		secretNames = append(secretNames, name)
+	}
+	sort.Strings(secretNames)
 
 	now := time.Now().UTC()
 	sub := &model.Submission{
@@ -103,6 +258,9 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		AuthProvider:      string(userCtx.Provider),
 		OutputDestination: req.OutputDestination,
 		CreatedAt:         now,
+		Secrets:           secrets,
+		SecretNames:       secretNames,
+		SecretsRetention:  retentionPolicy.String(),
 	}
 	if sub.Inputs == nil {
 		sub.Inputs = map[string]any{}
@@ -154,7 +312,7 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	// by the scheduler), but set it to a non-nil slice for clean JSON output.
 	sub.Tasks = []model.Task{}
 
-	respondCreated(w, reqID, sub)
+	respondCreated(w, reqID, newSubmissionResponse(sub))
 }
 
 func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +369,7 @@ func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respondList(w, reqID, subs, &model.Pagination{
+	respondList(w, reqID, newSubmissionListResponse(subs), &model.Pagination{
 		Total:   total,
 		Limit:   opts.Limit,
 		Offset:  opts.Offset,
@@ -250,7 +408,7 @@ func (s *Server) handleGetSubmission(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respondOK(w, reqID, sub)
+	respondOK(w, reqID, newSubmissionResponse(sub))
 }
 
 func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) {
@@ -467,6 +625,18 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Secrets purged (retention sweep or manual DELETE .../secrets) means the
+	// scheduler has nothing to re-attach to the retried tasks: refuse rather
+	// than silently run without them. Resubmitting (with secrets again) is
+	// the supported path.
+	if sub.SecretsState() == "purged" {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "secrets purged; resubmit with secrets",
+		})
+		return
+	}
+
 	// Reset the submission to RUNNING so the scheduler picks it up.
 	sub.State = model.SubmissionStateRunning
 	sub.Error = nil
@@ -501,6 +671,132 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 		"steps_reset": stepsReset,
 		"tasks_reset": tasksReset,
 	})
+}
+
+// handleDeleteSubmissionSecrets implements DELETE /api/v1/submissions/{id}/secrets:
+// an owner/admin-only manual purge of a submission's secret values (the
+// "manual" row of the retention table — see pkg/model.SecretsRetentionPolicy
+// and the scheduler's retention sweep for the automatic policies). Purges
+// this submission and, recursively, every descendant child submission
+// reached through its sub-workflow proxy tasks, so a re-delivered secret
+// cannot survive in a nested child after the parent's is gone.
+func (s *Server) handleDeleteSubmissionSecrets(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	sub, err := s.store.GetSubmission(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if sub == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+		return
+	}
+
+	// Ownership check: non-admin users can only purge their own submissions.
+	userCtx := UserFromContext(r.Context())
+	if !requireSubmissionAccess(sub, userCtx) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied: you can only access your own submissions",
+		})
+		return
+	}
+
+	if sub.SecretsState() != "present" {
+		respondError(w, reqID, http.StatusNotFound, &model.APIError{
+			Code:    model.ErrNotFound,
+			Message: "submission has no secrets to purge",
+		})
+		return
+	}
+
+	// A purge while the submission is still non-terminal would delete the
+	// secrets a running task depends on out from under it (and, before H2,
+	// the scheduler's terminal scrub would never even fire to leave a
+	// task-row copy behind — this guard closes that window entirely). The
+	// retention sweep never sees a non-terminal submission in the first
+	// place (ListSubmissionsWithSecretsForRetention only returns terminal
+	// rows), so this only affects the manual DELETE path.
+	if !sub.State.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "submission is not terminal; cancel it first or wait for completion",
+		})
+		return
+	}
+
+	now := time.Now().UTC()
+	purged, err := s.purgeSecretsCascade(r.Context(), sub.ID, now, map[string]bool{})
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+
+	sub.Secrets = nil
+	sub.SecretsPurgedAt = &now
+
+	s.logger.Info("submission secrets purged", "id", sub.ID, "names", len(sub.SecretNames), "submissions_purged", purged)
+
+	respondOK(w, reqID, map[string]any{
+		"id":                 sub.ID,
+		"secrets_state":      sub.SecretsState(),
+		"secret_names":       sub.SecretNames,
+		"secrets_retention":  sub.SecretsRetention,
+		"secrets_purged_at":  sub.SecretsPurgedAt,
+		"submissions_purged": purged,
+	})
+}
+
+// purgeSecretsCascade purges secret values for the submission id and every
+// descendant child submission reachable through its subworkflow proxy tasks
+// (any nesting depth), following the same task -> GetChildSubmissions link
+// hasActiveChildSubmissions/cancelseq use. store.PurgeSubmissionSecrets is a
+// no-op on a submission that already has no secret value (already NULL), so
+// purging every descendant unconditionally is safe and sidesteps
+// GetChildSubmissions' lean column set (it does not load secret metadata,
+// so child.SecretsState() would be unreliable here). visited guards against
+// cycles; returns the number of submissions purged (including id itself).
+func (s *Server) purgeSecretsCascade(ctx context.Context, id string, now time.Time, visited map[string]bool) (int, error) {
+	if visited[id] {
+		return 0, nil
+	}
+	visited[id] = true
+
+	if err := s.store.PurgeSubmissionSecrets(ctx, id, now); err != nil {
+		return 0, fmt.Errorf("purge submission %s: %w", id, err)
+	}
+	// PurgeSubmissionSecrets only clears the submissions row; the per-task
+	// subset of secrets delivered to this submission's tasks lives in
+	// tasks.runtime_hints and survives it untouched otherwise (#260 H3).
+	if _, err := s.store.ScrubTaskSecretsForSubmission(ctx, id); err != nil {
+		return 0, fmt.Errorf("scrub task secrets for submission %s: %w", id, err)
+	}
+	count := 1
+
+	tasks, err := s.store.ListTasksBySubmission(ctx, id)
+	if err != nil {
+		return count, fmt.Errorf("list tasks for %s: %w", id, err)
+	}
+	for _, task := range tasks {
+		if task.ExecutorType != model.ExecutorTypeSubworkflow {
+			continue
+		}
+		children, err := s.store.GetChildSubmissions(ctx, task.ID)
+		if err != nil {
+			return count, fmt.Errorf("list children of task %s: %w", task.ID, err)
+		}
+		for _, child := range children {
+			n, err := s.purgeSecretsCascade(ctx, child.ID, now, visited)
+			count += n
+			if err != nil {
+				return count, err
+			}
+		}
+	}
+	return count, nil
 }
 
 // buildDryRunReport validates a workflow and inputs without creating a submission.

@@ -94,8 +94,20 @@ func (e *LocalExecutor) submitWithCWLTool(ctx context.Context, task *model.Task,
 		cfg.CWLDir = task.RuntimeHints.CWLDir
 	}
 
+	// H4: deliver the task's opted-in submission secrets (gowe:Execution
+	// secret_env/inject_secrets) into cfg.SecretEnvVars and re-inject
+	// cwltool:Secrets-declared inputs into a COPY of task.Job. Before this,
+	// the local executor built cfg with no secret wiring at all, so a
+	// secret_env task silently ran with no env var and a cwltool:Secrets
+	// input ran with the literal placeholder — exactly on the default
+	// executor (no workers online).
+	job, err := cwltool.ApplySecrets(&cfg, task, e.logger)
+	if err != nil {
+		return taskDir, fmt.Errorf("task %s: apply secrets: %w", task.ID, err)
+	}
+
 	// Execute the tool.
-	result, err := cwltool.ExecuteTool(ctx, cfg, tool, task.Job, taskDir)
+	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
 	if err != nil {
 		return taskDir, fmt.Errorf("task %s: execute: %w", task.ID, err)
 	}

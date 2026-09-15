@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -138,6 +139,28 @@ func newStatusCmd() *cobra.Command {
 			}
 			if completedAt, ok := data["completed_at"].(string); ok && completedAt != "" {
 				fmt.Printf("  Completed: %s\n", completedAt)
+			}
+
+			// Secrets metadata only — never a value, which the API response
+			// never carries in the first place.
+			if secretsState, ok := data["secrets_state"].(string); ok && secretsState != "" && secretsState != "none" {
+				fmt.Printf("  Secrets:  %s", secretsState)
+				if retention, ok := data["secrets_retention"].(string); ok && retention != "" {
+					fmt.Printf(" (retention: %s)", retention)
+				}
+				fmt.Println()
+				if names, ok := data["secret_names"].([]any); ok && len(names) > 0 {
+					strNames := make([]string, 0, len(names))
+					for _, n := range names {
+						if s, ok := n.(string); ok {
+							strNames = append(strNames, s)
+						}
+					}
+					fmt.Printf("    Names:  %s\n", strings.Join(strNames, ", "))
+				}
+				if purgedAt, ok := data["secrets_purged_at"].(string); ok && purgedAt != "" {
+					fmt.Printf("    Purged: %s\n", purgedAt)
+				}
 			}
 
 			return nil

@@ -456,6 +456,8 @@ Fields:
 | `inputs` | yes | Map of input values matching the workflow's input schema |
 | `labels` | no | Key-value metadata for organizing submissions |
 | `output_destination` | no | Where to upload outputs on completion (e.g., `ws://` for BV-BRC workspace) |
+| `secrets` | no | Map of submission-time secrets (`{"NAME": "value"}`, name `^[A-Z][A-Z0-9_]*$`, ≤64KiB each, ≤64 entries). Delivered only to steps that opt in via `gowe:Execution.secret_env`/`inject_secrets` — see [`docs/cwl-hints.md`](cwl-hints.md#gowe-executionsecret_env--inject_secrets--submission-time-secrets). Never echoed back by this or any other endpoint; requires authentication (anonymous submissions may not carry secrets). |
+| `secrets_retention` | no | Overrides the server's default automatic-purge policy for this submission's secret *values*: `"keep"`, `"ttl:<duration>"`, `"on_success"`, or `"on_terminal"`. See [`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260) for the full table. |
 
 Response (HTTP 201):
 
@@ -475,11 +477,27 @@ Response (HTTP 201):
       "running": 0, "success": 0, "failed": 0, "skipped": 0
     },
     "output_destination": "ws:///user@bvbrc/home/results/batch-42/",
+    "secret_names": ["HF_TOKEN"],
+    "secrets_state": "present",
+    "secrets_retention": "ttl:720h0m0s",
+    "secrets_purged_at": null,
     "created_at": "2026-04-07T12:00:00Z",
     "completed_at": null
   }
 }
 ```
+
+A submission that carried no `secrets` and no `cwltool:Secrets`-declared input omits `secret_names`/`secrets_retention`/`secrets_purged_at` and reports `secrets_state: "none"`. **The real secret value never appears in this or any other response** — only `secret_names` (the keys), `secrets_state`, `secrets_retention`, and `secrets_purged_at` are ever serialized; `secrets` itself is write-only.
+
+### Deleting a submission's secrets
+
+```
+DELETE /api/v1/submissions/{id}/secrets
+```
+
+Manually purges this submission's secret *values* (owner/admin only), independent of its `secrets_retention` policy — the automatic policies above cover the common cases, this is the immediate-and-manual one. Cascades to any descendant child submissions (sub-workflow/scatter fan-out). `secret_names` is retained for auditability; `secrets_state` becomes `"purged"`. Returns **404** if the submission has no secrets to purge.
+
+Once purged, `PUT /api/v1/submissions/{id}/retry` on that submission returns **409** (`"secrets purged; resubmit with secrets"`) rather than silently retrying without them — resubmitting (with `secrets` again) is the supported path.
 
 ---
 

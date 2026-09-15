@@ -101,21 +101,31 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 	// the same workspace destination, overwrite _gowe_outputs.json, and fail
 	// the parent on any upload error. The parent uploads the gathered
 	// outputs after fan-in, as today. [F6]
+	//
+	// Secrets/SecretNames/SecretsRetention ARE inherited (unlike
+	// OutputDestination): a sub-workflow step's tools may need the same
+	// secret_env/inject_secrets/cwltool:Secrets access as any other step, and
+	// the child submission is the source of truth its own dispatch reads
+	// from (mirrors UserToken below) — the proxy task itself carries none,
+	// see createSubworkflowProxyTask.
 	now := time.Now().UTC()
 	childSub := &model.Submission{
-		ID:           "sub_" + uuid.New().String(),
-		WorkflowID:   childWf.ID,
-		WorkflowName: childWf.Name,
-		State:        model.SubmissionStatePending,
-		Inputs:       inputs,
-		Outputs:      map[string]any{},
-		Labels:       labels,
-		SubmittedBy:  parentSub.SubmittedBy,
-		ParentTaskID: parentTask.ID,
-		UserToken:    parentSub.UserToken,
-		TokenExpiry:  parentSub.TokenExpiry,
-		AuthProvider: parentSub.AuthProvider,
-		CreatedAt:    now,
+		ID:               "sub_" + uuid.New().String(),
+		WorkflowID:       childWf.ID,
+		WorkflowName:     childWf.Name,
+		State:            model.SubmissionStatePending,
+		Inputs:           inputs,
+		Outputs:          map[string]any{},
+		Labels:           labels,
+		SubmittedBy:      parentSub.SubmittedBy,
+		ParentTaskID:     parentTask.ID,
+		UserToken:        parentSub.UserToken,
+		TokenExpiry:      parentSub.TokenExpiry,
+		AuthProvider:     parentSub.AuthProvider,
+		Secrets:          parentSub.Secrets,
+		SecretNames:      parentSub.SecretNames,
+		SecretsRetention: parentSub.SecretsRetention,
+		CreatedAt:        now,
 	}
 
 	// StepInstances for each child workflow step, persisted with the

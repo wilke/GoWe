@@ -123,6 +123,20 @@ type RuntimeHints struct {
 	// task working data (no cleanup) so it can be inspected afterwards.
 	// Propagated from the submission's "debug" label.
 	Debug bool `json:"debug,omitempty"`
+
+	// Secrets are the subset of the submission's secrets this task may see (name → value).
+	// Encrypted at rest in tasks.runtime_hints; cleared at terminal state; delivered to the
+	// container by the worker. Never returned by the API.
+	Secrets map[string]string `json:"secrets,omitempty"`
+	// SecretEnvNames lists the keys of Secrets that the executor exposes to the
+	// tool as environment variables (from gowe:Execution.secret_env /
+	// inject_secrets). Keys of Secrets not listed here exist only for
+	// cwltool:Secrets job re-injection and must NOT be placed in the env.
+	SecretEnvNames []string `json:"secret_env_names,omitempty"`
+
+	// SecretInputs names workflow inputs declared secret via cwltool:Secrets whose values
+	// were removed from the persisted job and must be re-injected by the worker from Secrets.
+	SecretInputs []string `json:"secret_inputs,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.
@@ -161,4 +175,19 @@ type HTTPCredential struct {
 // HasTool returns true if this task has a Tool definition for worker execution.
 func (t *Task) HasTool() bool {
 	return t.Tool != nil && len(t.Tool) > 0
+}
+
+// ScrubSecrets removes every secret-bearing value from the hints in place:
+// the task-embedded copies of the submission's secrets and the delegated
+// HTTP credential. Metadata (SecretInputs, SecretEnvNames) is kept. Call it
+// whenever a task reaches a terminal state or a submission's secrets are
+// purged, on every path that persists the task afterwards.
+func (h *RuntimeHints) ScrubSecrets() {
+	if h == nil {
+		return
+	}
+	h.Secrets = nil
+	if h.StagerOverrides != nil {
+		h.StagerOverrides.HTTPCredential = nil
+	}
 }

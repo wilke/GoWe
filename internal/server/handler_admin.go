@@ -166,9 +166,7 @@ func (s *Server) handleListActiveTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, t := range active {
-		sanitizeTaskCredentials(t)
-	}
+	active = sanitizeTaskCredentialsSlice(active)
 
 	respondOK(w, reqID, map[string]any{
 		"total": len(active),

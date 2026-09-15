@@ -41,8 +41,17 @@ type Config struct {
 	OutDir                string               // Output directory for resolved output paths
 	RemoveDefaultListings bool                 // Remove listings when loadListing is default (for worker/executor mode)
 	ExtraBinds            []toolexec.ExtraBind // Extra bind mounts for containers (pre-staged datasets, admin paths)
-	SecretEnvVars         map[string]string    // Secret env vars injected into containers (never logged or stored)
+	SecretEnvVars         map[string]string    // Secret env vars injected into containers (never logged, delivered via cmd.Env not argv)
 	EnvVars               map[string]string    // Non-secret env vars injected into containers
+	// SecretValues is the full set of secret name->value pairs in play for
+	// this execution (env-exposed SecretEnvVars entries plus any job-only
+	// values re-injected by ApplySecrets, e.g. a cwltool:Secrets input
+	// consumed via $(inputs.x) in a commandLineBinding or
+	// InitialWorkDirRequirement). It is used ONLY to redact secret values
+	// out of log lines (the built command, docker/apptainer argv) — never
+	// for container delivery. Populated by ApplySecrets; callers that build
+	// Config without it get no masking beyond SecretEnvVars.
+	SecretValues map[string]string
 }
 
 // Result holds the result of tool execution.
@@ -264,7 +273,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		logger.Debug("built command", "cmd", cmdResult.Command)
+		logger.Debug("built command", "cmd", toolexec.MaskSecretValues(cmdResult.Command, cfg.SecretValues))
 		executor := toolexec.NewExecutor(logger)
 		execResult, execErr = executor.Execute(ctx, &toolexec.Options{
 			Tool:              tool,
@@ -285,6 +294,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			ExtraBinds:        cfg.ExtraBinds,
 			SecretEnvVars:     cfg.SecretEnvVars,
 			EnvVars:           cfg.EnvVars,
+			MaskSecrets:       cfg.SecretValues,
 		})
 
 	case "apptainer":
@@ -307,7 +317,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		logger.Debug("built command", "cmd", cmdResult.Command)
+		logger.Debug("built command", "cmd", toolexec.MaskSecretValues(cmdResult.Command, cfg.SecretValues))
 		executor := toolexec.NewExecutor(logger)
 		execResult, execErr = executor.Execute(ctx, &toolexec.Options{
 			Tool:            tool,
@@ -327,6 +337,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			ExtraBinds:      cfg.ExtraBinds,
 			SecretEnvVars:   cfg.SecretEnvVars,
 			EnvVars:         cfg.EnvVars,
+			MaskSecrets:     cfg.SecretValues,
 		})
 
 	default:
@@ -340,7 +351,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		logger.Debug("built command", "cmd", cmdResult.Command)
+		logger.Debug("built command", "cmd", toolexec.MaskSecretValues(cmdResult.Command, cfg.SecretValues))
 		executor := toolexec.NewExecutor(logger)
 		execResult, execErr = executor.Execute(ctx, &toolexec.Options{
 			Tool:            tool,
@@ -356,6 +367,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			ExtraBinds:      cfg.ExtraBinds,
 			SecretEnvVars:   cfg.SecretEnvVars,
 			EnvVars:         cfg.EnvVars,
+			MaskSecrets:     cfg.SecretValues,
 		})
 	}
 

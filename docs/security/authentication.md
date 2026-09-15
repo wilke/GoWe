@@ -104,11 +104,70 @@ Nothing else is injected — a tool that does not opt in runs with **no ambient 
 - **Server ↔ API clients**: token verified per request; never echoed back (`json:"-"`); denylist applies post-identity.
 - **Server ↔ workers**: the worker checkout payload **does** carry the plaintext credential inside `RuntimeHints.StagerOverrides.HTTPCredential` when §4 applies — that *is* the designed delivery mechanism. It is gated by `X-Worker-Key` auth; **transport confidentiality is the deployment's TLS story** (`--tls-cert/--tls-key` or a TLS-terminating proxy with `--behind-proxy`). On loopback-only deployments the wire is the local host.
 - **Server ↔ DB**: encryption boundary at the store; in-memory values are plaintext, rows are AES-256-GCM.
-- **Worker ↔ container**: token/secrets enter as environment variables on the container runtime's argv (`--env NAME=value` for Apptainer, `-e` for Docker). **Caveat (live):** the full argument vector is logged at **debug** level (`internal/toolexec/execute.go`), so a worker running `--log-level debug` can write secret and token values to its log. Production runs `info`. This is finding #1 of [`worker-isolation.md`](worker-isolation.md) and is not yet fixed.
+- **Worker ↔ container**: secrets and the token reach the tool as environment variables. Since #260 they are handed to the container runtime through the worker's *process environment* (Docker `-e NAME` with the value in `cmd.Env`; Apptainer `APPTAINERENV_NAME`), never on the runtime's argument vector — so they are not visible in `ps`/`/proc/*/cmdline` on the host. Every log line that prints a tool or runtime command is masked (`toolexec.MaskSecretValues`); `--env-file` values are still logged in clear at worker start (put credentials in `--secret-file`, which logs names only).
 - **Container ↔ host / other tasks**: out of scope here — see [`worker-isolation.md`](worker-isolation.md) (containers run as root, NetworkAccess is tool-declared, etc.).
 - **UI sessions**: cookie references a server-side session that holds the token; the token itself is never sent to the browser.
 
-## 8. Operator quick reference
+## 8. Submission-time secrets (#260)
+
+Separate from the submitter's BV-BRC/MG-RAST **provider token** (§§1–7): a submission may also carry arbitrary **application secrets** — API keys, DSNs, HuggingFace tokens — that a tool needs but that must never appear in the workflow record, task inputs, or logs. The lifecycle deliberately mirrors the token model above.
+
+**What they are:**
+
+- `secrets: {NAME: value, …}` on `POST /api/v1/submissions` — submitter-supplied, name must match `^[A-Z][A-Z0-9_]*$`, value 1–64KiB, at most 64 entries per submission.
+- A top-level `cwltool:Secrets` hint (`hints: {"cwltool:Secrets": {secrets: [inputID, …]}}`, cwltool's own extension — never standardized, see the issue discussion) declares specific **workflow inputs** as secret. At submission the server moves each declared input's value out of `inputs`/`submitted_inputs` and into the secrets store, replacing it with the literal placeholder `<secret>`; the key it's stored under is derived deterministically as `INPUT_<INPUT_ID_UPPERCASED>` (`pkg/model.SecretNameForInput`) so the worker can re-inject it without any extra bookkeeping.
+
+**Lifecycle (mirrors §3's token diagram):**
+
+```
+POST /submissions {secrets: {...}}
+  └─ ValidateSecrets (name/size/count) → Submission.Secrets   (json:"-" — never serialized)
+       └─ persisted encrypted (AES-256-GCM, same GOWE_TOKEN_KEY as §3)   submissions.secrets
+            └─ per-task opted-in subset attached at dispatch (below) as
+               RuntimeHints.Secrets   tasks.runtime_hints (also encrypted, under "__enc__")
+                 └─ scrubbed at terminal state (scrubTaskToken)
+                      └─ submission-level value purged per retention policy (below)
+```
+
+**Delivery opt-ins** — a task sees a submission secret only if its step explicitly asks:
+
+| CWL hint | Effect |
+|---|---|
+| `gowe:Execution.secret_env: [NAME, ...]` | that task's container gets exactly those env vars; an unlisted or absent name fails the task **pre-dispatch**, naming the missing secret, never dispatching it |
+| `gowe:Execution.inject_secrets: true` | every submission secret is injected as an env var (used for tools that legitimately need the whole set, e.g. a registry credential bundle) |
+| `cwltool:Secrets` (top-level) | the declared input's value is re-injected into the in-memory job before tool evaluation (parameter references, `InitialWorkDirRequirement` interpolation), never into the persisted job |
+| (no hint) | the task sees no submission secrets at all |
+
+A step with no opt-in sees nothing; sibling steps in the same submission are isolated from each other's secrets by default — this is what makes a shared worker group safe for multi-tenant secrets. A sub-workflow's child submission **inherits** the parent's secrets store (it's the same submitter's work); the sub-workflow **proxy task carries none** — it never executes, so a value at rest there would be pure exposure (same reasoning as the token's proxy handling, §3).
+
+**Retention policies** — a submission's secret *values* are purged automatically once terminal, per policy (`secret_names` and other metadata are always kept for auditability):
+
+| `secrets_retention` | Behavior |
+|---|---|
+| `keep` | never purged automatically (today's token default; used by dev/demo tenants for reproducible debugging) |
+| `ttl:<duration>` | purged that long after the submission reaches a terminal state — **server default: `ttl:720h`** (30 days), set via `--secrets-retention` |
+| `on_success` | purged on COMPLETED; kept on FAILED/CANCELLED so a retry still has them |
+| `on_terminal` | purged as soon as the submission reaches any terminal state |
+| manual | `DELETE /api/v1/submissions/{id}/secrets` (owner/admin), any time; cascades to descendant child submissions |
+
+A per-submission `secrets_retention` in the create request overrides the server default. The scheduler's retention sweep (`internal/scheduler/secrets_retention.go`) evaluates every terminal submission still carrying a value once a tick, rate-limited to once per minute. `POST .../retry` on a submission whose secrets were purged is refused with **409** (`"secrets purged; resubmit with secrets"`) rather than silently retrying without them.
+
+**Surfaces that never show a value** — create response, `GET /submissions/{id}`, list, and the web UI's submission detail page all expose only `secret_names`, `secrets_state` (`none|present|purged`), `secrets_retention`, and `secrets_purged_at`; the value itself is `json:"-"` at every layer and is never present in these responses.
+
+**`cwltool:Secrets` compatibility** — cwltool's own extension (never standardized into the CWL spec; a CWL v1.3 draft, PR #26, proposes a different `SecretText` construct instead) is supported for both the server path (stripped at submission as above) and the standalone `cwl-runner` path. `cwl-runner` has **no submission store** — there is nothing to strip, since the value comes straight from the job file — so its only obligation is that its **own logs/provenance never carry the value**; there is no metadata/placeholder round-trip to speak of outside a server-managed submission.
+
+**Honest limits:**
+
+- The **worker sees secret values in flight**: they arrive in the checkout payload (`RuntimeHints.Secrets`) exactly like the provider token (§7) — the same TLS/loopback trust boundary applies.
+- Once delivered, the value is an **ordinary environment variable inside the tool's own process** — any code the tool runs can read it, log it, or write it to a file; GoWe's guarantees stop at "GoWe itself never persists or displays it," not "the tool can't leak it."
+- **Argv/log masking is best-effort string replacement** (`redactSecrets`/`maskSecretValues`, values ≥8 bytes — enforced by validation), applied to the worker's captured stdout/stderr and to the container-runtime argv debug log. It cannot catch a value the tool has transformed (base64'd, split across lines, etc.) before printing it.
+- **Known limitations of this release** (tracked on issue #260; fixed in a follow-up before general availability — see the PR/branch history for `feat/260-fixes`):
+  - `cwltool:Secrets` re-injection only recognizes a **direct** `in: x: <workflow-input>` step sourcing at the **top-level workflow**; sourcing through an intermediate step output, `valueFrom`, or a nested sub-workflow's own `cwltool:Secrets` declaration is not (yet) re-injected.
+  - A task's output *files* are never scanned or redacted — if a tool writes a secret value into a declared output file (by design, e.g. a rendered config), that file is not treated specially; only the task's captured stdout/stderr get the `***REDACTED***` treatment.
+  - Files materialized via `InitialWorkDirRequirement` interpolation (the IWDR consumption mode) are created with the worker's default file modes — no extra permission hardening beyond normal task-directory isolation.
+  - Task API surfaces (`GET .../tasks/{tid}`, `GET .../tasks/`, embedded `tasks[]`, admin active tasks, SSE) sanitize `RuntimeHints.Secrets` exactly as they sanitize the provider credential; worker-executed tasks are scrubbed at terminal state, on cancel, and on purge. The acceptance battery (`internal/server/e2e_secrets_test.go`, `scripts/validate-secrets.sh`) asserts each of these.
+
+## 9. Operator quick reference
 
 | Flag / env | Purpose |
 |---|---|

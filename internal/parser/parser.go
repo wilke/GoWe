@@ -1645,6 +1645,16 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 		inputIDs[id] = true
 	}
 
+	// Top-level cwltool:Secrets declaration: every named input must be a
+	// declared workflow input, so submission-time secret extraction (owned
+	// by another agent) can trust the list without re-validating it.
+	for _, id := range extractSecretInputs(wf.Hints, wf.Requirements, graph.Namespaces) {
+		if !inputIDs[id] {
+			return nil, fmt.Errorf("cwltool:Secrets: unknown input %q", id)
+		}
+		mw.SecretInputs = append(mw.SecretInputs, id)
+	}
+
 	// Convert steps.
 	for stepID, step := range wf.Steps {
 		toolRef := strings.TrimPrefix(step.Run, "#")
@@ -1684,11 +1694,19 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 
 		// Resolve inline tool from graph.
 		if tool, ok := graph.Tools[toolRef]; ok {
-			ms.ToolInline = convertTool(tool)
+			inlineTool, err := convertTool(tool)
+			if err != nil {
+				return nil, fmt.Errorf("step %s: %w", stepID, err)
+			}
+			ms.ToolInline = inlineTool
 		}
 
 		// Extract GoWe hints from step or resolved tool.
-		ms.Hints = extractStepHints(step.Hints, nil)
+		stepHints, err := extractStepHints(step.Hints, nil)
+		if err != nil {
+			return nil, fmt.Errorf("step %s: %w", stepID, err)
+		}
+		ms.Hints = stepHints
 		if ms.Hints == nil && ms.ToolInline != nil {
 			ms.Hints = ms.ToolInline.Hints
 		}
@@ -1706,7 +1724,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 }
 
 // convertTool converts a cwl.CommandLineTool to a model.Tool.
-func convertTool(ct *cwl.CommandLineTool) *model.Tool {
+func convertTool(ct *cwl.CommandLineTool) (*model.Tool, error) {
 	t := &model.Tool{
 		ID:    ct.ID,
 		Class: ct.Class,
@@ -1763,9 +1781,13 @@ func convertTool(ct *cwl.CommandLineTool) *model.Tool {
 	})
 
 	// Extract tool hints (check both hints and requirements for DockerRequirement).
-	t.Hints = extractStepHints(ct.Hints, ct.Requirements)
+	hints, err := extractStepHints(ct.Hints, ct.Requirements)
+	if err != nil {
+		return nil, fmt.Errorf("tool %s: %w", ct.ID, err)
+	}
+	t.Hints = hints
 
-	return t
+	return t, nil
 }
 
 // computeDependsOn extracts step dependencies from source references.
@@ -1934,11 +1956,58 @@ func intSlice(m map[string]any, key string) []int {
 	return nil
 }
 
+// cwltoolNamespaceURI is the URI the "cwltool" prefix conventionally
+// resolves to (cwltool's extensions.yml, http://commonwl.org/cwltool#).
+const cwltoolNamespaceURI = "http://commonwl.org/cwltool#"
+
+// cwltoolSecretsKeys returns every hints/requirements key that could spell
+// the cwltool:Secrets extension in a given document: the conventional
+// "cwltool:" prefix, the fully-expanded URI form, and any other prefix the
+// document's own $namespaces maps to cwltoolNamespaceURI.
+func cwltoolSecretsKeys(namespaces map[string]string) []string {
+	keys := []string{"cwltool:Secrets", cwltoolNamespaceURI + "Secrets"}
+	for prefix, uri := range namespaces {
+		if uri == cwltoolNamespaceURI && prefix != "cwltool" {
+			keys = append(keys, prefix+":Secrets")
+		}
+	}
+	return keys
+}
+
+// extractSecretInputs looks for a top-level cwltool:Secrets hint or
+// requirement (checked in that order) and returns the input IDs it names,
+// normalizing packed-format IDs ("#main/x" -> "x"). Returns nil when no
+// cwltool:Secrets declaration is present.
+func extractSecretInputs(hints, requirements map[string]any, namespaces map[string]string) []string {
+	keys := cwltoolSecretsKeys(namespaces)
+	for _, m := range []map[string]any{hints, requirements} {
+		if m == nil {
+			continue
+		}
+		for _, key := range keys {
+			sm, ok := m[key].(map[string]any)
+			if !ok {
+				continue
+			}
+			raw := stringSlice(sm, "secrets")
+			if len(raw) == 0 {
+				return nil
+			}
+			ids := make([]string, len(raw))
+			for i, id := range raw {
+				ids[i] = normalizePackedID(id)
+			}
+			return ids
+		}
+	}
+	return nil
+}
+
 // extractStepHints extracts GoWe-specific hints and CWL DockerRequirement from hints and requirements maps.
 // DockerRequirement may appear in either hints or requirements; both are checked.
-func extractStepHints(hints map[string]any, requirements map[string]any) *model.StepHints {
+func extractStepHints(hints map[string]any, requirements map[string]any) (*model.StepHints, error) {
 	if hints == nil && requirements == nil {
-		return nil
+		return nil, nil
 	}
 
 	var h model.StepHints
@@ -1961,6 +2030,20 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 		}
 		if inject, ok := goweMap["inject_bvbrc_token"].(bool); ok && inject {
 			h.InjectBVBRCToken = true
+		}
+		// secret_env must be a list of secret names (e.g. [HF_TOKEN]). The
+		// mapping shape (secret_env: {ENV_NAME: secret-name}) proposed early
+		// in #260's discussion was never implemented as env-name aliasing —
+		// silently accepting it here would drop the hint with no signal to
+		// the author, so reject it explicitly instead.
+		if raw, ok := goweMap["secret_env"]; ok {
+			if _, isMap := raw.(map[string]any); isMap {
+				return nil, fmt.Errorf("gowe:Execution.secret_env must be a list of secret names, not a mapping")
+			}
+		}
+		h.SecretEnv = stringSlice(goweMap, "secret_env")
+		if inject, ok := goweMap["inject_secrets"].(bool); ok && inject {
+			h.InjectSecrets = true
 		}
 	}
 
@@ -2011,10 +2094,11 @@ func extractStepHints(hints map[string]any, requirements map[string]any) *model.
 		}
 	}
 
-	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && h.WorkerGroup == "" && len(h.RequiredDatasets) == 0 {
-		return nil
+	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && h.WorkerGroup == "" &&
+		len(h.RequiredDatasets) == 0 && len(h.SecretEnv) == 0 && !h.InjectSecrets {
+		return nil, nil
 	}
-	return &h
+	return &h, nil
 }
 
 // parseNamespaces extracts $namespaces map from a CWL document.

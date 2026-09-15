@@ -874,6 +874,11 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	ui.store.CancelNonTerminalSteps(r.Context(), id, now)
 	ui.store.CancelNonTerminalTasks(r.Context(), id, now)
+	// Scrub task-embedded secrets before the delete: if DeleteSubmission
+	// fails part-way, no task row is left holding a secret copy (#260).
+	if _, err := ui.store.ScrubTaskSecretsForSubmission(r.Context(), id); err != nil {
+		ui.logger.Warn("scrub task secrets before delete", "submission_id", id, "error", err)
+	}
 
 	if err := ui.store.DeleteSubmission(r.Context(), id); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

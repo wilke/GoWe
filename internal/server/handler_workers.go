@@ -387,12 +387,14 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	task.StageOutMs = req.StageOutMs
 
 	// The task has reached a terminal state via the worker report path (the only
-	// path a worker task terminalizes on). The injected provider token is no
-	// longer needed, so drop it before persisting rather than retaining it at
-	// rest — the scheduler's scrubTaskToken never fires for worker completions.
+	// path a worker task terminalizes on). The injected provider token and any
+	// delivered submission-time secrets are no longer needed, so scrub both
+	// before persisting rather than retaining them at rest — the scheduler's
+	// scrubTaskToken (loop.go) only fires for the local/docker/bvbrc dispatch
+	// paths, never for worker completions (#260 H2).
 	// (SPECIFICATION.md §13.5: the token is needed only while the task is in flight.)
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
+	if task.RuntimeHints != nil {
+		task.RuntimeHints.ScrubSecrets()
 	}
 
 	// CAS write: refuse to overwrite a terminal state written between the read

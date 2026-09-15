@@ -18,6 +18,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/ui"
+	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
 
@@ -31,24 +32,25 @@ type Server struct {
 	validator             *parser.Validator
 	store                 store.Store
 	scheduler             scheduler.Scheduler
-	registry              *executor.Registry       // optional; used by dry-run to check executor availability
-	bvbrcCaller           bvbrc.RPCCaller          // optional; AppService caller, nil when no BV-BRC token
-	workspaceURL          string                   // optional; BV-BRC Workspace endpoint for the UI (empty = production)
-	uiUploadMaxSize       int64                    // optional; cap on UI workspace upload bodies (0 = ui default)
-	testApps              []map[string]any         // optional; static app list for testing without BV-BRC
-	ui                    *ui.UI                   // UI handler for web interface
-	adminConfig           *AdminConfig             // optional; admin role configuration
-	anonConfig            *AnonymousConfig         // optional; anonymous access configuration
-	workerKeyConfig       *WorkerKeyConfig         // optional; static worker keys (file/env)
-	workerAuth            *WorkerKeyAuthenticator  // validates static + DB-backed worker keys
-	tokenVerifier         *bvbrc.Verifier          // optional; verifies BV-BRC provider token signatures (nil = verification disabled)
-	allowUnverifiedMGRAST bool                     // allow the unverified X-MG-RAST-Token path even when tokenVerifier is set
-	authDenylist          *AuthDenylist            // optional; local username/token-id denylist checked after identity is established
-	fileUploadConfig      *FileUploadConfig        // optional; file upload proxy configuration
-	wsStager              *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
-	metrics               *metrics.Registry        // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
-	workflowNames         *workflowNameCache       // LRU backing workflowNameFor, the worker-report path's metric label lookup
-	basePath              string                   // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
+	registry              *executor.Registry           // optional; used by dry-run to check executor availability
+	bvbrcCaller           bvbrc.RPCCaller              // optional; AppService caller, nil when no BV-BRC token
+	workspaceURL          string                       // optional; BV-BRC Workspace endpoint for the UI (empty = production)
+	uiUploadMaxSize       int64                        // optional; cap on UI workspace upload bodies (0 = ui default)
+	testApps              []map[string]any             // optional; static app list for testing without BV-BRC
+	ui                    *ui.UI                       // UI handler for web interface
+	adminConfig           *AdminConfig                 // optional; admin role configuration
+	anonConfig            *AnonymousConfig             // optional; anonymous access configuration
+	workerKeyConfig       *WorkerKeyConfig             // optional; static worker keys (file/env)
+	workerAuth            *WorkerKeyAuthenticator      // validates static + DB-backed worker keys
+	tokenVerifier         *bvbrc.Verifier              // optional; verifies BV-BRC provider token signatures (nil = verification disabled)
+	allowUnverifiedMGRAST bool                         // allow the unverified X-MG-RAST-Token path even when tokenVerifier is set
+	authDenylist          *AuthDenylist                // optional; local username/token-id denylist checked after identity is established
+	fileUploadConfig      *FileUploadConfig            // optional; file upload proxy configuration
+	wsStager              *staging.WorkspaceStager     // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+	metrics               *metrics.Registry            // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
+	workflowNames         *workflowNameCache           // LRU backing workflowNameFor, the worker-report path's metric label lookup
+	basePath              string                       // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
+	secretsRetention      model.SecretsRetentionPolicy // default secrets_retention applied to a submission that doesn't specify one (see WithSecretsRetention); zero value is SecretsRetentionKeep
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -187,6 +189,17 @@ func WithAllowUnverifiedMGRAST(allow bool) Option {
 func WithBasePath(p string) Option {
 	return func(s *Server) {
 		s.basePath = p
+	}
+}
+
+// WithSecretsRetention sets the default secrets_retention policy applied to
+// a submission whose create request leaves secrets_retention empty (see
+// --secrets-retention / GOWE_SECRETS_RETENTION in cmd/server). Explicit
+// per-submission values (including "keep", used by dev/demo tenants for
+// reproducible debugging) always override this default.
+func WithSecretsRetention(policy model.SecretsRetentionPolicy) Option {
+	return func(s *Server) {
+		s.secretsRetention = policy
 	}
 }
 
@@ -418,6 +431,7 @@ func (s *Server) routes() {
 					r.Put("/cancel", s.handleCancelSubmission)
 					r.Delete("/", s.handleDeleteSubmission)
 					r.Put("/retry", s.handleRetrySubmission)
+					r.Delete("/secrets", s.handleDeleteSubmissionSecrets)
 					// Tasks nested under submissions
 					r.Route("/tasks", func(r chi.Router) {
 						r.Get("/", s.handleListTasks)

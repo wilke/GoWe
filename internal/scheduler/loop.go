@@ -143,6 +143,11 @@ type Loop struct {
 	// every Registry method no-ops on a nil receiver, so instrumentation
 	// call sites throughout this file never check for nil themselves.
 	metrics *metrics.Registry
+
+	// lastSecretsSweep rate-limits sweepSecretsRetention (secrets_retention.go,
+	// #260) to once per minute even though Tick() calls it every tick; zero
+	// value runs the sweep on the very first tick.
+	lastSecretsSweep time.Time
 }
 
 // SetMetrics wires the Prometheus metrics registry into the scheduler. Not
@@ -425,6 +430,10 @@ func (l *Loop) Tick(ctx context.Context) error {
 		return fmt.Errorf("phase 5 (finalize): %w", err)
 	}
 	l.metrics.ObserveTickPhase("5", time.Since(phaseStart))
+
+	// Secrets retention sweep (#260): rate-limited internally to once per
+	// minute, so calling it every tick is cheap. See secrets_retention.go.
+	l.sweepSecretsRetention(ctx, time.Now())
 
 	// Phase 5.5: Upload outputs to workspace for completed submissions (server-side mode).
 	if l.wsStager != nil {
@@ -920,6 +929,11 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Add user token.
 	l.addUserToken(task, sub)
 
+	// Attach opted-in submission secrets / re-inject cwltool:Secrets inputs.
+	if err := l.addSecrets(task, sub, step.Hints, wf); err != nil {
+		return l.failTaskPreDispatch(ctx, task, si, err.Error())
+	}
+
 	if err := l.store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
@@ -1115,6 +1129,11 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task.Inputs = combo
 
 		l.addUserToken(task, sub)
+
+		// Attach opted-in submission secrets / re-inject cwltool:Secrets inputs.
+		if err := l.addSecrets(task, sub, step.Hints, wf); err != nil {
+			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
+		}
 
 		if err := l.store.CreateTask(ctx, task); err != nil {
 			now := time.Now().UTC()
@@ -1396,6 +1415,11 @@ func (l *Loop) createSubworkflowProxyTask(si *model.StepInstance, tmpTask *model
 	// No addUserToken: the proxy never executes, so a token at rest on a
 	// long-lived RUNNING row is pure exposure, and propagating the parent's
 	// OutputDestination here would contradict the child-level drop. [F6]
+	// No addSecrets either, for the same reason: the proxy never executes,
+	// so it carries none of the submission's secrets at rest. The paired
+	// child submission inherits Secrets/SecretNames/SecretsRetention
+	// directly (see createChildSubmission) and re-derives its own tasks'
+	// secret subsets when it dispatches its own steps.
 	return task
 }
 
@@ -1409,6 +1433,9 @@ func (l *Loop) failSubworkflowProxy(ctx context.Context, task *model.Task, si *m
 	task.State = model.TaskStateFailed
 	task.Stderr = reason
 	task.CompletedAt = &now
+	// Defense in depth: proxy tasks never carry RuntimeHints.Secrets (see
+	// reconcileDispatchWithCancel's identical note) — scrub unconditionally.
+	scrubTaskToken(task)
 	if applied, err := l.store.TerminalizeTask(ctx, task); err != nil {
 		l.logger.Error("fail subworkflow proxy", "task_id", task.ID, "error", err)
 	} else if applied {
@@ -1453,6 +1480,13 @@ func (l *Loop) reconcileDispatchWithCancel(ctx context.Context, subID, siID stri
 	for _, task := range tasks {
 		task.State = model.TaskStateSkipped
 		task.CompletedAt = &now
+		// Defense in depth: these are sub-workflow proxy tasks, which never
+		// carry RuntimeHints.Secrets in the first place (createSubworkflowProxyTask
+		// never calls addSecrets), so this is a no-op today — but every
+		// path that terminalizes a task row scrubs unconditionally so a
+		// future caller of reconcileDispatchWithCancel with a non-proxy task
+		// can't reintroduce H2.
+		scrubTaskToken(task)
 		// CAS: when-skipped synthetic SUCCESS tasks are already terminal and
 		// stay as they are. Proxies are excluded from CancelNonTerminalTasks,
 		// so this is the one per-row SKIP count, gated on the write applying.
@@ -1489,6 +1523,14 @@ func (l *Loop) cancelChildSubmission(ctx context.Context, child *model.Submissio
 	tasksCancelled, err := l.store.CancelNonTerminalTasks(ctx, child.ID, now)
 	if err != nil {
 		l.logger.Error("cancel child tasks", "child_id", child.ID, "error", err)
+	}
+	// H2/H3: CancelNonTerminalTasks is a bulk state/completed_at UPDATE — it
+	// does not touch runtime_hints, so a cancelled child's tasks would keep
+	// any addSecrets-attached secret values at rest. This is the scheduler's
+	// own sub-workflow cancel cascade, which bypasses the server's cancel
+	// handler (internal/cancelseq) where the scrub is already wired.
+	if _, err := l.store.ScrubTaskSecretsForSubmission(ctx, child.ID); err != nil {
+		l.logger.Warn("scrub secrets after cancel", "submission_id", child.ID, "error", err)
 	}
 	l.metrics.AddTasksSkipped(tasksCancelled)
 	l.logger.Info("child submission cancelled", "child_id", child.ID)
@@ -1838,14 +1880,16 @@ func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
 	}
 }
 
-// scrubTaskToken removes the user authentication token from a task's runtime
-// hints so that credentials are not persisted in the database after the task
-// reaches a terminal state. The token is only needed while the task is in
-// flight; once complete, keeping it at rest is unnecessary exposure.
+// scrubTaskToken removes the user authentication token and any delivered
+// submission secrets from a task's runtime hints so that credentials are not
+// persisted in the database after the task reaches a terminal state. Both
+// are only needed while the task is in flight; once complete, keeping them
+// at rest is unnecessary exposure. RuntimeHints.SecretInputs/SecretEnvNames
+// (naming which inputs/env vars were secret, not their values) are
+// deliberately kept — see model.RuntimeHints.ScrubSecrets, the single
+// implementation every terminal-marking call site in this file delegates to.
 func scrubTaskToken(task *model.Task) {
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
-	}
+	task.RuntimeHints.ScrubSecrets()
 }
 
 // submitAndUpdateTask submits a task to its executor and updates its state.
@@ -1862,6 +1906,13 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		task.State = model.TaskStateFailed
 		task.Stderr = err.Error()
 		task.CompletedAt = &now
+		// H2: this terminal write does not go through the success branch
+		// below, which is where scrubTaskToken used to live exclusively —
+		// scrub explicitly so a task that had addSecrets-attached
+		// RuntimeHints.Secrets (dispatch always runs addSecrets before
+		// submitAndUpdateTask) doesn't keep them at rest just because its
+		// executor type failed to resolve.
+		scrubTaskToken(task)
 		l.persistSubmitOutcome(ctx, task)
 		return
 	}
@@ -1895,6 +1946,15 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 			strings.Contains(errMsg, "context canceled") {
 			task.MaxRetries = task.RetryCount
 		}
+		// H2: this is a THIRD terminal-marking branch (beyond the
+		// newState.IsTerminal() success-path branch scrubTaskToken
+		// previously lived in exclusively) — a synchronous executor
+		// (local/container/apptainer) that runs the tool and then returns a
+		// non-nil error (e.g. the command exited non-zero) goes FAILED here,
+		// carrying whatever addSecrets attached at dispatch. Without this,
+		// every local/docker/apptainer task that simply fails (the common
+		// case, not just a cancel) keeps its secret values at rest forever.
+		scrubTaskToken(task)
 		l.logger.Info("task failed (submit error)", "task_id", task.ID, "error", submitErr)
 	} else {
 		newState, statusErr := exec.Status(ctx, task)
@@ -2124,12 +2184,77 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.StageInMs = nil
 		task.StageOutMs = nil
 
+		// Re-attach secrets scrubbed off this task at its prior terminal
+		// (FAILED) state: scrubTaskToken/ScrubSecrets clears
+		// RuntimeHints.Secrets but keeps the SecretInputs/SecretEnvNames
+		// metadata, so a task that expected secrets is easy to detect here.
+		// Without this, a retried task resubmits with no secret values at
+		// all — reproducing exactly the silent-failure/hard-failure classes
+		// #260 exists to prevent, just on the second attempt instead of the
+		// first.
+		if task.RuntimeHints != nil && (len(task.RuntimeHints.SecretEnvNames) > 0 || len(task.RuntimeHints.SecretInputs) > 0) {
+			if failed := l.reattachSecretsForRetry(ctx, task); failed {
+				affected[task.SubmissionID] = true
+				continue
+			}
+		}
+
 		l.logger.Info("retrying task", "task_id", task.ID, "attempt", task.RetryCount)
 		l.submitAndUpdateTask(ctx, task)
 		affected[task.SubmissionID] = true
 	}
 
 	return nil
+}
+
+// reattachSecretsForRetry re-runs addSecrets on a task being resubmitted out
+// of RETRYING, using the same sub/step/wf lookups the original dispatch used.
+// It resets the task's SecretInputs/SecretEnvNames metadata first so a
+// second (or third...) retry does not accumulate duplicate entries from the
+// still-present pre-scrub metadata. Returns true when the task could not be
+// re-attached (submission/workflow/step unavailable, or the secret itself is
+// missing) — in that case the task has already been persisted FAILED
+// (mirroring failTaskPreDispatch) and the caller must not call
+// submitAndUpdateTask.
+func (l *Loop) reattachSecretsForRetry(ctx context.Context, task *model.Task) bool {
+	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
+	if err != nil || sub == nil {
+		l.logger.Error("retry: load submission to re-attach secrets", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, "retry: submission unavailable to re-attach secrets")
+	}
+	wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
+	if err != nil || wf == nil {
+		l.logger.Error("retry: load workflow to re-attach secrets", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, "retry: workflow unavailable to re-attach secrets")
+	}
+	var hints *model.StepHints
+	if step := findStep(wf, task.StepID); step != nil {
+		hints = step.Hints
+	}
+
+	task.RuntimeHints.SecretInputs = nil
+	task.RuntimeHints.SecretEnvNames = nil
+	if err := l.addSecrets(task, sub, hints, wf); err != nil {
+		l.logger.Error("retry: re-attach secrets failed", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, err.Error())
+	}
+	return false
+}
+
+// failRetryingTaskNow terminalizes a SCHEDULED (claimed-for-retry) task as
+// FAILED with no further retries, for use when reattachSecretsForRetry
+// cannot proceed. Mirrors failTaskPreDispatch's task-side effects; unlike
+// that helper it has no step instance in hand, so it persists through
+// persistSubmitOutcome (TerminalizeTask), same as submitAndUpdateTask's own
+// no-executor-found branch.
+func (l *Loop) failRetryingTaskNow(ctx context.Context, task *model.Task, reason string) bool {
+	now := time.Now().UTC()
+	task.State = model.TaskStateFailed
+	task.Stderr = reason
+	task.CompletedAt = &now
+	task.MaxRetries = task.RetryCount
+	l.persistSubmitOutcome(ctx, task)
+	return true
 }
 
 // pollInFlight checks QUEUED and RUNNING tasks for status updates (for async executors).
@@ -2286,6 +2411,10 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 		now := time.Now().UTC()
 		task.State = model.TaskStateSkipped
 		task.CompletedAt = &now
+		// Defense in depth: subworkflow proxy tasks never carry
+		// RuntimeHints.Secrets (see reconcileDispatchWithCancel's identical
+		// note) — scrub unconditionally anyway.
+		scrubTaskToken(task)
 		applied, err := l.store.TerminalizeTask(ctx, task)
 		if err != nil {
 			l.logger.Error("skip orphaned subworkflow proxy", "task_id", task.ID, "error", err)
@@ -2338,6 +2467,9 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 	}
 	now := time.Now().UTC()
 	task.CompletedAt = &now
+	// Defense in depth: proxy tasks never carry RuntimeHints.Secrets (see
+	// reconcileDispatchWithCancel's identical note) — scrub unconditionally.
+	scrubTaskToken(task)
 	// CAS write: a concurrent cancel may have already terminalized this proxy
 	// (SKIPPED); the child's result must not overwrite it. [F3]
 	applied, err := l.store.TerminalizeTask(ctx, task)
@@ -2499,6 +2631,13 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 			// No capable worker exists — retrying won't help. Exhaust retries
 			// so markRetries does not re-queue this task.
 			oldest.MaxRetries = oldest.RetryCount
+			// H2: this is a real (non-proxy) task that may have been
+			// dispatched with addSecrets-attached RuntimeHints.Secrets and
+			// then sat QUEUED long enough to be declared stuck — this
+			// terminal write does not go through submitAndUpdateTask or
+			// pollInFlight, so it must scrub explicitly or the secret values
+			// stay at rest on a FAILED row forever.
+			scrubTaskToken(oldest)
 			// CAS write: oldest was snapshotted as QUEUED, but a worker may
 			// have checked it out (QUEUED->RUNNING with a new external_id)
 			// between the snapshot and this write, or a concurrent cancel
