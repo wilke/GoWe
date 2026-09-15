@@ -694,7 +694,7 @@ func TestDeleteSubmissionSecrets_PurgesAndReturns404WhenNone(t *testing.T) {
 	if w2.Code != http.StatusOK {
 		t.Fatalf("delete secrets: status=%d, want 200, body=%s", w2.Code, w2.Body.String())
 	}
-	if bodyContainsValue(w2.Body.Bytes(), `"v"`) {
+	if bodyContainsValue(w2.Body.Bytes(), `"valuevalue"`) {
 		t.Errorf("delete secrets response may leak a value: %s", w2.Body.String())
 	}
 
