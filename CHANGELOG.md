@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/wilke/GoWe/compare/v0.19.0...v0.20.0) (2026-09-16)
+
+
+### Features
+
+* **secrets:** submission-time secrets — encrypted, opt-in delivery, retention policies ([#265](https://github.com/wilke/GoWe/issues/265)) ([590026c](https://github.com/wilke/GoWe/commit/590026ce2b4fce7aa785eb4f7d3cc6127ab4cb33))
+
+
+### Bug Fixes
+
+* **scheduler,server:** fail fast when workspace pre-staging fails; retry re-stages; reject non-ASCII ws:// paths ([#268](https://github.com/wilke/GoWe/issues/268)) ([660aa46](https://github.com/wilke/GoWe/commit/660aa46dfbc9921d1bcd225a2903ea60ad5acd9b))
+
 ## [0.19.0](https://github.com/wilke/GoWe/compare/v0.18.1...v0.19.0) (2026-09-09)
 
 
