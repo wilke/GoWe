@@ -4,6 +4,24 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.19.x → next
+
+Server-side workspace pre-staging (`--workspace-staging server`) behavior change (#267): a
+submission whose `ws://` input(s) cannot be staged after 10 consecutive scheduler-tick
+attempts now **fails outright** (`state: FAILED`, `error.code: "PRESTAGE_FAILED"`) instead
+of silently dispatching with the unstaged `ws://` location left in place — that fallback
+could never succeed anyway, since a dispatched task in this deployment mode never carries
+the submitter's credential to stage `ws://` itself. No script should have depended on the
+old fallback; if one polled for a task-side "unsupported scheme ws" failure as its signal
+that pre-staging failed, it will now see the submission itself FAIL faster and with the
+real cause. `PUT /submissions/{id}/retry` on a `PRESTAGE_FAILED` submission (or one whose
+inputs still carry an unstaged `ws://` location) now resets it to `PENDING` instead of
+`RUNNING` so pre-staging re-runs; an ordinary task-failure retry is unchanged. `POST
+/submissions` also now rejects (400 `VALIDATION_ERROR`) any `ws://` input or
+`output_destination` path containing a non-ASCII character, which the BV-BRC Workspace API
+cannot escape — see [`PRODUCTION.md`](PRODUCTION.md#server-side-workspace-pre-staging---workspace-staging-server)
+and [`API_GUIDE.md`](API_GUIDE.md) §6.
+
 ## 0.15.x → next
 
 Dispatch/staging attribution (#184 PR2) adds `tasks.dispatched_at`, `tasks.stage_in_ms`,

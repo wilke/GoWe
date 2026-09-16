@@ -497,6 +497,7 @@ func main() {
 	}
 	if *workspaceStaging == "server" {
 		sched.SetWorkspaceStager(wsStager)
+		serverOpts = append(serverOpts, server.WithServerSideStaging(true))
 		logger.Info("server-side workspace staging enabled")
 	}
 

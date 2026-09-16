@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,8 +14,56 @@ import (
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/pkg/model"
 )
+
+// findNonASCIIRune returns the first rune above U+007F in s, and true, or
+// (0, false) if s is entirely ASCII.
+func findNonASCIIRune(s string) (rune, bool) {
+	for _, r := range s {
+		if r > 0x7F {
+			return r, true
+		}
+	}
+	return 0, false
+}
+
+// validateWorkspacePaths rejects ws:// workspace paths (from inputs' File/
+// Directory locations, or outputDestination) containing a non-ASCII
+// character: the BV-BRC Workspace API cannot escape one — observed in
+// production as Workspace.get_download_url failing on a filename containing
+// U+2010 (non-ASCII hyphen) with "Can't escape \x{2010}, try
+// uri_escape_utf8() instead" (#267). "#", "%", and "?" are valid ASCII
+// workspace path characters with caller-defined semantics and are
+// deliberately NOT rejected here. Names the offending input (or
+// "output_destination"), the code point, and the basename only — never the
+// full path, which may be long or itself sensitive. Returns nil when every
+// path is clean.
+func validateWorkspacePaths(inputs map[string]any, outputDestination string) *model.APIError {
+	for id, v := range inputs {
+		// Reuse the scheduler's ws:// walker per top-level input so the
+		// error can name which input the bad path came from; FindWSLocations
+		// itself is shape-agnostic (files, directories, arrays, nested
+		// records) and does not track a path back to a top-level key.
+		for _, loc := range scheduler.FindWSLocations(map[string]any{id: v}) {
+			if r, bad := findNonASCIIRune(loc.Path); bad {
+				base := filepath.Base(loc.Path)
+				msg := fmt.Sprintf("input %q: workspace path contains a character (U+%04X) the BV-BRC Workspace API cannot escape: %s", id, r, base)
+				return model.NewValidationError(msg, model.FieldError{Field: id, Message: msg})
+			}
+		}
+	}
+	if strings.HasPrefix(outputDestination, "ws://") {
+		path := strings.TrimPrefix(outputDestination, "ws://")
+		if r, bad := findNonASCIIRune(path); bad {
+			base := filepath.Base(strings.TrimRight(path, "/"))
+			msg := fmt.Sprintf("output_destination: workspace path contains a character (U+%04X) the BV-BRC Workspace API cannot escape: %s", r, base)
+			return model.NewValidationError(msg, model.FieldError{Field: "output_destination", Message: msg})
+		}
+	}
+	return nil
+}
 
 // submissionResponse wraps a submission with secrets_state, computed from
 // SecretNames/SecretsPurgedAt (model.Submission.SecretsState() is a method,
@@ -102,6 +151,14 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		respondError(w, reqID, http.StatusBadRequest,
 			model.NewValidationError("missing required field",
 				model.FieldError{Field: "workflow_id", Message: "workflow_id is required"}))
+		return
+	}
+
+	// Reject non-ASCII ws:// workspace paths up front (#267): the BV-BRC
+	// Workspace API cannot escape them, so staging would fail later with a
+	// confusing service error naming a raw path instead.
+	if apiErr := validateWorkspacePaths(req.Inputs, req.OutputDestination); apiErr != nil {
+		respondError(w, reqID, http.StatusBadRequest, apiErr)
 		return
 	}
 
@@ -637,11 +694,30 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset the submission to RUNNING so the scheduler picks it up.
-	sub.State = model.SubmissionStateRunning
+	// A PRESTAGE_FAILED submission (#267), or any submission whose inputs
+	// still carry unstaged ws:// locations while server-side staging is
+	// configured, must re-run pre-staging before it dispatches again —
+	// otherwise the scheduler would re-dispatch the same ws:// inputs, which
+	// fails identically (workers never get the credential to stage them
+	// themselves in server-staging mode; see addUserToken). Route it back
+	// through PENDING with the pre-stage markers reset so
+	// prestageWorkspaceInputs picks it up fresh, instead of RUNNING.
+	needsRestage := sub.Error != nil && sub.Error.Code == scheduler.PrestageFailedCode
+	if !needsRestage && s.serverSideStaging {
+		needsRestage = len(scheduler.FindWSLocations(sub.Inputs)) > 0
+	}
+
 	sub.Error = nil
 	sub.CompletedAt = nil
 	sub.OutputState = ""
+	if needsRestage {
+		sub.State = model.SubmissionStatePending
+		sub.PrestageStartedAt = nil
+		sub.PrestageCompletedAt = nil
+	} else {
+		// Reset the submission to RUNNING so the scheduler picks it up.
+		sub.State = model.SubmissionStateRunning
+	}
 
 	if err := s.store.UpdateSubmission(r.Context(), sub); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,

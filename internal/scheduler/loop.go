@@ -129,6 +129,13 @@ type Loop struct {
 	// wsStager handles server-side workspace pre/post-staging (nil if disabled).
 	wsStager wsStagerInterface
 
+	// prestageFailures tracks how many consecutive ticks server-side
+	// workspace pre-staging has failed for a submission. Key = submissionID.
+	// Mirrors missingWorkflowTicks's bounded-retry pattern (#128): once
+	// prestageFailThreshold is reached, failPrestage FAILs the submission
+	// instead of retrying forever (#267). Cleared on success or on give-up.
+	prestageFailures map[string]int
+
 	// unsupportedSteps tracks step instances that failed due to unsupported
 	// CWL requirements (e.g., InplaceUpdateRequirement). Key = stepInstanceID,
 	// value = human-readable reason. Used by buildSubmissionError to set the
@@ -197,6 +204,7 @@ func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Lo
 		deferredSteps:        make(map[string]int),
 		missingWorkflowTicks: make(map[string]int),
 		unsupportedSteps:     make(map[string]string),
+		prestageFailures:     make(map[string]int),
 		stuck: stuckTracker{
 			lastCounts: make(map[taskRequirementKey]int),
 			staleTicks: make(map[taskRequirementKey]int),
@@ -729,6 +737,19 @@ func (l *Loop) dispatchReady(ctx context.Context, affected map[string]bool) erro
 		// dispatch every tick (#128).
 		if sub.State.IsTerminal() {
 			l.orphanedByTerminalSubmission(ctx, si, sub)
+			continue
+		}
+
+		// A submission with server-side pre-staging still in flight must not
+		// dispatch: its inputs may still carry ws:// locations, and a
+		// dispatched task never gets the submitter's credential to resolve
+		// them itself (addUserToken only embeds it when l.wsStager == nil —
+		// passthrough mode). Defer this step to a later tick; pre-staging
+		// either completes (rewriting the inputs to file://, after which this
+		// same READY step dispatches normally) or exhausts its retries and
+		// FAILs the submission (prestageFailThreshold, see workspace.go),
+		// at which point the terminal check above orphans it instead (#267).
+		if l.wsStager != nil && sub.PrestageStartedAt != nil && sub.PrestageCompletedAt == nil {
 			continue
 		}
 

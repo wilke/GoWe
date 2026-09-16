@@ -459,6 +459,14 @@ Fields:
 | `secrets` | no | Map of submission-time secrets (`{"NAME": "value"}`, name `^[A-Z][A-Z0-9_]*$`, ≤64KiB each, ≤64 entries). Delivered only to steps that opt in via `gowe:Execution.secret_env`/`inject_secrets` — see [`docs/cwl-hints.md`](cwl-hints.md#gowe-executionsecret_env--inject_secrets--submission-time-secrets). Never echoed back by this or any other endpoint; requires authentication (anonymous submissions may not carry secrets). |
 | `secrets_retention` | no | Overrides the server's default automatic-purge policy for this submission's secret *values*: `"keep"`, `"ttl:<duration>"`, `"on_success"`, or `"on_terminal"`. See [`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260) for the full table. |
 
+**Non-ASCII workspace paths are rejected (#267).** Any `ws://` location in `inputs` (a
+File/Directory, at any nesting depth) or in `output_destination` whose path contains a
+character above U+007F is rejected with **400** `VALIDATION_ERROR`, naming the offending
+input (or `output_destination`), the code point (e.g. `U+2010`), and the file's basename —
+the BV-BRC Workspace API cannot escape such paths (`Workspace.get_download_url` fails with
+`Can't escape \x{2010}, try uri_escape_utf8() instead`). ASCII characters that are valid
+workspace path syntax (`#`, `%`, `?`) are never rejected.
+
 Response (HTTP 201):
 
 ```json
@@ -488,6 +496,38 @@ Response (HTTP 201):
 ```
 
 A submission that carried no `secrets` and no `cwltool:Secrets`-declared input omits `secret_names`/`secrets_retention`/`secrets_purged_at` and reports `secrets_state: "none"`. **The real secret value never appears in this or any other response** — only `secret_names` (the keys), `secrets_state`, `secrets_retention`, and `secrets_purged_at` are ever serialized; `secrets` itself is write-only.
+
+### Retrying a failed submission
+
+```
+PUT /api/v1/submissions/{id}/retry
+```
+
+Only submissions in state `FAILED` can be retried. What "retry" resets depends on *why* it
+failed:
+
+- **Ordinary failure** (a step/task failed, inputs already staged): FAILED steps/tasks are
+  reset and the submission goes straight back to `RUNNING` — the same behavior as before
+  #267.
+- **`error.code == "PRESTAGE_FAILED"`, or server-side workspace staging (`--workspace-staging
+  server`) is configured and the submission's inputs still carry an unstaged `ws://`
+  location** (#267): the submission instead goes back to `PENDING`, with `prestage_started_at`
+  /`prestage_completed_at` cleared and `error` cleared, so the scheduler's pre-stage phase
+  re-runs before the submission dispatches again. Retrying without this would otherwise
+  re-dispatch the same unstaged `ws://` inputs and fail identically.
+
+In both cases the response is the same shape:
+
+```json
+{
+  "data": {
+    "id": "sub_xyz789",
+    "state": "PENDING",
+    "steps_reset": 0,
+    "tasks_reset": 0
+  }
+}
+```
 
 ### Deleting a submission's secrets
 

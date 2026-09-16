@@ -47,6 +47,7 @@ type Server struct {
 	authDenylist          *AuthDenylist                // optional; local username/token-id denylist checked after identity is established
 	fileUploadConfig      *FileUploadConfig            // optional; file upload proxy configuration
 	wsStager              *staging.WorkspaceStager     // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+	serverSideStaging     bool                         // true when the scheduler runs server-side ws:// pre/post-staging (--workspace-staging=server); see WithServerSideStaging
 	metrics               *metrics.Registry            // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
 	workflowNames         *workflowNameCache           // LRU backing workflowNameFor, the worker-report path's metric label lookup
 	basePath              string                       // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
@@ -102,6 +103,18 @@ func WithUIUploadMaxSize(n int64) Option {
 func WithWorkspaceStager(ws *staging.WorkspaceStager) Option {
 	return func(s *Server) {
 		s.wsStager = ws
+	}
+}
+
+// WithServerSideStaging records whether the scheduler was configured for
+// server-side workspace pre/post-staging (--workspace-staging=server), as
+// distinct from wsStager being set (which also happens in passthrough mode,
+// solely for the admin output verification/re-delivery endpoints). Used by
+// handleRetrySubmission (#267) to decide whether a retry needs to reset the
+// pre-stage markers and route back through PENDING instead of RUNNING.
+func WithServerSideStaging(enabled bool) Option {
+	return func(s *Server) {
+		s.serverSideStaging = enabled
 	}
 }
 

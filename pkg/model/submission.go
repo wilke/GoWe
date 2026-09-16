@@ -92,6 +92,14 @@ type SubmissionErrDetail struct {
 	TaskID   string `json:"task_id,omitempty"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	Stderr   string `json:"stderr,omitempty"`
+
+	// Location, Error, and Attempts are populated for PRESTAGE_FAILED
+	// (internal/scheduler/workspace.go): the ws:// input location that
+	// could not be staged, the underlying Workspace stager error, and how
+	// many scheduler-tick pre-stage attempts were made before giving up.
+	Location string `json:"location,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`
 }
 
 // TaskSummary provides an aggregate count of task states within a Submission.
