@@ -103,6 +103,45 @@ NUM_WORKERS=4 LOG_LEVEL=debug ./scripts/start-server.sh
 5. Writes PIDs to `$BASE_DIR/gowe/pids/`
 6. Logs to `$BASE_DIR/gowe/logs/`
 
+## Server-side Workspace Pre-staging (`--workspace-staging server`)
+
+With `--workspace-staging server` (the production default via `start-server.sh`), the
+scheduler downloads every `ws://` input for a PENDING submission to a per-submission
+directory and rewrites the input to `file://` before the submission dispatches. This
+exists because workers dispatched a task never get the submitter's BV-BRC credential to
+stage `ws://` inputs themselves in this mode — `addUserToken` only embeds it when
+server-side staging is *not* configured (pure passthrough deployments, no
+`--workspace-staging` flag).
+
+**Fail-fast on pre-stage failure (#267).** If a `ws://` input cannot be staged (bad path,
+expired token, an unreachable Workspace service, or a workspace object the BV-BRC
+Workspace API cannot serve — see below), the scheduler retries for up to 10 consecutive
+scheduler ticks before giving up. Once it gives up, the submission is marked `FAILED` with
+`error.code = "PRESTAGE_FAILED"`, naming the exact `ws://` path that failed and the
+underlying Workspace error in `error.context`. No task is ever created for a submission
+whose pre-staging fails or is still in progress — dispatch is deferred until pre-staging
+either completes or fails outright. This replaces the pre-#267 behavior, which silently
+left the input as `ws://` and dispatched the submission anyway; since workers never have
+the credential to resolve it themselves in this mode, that always failed downstream with a
+confusing, worker-side "unsupported scheme" or authentication error instead of the true
+cause.
+
+**Retrying a `PRESTAGE_FAILED` submission** (`PUT /submissions/{id}/retry`) resets the
+pre-stage markers and error and routes the submission back through `PENDING` (not directly
+to `RUNNING`) so pre-staging runs again — e.g. after fixing the underlying file or renaming
+it. A submission that failed for an ordinary (non-pre-stage) reason, with inputs already
+fully staged to `file://`, retries exactly as before (straight to `RUNNING`).
+
+**Non-ASCII workspace paths are rejected at submission time.** A production incident
+(`sub_b189807d`) hit a BV-BRC Workspace service bug where a path containing U+2010 (a
+non-ASCII hyphen) made `Workspace.get_download_url` fail with `[-32603] Can't escape
+\x{2010}, try uri_escape_utf8() instead`. `POST /submissions` now rejects any `ws://`
+location (in an input, or `output_destination`) whose path contains a character above
+U+007F, with a 400 `VALIDATION_ERROR` naming the input (or `output_destination`), the
+offending code point, and the file's basename — before it ever reaches pre-staging. Valid
+ASCII workspace path characters (`#`, `%`, `?`) are never rejected; only non-ASCII code
+points are.
+
 ## Stopping the Server
 
 ```bash

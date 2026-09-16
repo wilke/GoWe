@@ -12,6 +12,24 @@ import (
 	"github.com/me/gowe/pkg/staging"
 )
 
+// PrestageFailedCode marks a submission that FAILed because server-side
+// workspace pre-staging could not stage a ws:// input after
+// prestageFailThreshold consecutive tick-level attempts. See failPrestage
+// and #267.
+const PrestageFailedCode = "PRESTAGE_FAILED"
+
+// prestageFailThreshold is the number of consecutive ticks server-side
+// pre-staging may fail to stage a submission's ws:// input(s) before the
+// submission is FAILed outright. Mirrors missingWorkflowFailThreshold's
+// bounded-retry rationale (#128): without a bound, prestageWorkspaceInputs
+// retried forever every tick while leaving the ws:// inputs unstaged, and
+// (before #267) dispatchReady would eventually dispatch anyway with those
+// stale ws:// locations and no credential to resolve them (addUserToken only
+// embeds the submitter's token when wsStager == nil) — a confusing
+// worker-side failure that named the wrong file. Now, once the threshold is
+// reached, the submission fails truthfully with the pre-stage error instead.
+const prestageFailThreshold = 10
+
 // wsStagerInterface is the subset of WorkspaceStager methods needed by the scheduler.
 type wsStagerInterface interface {
 	StageIn(ctx context.Context, location string, destPath string, opts staging.StageOptions) error
@@ -40,7 +58,7 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 		}
 
 		// Check if any input has a ws:// location.
-		wsLocations := findWSLocations(sub.Inputs)
+		wsLocations := FindWSLocations(sub.Inputs)
 		if len(wsLocations) == 0 {
 			continue
 		}
@@ -78,34 +96,53 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 		stager := l.wsStager.WithToken(sub.UserToken)
 
 		allOK := true
+		var failedLoc WSLocation
+		var stageErr error
 		for _, loc := range wsLocations {
-			basename := filepath.Base(loc.path)
+			basename := filepath.Base(loc.Path)
 			destPath := filepath.Join(stageDir, basename)
 
 			l.logger.Info("pre-staging workspace input",
 				"submission_id", sub.ID,
-				"ws_path", loc.path,
+				"ws_path", loc.Path,
 				"dest", destPath,
 			)
 
-			err := stager.StageIn(ctx, loc.location, destPath, staging.StageOptions{})
+			err := stager.StageIn(ctx, loc.Location, destPath, staging.StageOptions{})
 			if err != nil {
 				l.logger.Error("pre-stage workspace input failed",
 					"submission_id", sub.ID,
-					"location", loc.location,
+					"location", loc.Location,
 					"error", err,
 				)
 				allOK = false
+				failedLoc = loc
+				stageErr = err
 				break
 			}
 
 			// Rewrite the location in the inputs map to file://.
-			rewriteLocation(sub.Inputs, loc.location, "file://"+destPath)
+			rewriteLocation(sub.Inputs, loc.Location, "file://"+destPath)
 		}
 
 		if !allOK {
-			continue // Leave inputs unchanged; worker will try ws:// if it has the stager.
+			// Leave inputs unchanged and bound the retry (#267): this can
+			// never fall through to the worker successfully in server-staging
+			// mode — addUserToken only embeds the submitter's credential when
+			// wsStager == nil, so a dispatched task would arrive with ws://
+			// inputs and no credential to resolve them, surfacing as a
+			// confusing worker-side failure instead of the true pre-stage
+			// error. dispatchReady also defers this submission's READY steps
+			// while PrestageCompletedAt is nil, so nothing dispatches in the
+			// meantime regardless.
+			l.prestageFailures[sub.ID]++
+			attempts := l.prestageFailures[sub.ID]
+			if attempts >= prestageFailThreshold {
+				l.failPrestage(ctx, sub, failedLoc, stageErr, attempts)
+			}
+			continue
 		}
+		delete(l.prestageFailures, sub.ID)
 
 		// Stamp prestage_completed_at, same CAS guard as the started stamp
 		// above — a concurrent cancel must not be clobbered back to PENDING,
@@ -246,6 +283,45 @@ func (l *Loop) poststageWorkspaceOutputs(ctx context.Context, affected map[strin
 	return nil
 }
 
+// failPrestage FAILs sub after prestageFailThreshold consecutive tick-level
+// pre-stage failures, persisting a diagnostic PRESTAGE_FAILED Error naming
+// the ws:// input and the underlying stager error so operators see the true
+// server-side cause instead of a worker dispatched with unresolved ws://
+// inputs (#267). Uses the same CAS-guarded finalization
+// (finalizeSubmissionCAS, backed by store.FinalizeSubmission's "state NOT IN
+// terminal" guard) as failSubmissionMissingWorkflow's analogous bounded-retry
+// give-up (#128): a submission cancelled concurrently is already terminal, so
+// the write is rejected and that cancellation wins.
+func (l *Loop) failPrestage(ctx context.Context, sub *model.Submission, loc WSLocation, stageErr error, attempts int) {
+	now := time.Now().UTC()
+	sub.State = model.SubmissionStateFailed
+	sub.CompletedAt = &now
+	sub.Error = &model.SubmissionError{
+		Code:    PrestageFailedCode,
+		Message: fmt.Sprintf("pre-staging workspace input %s failed: %v", loc.Path, stageErr),
+		Context: &model.SubmissionErrDetail{
+			Location: loc.Location,
+			Error:    stageErr.Error(),
+			Attempts: attempts,
+		},
+	}
+
+	applied, err := l.finalizeSubmissionCAS(ctx, sub)
+	if err != nil {
+		l.logger.Error("fail submission: workspace pre-stage exhausted retries",
+			"submission_id", sub.ID, "location", loc.Location, "error", err)
+		return
+	}
+	delete(l.prestageFailures, sub.ID)
+	if !applied {
+		// Lost the race to a concurrent terminal write (e.g. a cancel) —
+		// that write wins, nothing more to do.
+		return
+	}
+	l.logger.Error("submission failed: workspace pre-staging exhausted retries",
+		"submission_id", sub.ID, "location", loc.Location, "attempts", attempts, "error", stageErr)
+}
+
 // uploadOutputManifest writes the submission outputs as a JSON manifest file
 // to the workspace destination (see staging.UploadOutputManifest, shared with
 // the admin re-delivery endpoint).
@@ -289,22 +365,25 @@ func (l *Loop) failOutputStaging(ctx context.Context, sub *model.Submission, rea
 	}
 }
 
-// wsLocation describes a ws:// file/directory reference found in inputs.
-type wsLocation struct {
-	location string // Full URI: ws:///user@bvbrc/home/file.fasta
-	path     string // Workspace path: /user@bvbrc/home/file.fasta
+// WSLocation describes a ws:// file/directory reference found in inputs.
+// Exported for reuse outside the scheduler package (internal/server: retry
+// re-stage detection and submit-time non-ASCII path validation, #267).
+type WSLocation struct {
+	Location string // Full URI: ws:///user@bvbrc/home/file.fasta
+	Path     string // Workspace path: /user@bvbrc/home/file.fasta
 }
 
-// findWSLocations walks an inputs map and returns all ws:// File/Directory locations.
-func findWSLocations(inputs map[string]any) []wsLocation {
-	var locs []wsLocation
+// FindWSLocations walks an inputs map and returns all ws:// File/Directory
+// locations. Exported for reuse by internal/server — see WSLocation.
+func FindWSLocations(inputs map[string]any) []WSLocation {
+	var locs []WSLocation
 	walkLocations(inputs, func(loc string) {
 		if strings.HasPrefix(loc, "ws://") {
 			path := loc[len("ws://"):]
 			if !strings.HasPrefix(path, "/") {
 				path = "/" + strings.TrimLeft(path, "/")
 			}
-			locs = append(locs, wsLocation{location: loc, path: path})
+			locs = append(locs, WSLocation{Location: loc, Path: path})
 		}
 	})
 	return locs
