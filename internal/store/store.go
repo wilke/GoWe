@@ -64,6 +64,14 @@ type Store interface {
 	// an output destination and no recorded delivery outcome (SQL-filtered so
 	// the post-stage phase's cost is bounded by pending deliveries).
 	ListSubmissionsAwaitingOutputStaging(ctx context.Context) ([]*model.Submission, error)
+	// ListSubmissionsAwaitingPrestage returns RUNNING submissions whose
+	// server-side workspace pre-staging was started but never completed
+	// (prestage_started_at set, prestage_completed_at NULL) — the recovery
+	// half of the scheduler's pre-stage loop selection alongside its existing
+	// PENDING scan (#268/#269): without it, a submission that reaches RUNNING
+	// before pre-staging finishes is never revisited and its READY steps
+	// defer forever.
+	ListSubmissionsAwaitingPrestage(ctx context.Context) ([]*model.Submission, error)
 	DeleteSubmission(ctx context.Context, id string) error
 	UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error
 	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)

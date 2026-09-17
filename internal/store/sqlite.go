@@ -939,6 +939,34 @@ func (s *SQLiteStore) ListSubmissionsAwaitingOutputStaging(ctx context.Context) 
 	return s.scanSubmissionRows(rows)
 }
 
+// ListSubmissionsAwaitingPrestage returns RUNNING submissions whose server-side
+// workspace pre-staging was started but never completed
+// (prestage_started_at IS NOT NULL AND prestage_completed_at IS NULL). This is
+// the recovery half of the scheduler's pre-stage loop selection (#268/#269):
+// PENDING submissions are already covered by the loop's existing PENDING scan,
+// but a submission that raced onto RUNNING before pre-staging finished (or one
+// left stuck by the pre-fix deadlock) must keep being retried until pre-stage
+// either completes or exhausts its failure threshold — otherwise it is never
+// looked at again and dispatchReady defers it forever. No pagination cap here:
+// unlike the PENDING scan, this set is self-limiting — every RUNNING row
+// either completes pre-staging within a few ticks or fails outright once
+// prestageFailThreshold is reached (becoming terminal and leaving this set).
+func (s *SQLiteStore) ListSubmissionsAwaitingPrestage(ctx context.Context) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_awaiting_prestage", "table", "submissions")
+
+	query := `SELECT ` + submissionListColumns + `
+		FROM submissions
+		WHERE state = 'RUNNING' AND prestage_started_at IS NOT NULL AND prestage_completed_at IS NULL
+		ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanSubmissionRows(rows)
+}
+
 func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Time, submittedBy string) (map[string]int, error) {
 	s.logger.Debug("sql", "op", "count_by_state", "table", "submissions", "since", since)
 

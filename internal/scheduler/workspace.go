@@ -43,14 +43,36 @@ func (l *Loop) SetWorkspaceStager(ws wsStagerInterface) {
 	l.wsStager = ws
 }
 
-// prestageWorkspaceInputs downloads ws:// inputs for PENDING submissions,
-// rewrites them to file:// locations, and updates the submission in the store.
+// prestageWorkspaceInputs downloads ws:// inputs for PENDING submissions and
+// for RUNNING submissions whose pre-staging was started but never completed,
+// rewrites them to file:// locations, and updates the submission in the
+// store.
+//
+// The RUNNING half matters because dispatchReady's PENDING→RUNNING
+// transition (finalizeSubmissions, "submission running") is itself gated on
+// pre-staging being complete, but a submission can still reach RUNNING with
+// pre-staging incomplete: rows already stuck from before that gate existed,
+// and any future gap between the two. Without also revisiting those rows
+// here, this loop would never see them again (they are no longer PENDING),
+// their failure counter would never reach prestageFailThreshold, and
+// dispatchReady's own pre-stage-incomplete gate would defer their READY
+// steps forever — a RUNNING submission with zero tasks, indefinitely (#269).
 func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]bool) error {
 	// Find PENDING submissions that may have ws:// inputs.
 	subs, err := l.listSubmissionsByState(ctx, "PENDING")
 	if err != nil {
 		return fmt.Errorf("list pending submissions: %w", err)
 	}
+
+	// Find RUNNING submissions whose pre-staging is incomplete (recovery +
+	// robustness, see doc comment above). SQL-filtered, so the cost is
+	// bounded by submissions actually mid-prestage rather than every RUNNING
+	// submission in the database.
+	running, err := l.store.ListSubmissionsAwaitingPrestage(ctx)
+	if err != nil {
+		return fmt.Errorf("list running submissions awaiting pre-stage: %w", err)
+	}
+	subs = append(subs, running...)
 
 	for _, sub := range subs {
 		if sub.UserToken == "" {
@@ -66,14 +88,17 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 		// Stamp prestage_started_at once, even across multi-tick retries (a
 		// failed attempt below leaves PrestageStartedAt set in the DB, so a
 		// later tick's freshly-loaded sub already has it and skips this
-		// block). CAS-gated on (PENDING, sub.OutputState): a concurrent
-		// cancel moving the submission off PENDING must never be clobbered
-		// back by this write — the F-J clobber class, at submission level —
-		// so an unapplied write leaves the submission alone entirely.
+		// block). In practice this only fires for PENDING submissions — a
+		// RUNNING row only enters subs via ListSubmissionsAwaitingPrestage,
+		// which requires PrestageStartedAt already set. CAS-gated on
+		// (sub.State, sub.OutputState) as loaded: a concurrent cancel (or any
+		// other state change) must never be clobbered back by this write —
+		// the F-J clobber class, at submission level — so an unapplied write
+		// leaves the submission alone entirely.
 		if sub.PrestageStartedAt == nil {
 			now := time.Now().UTC()
 			sub.PrestageStartedAt = &now
-			applied, err := l.store.UpdateSubmissionIfState(ctx, sub, model.SubmissionStatePending, sub.OutputState)
+			applied, err := l.store.UpdateSubmissionIfState(ctx, sub, sub.State, sub.OutputState)
 			if err != nil {
 				l.logger.Error("stamp prestage_started_at", "submission_id", sub.ID, "error", err)
 			}
@@ -81,7 +106,7 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 				l.cache.invalidateSubmission(sub.ID)
 			}
 			if !applied {
-				continue // Left PENDING concurrently; leave the submission alone.
+				continue // Left sub.State concurrently; leave the submission alone.
 			}
 		}
 
@@ -145,12 +170,13 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 		delete(l.prestageFailures, sub.ID)
 
 		// Stamp prestage_completed_at, same CAS guard as the started stamp
-		// above — a concurrent cancel must not be clobbered back to PENDING,
-		// and if it already left PENDING the rewritten inputs below must not
-		// be persisted either (the submission is no longer going to run them).
+		// above — a concurrent state change (e.g. cancel) must not be
+		// clobbered back, and if it already moved the submission off
+		// sub.State the rewritten inputs below must not be persisted either
+		// (the submission is no longer going to run them as staged).
 		now := time.Now().UTC()
 		sub.PrestageCompletedAt = &now
-		applied, err := l.store.UpdateSubmissionIfState(ctx, sub, model.SubmissionStatePending, sub.OutputState)
+		applied, err := l.store.UpdateSubmissionIfState(ctx, sub, sub.State, sub.OutputState)
 		if err != nil {
 			l.logger.Error("stamp prestage_completed_at", "submission_id", sub.ID, "error", err)
 		}
@@ -158,7 +184,7 @@ func (l *Loop) prestageWorkspaceInputs(ctx context.Context, affected map[string]
 			l.cache.invalidateSubmission(sub.ID)
 		}
 		if !applied {
-			continue // Left PENDING concurrently; don't persist rewritten inputs.
+			continue // Left sub.State concurrently; don't persist rewritten inputs.
 		}
 		l.metrics.ObserveStaging("prestage", sub.PrestageStartedAt, sub.PrestageCompletedAt)
 
@@ -298,7 +324,7 @@ func (l *Loop) failPrestage(ctx context.Context, sub *model.Submission, loc WSLo
 	sub.CompletedAt = &now
 	sub.Error = &model.SubmissionError{
 		Code:    PrestageFailedCode,
-		Message: fmt.Sprintf("pre-staging workspace input %s failed: %v", loc.Path, stageErr),
+		Message: prestageFailMessage(loc, stageErr),
 		Context: &model.SubmissionErrDetail{
 			Location: loc.Location,
 			Error:    stageErr.Error(),
@@ -320,6 +346,28 @@ func (l *Loop) failPrestage(ctx context.Context, sub *model.Submission, loc WSLo
 	}
 	l.logger.Error("submission failed: workspace pre-staging exhausted retries",
 		"submission_id", sub.ID, "location", loc.Location, "attempts", attempts, "error", stageErr)
+}
+
+// objectNotFoundMarker is the substring the BV-BRC Workspace service uses to
+// report a missing object (observed verbatim as
+// "_ERROR_Object not found!_ERROR_" in practice); matched case-insensitively
+// since the exact casing/wrapping is not a documented contract.
+const objectNotFoundMarker = "object not found"
+
+// prestageFailMessage builds the PRESTAGE_FAILED user-facing message. For the
+// common case of a missing workspace object it swaps in an actionable, GoWe-
+// generic hint (no assumption about where a given client uploads) instead of
+// surfacing the raw service error inline; the raw error is preserved
+// unchanged in Context.Error regardless; for every other error it keeps the
+// original inline-error message.
+func prestageFailMessage(loc WSLocation, stageErr error) string {
+	if strings.Contains(strings.ToLower(stageErr.Error()), objectNotFoundMarker) {
+		return fmt.Sprintf(
+			"pre-staging workspace input %s failed: the referenced workspace object does not exist — check the path (case-sensitive) and that the upload completed before submitting",
+			loc.Path,
+		)
+	}
+	return fmt.Sprintf("pre-staging workspace input %s failed: %v", loc.Path, stageErr)
 }
 
 // uploadOutputManifest writes the submission outputs as a JSON manifest file
