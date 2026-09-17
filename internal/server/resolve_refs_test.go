@@ -119,6 +119,9 @@ func (m *mockStore) UpdateTaskPriority(context.Context, string, int) error { ret
 func (m *mockStore) ListSubmissionsAwaitingOutputStaging(context.Context) ([]*model.Submission, error) {
 	return nil, nil
 }
+func (m *mockStore) ListSubmissionsAwaitingPrestage(context.Context) ([]*model.Submission, error) {
+	return nil, nil
+}
 func (m *mockStore) GetTasksByState(context.Context, model.TaskState) ([]*model.Task, error) {
 	return nil, nil
 }

@@ -3034,6 +3034,19 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 				l.logger.Info("submission finalized", "submission_id", subID, "state", sub.State)
 			}
 		} else if (anyActive || anyFailed) && sub.State == model.SubmissionStatePending {
+			// A submission whose server-side workspace pre-staging is still in
+			// flight must not become RUNNING yet: dispatchReady already defers
+			// its READY steps until PrestageCompletedAt is set (see the
+			// mirrored gate there), so activating it here would just leave it
+			// RUNNING with zero tasks until pre-staging catches up — and if
+			// prestageWorkspaceInputs only ever revisited PENDING submissions,
+			// it would never catch up at all (#269). Leaving it PENDING keeps
+			// it in prestageWorkspaceInputs' PENDING scan; once pre-staging
+			// completes (or exhausts its retries and FAILs the submission),
+			// this branch activates it normally on a later tick.
+			if l.wsStager != nil && sub.PrestageStartedAt != nil && sub.PrestageCompletedAt == nil {
+				continue
+			}
 			if applied, err := l.activateSubmissionCAS(ctx, sub.ID); err != nil {
 				l.logger.Error("activate submission", "submission_id", subID, "error", err)
 			} else if applied {
