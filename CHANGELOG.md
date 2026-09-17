@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/wilke/GoWe/compare/v0.20.0...v0.20.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **scheduler:** keep pre-staging alive for RUNNING submissions; never activate before inputs are staged ([#270](https://github.com/wilke/GoWe/issues/270)) ([9cc555d](https://github.com/wilke/GoWe/commit/9cc555d7dd190b5658f2e868dcbed1e6e19ca616))
+
 ## [0.20.0](https://github.com/wilke/GoWe/compare/v0.19.0...v0.20.0) (2026-09-16)
 
 
