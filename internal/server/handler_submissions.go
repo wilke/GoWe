@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -79,6 +80,17 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
+	}
+
+	// Validate inputs against each step's CWL schema (record fields,
+	// shape, required inputs). This catches errors synchronously before
+	// the submission is created — the agent gets a real HTTP 400 instead
+	// of a "submitted successfully" followed by an async failure.
+	if err := scheduler.ValidateSubmissionInputs(s.logger, wf, req.Inputs); err != nil {
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError("input validation failed",
+				model.FieldError{Field: "inputs", Message: err.Error()}))
+		return
 	}
 
 	// Dry-run: validate without creating a submission.
@@ -642,6 +654,14 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 				"field":   "inputs." + inp.ID,
 				"message": "Directory path " + val + " does not start with / or contain a scheme",
 			})
+		}
+	}
+
+	// --- CWL input validation (record fields, shape, required) ---
+	if valErrs := scheduler.ValidateSubmissionInputsJSON(s.logger, wf, inputs); len(valErrs) > 0 {
+		inputsValid = false
+		for _, ve := range valErrs {
+			errors = append(errors, ve)
 		}
 	}
 

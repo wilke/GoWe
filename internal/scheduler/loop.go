@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -104,6 +105,12 @@ type Loop struct {
 	// UNSUPPORTED_REQUIREMENT error code so the CLI can exit with code 33.
 	unsupportedSteps map[string]string
 
+	// invalidInputSteps tracks step instances that failed due to input
+	// validation errors (unknown record fields, shape mismatches, missing
+	// required fields). Key = stepInstanceID, value = error message.
+	// Used by buildSubmissionError to set INPUT_VALIDATION_FAILED.
+	invalidInputSteps map[string]string
+
 	// cache provides per-tick memoization for frequently-read DB entities
 	// (submissions, workflows, step instances). Reset at the start of each Tick().
 	cache *tickCache
@@ -125,14 +132,15 @@ type stuckTracker struct {
 // NewLoop creates a new scheduler loop.
 func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Logger) *Loop {
 	return &Loop{
-		store:            st,
-		registry:         reg,
-		config:           cfg,
-		logger:           logger.With("component", "scheduler"),
-		stopCh:           make(chan struct{}),
-		doneCh:           make(chan struct{}),
-		deferredSteps:    make(map[string]int),
-		unsupportedSteps: make(map[string]string),
+		store:             st,
+		registry:          reg,
+		config:            cfg,
+		logger:            logger.With("component", "scheduler"),
+		stopCh:            make(chan struct{}),
+		doneCh:            make(chan struct{}),
+		deferredSteps:     make(map[string]int),
+		unsupportedSteps:  make(map[string]string),
+		invalidInputSteps: make(map[string]string),
 		stuck: stuckTracker{
 			lastCounts: make(map[taskRequirementKey]int),
 			staleTicks: make(map[taskRequirementKey]int),
@@ -529,6 +537,17 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	tasksByStep := buildSyntheticTasksByStep(allSteps)
 
 	if err := l.populateToolAndJob(tmpTask, step, wf, mergedInputs, tasksByStep); err != nil {
+		// Input validation errors are not recoverable by legacy fallback —
+		// failing the step prevents bad inputs from reaching BV-BRC.
+		if errors.Is(err, validate.ErrInputValidation) {
+			now := time.Now().UTC()
+			si.State = model.StepStateFailed
+			si.CompletedAt = &now
+			l.invalidInputSteps[si.ID] = err.Error()
+			l.logger.Error("step failed: input validation error",
+				"si_id", si.ID, "step_id", si.StepID, "error", err)
+			return l.updateStepInstance(ctx, si)
+		}
 		l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
 			"si_id", si.ID, "error", err)
 	}
@@ -623,12 +642,16 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Normal CommandLineTool dispatch — create a single Task.
 	task := l.createTaskFromStep(si, tmpTask, step, sub, execType, -1)
 
-	// Resolve legacy inputs.
+	// Resolve legacy inputs and apply record defaults so the BV-BRC
+	// executor (which reads task.Inputs, not task.Job) also gets them.
 	if err := ResolveTaskInputs(task, step, mergedInputs, tasksByStep, nil); err != nil {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
 		si.CompletedAt = &now
 		return l.updateStepInstance(ctx, si)
+	}
+	if cwlTool := parseCWLToolFromTaskTool(l.logger, task.Tool); cwlTool != nil {
+		validate.ApplyRecordFieldDefaults(cwlTool, task.Inputs)
 	}
 
 	// Add user token.
@@ -2454,6 +2477,16 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 		}
 	}
 
+	// Check if this step failed due to input validation.
+	if reason, ok := l.invalidInputSteps[failedStep.ID]; ok {
+		delete(l.invalidInputSteps, failedStep.ID)
+		return &model.SubmissionError{
+			Code:    "INPUT_VALIDATION_FAILED",
+			Message: reason,
+			Context: &model.SubmissionErrDetail{StepID: failedStep.StepID},
+		}
+	}
+
 	subErr := &model.SubmissionError{
 		Code:    "STEP_FAILED",
 		Message: fmt.Sprintf("step '%s' failed", failedStep.StepID),
@@ -2568,6 +2601,7 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 	// Look up tool in the parsed graph.
 	var tool map[string]any
 	var runtimeHints *model.RuntimeHints
+	var cwlTool *cwl.CommandLineTool // Retained for record field validation.
 
 	// Check CommandLineTools
 	for id, clt := range graphDoc.Tools {
@@ -2581,6 +2615,7 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 			if err := json.Unmarshal(data, &tool); err != nil {
 				return fmt.Errorf("unmarshal tool: %w", err)
 			}
+			cwlTool = clt
 			runtimeHints = extractRuntimeHintsFromCWLTool(clt)
 			break
 		}
@@ -2652,6 +2687,20 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 	job, err := stepinput.ResolveInputs(inputs, submissionInputs, stepOutputs, opts)
 	if err != nil {
 		return fmt.Errorf("resolve job inputs: %w", err)
+	}
+
+	// Apply record-field defaults (e.g., sample_id: "sample") and then
+	// validate record field names and shape. This catches wrong field
+	// names (e.g., "srr_id" instead of "srr_accession") and fills
+	// missing fields that have CWL defaults before they reach BV-BRC.
+	if cwlTool != nil {
+		validate.ApplyRecordFieldDefaults(cwlTool, job)
+		if err := validate.ValidateRecordShape(cwlTool, job); err != nil {
+			return fmt.Errorf("input validation: %w", err)
+		}
+		if err := validate.ValidateRecordFields(cwlTool, job); err != nil {
+			return fmt.Errorf("input validation: %w", err)
+		}
 	}
 
 	// Merge workflow-level and step-level requirements into the tool.
@@ -3051,6 +3100,26 @@ func mergeRequirementsIntoTool(tool map[string]any, wf *cwl.Workflow, stepID str
 	if len(toolHints) > 0 {
 		tool["hints"] = toolHints
 	}
+}
+
+// parseCWLToolFromTaskTool re-parses a task.Tool map into a cwl.CommandLineTool
+// so that helpers like ApplyRecordFieldDefaults can access typed RecordFields.
+// Returns nil if the tool is not a CommandLineTool or parsing fails.
+func parseCWLToolFromTaskTool(logger *slog.Logger, tool map[string]any) *cwl.CommandLineTool {
+	if tool == nil {
+		return nil
+	}
+	class, _ := tool["class"].(string)
+	if class != "CommandLineTool" && class != "" {
+		return nil
+	}
+	p := parser.New(logger)
+	clt, err := p.ParseToolFromMap(tool)
+	if err != nil {
+		logger.Debug("parseCWLToolFromTaskTool failed", "error", err)
+		return nil
+	}
+	return clt
 }
 
 // mergeJobRequirementsIntoTool merges cwl:requirements from the job input document

@@ -32,7 +32,19 @@ func (w *Workflow) IsWorkflow() bool {
 
 // WorkflowInput describes a typed input parameter of a Workflow.
 type WorkflowInput struct {
-	ID       string `json:"id"`
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Required bool                 `json:"required"`
+	Default  any                  `json:"default,omitempty"`
+	Doc      string               `json:"doc,omitempty"`
+	Fields   []RecordFieldSummary `json:"fields,omitempty"`
+}
+
+// RecordFieldSummary describes a single field within a record-typed input.
+// Exposed in GET /workflows/:id/inputs so callers (including LLMs) know
+// the exact field names, types, and defaults for record inputs.
+type RecordFieldSummary struct {
+	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
 	Default  any    `json:"default,omitempty"`

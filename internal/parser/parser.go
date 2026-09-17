@@ -1470,10 +1470,11 @@ func parseRecordFields(fields any) []cwl.RecordField {
 // parseRecordField parses a single record field definition.
 func parseRecordField(m map[string]any) cwl.RecordField {
 	field := cwl.RecordField{
-		Name:  stringField(m, "name"),
-		Type:  serializeCWLType(m["type"]),
-		Doc:   stringField(m, "doc"),
-		Label: stringField(m, "label"),
+		Name:    stringField(m, "name"),
+		Type:    serializeCWLType(m["type"]),
+		Default: m["default"],
+		Doc:     stringField(m, "doc"),
+		Label:   stringField(m, "label"),
 	}
 
 	// Parse inputBinding for this field.
@@ -1608,7 +1609,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 
 	// Convert inputs.
 	for id, inp := range wf.Inputs {
-		mw.Inputs = append(mw.Inputs, model.WorkflowInput{
+		wi := model.WorkflowInput{
 			ID:   id,
 			Type: inp.Type,
 			// An input may be omitted at submission if its type is nullable (a
@@ -1617,7 +1618,22 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 			Required: !strings.HasSuffix(inp.Type, "?") && inp.Default == nil,
 			Default:  inp.Default,
 			Doc:      inp.Doc,
-		})
+		}
+
+		// Populate record field summaries for record-typed inputs.
+		if len(inp.RecordFields) > 0 {
+			for _, rf := range inp.RecordFields {
+				wi.Fields = append(wi.Fields, model.RecordFieldSummary{
+					Name:     rf.Name,
+					Type:     rf.Type,
+					Required: !strings.HasSuffix(rf.Type, "?") && rf.Default == nil,
+					Default:  rf.Default,
+					Doc:      rf.Doc,
+				})
+			}
+		}
+
+		mw.Inputs = append(mw.Inputs, wi)
 	}
 	sort.Slice(mw.Inputs, func(i, j int) bool {
 		return mw.Inputs[i].ID < mw.Inputs[j].ID

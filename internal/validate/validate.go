@@ -3,14 +3,97 @@
 package validate
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
 )
 
+// ErrInputValidation is a sentinel error for input validation failures.
+// Wrap with %w so callers can use errors.Is to distinguish validation
+// errors from other populate failures (e.g., missing tool, parse errors).
+var ErrInputValidation = errors.New("input validation")
+
+// ApplyRecordFieldDefaults fills missing record fields that declare a
+// default. It mutates records in place (single record or array of records)
+// and leaves unknown/absent inputs alone. Returns the possibly-updated inputs.
+func ApplyRecordFieldDefaults(tool *cwl.CommandLineTool, inputs map[string]any) map[string]any {
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.RecordFields) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+
+		switch v := value.(type) {
+		case map[string]any:
+			applyDefaults(v, inputDef.RecordFields)
+		case []any:
+			for _, item := range v {
+				if rec, ok := item.(map[string]any); ok {
+					applyDefaults(rec, inputDef.RecordFields)
+				}
+			}
+		}
+	}
+	return inputs
+}
+
+// applyDefaults fills missing fields in a single record with their defaults.
+func applyDefaults(rec map[string]any, fields []cwl.RecordField) {
+	for _, rf := range fields {
+		if rf.Default == nil {
+			continue
+		}
+		if _, exists := rec[rf.Name]; !exists {
+			rec[rf.Name] = rf.Default
+		}
+	}
+}
+
+// ValidateRecordShape checks that record-typed inputs have the correct
+// shape: a "record:x?" input must be a single object (not an array), and
+// a "record:x[]?" input must be an array (not a bare object). Returns a
+// descriptive error on mismatch.
+func ValidateRecordShape(tool *cwl.CommandLineTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.RecordFields) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+
+		typeStr := inputDef.Type
+		isArray := strings.Contains(typeStr, "[]")
+
+		switch value.(type) {
+		case []any:
+			if !isArray {
+				return fmt.Errorf(
+					"%s expects a single record, got an array (%w)",
+					inputID, ErrInputValidation,
+				)
+			}
+		case map[string]any:
+			if isArray {
+				return fmt.Errorf(
+					"%s expects an array of records, got a single object (%w)",
+					inputID, ErrInputValidation,
+				)
+			}
+		}
+	}
+	return nil
+}
+
 // ToolInputs validates that inputs match the tool's input schema.
-// Returns an error if required inputs are missing or null is provided for non-optional types.
+// Returns an error if required inputs are missing, null is provided for
+// non-optional types, or record-typed inputs contain unknown field names.
 func ToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
 	for inputID, inputDef := range tool.Inputs {
 		value, exists := inputs[inputID]
@@ -35,6 +118,18 @@ func ToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
 			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
 		}
 	}
+
+	// Validate record shape (array vs single object).
+	if err := ValidateRecordShape(tool, inputs); err != nil {
+		return err
+	}
+
+	// Validate record field names (catches wrong field names like "srr_id"
+	// instead of "srr_accession" before they reach downstream executors).
+	if err := ValidateRecordFields(tool, inputs); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -62,6 +157,65 @@ func ExpressionToolInputs(tool *cwl.ExpressionTool, inputs map[string]any) error
 				continue // null is allowed for Any with default - it will use the default.
 			}
 			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
+		}
+	}
+	return nil
+}
+
+// ValidateRecordFields checks that record-typed inputs contain only field names
+// declared in the CWL schema. This catches cases where an API caller (e.g., an
+// LLM) uses a wrong field name (like "srr_id" instead of "srr_accession"),
+// which would otherwise pass silently through to the downstream executor and
+// cause a cryptic runtime error.
+func ValidateRecordFields(tool *cwl.CommandLineTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.RecordFields) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+
+		// Build the set of valid field names for this record type.
+		validFields := make(map[string]bool, len(inputDef.RecordFields))
+		for _, rf := range inputDef.RecordFields {
+			validFields[rf.Name] = true
+		}
+
+		// The input may be a single record (map) or an array of records.
+		switch v := value.(type) {
+		case map[string]any:
+			if err := checkRecordKeys(inputID, v, validFields); err != nil {
+				return err
+			}
+		case []any:
+			for i, item := range v {
+				rec, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if err := checkRecordKeys(fmt.Sprintf("%s[%d]", inputID, i), rec, validFields); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkRecordKeys reports an error if any key in rec is not in validFields.
+func checkRecordKeys(context string, rec map[string]any, validFields map[string]bool) error {
+	for key := range rec {
+		if !validFields[key] {
+			valid := make([]string, 0, len(validFields))
+			for f := range validFields {
+				valid = append(valid, f)
+			}
+		return fmt.Errorf(
+			"unknown field %q in record input %s (valid fields: %s): %w",
+			key, context, strings.Join(valid, ", "), ErrInputValidation,
+		)
 		}
 	}
 	return nil

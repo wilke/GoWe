@@ -173,6 +173,9 @@ type RecordField struct {
 	// Type is the field type (e.g., "string", "int", "File").
 	Type string `json:"type"`
 
+	// Default is the field's default value when the record omits it.
+	Default any `json:"default,omitempty"`
+
 	// InputBinding controls how this field appears on the command line.
 	InputBinding *InputBinding `json:"inputBinding,omitempty"`
 

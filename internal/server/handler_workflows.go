@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -218,7 +219,61 @@ func (s *Server) handleGetWorkflowInputs(w http.ResponseWriter, r *http.Request)
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", idOrName))
 		return
 	}
-	respondOK(w, reqID, wf.Inputs)
+
+	// Legacy-registered workflows may not have Fields populated. Derive
+	// them from RawCWL when a record-typed input has no Fields.
+	inputs := wf.Inputs
+	if wf.RawCWL != "" {
+		needsDerive := false
+		for _, inp := range inputs {
+			if strings.Contains(inp.Type, "record:") && len(inp.Fields) == 0 {
+				needsDerive = true
+				break
+			}
+		}
+		if needsDerive {
+			inputs = deriveRecordFields(s.parser, wf.RawCWL, inputs)
+		}
+	}
+
+	respondOK(w, reqID, inputs)
+}
+
+// deriveRecordFields re-parses RawCWL and populates Fields on record-typed
+// inputs that are missing them. This handles legacy-registered workflows
+// stored before Fields was added to the model.
+func deriveRecordFields(p *parser.Parser, rawCWL string, inputs []model.WorkflowInput) []model.WorkflowInput {
+	graphDoc, err := p.ParseGraph([]byte(rawCWL))
+	if err != nil {
+		return inputs
+	}
+	if graphDoc.Workflow == nil {
+		return inputs
+	}
+
+	result := make([]model.WorkflowInput, len(inputs))
+	copy(result, inputs)
+
+	for i := range result {
+		if !strings.Contains(result[i].Type, "record:") || len(result[i].Fields) > 0 {
+			continue
+		}
+		if cwlInp, ok := graphDoc.Workflow.Inputs[result[i].ID]; ok {
+			if len(cwlInp.RecordFields) > 0 {
+				for _, rf := range cwlInp.RecordFields {
+					result[i].Fields = append(result[i].Fields, model.RecordFieldSummary{
+						Name:     rf.Name,
+						Type:     rf.Type,
+						Required: !strings.HasSuffix(rf.Type, "?") && rf.Default == nil,
+						Default:  rf.Default,
+						Doc:      rf.Doc,
+					})
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 func (s *Server) handleGetWorkflowOutputs(w http.ResponseWriter, r *http.Request) {
