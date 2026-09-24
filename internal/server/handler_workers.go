@@ -319,6 +319,10 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 		Outputs    map[string]any `json:"outputs"`
 		StageInMs  *int64         `json:"stage_in_ms"`
 		StageOutMs *int64         `json:"stage_out_ms"`
+		// Permanent (#273): the worker's execution error wrapped
+		// validate.ErrInputValidation. Absent (an older worker, or a normal
+		// failure) leaves retry behavior unchanged.
+		Permanent bool `json:"permanent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -377,6 +381,14 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	task.Stdout = req.Stdout
 	task.Stderr = req.Stderr
 	task.CompletedAt = &now
+	// #273: the worker identified this failure as non-retryable (a bad
+	// input value fails identically on every retry) — apply the same
+	// MaxRetries=RetryCount idiom used by the synchronous executor path
+	// (scheduler/loop.go) to make the task terminal instead of consuming
+	// its retry budget.
+	if req.Permanent && newState == model.TaskStateFailed {
+		task.MaxRetries = task.RetryCount
+	}
 	if req.Outputs != nil {
 		task.Outputs = req.Outputs
 	}

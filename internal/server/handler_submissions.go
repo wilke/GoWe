@@ -15,8 +15,15 @@ import (
 	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/scheduler"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
 )
+
+// maxSubmissionBodyBytes caps the POST /submissions request body (#273): the
+// largest stored submission inputs observed in production are ~206 KB, so
+// 16 MiB is generous headroom while still bounding worst-case memory use
+// from an arbitrarily large body.
+const maxSubmissionBodyBytes = 16 << 20
 
 // findNonASCIIRune returns the first rune above U+007F in s, and true, or
 // (0, false) if s is entirely ASCII.
@@ -75,6 +82,11 @@ func validateWorkspacePaths(inputs map[string]any, outputDestination string) *mo
 type submissionResponse struct {
 	*model.Submission
 	SecretsState string `json:"secrets_state,omitempty"`
+	// Warnings carries #273 input-validation field errors when the server
+	// is running in warn mode: the submission was accepted as-is (unlike
+	// enforce, which rejects with 400), but the values did not match their
+	// declared CWL types. Only ever set by handleCreateSubmission.
+	Warnings []model.FieldError `json:"warnings,omitempty"`
 }
 
 func newSubmissionResponse(sub *model.Submission) *submissionResponse {
@@ -120,6 +132,12 @@ func requireSubmissionAccess(sub *model.Submission, userCtx *UserContext) bool {
 
 func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+
+	// Bound the request body so an arbitrarily large submission cannot pin
+	// unbounded memory while it is JSON-decoded below (#273). Decode returns
+	// an error once the limit is exceeded, handled by the existing "Invalid
+	// JSON body" 400 path.
+	r.Body = http.MaxBytesReader(w, r.Body, maxSubmissionBodyBytes)
 
 	// Get authenticated user context.
 	userCtx := UserFromContext(r.Context())
@@ -209,9 +227,56 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Dry-run: validate without creating a submission.
+	// Input validation (#273): validate submitted inputs against the
+	// workflow's declared CWL types, re-parsed fresh from the stored RawCWL
+	// (never persisted), BEFORE the dry-run branch and before secret
+	// stripping below (which replaces declared-secret values with a
+	// placeholder) — so validation always sees the real submitted value. A
+	// parse failure of our own is logged and treated as "could not
+	// validate", never as a rejection.
+	inputValidationMode := s.inputValidation.Effective()
+	var inputValidationErrs []model.FieldError
+	if inputValidationMode != validate.ModeOff {
+		var verr error
+		inputValidationErrs, verr = validate.SubmissionInputs([]byte(wf.RawCWL), wf.SecretInputs, req.Inputs, validate.Options{})
+		if verr != nil {
+			s.logger.Warn("input validation: could not parse workflow CWL", "workflow_id", wf.ID, "workflow", wf.Name, "error", verr)
+			inputValidationErrs = nil
+		}
+	}
+
+	// Dry-run: validate without creating a submission. Field errors from
+	// input validation are reported (in every mode, including warn — dry-run
+	// is diagnostic) but never block the dry-run response itself.
 	if r.URL.Query().Get("dry_run") == "true" {
-		respondOK(w, reqID, s.buildDryRunReport(wf, req.Inputs))
+		report := s.buildDryRunReport(wf, req.Inputs)
+		if len(inputValidationErrs) > 0 {
+			errs, _ := report["errors"].([]map[string]string)
+			for _, fe := range inputValidationErrs {
+				msg := fe.Message
+				if fe.Path != "" {
+					msg = fe.Path + ": " + msg
+				}
+				errs = append(errs, map[string]string{
+					"field":   "inputs." + fe.Field,
+					"message": msg,
+				})
+			}
+			report["errors"] = errs
+			report["inputs_valid"] = false
+			report["valid"] = false
+		}
+		respondOK(w, reqID, report)
+		return
+	}
+
+	if inputValidationMode == validate.ModeEnforce && len(inputValidationErrs) > 0 {
+		details := make([]model.FieldError, len(inputValidationErrs))
+		for i, fe := range inputValidationErrs {
+			details[i] = model.FieldError{Field: "inputs." + fe.Field, Path: fe.Path, Message: fe.Message}
+		}
+		respondError(w, reqID, http.StatusBadRequest,
+			model.NewValidationError(validate.SummarizeErrors(inputValidationErrs), details...))
 		return
 	}
 
@@ -369,7 +434,31 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	// by the scheduler), but set it to a non-nil slice for clean JSON output.
 	sub.Tasks = []model.Task{}
 
-	respondCreated(w, reqID, newSubmissionResponse(sub))
+	resp := newSubmissionResponse(sub)
+
+	// warn mode (#273): the submission was accepted despite type mismatches
+	// (enforce already returned 400 above, off never populated
+	// inputValidationErrs) — surface a warning on the response, log a
+	// structured line naming only the fields (never values), and record one
+	// metric observation per distinct input.
+	if inputValidationMode == validate.ModeWarn && len(inputValidationErrs) > 0 {
+		details := make([]model.FieldError, len(inputValidationErrs))
+		fields := make([]string, len(inputValidationErrs))
+		seen := make(map[string]bool, len(inputValidationErrs))
+		for i, fe := range inputValidationErrs {
+			details[i] = model.FieldError{Field: "inputs." + fe.Field, Path: fe.Path, Message: fe.Message}
+			fields[i] = fe.Field
+			if !seen[fe.Field] {
+				seen[fe.Field] = true
+				s.metrics.IncInputValidationFailure(wf.Name, fe.Field, string(inputValidationMode))
+			}
+		}
+		resp.Warnings = details
+		s.logger.Warn("submission accepted with input validation warnings",
+			"id", sub.ID, "workflow_id", wf.ID, "workflow", wf.Name, "fields", fields)
+	}
+
+	respondCreated(w, reqID, resp)
 }
 
 func (s *Server) handleListSubmissions(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ package cwltool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +21,43 @@ import (
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 )
+
+// maskSecretsInError redacts any secret value from err's message, for the
+// #273 tool-level input validation error path: ValidateInputs' ToolLevel
+// redaction already omits offending values from every message, but this is
+// routed through the same secret masking as stderr/argv (toolexec.
+// MaskSecretValues) as a second layer, in case a field name or expected-type
+// description happens to contain a secret substring. Preserves
+// errors.Is(_, validate.ErrInputValidation) when the original error wrapped
+// it. Returns err unchanged when there is nothing to mask or no secrets are
+// configured.
+func maskSecretsInError(err error, secrets map[string]string) error {
+	if err == nil || len(secrets) == 0 {
+		return err
+	}
+	msg := err.Error()
+	masked := toolexec.MaskSecretValues([]string{msg}, secrets)[0]
+	if masked == msg {
+		return err
+	}
+	if errors.Is(err, validate.ErrInputValidation) {
+		return &maskedError{msg: masked, wrapped: validate.ErrInputValidation}
+	}
+	return errors.New(masked)
+}
+
+// maskedError carries a secret-redacted message while still satisfying
+// errors.Is(_, validate.ErrInputValidation) for the original error, via
+// Unwrap — unlike fmt.Errorf("%w: %s", ...), it does not re-prepend
+// ErrInputValidation's own text (already present in msg, itself derived from
+// an error that already wrapped it).
+type maskedError struct {
+	msg     string
+	wrapped error
+}
+
+func (e *maskedError) Error() string { return e.msg }
+func (e *maskedError) Unwrap() error { return e.wrapped }
 
 // Config holds configuration for ExecuteTool.
 type Config struct {
@@ -52,6 +90,13 @@ type Config struct {
 	// for container delivery. Populated by ApplySecrets; callers that build
 	// Config without it get no masking beyond SecretEnvVars.
 	SecretValues map[string]string
+
+	// InputValidation controls the #273 tool-level input type-schema check
+	// (validate.ToolInputs/ExpressionToolInputs). Empty means warn (see
+	// validate.Mode.Effective) — the safe default for a task whose
+	// RuntimeHints predate the server's --input-validation stamping.
+	// cwl-runner sets this explicitly to enforce (its standalone default).
+	InputValidation validate.Mode
 }
 
 // Result holds the result of tool execution.
@@ -142,9 +187,12 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	// lack these properties.
 	PopulateDerivedFileProperties(mergedInputs)
 
-	// Validate inputs against tool schema.
-	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
-		return nil, err
+	// Validate inputs against tool schema. Tool-level messages (mode=enforce
+	// errors, mode=warn log lines) never include values (Options.ToolLevel),
+	// but route the returned error through the same secret redaction as
+	// stderr/argv anyway, in case a value happens to echo a secret substring.
+	if err := validate.ToolInputs(tool, mergedInputs, cfg.InputValidation, logger); err != nil {
+		return nil, maskSecretsInError(err, cfg.SecretValues)
 	}
 
 	// Validate File/Directory inputs have path or location.

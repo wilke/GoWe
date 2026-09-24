@@ -50,6 +50,17 @@ type Runner struct {
 	CollectMetrics bool              // Enable metrics collection
 	metrics        *MetricsCollector // Internal metrics collector
 
+	// InputValidation controls the #273 input-validation checks this runner
+	// performs: the top-level workflow job (validated once, after defaults
+	// are merged, before any step runs — see executeWorkflow) and every
+	// tool/ExpressionTool execution (threaded into cwltool.Config /
+	// validate.ToolInputs / validate.ExpressionToolInputs). Defaults to
+	// enforce — cwl-runner is a standalone, spec-conformance runner with no
+	// server-side mixed-fleet concern, so the default should catch bad
+	// values rather than warn. cmd/cwl-runner's --no-input-validation flag
+	// sets this to off.
+	InputValidation validate.Mode
+
 	// Internal state.
 	cwlDir          string            // directory of CWL file, for resolving relative paths in defaults
 	stepCount       int               // counter for unique step directories
@@ -61,11 +72,12 @@ type Runner struct {
 // NewRunner creates a new CWL runner.
 func NewRunner(logger *slog.Logger) *Runner {
 	return &Runner{
-		logger:       logger,
-		parser:       parser.New(logger),
-		OutDir:       "./cwl-output",
-		OutputFormat: "json",
-		Parallel:     DefaultParallelConfig(),
+		logger:          logger,
+		parser:          parser.New(logger),
+		OutDir:          "./cwl-output",
+		OutputFormat:    "json",
+		Parallel:        DefaultParallelConfig(),
+		InputValidation: validate.ModeEnforce,
 	}
 }
 
@@ -397,6 +409,7 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		ResolveSecondary: resolveSecondary,
 		JobRequirements:  r.jobRequirements,
 		OutDir:           r.OutDir,
+		InputValidation:  r.InputValidation,
 	}
 
 	result, execErr := cwltool.ExecuteTool(ctx, cfg, tool, inputs, workDir)
@@ -635,7 +648,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	}
 
 	// Validate inputs against tool schema.
-	if err := validate.ToolInputs(tool, mergedInputs); err != nil {
+	if err := validate.ToolInputs(tool, mergedInputs, r.InputValidation, r.logger); err != nil {
 		return nil, err
 	}
 
@@ -767,12 +780,43 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 	}
 }
 
+// mergeExpressionToolInputDefaults mirrors exprtool.Execute's own default-
+// merge step (defaults fill inputs not provided; an explicit null on an
+// Any-typed input with a default keeps that default, per the CWL spec) so
+// #273's tool-level validation can run against the values the tool will
+// actually see, without exprtool needing to export this — Execute itself
+// re-merges from the raw inputs right after this function's caller uses the
+// result only for validation.
+func mergeExpressionToolInputDefaults(tool *cwl.ExpressionTool, inputs map[string]any) map[string]any {
+	merged := make(map[string]any, len(tool.Inputs)+len(inputs))
+	for inputID, inputDef := range tool.Inputs {
+		if inputDef.Default != nil {
+			merged[inputID] = inputDef.Default
+		}
+	}
+	for inputID, val := range inputs {
+		if val == nil {
+			if inputDef, ok := tool.Inputs[inputID]; ok {
+				if inputDef.Type == "Any" && inputDef.Default != nil {
+					continue
+				}
+			}
+		}
+		merged[inputID] = val
+	}
+	return merged
+}
+
 // executeExpressionTool executes a CWL ExpressionTool by evaluating its JavaScript expression.
 func (r *Runner) executeExpressionTool(tool *cwl.ExpressionTool, inputs map[string]any, graph *cwl.GraphDocument) (map[string]any, error) {
 	r.logger.Info("executing expression tool", "id", tool.ID)
 
-	// Validate inputs against tool schema.
-	if err := validate.ExpressionToolInputs(tool, inputs); err != nil {
+	// Validate inputs AFTER defaults are merged (#273): a null/missing value
+	// backed by a declared default must not be flagged. exprtool.Execute
+	// below re-merges from the raw inputs (idempotent), so this does not
+	// change what actually runs.
+	mergedForValidation := mergeExpressionToolInputDefaults(tool, inputs)
+	if err := validate.ExpressionToolInputs(tool, mergedForValidation, r.InputValidation, r.logger); err != nil {
 		return nil, err
 	}
 
@@ -1355,6 +1399,15 @@ func (r *Runner) executeWorkflow(ctx context.Context, graph *cwl.GraphDocument, 
 
 	// Merge workflow input defaults with provided inputs.
 	mergedInputs := mergeWorkflowInputDefaults(graph.Workflow, inputs, r.cwlDir)
+
+	// Validate the top-level job against the workflow's declared input types
+	// (#273), after defaults are merged and before any step runs, so a bad
+	// value is reported up front instead of surfacing as a confusing
+	// mid-workflow failure. Enforce by default (standalone runner); --no-
+	// input-validation sets r.InputValidation to off.
+	if err := r.validateTopLevelInputs(graph.Workflow, mergedInputs); err != nil {
+		return err
+	}
 
 	// Build execution order using DAG.
 	dag, err := parser.BuildDAG(graph.Workflow)
@@ -2597,6 +2650,38 @@ func resolveDefaultValue(v any, cwlDir string) any {
 	}
 }
 
+// validateTopLevelInputs validates a workflow's merged top-level job inputs
+// against their declared CWL types (#273). off skips entirely; warn logs and
+// continues; enforce returns an error (wrapping validate.ErrInputValidation)
+// naming the offending input, for the caller to surface as a non-zero exit.
+func (r *Runner) validateTopLevelInputs(wf *cwl.Workflow, inputs map[string]any) error {
+	if wf == nil {
+		return nil
+	}
+	mode := r.InputValidation.Effective()
+	if mode == validate.ModeOff {
+		return nil
+	}
+	params := make(map[string]validate.ParamSpec, len(wf.Inputs))
+	for id, in := range wf.Inputs {
+		params[id] = validate.ParamSpec{TypeSchema: in.TypeSchema, Default: in.Default, HasDefault: in.Default != nil}
+	}
+	errs := validate.ValidateInputs(params, inputs, validate.Options{})
+	if len(errs) == 0 {
+		return nil
+	}
+	summary := validate.SummarizeErrors(errs)
+	if mode == validate.ModeEnforce {
+		return fmt.Errorf("%w: %s", validate.ErrInputValidation, summary)
+	}
+	fields := make([]string, len(errs))
+	for i, e := range errs {
+		fields[i] = e.Field
+	}
+	r.logger.Warn("input validation failed", "fields", fields, "summary", summary)
+	return nil
+}
+
 // mergeWorkflowInputDefaults merges workflow input defaults with provided inputs.
 // Also resolves secondaryFiles for inputs based on the workflow's input declarations.
 func mergeWorkflowInputDefaults(wf *cwl.Workflow, inputs map[string]any, cwlDir string) map[string]any {
@@ -2607,9 +2692,12 @@ func mergeWorkflowInputDefaults(wf *cwl.Workflow, inputs map[string]any, cwlDir 
 		merged[k] = v
 	}
 
-	// Add defaults for missing inputs.
+	// Add defaults for missing inputs. An explicit null also takes the
+	// default (#273, CWL spec): a caller that writes `foo: null` in the job
+	// file is declaring "use the default", same as omitting foo entirely.
 	for inputID, inputDef := range wf.Inputs {
-		if _, exists := merged[inputID]; !exists && inputDef.Default != nil {
+		v, exists := merged[inputID]
+		if (!exists || v == nil) && inputDef.Default != nil {
 			// Resolve default value (especially File objects).
 			defaultVal := resolveDefaultValue(inputDef.Default, cwlDir)
 			merged[inputID] = defaultVal

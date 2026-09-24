@@ -184,6 +184,14 @@ type TaskResult struct {
 	// field silently ignored by the old handler's decode struct.
 	StageInMs  *int64 `json:"stage_in_ms,omitempty"`
 	StageOutMs *int64 `json:"stage_out_ms,omitempty"`
+
+	// Permanent marks a FAILED result as non-retryable (#273): the
+	// execution error wrapped validate.ErrInputValidation, so retrying would
+	// fail identically every time (a bad input value never becomes valid on
+	// retry). The server applies its existing MaxRetries=RetryCount idiom
+	// when set. Omitted (false) preserves normal retry behavior, including
+	// for an older worker that never sets this field.
+	Permanent bool `json:"permanent,omitempty"`
 }
 
 // ReportComplete sends the final task result.

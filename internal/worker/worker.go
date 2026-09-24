@@ -17,6 +17,7 @@ import (
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/toolexec"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
@@ -821,6 +822,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
+		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
 		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
 	}
 
@@ -1132,12 +1134,16 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, 
 }
 
 // reportFailure sends a FAILED completion with the given error as stderr.
+// Permanent is set when execErr wraps validate.ErrInputValidation (#273): a
+// bad input value fails identically on every retry, so the server should
+// make this FAILED terminal instead of consuming the task's retry budget.
 func (w *Worker) reportFailure(ctx context.Context, task *model.Task, execErr error) error {
 	exitCode := -1
 	reportErr := w.reportComplete(ctx, task.ID, TaskResult{
-		State:    model.TaskStateFailed,
-		ExitCode: &exitCode,
-		Stderr:   execErr.Error(),
+		State:     model.TaskStateFailed,
+		ExitCode:  &exitCode,
+		Stderr:    execErr.Error(),
+		Permanent: errors.Is(execErr, validate.ErrInputValidation),
 	})
 	if reportErr != nil {
 		return fmt.Errorf("report failure: %w (original: %v)", reportErr, execErr)

@@ -70,9 +70,10 @@ type Registry struct {
 	stagingSeconds        *prometheus.HistogramVec
 	tickSeconds           *prometheus.HistogramVec
 
-	taskRetries  *prometheus.CounterVec
-	taskFailures *prometheus.CounterVec
-	tasksSkipped prometheus.Counter
+	taskRetries             *prometheus.CounterVec
+	taskFailures            *prometheus.CounterVec
+	tasksSkipped            prometheus.Counter
+	inputValidationFailures *prometheus.CounterVec
 
 	tasksGauge       *prometheus.GaugeVec
 	submissionsGauge *prometheus.GaugeVec
@@ -146,6 +147,10 @@ func NewRegistry(cfg Config) *Registry {
 			Name: "gowe_tasks_skipped_total",
 			Help: "Total number of tasks SKIPPED by a cancellation fan-out (bulk-counted, never per-row).",
 		}),
+		inputValidationFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gowe_input_validation_failures_total",
+			Help: "Total number of submitted input values that failed #273 type-schema validation, by workflow, input, and mode.",
+		}, []string{"workflow", "input", "mode"}),
 
 		tasksGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "gowe_tasks",
@@ -175,7 +180,7 @@ func NewRegistry(cfg Config) *Registry {
 	r.reg.MustRegister(
 		r.taskQueueSeconds, r.taskRunSeconds, r.taskStageSeconds,
 		r.submissionWallSeconds, r.stagingSeconds, r.tickSeconds,
-		r.taskRetries, r.taskFailures, r.tasksSkipped,
+		r.taskRetries, r.taskFailures, r.tasksSkipped, r.inputValidationFailures,
 		r.tasksGauge, r.submissionsGauge, r.workersGauge, r.queueDepthGauge,
 	)
 
@@ -316,6 +321,25 @@ func (r *Registry) AddTasksSkipped(n int) {
 		return
 	}
 	r.tasksSkipped.Add(float64(n))
+}
+
+// IncInputValidationFailure increments gowe_input_validation_failures_total
+// for one submitted input that failed #273 type-schema validation. workflow
+// is bounded the same way as the task labels (cap + "_other" overflow,
+// respecting --metrics-workflow-label); input and mode are small, bounded
+// vocabularies (a workflow's own declared input ids, and "warn"/"enforce")
+// so they are not capped.
+func (r *Registry) IncInputValidationFailure(workflow, input, mode string) {
+	if r == nil {
+		return
+	}
+	wf := workflow
+	if r.workflowLabelEnabled {
+		wf = r.boundedLabel(r.workflowSeen, workflow)
+	} else {
+		wf = allWorkflowsLabel
+	}
+	r.inputValidationFailures.WithLabelValues(wf, input, mode).Inc()
 }
 
 // ObserveSubmissionWall records gowe_submission_wall_seconds{outcome},
