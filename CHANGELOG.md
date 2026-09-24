@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/wilke/GoWe/compare/v0.20.1...v0.21.0) (2026-09-24)
+
+
+### Features
+
+* validate CWL input values against their declared types ([#273](https://github.com/wilke/GoWe/issues/273)) ([#275](https://github.com/wilke/GoWe/issues/275)) ([09cb80a](https://github.com/wilke/GoWe/commit/09cb80aa273469e9611b2d720a80a902e0d8ff45))
+
 ## [0.20.1](https://github.com/wilke/GoWe/compare/v0.20.0...v0.20.1) (2026-09-17)
 
 
