@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -190,19 +193,46 @@ func ValidateInputs(params map[string]ParamSpec, inputs map[string]any, opts Opt
 	return all
 }
 
-// SubmissionInputs will validate a submission's raw inputs against the
-// workflow's declared input types. It is currently a STUB: once the parser
-// (work package A, landing in parallel with this package) grows a
-// TypeSchema field on graph.Workflow.Inputs[*], this function will
-// re-parse rawCWL (the same way the scheduler already does per task) to
-// obtain those ParamSpecs, mark the ids in secretInputs as
-// ParamSpec.Secret, and delegate to ValidateInputs. Until then it performs
-// no validation and always succeeds, so downstream call sites (server,
-// cwl-runner, UI) can be wired up against this signature without waiting on
-// the parser change.
+// SubmissionInputs validates a submission's inputs against the declared
+// input types of the workflow whose stored CWL text is rawCWL. It re-parses
+// rawCWL (as the scheduler does per task), so every stored workflow is
+// covered without persisting schemas. ParseGraph also wraps a bare tool as a
+// workflow, so tool registrations are covered too.
+//
+// Ids in secretInputs are validated but their values are never echoed.
+// Inputs whose TypeSchema is nil, and named types the parser could not
+// resolve, are skipped. A parse error is returned as err with no field
+// errors: callers must treat it as "could not validate", never as a
+// rejection.
 func SubmissionInputs(rawCWL []byte, secretInputs []string, inputs map[string]any, opts Options) ([]model.FieldError, error) {
-	return nil, nil
+	graph, err := parser.New(discardLogger).ParseGraph(rawCWL)
+	if err != nil {
+		return nil, fmt.Errorf("parse workflow for input validation: %w", err)
+	}
+	if graph == nil || graph.Workflow == nil {
+		return nil, nil
+	}
+	secret := make(map[string]bool, len(secretInputs))
+	for _, id := range secretInputs {
+		secret[id] = true
+	}
+	params := make(map[string]ParamSpec, len(graph.Workflow.Inputs))
+	for id, in := range graph.Workflow.Inputs {
+		id = strings.TrimPrefix(id, "#")
+		params[id] = ParamSpec{
+			TypeSchema: in.TypeSchema,
+			Default:    in.Default,
+			HasDefault: in.Default != nil,
+			Secret:     secret[id],
+		}
+	}
+	if inputs == nil {
+		inputs = map[string]any{}
+	}
+	return ValidateInputs(params, inputs, opts), nil
 }
+
+var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // validateParam applies the null/default/required rules for a single
 // top-level parameter before delegating the present, non-null,

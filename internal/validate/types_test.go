@@ -312,16 +312,6 @@ func TestArrayIndexAndRecordFieldPathCombine(t *testing.T) {
 	}
 }
 
-func TestSubmissionInputsStub(t *testing.T) {
-	errs, err := SubmissionInputs([]byte("cwlVersion: v1.2"), nil, map[string]any{"x": 1}, Options{})
-	if err != nil {
-		t.Fatalf("expected nil error from stub, got %v", err)
-	}
-	if errs != nil {
-		t.Fatalf("expected nil errors from stub, got %+v", errs)
-	}
-}
-
 func TestOptionalEnumKeepsSymbolsInError(t *testing.T) {
 	schema := []any{"null", map[string]any{"type": "enum", "symbols": []any{"#chunk/fixed", "#chunk/semantic"}}}
 	tests := []struct {
@@ -355,4 +345,71 @@ func TestMultiMemberUnionErrorDescribesEnumSymbols(t *testing.T) {
 	if len(errs) != 1 || !strings.Contains(errs[0].Message, "enum{a, b}") {
 		t.Fatalf("want union error naming enum symbols, got %v", errs)
 	}
+}
+
+func TestSubmissionInputs(t *testing.T) {
+	const wf = `cwlVersion: v1.2
+class: Workflow
+inputs:
+  chunk_method:
+    type:
+      - "null"
+      - type: enum
+        symbols: [fixed, sentence, semantic]
+  size: {type: int, default: 512}
+  password: string
+  flag: boolean
+outputs: []
+steps: []
+`
+	const tool = `cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: echo
+inputs:
+  n: int
+outputs: []
+`
+	tests := []struct {
+		name      string
+		cwl       string
+		secret    []string
+		inputs    map[string]any
+		wantField []string
+		notIn     string
+	}{
+		{"valid", wf, nil, map[string]any{"chunk_method": "semantic", "password": "x", "flag": true}, nil, ""},
+		{"bad enum lists symbols", wf, nil, map[string]any{"chunk_method": "semantic_pooled_typo", "password": "x", "flag": true}, []string{"chunk_method"}, ""},
+		{"null uses default", wf, nil, map[string]any{"size": nil, "password": "x", "flag": false}, nil, ""},
+		{"missing required and wrong type", wf, nil, map[string]any{"password": "x", "size": "big"}, []string{"flag", "size"}, ""},
+		{"secret never echoed", wf, []string{"password"}, map[string]any{"password": 12345678901, "flag": true}, []string{"password"}, "12345678901"},
+		{"bare tool is wrapped", tool, nil, map[string]any{"n": "three"}, []string{"n"}, ""},
+		{"undeclared keys ignored", tool, nil, map[string]any{"n": 3, "cwl:requirements": []any{}}, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs, err := SubmissionInputs([]byte(tt.cwl), tt.secret, tt.inputs, Options{})
+			if err != nil {
+				t.Fatalf("unexpected parse error: %v", err)
+			}
+			var got []string
+			for _, e := range errs {
+				got = append(got, e.Field)
+				if tt.notIn != "" && strings.Contains(e.Message, tt.notIn) {
+					t.Errorf("message leaks value: %q", e.Message)
+				}
+			}
+			if strings.Join(got, ",") != strings.Join(tt.wantField, ",") {
+				t.Fatalf("fields = %v, want %v (errors: %v)", got, tt.wantField, errs)
+			}
+			if tt.name == "bad enum lists symbols" && !strings.Contains(errs[0].Message, "fixed, sentence, semantic") {
+				t.Errorf("message should list symbols: %q", errs[0].Message)
+			}
+		})
+	}
+	t.Run("unparseable CWL is an error, not a rejection", func(t *testing.T) {
+		errs, err := SubmissionInputs([]byte("::: not yaml :::"), nil, nil, Options{})
+		if err == nil || errs != nil {
+			t.Fatalf("want parse error and no field errors, got errs=%v err=%v", errs, err)
+		}
+	})
 }
