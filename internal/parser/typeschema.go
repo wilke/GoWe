@@ -278,7 +278,7 @@ func normalizeRecordFieldsSchema(fields any, defs *schemaDefs, seen map[string]b
 			name, _ := fm["name"].(string)
 			out = append(out, map[string]any{
 				"name": name,
-				"type": normalizeType(fm["type"], defs, seen),
+				"type": fieldTypeSchema(fm, fm["type"], defs, seen),
 			})
 		}
 		return out
@@ -292,7 +292,7 @@ func normalizeRecordFieldsSchema(fields any, defs *schemaDefs, seen map[string]b
 		for _, k := range keys {
 			out = append(out, map[string]any{
 				"name": k,
-				"type": normalizeType(recordFieldTypeValue(f[k]), defs, seen),
+				"type": fieldTypeSchema(f[k], recordFieldTypeValue(f[k]), defs, seen),
 			})
 		}
 		return out
@@ -311,4 +311,38 @@ func recordFieldTypeValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// fieldTypeSchema normalizes a record field's type. A field definition that
+// carries a "default" is made nullable, so a value that omits the field is not
+// rejected. CWL v1.2 record fields have no default, but BV-BRC-generated tools
+// (gen-cwl-tools) declare them (e.g. GenomeAssembly2 paired_end_libs
+// "interleaved: default false") and the platform fills them in. The validator
+// must never reject what the engine and the app accept today (#273).
+func fieldTypeSchema(def any, rawType any, defs *schemaDefs, seen map[string]bool) any {
+	t := normalizeType(rawType, defs, seen)
+	m, ok := def.(map[string]any)
+	if !ok {
+		return t
+	}
+	if d, has := m["default"]; !has || d == nil {
+		return t
+	}
+	return makeNullable(t)
+}
+
+// makeNullable returns t as a union that admits null.
+func makeNullable(t any) any {
+	if u, ok := t.([]any); ok {
+		for _, m := range u {
+			if s, ok := m.(string); ok && s == "null" {
+				return u
+			}
+		}
+		return append([]any{"null"}, u...)
+	}
+	if s, ok := t.(string); ok && s == "null" {
+		return t
+	}
+	return []any{"null", t}
 }
