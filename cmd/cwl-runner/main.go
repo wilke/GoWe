@@ -11,24 +11,26 @@ import (
 	"syscall"
 
 	"github.com/me/gowe/internal/cwlrunner"
+	"github.com/me/gowe/internal/validate"
 	"github.com/spf13/cobra"
 )
 
 var (
-	outDir           string
-	noContainer      bool
-	forceDocker      bool
-	forceApptainer   bool
-	containerRuntime string
-	outputFormat     string
-	verbose          bool
-	quiet            bool
-	parallel         bool
-	maxJobs          int
-	coresBudget      int
-	noFailFast       bool
-	collectMetrics   bool
-	imageDir         string
+	outDir            string
+	noContainer       bool
+	forceDocker       bool
+	forceApptainer    bool
+	containerRuntime  string
+	outputFormat      string
+	verbose           bool
+	quiet             bool
+	parallel          bool
+	maxJobs           int
+	coresBudget       int
+	noFailFast        bool
+	collectMetrics    bool
+	imageDir          string
+	noInputValidation bool
 )
 
 const version = "1.2.1-dev"
@@ -82,6 +84,11 @@ Examples:
 
 	// Image directory for local SIF files.
 	rootCmd.PersistentFlags().StringVar(&imageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
+
+	// Input validation (#273): cwl-runner enforces declared CWL input types
+	// by default (standalone spec-conformance runner); this is the escape
+	// hatch.
+	rootCmd.PersistentFlags().BoolVar(&noInputValidation, "no-input-validation", false, "Disable validation of input values against their declared CWL types (default: enforced)")
 
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
@@ -141,6 +148,12 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 
 	// Configure image directory for local SIF files.
 	r.ImageDir = imageDir
+
+	// Configure input validation (#273): enforce by default (set in
+	// cwlrunner.NewRunner), --no-input-validation disables it entirely.
+	if noInputValidation {
+		r.InputValidation = validate.ModeOff
+	}
 
 	return r
 }

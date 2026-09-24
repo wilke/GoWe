@@ -202,6 +202,7 @@ log_info "Starting server..."
     -upload-local-dir "$UPLOAD_DIR" \
     -upload-download-dirs "$DOWNLOAD_DIRS" \
     -log-level warn \
+    -input-validation enforce \
     &
 SERVER_PID=$!
 

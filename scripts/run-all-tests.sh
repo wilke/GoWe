@@ -523,6 +523,7 @@ run_server_local() {
         -anonymous-executors "local,docker,worker,container" \
         -scheduler-poll 100ms \
         -log-level warn \
+        -input-validation enforce \
         &
     server_pid=$!
 
@@ -655,6 +656,8 @@ services:
   gowe-server:
     ports:
       - "${DISTRIBUTED_PORT}:8080"
+    environment:
+      - GOWE_INPUT_VALIDATION=enforce
   worker-1:
     command:
       - "-server"
@@ -704,6 +707,8 @@ services:
   gowe-server:
     ports:
       - "${DISTRIBUTED_PORT}:8080"
+    environment:
+      - GOWE_INPUT_VALIDATION=enforce
   worker-1:
     command:
       - "-server"
@@ -934,6 +939,7 @@ run_distributed_apptainer() {
         -upload-local-dir "$upload_dir" \
         -upload-download-dirs "$download_dirs" \
         -log-level warn \
+        -input-validation enforce \
         &
     server_pid=$!
 

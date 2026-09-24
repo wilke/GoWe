@@ -11,6 +11,7 @@ import (
 
 	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -92,6 +93,7 @@ func (e *LocalExecutor) submitWithCWLTool(ctx context.Context, task *model.Task,
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
+		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
 	}
 
 	// H4: deliver the task's opted-in submission secrets (gowe:Execution

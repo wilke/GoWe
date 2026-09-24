@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -155,12 +156,26 @@ type Loop struct {
 	// #260) to once per minute even though Tick() calls it every tick; zero
 	// value runs the sweep on the very first tick.
 	lastSecretsSweep time.Time
+
+	// inputValidation is the server's --input-validation mode (#273),
+	// stamped into every task's RuntimeHints (populateToolAndJob) so workers
+	// follow the same policy, and used directly for server-run
+	// ExpressionTools (executeExpressionTool) and tool-level validation on
+	// the synchronous executors. Empty (unset) means warn — see
+	// validate.Mode.Effective.
+	inputValidation validate.Mode
 }
 
 // SetMetrics wires the Prometheus metrics registry into the scheduler. Not
 // setting it (nil) leaves instrumentation disabled.
 func (l *Loop) SetMetrics(m *metrics.Registry) {
 	l.metrics = m
+}
+
+// SetInputValidation wires the server's --input-validation mode (#273) into
+// the scheduler. Not setting it (zero value) means warn.
+func (l *Loop) SetInputValidation(mode validate.Mode) {
+	l.inputValidation = mode
 }
 
 // workflowNameForTask looks up a task's workflow name via the per-tick
@@ -1967,6 +1982,14 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 			strings.Contains(errMsg, "context canceled") {
 			task.MaxRetries = task.RetryCount
 		}
+		// #273: a synchronous executor (local/docker/apptainer) failed
+		// because a supplied input value did not match its declared CWL
+		// type (enforce mode) — retrying would fail identically every time,
+		// so make this FAILED terminal rather than consume the task's
+		// retry budget.
+		if errors.Is(submitErr, validate.ErrInputValidation) {
+			task.MaxRetries = task.RetryCount
+		}
 		// H2: this is a THIRD terminal-marking branch (beyond the
 		// newState.IsTerminal() success-path branch scrubTaskToken
 		// previously lived in exclusively) — a synchronous executor
@@ -3339,6 +3362,18 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		task.RuntimeHints.Namespaces = graphDoc.Namespaces
 	}
 
+	// Stamp the server's --input-validation mode (#273) so the executing
+	// worker (or synchronous local/docker/apptainer executor) applies the
+	// same policy without a worker-side flag. Empty (an old server, or a
+	// server started with the code default) is interpreted as warn
+	// downstream — see validate.Mode.Effective. Every scatter-combination
+	// Task built from this StepInstance's tmpTask (createTaskFromStep)
+	// shares this same RuntimeHints pointer, so they all inherit it.
+	if task.RuntimeHints == nil {
+		task.RuntimeHints = &model.RuntimeHints{}
+	}
+	task.RuntimeHints.InputValidation = string(l.inputValidation)
+
 	return nil
 }
 
@@ -3551,6 +3586,33 @@ func hasInplaceUpdateReq(tool map[string]any) bool {
 }
 
 // isExpressionTool checks if a tool map represents a CWL ExpressionTool.
+// mergeExpressionToolInputDefaults mirrors exprtool.Execute's own default-
+// merge step (defaults fill inputs not provided; an explicit null on an
+// Any-typed input with a default keeps that default, per the CWL spec) so
+// #273's tool-level validation can run against the values the tool will
+// actually see, without exprtool needing to export this — Execute itself
+// re-merges from the raw inputs right after this function's caller uses the
+// result only for validation.
+func mergeExpressionToolInputDefaults(tool *cwl.ExpressionTool, inputs map[string]any) map[string]any {
+	merged := make(map[string]any, len(tool.Inputs)+len(inputs))
+	for inputID, inputDef := range tool.Inputs {
+		if inputDef.Default != nil {
+			merged[inputID] = inputDef.Default
+		}
+	}
+	for inputID, val := range inputs {
+		if val == nil {
+			if inputDef, ok := tool.Inputs[inputID]; ok {
+				if inputDef.Type == "Any" && inputDef.Default != nil {
+					continue
+				}
+			}
+		}
+		merged[inputID] = val
+	}
+	return merged
+}
+
 func isExpressionTool(tool map[string]any) bool {
 	if tool == nil {
 		return false
@@ -3576,8 +3638,13 @@ func (l *Loop) executeExpressionTool(task *model.Task) (map[string]any, error) {
 	// ExpressionTools need listings populated just like CommandLineTools.
 	cwltool.PopulateDirectoryListingsFromDefs(tool.Inputs, tool.Requirements, task.Job, false)
 
-	// Validate inputs before execution.
-	if err := validate.ExpressionToolInputs(&tool, task.Job); err != nil {
+	// Validate inputs AFTER defaults are merged (#273): a null/missing value
+	// backed by a declared default must not be flagged. exprtool.Execute
+	// below re-merges from the raw task.Job itself (idempotent — merging
+	// already-present keys is a no-op), so this does not change what
+	// actually runs.
+	mergedForValidation := mergeExpressionToolInputDefaults(&tool, task.Job)
+	if err := validate.ExpressionToolInputs(&tool, mergedForValidation, l.inputValidation, l.logger); err != nil {
 		return nil, err
 	}
 

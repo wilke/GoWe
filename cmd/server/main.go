@@ -25,6 +25,7 @@ import (
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/tokencrypt"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -79,6 +80,7 @@ func main() {
 	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
 	authDenylistFile := flag.String("auth-denylist", "", "Path to a file of denylisted users/tokens, one entry per line as 'user:<username>' or 'tokenid:<uuid>' ('#' comments allowed); empty disables the denylist")
 	secretsRetentionFlag := flag.String("secrets-retention", "", "Default secrets_retention policy for a submission that doesn't specify one: keep, ttl:<duration>, on_success, or on_terminal (also: GOWE_SECRETS_RETENTION env, flag wins; default ttl:720h)")
+	inputValidationFlag := flag.String("input-validation", "", "Input value/type validation mode: warn (default), enforce, or off (also: GOWE_INPUT_VALIDATION env, flag wins). Stamped into every task's RuntimeHints so workers follow the same policy")
 
 	// Provider-token encryption at rest
 	tokenKeyFile := flag.String("token-key-file", "", "Path to a file holding the token-encryption key (base64 or hex, 32 bytes); overrides GOWE_TOKEN_KEY")
@@ -340,6 +342,22 @@ func main() {
 	serverOpts = append(serverOpts, server.WithSecretsRetention(secretsRetentionPolicy))
 	logger.Info("default secrets retention", "policy", secretsRetentionPolicy.String())
 
+	// Input validation mode (#273): --input-validation wins over
+	// GOWE_INPUT_VALIDATION; empty from both means warn (validate.ParseMode).
+	// Stamped into every task's RuntimeHints by the scheduler so a worker
+	// follows the same policy without its own flag.
+	inputValidationRaw := *inputValidationFlag
+	if inputValidationRaw == "" {
+		inputValidationRaw = os.Getenv("GOWE_INPUT_VALIDATION")
+	}
+	inputValidationMode, err := validate.ParseMode(inputValidationRaw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--input-validation: %v\n", err)
+		os.Exit(1)
+	}
+	serverOpts = append(serverOpts, server.WithInputValidation(inputValidationMode))
+	logger.Info("input validation mode", "mode", inputValidationMode)
+
 	// Configure provider token signature verification. On by default:
 	// inbound BV-BRC tokens are cryptographically verified against a
 	// hard-pinned set of issuer keys before any identity is trusted.
@@ -479,6 +497,7 @@ func main() {
 	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 	sched.SetMetrics(metricsReg)
+	sched.SetInputValidation(inputValidationMode)
 
 	// One Workspace stager serves both the scheduler (server-side pre/post
 	// staging, only in "server" mode) and the admin output verification /

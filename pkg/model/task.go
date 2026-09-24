@@ -137,6 +137,14 @@ type RuntimeHints struct {
 	// SecretInputs names workflow inputs declared secret via cwltool:Secrets whose values
 	// were removed from the persisted job and must be re-injected by the worker from Secrets.
 	SecretInputs []string `json:"secret_inputs,omitempty"`
+
+	// InputValidation is the server's --input-validation mode (#273:
+	// "warn"|"enforce"|"off") at the time this task was created, stamped by
+	// the scheduler (populateToolAndJob) so a worker executing this task
+	// applies the same policy without its own flag. Empty means warn — a
+	// task from an older server, or created before an upgrade, must never
+	// start silently rejecting values. See internal/validate.Mode.
+	InputValidation string `json:"input_validation,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.

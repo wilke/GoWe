@@ -14,6 +14,7 @@ import (
 
 	"github.com/me/gowe/internal/bundle"
 	"github.com/me/gowe/internal/bvbrc"
+	"github.com/me/gowe/internal/wslocation"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
 	"github.com/spf13/cobra"
@@ -196,6 +197,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 
 			subResp, err := client.Post(subPath, subReq)
 			if err != nil {
+				printAPIErrorDetails(os.Stderr, err)
 				return fmt.Errorf("create submission: %w", err)
 			}
 
@@ -214,6 +216,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 			}
 			state, _ := subData["state"].(string)
 			fmt.Printf("Submission created: %s (state: %s)\n", submissionID, state)
+			printSubmissionWarnings(os.Stdout, subResp.Data)
 			return nil
 		},
 	}
@@ -445,7 +448,7 @@ func uploadFileToWorkspace(ctx context.Context, ws *bvbrcpkg.Client, fileObj map
 	for k, v := range fileObj {
 		result[k] = v
 	}
-	result["location"] = "ws://" + wsPath
+	result["location"] = wslocation.Resolve(wsPath)
 	result["path"] = wsPath
 	result["basename"] = basename
 	return result, nil

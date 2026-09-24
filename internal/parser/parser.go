@@ -77,7 +77,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			graph.Namespaces = namespaces
 			return graph, nil
 		case "Workflow":
-			graph, err := p.parseBareWorkflow(raw, version)
+			graph, err := p.parseBareWorkflow(raw, version, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -99,6 +99,21 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		OriginalClass: "Workflow",
 		Tools:         make(map[string]*cwl.CommandLineTool),
 		Namespaces:    namespaces,
+	}
+
+	// Pre-pass: collect SchemaDefRequirement types from EVERY $graph entry
+	// (Workflow, CommandLineTool, ExpressionTool; list-form and map-form
+	// requirements) before parsing any entry, so a named type declared in
+	// one entry's requirements is resolvable from another entry's inputs.
+	globalDefs := newSchemaDefs()
+	for _, entry := range entries {
+		if m, ok := entry.(map[string]any); ok {
+			// $graph siblings have no precedence over each other: an exact
+			// name clash between entries with different definitions makes
+			// that name ambiguous (unresolved), not "first entry wins" —
+			// see mergeGraphEntry (#273 review #6).
+			globalDefs = globalDefs.mergeGraphEntry(collectSchemaDefsFromRequirements(normalizeHintsToMap(m["requirements"])))
+		}
 	}
 
 	// Collect all parsed workflows; we'll select the main one below.
@@ -124,7 +139,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 		class := stringField(m, "class")
 		switch class {
 		case "Workflow":
-			wfResult, err := p.parseWorkflow(m)
+			wfResult, err := p.parseWorkflow(m, globalDefs)
 			if err != nil {
 				return nil, fmt.Errorf("$graph[%d] (Workflow): %w", i, err)
 			}
@@ -134,7 +149,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			parsedWorkflows = append(parsedWorkflows, parsedWorkflow{result: wfResult, index: i})
 
 		case "CommandLineTool":
-			tool, err := p.parseTool(m)
+			tool, err := p.parseTool(m, globalDefs, false)
 			if err != nil {
 				return nil, fmt.Errorf("$graph[%d] (%s): %w", i, class, err)
 			}
@@ -149,7 +164,7 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 			graph.Tools[toolID] = tool
 
 		case "ExpressionTool":
-			exprTool, err := p.parseExpressionTool(m)
+			exprTool, err := p.parseExpressionTool(m, globalDefs)
 			if err != nil {
 				return nil, fmt.Errorf("$graph[%d] (%s): %w", i, class, err)
 			}
@@ -306,9 +321,10 @@ func createSyntheticWorkflow(tool *cwl.CommandLineTool) *cwl.Workflow {
 	wfInputs := make(map[string]cwl.InputParam)
 	for id, inp := range tool.Inputs {
 		wfInputs[id] = cwl.InputParam{
-			Type:    inp.Type,
-			Doc:     inp.Doc,
-			Default: inp.Default,
+			Type:       inp.Type,
+			Doc:        inp.Doc,
+			Default:    inp.Default,
+			TypeSchema: inp.TypeSchema,
 		}
 	}
 
@@ -354,11 +370,17 @@ func createSyntheticWorkflow(tool *cwl.CommandLineTool) *cwl.Workflow {
 }
 
 // parseBareWorkflow parses a bare Workflow document (without $graph).
-func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.GraphDocument, error) {
-	wfResult, err := p.parseWorkflow(raw)
+// defs carries SchemaDefRequirement types collected from an enclosing
+// document (e.g. $graph siblings or a parent workflow); it may be nil.
+func (p *Parser) parseBareWorkflow(raw map[string]any, version string, defs *schemaDefs) (*cwl.GraphDocument, error) {
+	wfResult, err := p.parseWorkflow(raw, defs)
 	if err != nil {
 		return nil, fmt.Errorf("parse Workflow: %w", err)
 	}
+	// Recompute the merged defs (parent + this workflow's own
+	// SchemaDefRequirement) so they can be propagated to inline/referenced
+	// tools below, mirroring what parseWorkflow used internally.
+	wfDefs := defsFromRawRequirements(raw, defs)
 
 	if version != "" && wfResult.Workflow.CWLVersion == "" {
 		wfResult.Workflow.CWLVersion = version
@@ -428,7 +450,7 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 			class := stringField(toolRaw, "class")
 			switch class {
 			case "ExpressionTool":
-				exprTool, err := p.parseExpressionTool(toolRaw)
+				exprTool, err := p.parseExpressionTool(toolRaw, wfDefs)
 				if err != nil {
 					return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
 				}
@@ -444,7 +466,7 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 			case "Workflow":
 				// Recursively parse the subworkflow.
 				subParser := &Parser{logger: p.logger, baseDir: toolBaseDir}
-				subGraph, err := subParser.parseBareWorkflow(toolRaw, stringField(toolRaw, "cwlVersion"))
+				subGraph, err := subParser.parseBareWorkflow(toolRaw, stringField(toolRaw, "cwlVersion"), wfDefs)
 				if err != nil {
 					return nil, fmt.Errorf("parse external workflow %s: %w", step.Run, err)
 				}
@@ -458,7 +480,7 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 				p.logger.Debug("loaded external workflow", "path", step.Run, "id", toolID)
 
 			default:
-				tool, err := p.parseTool(toolRaw)
+				tool, err := p.parseTool(toolRaw, wfDefs, false)
 				if err != nil {
 					return nil, fmt.Errorf("parse external tool %s: %w", step.Run, err)
 				}
@@ -484,6 +506,7 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string) (*cwl.Gra
 // wrapToolAsWorkflow wraps a bare CommandLineTool or ExpressionTool in a synthetic single-step Workflow.
 func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cwl.GraphDocument, error) {
 	class := stringField(toolRaw, "class")
+	defs := defsFromRawRequirements(toolRaw, nil)
 
 	var toolID string
 	var toolDoc string
@@ -498,7 +521,7 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 	if class == "ExpressionTool" {
 		// Parse as ExpressionTool.
 		var err error
-		exprTool, err = p.parseExpressionTool(toolRaw)
+		exprTool, err = p.parseExpressionTool(toolRaw, defs)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", class, err)
 		}
@@ -514,9 +537,10 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 		wfInputs = make(map[string]cwl.InputParam)
 		for id, inp := range exprTool.Inputs {
 			wfInputs[id] = cwl.InputParam{
-				Type:    inp.Type,
-				Doc:     inp.Doc,
-				Default: inp.Default,
+				Type:       inp.Type,
+				Doc:        inp.Doc,
+				Default:    inp.Default,
+				TypeSchema: inp.TypeSchema,
 			}
 		}
 
@@ -539,7 +563,7 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 	} else {
 		// Parse as CommandLineTool.
 		var err error
-		cmdTool, err = p.parseTool(toolRaw)
+		cmdTool, err = p.parseTool(toolRaw, defs, false)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", class, err)
 		}
@@ -560,6 +584,7 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 				Default:        inp.Default,
 				RecordFields:   inp.RecordFields,
 				SecondaryFiles: inp.SecondaryFiles,
+				TypeSchema:     inp.TypeSchema,
 			}
 		}
 
@@ -635,7 +660,11 @@ type workflowParseResult struct {
 }
 
 // parseWorkflow parses a single CWL Workflow from a raw map.
-func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) {
+// defs carries SchemaDefRequirement types collected from an enclosing
+// document (e.g. $graph siblings or a parent workflow); it may be nil. It is
+// merged with this workflow's own requirements before resolving its inputs'
+// named types, and the merged result is threaded into steps.
+func (p *Parser) parseWorkflow(raw map[string]any, defs *schemaDefs) (workflowParseResult, error) {
 	result := workflowParseResult{
 		InlineTools:           make(map[string]*cwl.CommandLineTool),
 		InlineExpressionTools: make(map[string]*cwl.ExpressionTool),
@@ -654,12 +683,16 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 		Requirements: normalizeHintsToMap(raw["requirements"]),
 	}
 
+	// Local (this workflow's own) SchemaDefRequirement entries win over
+	// inherited (parent-document) ones (#273 review #6).
+	localDefs := collectSchemaDefsFromRequirements(wf.Requirements).merge(defs)
+
 	// Parse inputs: supports both array-style and map-style.
 	inputs := normalizeToMap(raw["inputs"])
 	for id, v := range inputs {
 		switch val := v.(type) {
 		case string:
-			wf.Inputs[id] = cwl.InputParam{Type: val}
+			wf.Inputs[id] = cwl.InputParam{Type: val, TypeSchema: normalizeType(val, localDefs, nil)}
 		case []any:
 			// Type is an array - this is a union type expressed directly as the input value.
 			// CWL allows input definitions like:
@@ -667,7 +700,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 			//     - type: array
 			//       items: File
 			// Serialize the entire array as the type.
-			wf.Inputs[id] = cwl.InputParam{Type: serializeCWLType(val)}
+			wf.Inputs[id] = cwl.InputParam{Type: serializeCWLType(val), TypeSchema: normalizeType(val, localDefs, nil)}
 		case map[string]any:
 			// Type can be a string or complex type (record, array, etc.)
 			typeVal := stringField(val, "type")
@@ -680,6 +713,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 				Doc:          stringField(val, "doc"),
 				Default:      val["default"],
 				LoadContents: boolField(val, "loadContents"),
+				TypeSchema:   normalizeType(val["type"], localDefs, nil),
 			}
 			// Parse secondaryFiles if present at the input level.
 			inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
@@ -687,7 +721,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 			// Parse record fields if this is a record type.
 			if typeMap, ok := val["type"].(map[string]any); ok {
 				if typeMap["type"] == "record" {
-					inp.RecordFields = parseRecordFields(typeMap["fields"])
+					inp.RecordFields = parseRecordFields(typeMap["fields"], localDefs, false)
 				}
 			}
 			wf.Inputs[id] = inp
@@ -727,7 +761,7 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 	steps := normalizeToMap(raw["steps"])
 	for id, v := range steps {
 		if m, ok := v.(map[string]any); ok {
-			stepResult, err := p.parseStep(m, id)
+			stepResult, err := p.parseStep(m, id, localDefs)
 			if err != nil {
 				return result, fmt.Errorf("step %q: %w", id, err)
 			}
@@ -859,8 +893,10 @@ type stepParseResult struct {
 	InlineWorkflow       *cwl.GraphDocument   // non-nil if step has inline Workflow
 }
 
-// parseStep parses a single CWL workflow step from a raw map.
-func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, error) {
+// parseStep parses a single CWL workflow step from a raw map. defs carries
+// the enclosing workflow's (already-merged) SchemaDefRequirement types,
+// propagated to inline tools/expression tools/sub-workflows.
+func (p *Parser) parseStep(raw map[string]any, stepID string, defs *schemaDefs) (stepParseResult, error) {
 	result := stepParseResult{}
 
 	// Normalize output IDs (packed format uses "#main/rev/output" -> "output")
@@ -899,7 +935,7 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 		switch class {
 		case "ExpressionTool":
 			// Parse as ExpressionTool.
-			exprTool, err := p.parseExpressionTool(runVal)
+			exprTool, err := p.parseExpressionTool(runVal, defs)
 			if err != nil {
 				return result, fmt.Errorf("parse inline expression tool: %w", err)
 			}
@@ -913,7 +949,7 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 
 		case "Workflow":
 			// Parse as embedded Workflow.
-			subGraph, err := p.parseBareWorkflow(runVal, "")
+			subGraph, err := p.parseBareWorkflow(runVal, "", defs)
 			if err != nil {
 				return result, fmt.Errorf("parse inline workflow: %w", err)
 			}
@@ -927,7 +963,7 @@ func (p *Parser) parseStep(raw map[string]any, stepID string) (stepParseResult, 
 
 		default:
 			// Parse as CommandLineTool (default).
-			tool, err := p.parseTool(runVal)
+			tool, err := p.parseTool(runVal, defs, false)
 			if err != nil {
 				return result, fmt.Errorf("parse inline tool: %w", err)
 			}
@@ -1039,14 +1075,24 @@ func normalizeSourceRefs(source any) []string {
 }
 
 // ParseToolFromMap parses a CWL CommandLineTool from a raw map[string]any.
-// This is the exported entry point used by executor/worker paths to parse
-// task.Tool maps into proper CommandLineTool structs.
+// This is the exported entry point used by executor/worker paths to
+// re-parse a task.Tool map (a previously-parsed cwl.CommandLineTool that was
+// JSON-marshalled into the task and is now being read back). In this path,
+// TypeSchema is taken verbatim from the "typeSchema" key of each input (or
+// record field) when present, and stays nil otherwise — it is NEVER
+// re-derived from the already-flattened "type" string, since that would
+// lose information (e.g. [File, File[]] flattened to "File?").
 func (p *Parser) ParseToolFromMap(raw map[string]any) (*cwl.CommandLineTool, error) {
-	return p.parseTool(raw)
+	return p.parseTool(raw, nil, true)
 }
 
 // parseTool parses a single CWL CommandLineTool from a raw map.
-func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
+// defs carries SchemaDefRequirement types collected from an enclosing
+// document; merged with this tool's own requirements. fromTaskMap
+// distinguishes a source-CWL parse (false: TypeSchema computed via
+// normalizeType) from a re-parse of a JSON-serialized task.Tool map (true:
+// TypeSchema read back verbatim from the "typeSchema" key, defs unused).
+func (p *Parser) parseTool(raw map[string]any, defs *schemaDefs, fromTaskMap bool) (*cwl.CommandLineTool, error) {
 	tool := &cwl.CommandLineTool{
 		ID:           stringField(raw, "id"),
 		Class:        stringField(raw, "class"),
@@ -1090,14 +1136,18 @@ func (p *Parser) parseTool(raw map[string]any) (*cwl.CommandLineTool, error) {
 	tool.TemporaryFailCodes = intSlice(raw, "temporaryFailCodes")
 	tool.PermanentFailCodes = intSlice(raw, "permanentFailCodes")
 
+	// Local (this tool's own) SchemaDefRequirement entries win over
+	// inherited (parent-document) ones (#273 review #6).
+	localDefs := collectSchemaDefsFromRequirements(tool.Requirements).merge(defs)
+
 	// Parse tool inputs: supports both array-style and map-style.
 	inputs := normalizeToMap(raw["inputs"])
 	for id, v := range inputs {
 		switch val := v.(type) {
 		case string:
-			tool.Inputs[id] = cwl.ToolInputParam{Type: val}
+			tool.Inputs[id] = cwl.ToolInputParam{Type: val, TypeSchema: normalizeType(val, localDefs, nil)}
 		case map[string]any:
-			tool.Inputs[id] = parseToolInput(val)
+			tool.Inputs[id] = parseToolInput(val, localDefs, fromTaskMap)
 		}
 	}
 
@@ -1157,7 +1207,12 @@ func validateToolVersion(tool *cwl.CommandLineTool) error {
 }
 
 // parseExpressionTool parses a CWL ExpressionTool from a raw map.
-func (p *Parser) parseExpressionTool(raw map[string]any) (*cwl.ExpressionTool, error) {
+// defs carries SchemaDefRequirement types collected from an enclosing
+// document; merged with this tool's own requirements. ExpressionTool has no
+// task-map re-parse path of its own (the scheduler/worker unmarshal straight
+// into cwl.ExpressionTool via encoding/json, which the TypeSchema json tag
+// already covers), so this always computes TypeSchema via normalizeType.
+func (p *Parser) parseExpressionTool(raw map[string]any, defs *schemaDefs) (*cwl.ExpressionTool, error) {
 	tool := &cwl.ExpressionTool{
 		ID:           stringField(raw, "id"),
 		Class:        stringField(raw, "class"),
@@ -1171,14 +1226,18 @@ func (p *Parser) parseExpressionTool(raw map[string]any) (*cwl.ExpressionTool, e
 		Outputs:      make(map[string]cwl.ExpressionToolOutputParam),
 	}
 
+	// Local (this tool's own) SchemaDefRequirement entries win over
+	// inherited (parent-document) ones (#273 review #6).
+	localDefs := collectSchemaDefsFromRequirements(tool.Requirements).merge(defs)
+
 	// Parse tool inputs: supports both array-style and map-style.
 	inputs := normalizeToMap(raw["inputs"])
 	for id, v := range inputs {
 		switch val := v.(type) {
 		case string:
-			tool.Inputs[id] = cwl.ToolInputParam{Type: val}
+			tool.Inputs[id] = cwl.ToolInputParam{Type: val, TypeSchema: normalizeType(val, localDefs, nil)}
 		case map[string]any:
-			tool.Inputs[id] = parseToolInput(val)
+			tool.Inputs[id] = parseToolInput(val, localDefs, false)
 		}
 	}
 
@@ -1202,7 +1261,12 @@ func (p *Parser) parseExpressionTool(raw map[string]any) (*cwl.ExpressionTool, e
 }
 
 // parseToolInput parses a single tool input parameter from a raw map.
-func parseToolInput(val map[string]any) cwl.ToolInputParam {
+// defs is used to inline named SchemaDefRequirement types when computing
+// TypeSchema. fromTaskMap distinguishes a source-CWL parse (TypeSchema
+// computed via normalizeType) from a re-parse of a JSON-serialized
+// task.Tool map (TypeSchema read back verbatim from val["typeSchema"], nil
+// if absent — never derived from the already-flattened "type" string).
+func parseToolInput(val map[string]any, defs *schemaDefs, fromTaskMap bool) cwl.ToolInputParam {
 	typeStr := stringField(val, "type")
 	if typeStr == "" {
 		// Complex type (record array, null union, etc.) — serialize to string tag.
@@ -1218,6 +1282,14 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 		Streamable:   boolField(val, "streamable"),
 		LoadContents: boolField(val, "loadContents"),
 		LoadListing:  stringField(val, "loadListing"),
+	}
+
+	if fromTaskMap {
+		if ts, ok := val["typeSchema"]; ok {
+			inp.TypeSchema = ts
+		}
+	} else {
+		inp.TypeSchema = normalizeType(val["type"], defs, nil)
 	}
 
 	// Parse inputBinding.
@@ -1251,7 +1323,7 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 		// Parse record field definitions.
 		// Example: type: { type: record, fields: [{name: a, type: int, inputBinding: {prefix: -a}}] }
 		if typeMap["type"] == "record" {
-			inp.RecordFields = parseRecordFields(typeMap["fields"])
+			inp.RecordFields = parseRecordFields(typeMap["fields"], defs, fromTaskMap)
 		}
 	}
 
@@ -1265,7 +1337,7 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 	}
 	if len(inp.RecordFields) == 0 {
 		if rf := val["recordFields"]; rf != nil {
-			inp.RecordFields = parseRecordFields(rf)
+			inp.RecordFields = parseRecordFields(rf, defs, fromTaskMap)
 		}
 	}
 	if len(inp.ArrayItemTypes) == 0 {
@@ -1438,8 +1510,9 @@ func parseInputBinding(ib map[string]any) *cwl.InputBinding {
 }
 
 // parseRecordFields parses record field definitions from a CWL type.
-// Fields can be an array or map of field definitions.
-func parseRecordFields(fields any) []cwl.RecordField {
+// Fields can be an array or map of field definitions. defs/fromTaskMap are
+// forwarded to parseRecordField for TypeSchema (see parseToolInput).
+func parseRecordFields(fields any, defs *schemaDefs, fromTaskMap bool) []cwl.RecordField {
 	if fields == nil {
 		return nil
 	}
@@ -1451,14 +1524,14 @@ func parseRecordFields(fields any) []cwl.RecordField {
 		// Array of field definitions.
 		for _, item := range f {
 			if fieldMap, ok := item.(map[string]any); ok {
-				result = append(result, parseRecordField(fieldMap))
+				result = append(result, parseRecordField(fieldMap, defs, fromTaskMap))
 			}
 		}
 	case map[string]any:
 		// Map of field name -> field definition.
 		for name, val := range f {
 			if fieldMap, ok := val.(map[string]any); ok {
-				field := parseRecordField(fieldMap)
+				field := parseRecordField(fieldMap, defs, fromTaskMap)
 				field.Name = name
 				result = append(result, field)
 			}
@@ -1468,13 +1541,24 @@ func parseRecordFields(fields any) []cwl.RecordField {
 	return result
 }
 
-// parseRecordField parses a single record field definition.
-func parseRecordField(m map[string]any) cwl.RecordField {
+// parseRecordField parses a single record field definition. fromTaskMap
+// distinguishes a source-CWL parse (TypeSchema computed via normalizeType)
+// from a re-parse of a JSON-serialized task.Tool map (TypeSchema read back
+// verbatim from m["typeSchema"], nil if absent).
+func parseRecordField(m map[string]any, defs *schemaDefs, fromTaskMap bool) cwl.RecordField {
 	field := cwl.RecordField{
 		Name:  stringField(m, "name"),
 		Type:  serializeCWLType(m["type"]),
 		Doc:   stringField(m, "doc"),
 		Label: stringField(m, "label"),
+	}
+
+	if fromTaskMap {
+		if ts, ok := m["typeSchema"]; ok {
+			field.TypeSchema = ts
+		}
+	} else {
+		field.TypeSchema = normalizeType(m["type"], defs, nil)
 	}
 
 	// Parse inputBinding for this field.
@@ -1972,6 +2056,15 @@ func cwltoolSecretsKeys(namespaces map[string]string) []string {
 		}
 	}
 	return keys
+}
+
+// ExtractSecretInputs is the exported form of extractSecretInputs, for
+// callers outside this package that already hold a parsed
+// hints/requirements map and don't go through model.Workflow.SecretInputs
+// (e.g. internal/cwlrunner, which validates top-level job inputs against a
+// pkg/cwl.Workflow rather than a persisted model.Workflow) (#273 review #7).
+func ExtractSecretInputs(hints, requirements map[string]any, namespaces map[string]string) []string {
+	return extractSecretInputs(hints, requirements, namespaces)
 }
 
 // extractSecretInputs looks for a top-level cwltool:Secrets hint or

@@ -76,6 +76,15 @@ func ResolveInputs(
 					return nil, fmt.Errorf("input %s: %w", inp.ID, err)
 				}
 				v = picked
+			} else if inp.LinkMerge != "" {
+				// An explicit linkMerge applies even to a single source
+				// (CWL v1.2 WorkflowStepInput; cwltool applies linkMerge
+				// whenever it is set): merge_nested wraps the value in a
+				// one-element list, merge_flattened flattens it. Without
+				// this, `source: [x]` + `linkMerge: merge_nested` handed a
+				// File to a File[] input (conformance count-lines19-wf,
+				// exposed by input type validation, #273).
+				v = cwloutput.ApplyLinkMerge([]any{v}, inp.LinkMerge)
 			}
 			value = v
 		} else if len(inp.Sources) > 1 {

@@ -18,6 +18,11 @@ const (
 	// evaluated at all, as distinct from a token that was evaluated and
 	// rejected (ErrUnauthorized).
 	ErrUnavailable ErrorCode = "UNAVAILABLE"
+	// ErrPayloadTooLarge marks a request body that was refused for
+	// exceeding a size cap (http.MaxBytesReader) before it could even be
+	// decoded, as distinct from a body that decoded but failed validation
+	// (ErrValidation).
+	ErrPayloadTooLarge ErrorCode = "PAYLOAD_TOO_LARGE"
 )
 
 // APIError is a structured error returned by the GoWe API.

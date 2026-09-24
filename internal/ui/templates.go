@@ -220,20 +220,13 @@ var templateFuncs = template.FuncMap{
 		}
 		return result
 	},
-	"isFileType": func(t string) bool {
-		// Check if CWL type is a File type (including optional File?)
-		t = strings.TrimSuffix(t, "?")
-		return t == "File" || strings.HasPrefix(t, "File[")
-	},
-	"isDirectoryType": func(t string) bool {
-		t = strings.TrimSuffix(t, "?")
-		return t == "Directory"
-	},
-	"isArrayType": func(t string) bool {
-		// Check if CWL type is an array type
-		t = strings.TrimSuffix(t, "?")
-		return strings.HasSuffix(t, "[]") || strings.HasPrefix(t, "File[]")
-	},
+	// isFileType/isDirectoryType/isArrayType are shared with the submission
+	// form's value-building code (internal/ui/inputkind.go, #273) so the
+	// widget rendered here and the value built from its POSTed field always
+	// agree on the input's kind.
+	"isFileType":      isFileType,
+	"isDirectoryType": isDirectoryType,
+	"isArrayType":     isArrayType,
 	"hasOptionalInputs": func(inputs []model.WorkflowInput) bool {
 		for _, inp := range inputs {
 			if !inp.Required {
@@ -1932,6 +1925,14 @@ var templates = map[string]string{
             </div>
         </div>
     </div>
+
+    <!-- Non-blocking input validation notice (#273, warn mode) -->
+    {{if .Warning}}
+    <div class="mb-4 rounded-md bg-yellow-50 border border-yellow-200 p-4">
+        <div class="text-sm font-medium text-yellow-800">Input validation warning</div>
+        <div class="text-sm text-yellow-700">{{.Warning}}</div>
+    </div>
+    {{end}}
 
     <!-- Stage Pills Progress Bar -->
     {{if gt (len .Submission.Tasks) 0}}

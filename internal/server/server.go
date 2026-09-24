@@ -18,6 +18,7 @@ import (
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/ui"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -52,6 +53,7 @@ type Server struct {
 	workflowNames         *workflowNameCache           // LRU backing workflowNameFor, the worker-report path's metric label lookup
 	basePath              string                       // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
 	secretsRetention      model.SecretsRetentionPolicy // default secrets_retention applied to a submission that doesn't specify one (see WithSecretsRetention); zero value is SecretsRetentionKeep
+	inputValidation       validate.Mode                // --input-validation mode (#273); empty means warn (see validate.Mode.Effective)
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -216,6 +218,16 @@ func WithSecretsRetention(policy model.SecretsRetentionPolicy) Option {
 	}
 }
 
+// WithInputValidation sets the server's --input-validation mode (#273):
+// warn, enforce, or off (see validate.Mode). Not setting it (the zero value)
+// means warn. Threaded into handleCreateSubmission (validate.SubmissionInputs)
+// and the web UI's Config.InputValidation.
+func WithInputValidation(mode validate.Mode) Option {
+	return func(s *Server) {
+		s.inputValidation = mode
+	}
+}
+
 // WithAuthDenylist sets a local, immediate-effect denylist of usernames and
 // provider token IDs. Requests from a denylisted user or token are
 // rejected after identity is established, whether or not the token
@@ -252,6 +264,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	// terminated in-process, when the operator opts in explicitly, or (behind a
 	// trusted proxy) per-request based on X-Forwarded-Proto.
 	s.ui = ui.New(st, logger, ui.Config{
+		InputValidation:     s.inputValidation,
 		SecureCookies:       cfg.SecureCookies || cfg.TLSEnabled(),
 		TrustForwardedProto: cfg.BehindProxy,
 		WorkspaceURL:        s.workspaceURL,

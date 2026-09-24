@@ -187,6 +187,12 @@ type RecordField struct {
 
 	// Label is a human-readable label.
 	Label string `json:"label,omitempty"`
+
+	// TypeSchema is the canonical, JSON-safe normalized form of this field's
+	// raw CWL type (shorthand-expanded, named types inlined via
+	// SchemaDefRequirement). Populated by the parser from real CWL source;
+	// nil means "do not validate" (see internal/parser/typeschema.go).
+	TypeSchema any `json:"typeSchema,omitempty"`
 }
 
 // OutputRecordField represents a field in a CWL output record type.
