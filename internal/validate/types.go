@@ -439,6 +439,23 @@ func validateUnion(value any, members []any, path string, depth int, c *collecto
 			return
 		}
 	}
+	// Optional type (["null", T]): a non-null value can only match T, so
+	// validate against T directly to keep its detailed error (e.g. the
+	// allowed enum symbols for an optional enum) instead of a generic
+	// "one of [null, enum]".
+	if value != nil {
+		var nonNull []any
+		for _, m := range members {
+			if str, ok := m.(string); ok && str == "null" {
+				continue
+			}
+			nonNull = append(nonNull, m)
+		}
+		if len(nonNull) == 1 {
+			validateValue(value, nonNull[0], path, depth, c)
+			return
+		}
+	}
 	for _, m := range members {
 		if schemaValidatesAt(value, m, depth, c.maxDepth) {
 			return
@@ -495,7 +512,8 @@ func describeSchema(schema any) string {
 		case "record":
 			return "record"
 		case "enum":
-			return "enum"
+			symbols, _ := s["symbols"].([]any)
+			return "enum{" + symbolList(symbols) + "}"
 		case "$ref":
 			return "ref"
 		default:

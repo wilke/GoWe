@@ -321,3 +321,38 @@ func TestSubmissionInputsStub(t *testing.T) {
 		t.Fatalf("expected nil errors from stub, got %+v", errs)
 	}
 }
+
+func TestOptionalEnumKeepsSymbolsInError(t *testing.T) {
+	schema := []any{"null", map[string]any{"type": "enum", "symbols": []any{"#chunk/fixed", "#chunk/semantic"}}}
+	tests := []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{"null ok", nil, true},
+		{"valid symbol", "semantic", true},
+		{"bad symbol", "semantic_pooled_typo", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := ValidateValue(tt.value, schema, "", Options{})
+			if tt.valid {
+				if len(errs) != 0 {
+					t.Fatalf("want valid, got %v", errs)
+				}
+				return
+			}
+			if len(errs) != 1 || !strings.Contains(errs[0].Message, "fixed, semantic") {
+				t.Fatalf("want one error listing the symbols, got %v", errs)
+			}
+		})
+	}
+}
+
+func TestMultiMemberUnionErrorDescribesEnumSymbols(t *testing.T) {
+	schema := []any{"int", map[string]any{"type": "enum", "symbols": []any{"a", "b"}}}
+	errs := ValidateValue("c", schema, "", Options{})
+	if len(errs) != 1 || !strings.Contains(errs[0].Message, "enum{a, b}") {
+		t.Fatalf("want union error naming enum symbols, got %v", errs)
+	}
+}
