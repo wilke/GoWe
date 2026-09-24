@@ -19,9 +19,11 @@ import (
 //   - File/Directory text box -> {"class": "File"|"Directory", "location":
 //     wslocation.Resolve(val)}, so a typed workspace-form path becomes a
 //     ws:// location exactly like the CLI's --workspace-upload path (#273).
-//   - array textarea -> a JSON array when the trimmed value starts with
-//     '[', otherwise one value per non-empty line; each item is converted
-//     per the array's item type when the UI knows it.
+//   - array textarea (including "File[]"/"File[]?"/"Directory[]") -> a JSON
+//     array when the trimmed value starts with '[', otherwise one value per
+//     non-empty line; each item is converted per the array's item type, so
+//     a File[]/Directory[] input builds one {class, location} object per
+//     non-empty item (#273).
 //   - everything else -> convertScalarInput.
 func convertFormInput(val, cwlType string) any {
 	switch {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -158,6 +159,14 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		SecretsRetention  string            `json:"secrets_retention"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			respondError(w, reqID, http.StatusRequestEntityTooLarge, &model.APIError{
+				Code:    model.ErrPayloadTooLarge,
+				Message: fmt.Sprintf("request body exceeds the %d byte limit", maxSubmissionBodyBytes),
+			})
+			return
+		}
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
 			Code:    model.ErrValidation,
 			Message: "Invalid JSON body: " + err.Error(),

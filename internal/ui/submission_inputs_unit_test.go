@@ -43,6 +43,17 @@ func TestConvertFormInput(t *testing.T) {
 		{"string passthrough", "hello", "string", "hello"},
 		{"array of int, JSON form", "[1,2,3]", "int[]", []any{float64(1), float64(2), float64(3)}},
 		{"array of int, line form", "1\n2\n3", "int[]", []any{1, 2, 3}},
+		{"file array, line form", "/awilke@bvbrc/home/a.txt\n/awilke@bvbrc/home/b.txt", "File[]", []any{
+			map[string]any{"class": "File", "location": "ws:///awilke@bvbrc/home/a.txt"},
+			map[string]any{"class": "File", "location": "ws:///awilke@bvbrc/home/b.txt"},
+		}},
+		{"file array, optional type", "/awilke@bvbrc/home/a.txt", "File[]?", []any{
+			map[string]any{"class": "File", "location": "ws:///awilke@bvbrc/home/a.txt"},
+		}},
+		{"directory array, line form", "/awilke@bvbrc/home/a\n/awilke@bvbrc/home/b", "Directory[]", []any{
+			map[string]any{"class": "Directory", "location": "ws:///awilke@bvbrc/home/a"},
+			map[string]any{"class": "Directory", "location": "ws:///awilke@bvbrc/home/b"},
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,7 +126,8 @@ func TestInputKindClassification(t *testing.T) {
 	}{
 		{"File", true, false, false},
 		{"File?", true, false, false},
-		{"File[]", true, false, true}, // isFileType wins precedence over isArrayType — see inputkind.go
+		{"File[]", false, false, true}, // array of File — see inputkind.go and #273
+		{"File[]?", false, false, true},
 		{"Directory", false, true, false},
 		{"Directory?", false, true, false},
 		{"Directory[]", false, false, true},

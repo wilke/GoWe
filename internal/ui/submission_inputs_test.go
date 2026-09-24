@@ -89,7 +89,7 @@ func postSubmissionCreate(t *testing.T, u *UI, sess *model.Session, form url.Val
 }
 
 // locationSubmissionID extracts the "sub_..." id from a
-// "/submissions/sub_xxx" or "/submissions/sub_xxx?warning=..." redirect
+// "/submissions/sub_xxx" or "/submissions/sub_xxx?validation=warn" redirect
 // Location header.
 func locationSubmissionID(t *testing.T, location string) string {
 	t.Helper()
@@ -244,8 +244,11 @@ func TestHandleSubmissionCreatePost_Warn_CreatesWithNotice(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
 	}
 	loc := rec.Header().Get("Location")
-	if !strings.Contains(loc, "warning=") {
-		t.Fatalf("Location = %q, want a ?warning= query param", loc)
+	if !strings.Contains(loc, "validation=warn") {
+		t.Fatalf("Location = %q, want a ?validation=warn query param", loc)
+	}
+	if strings.Contains(loc, "bogus_symbol") || strings.Contains(loc, "warning=") {
+		t.Fatalf("Location = %q, want a boolean flag only, never the message text", loc)
 	}
 	id := locationSubmissionID(t, loc)
 
@@ -294,8 +297,8 @@ func TestHandleSubmissionCreatePost_Off_SkipsValidation(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
 	}
 	loc := rec.Header().Get("Location")
-	if strings.Contains(loc, "warning=") {
-		t.Errorf("Location = %q, want no ?warning= param when validation is off", loc)
+	if strings.Contains(loc, "validation=warn") {
+		t.Errorf("Location = %q, want no ?validation=warn param when validation is off", loc)
 	}
 	id := locationSubmissionID(t, loc)
 	sub, err := st.GetSubmission(context.Background(), id)
@@ -304,6 +307,78 @@ func TestHandleSubmissionCreatePost_Off_SkipsValidation(t *testing.T) {
 	}
 	if sub.Inputs["chunk_method"] != "bogus_symbol" {
 		t.Errorf("chunk_method = %#v, want the raw submitted value", sub.Inputs["chunk_method"])
+	}
+}
+
+// TestHandleSubmissionDetail_WarningSpoofingBlocked is the #273 review-#7
+// regression test: the detail page must never render arbitrary text from a
+// query parameter. It (1) confirms a legacy/attacker-supplied ?warning=<text>
+// param is never reflected into the page, (2) confirms ?validation=warn on a
+// submission whose stored inputs are actually valid produces no warning
+// banner (the flag alone cannot fabricate one), and (3) confirms
+// ?validation=warn on a submission whose stored inputs really are invalid
+// shows the genuine, server-recomputed warning.
+func TestHandleSubmissionDetail_WarningSpoofingBlocked(t *testing.T) {
+	st := setupTestStore(t)
+	defer st.Close()
+	u := New(st, slog.Default(), Config{InputValidation: validate.ModeWarn})
+	wf := createSubmissionInputsTestWorkflow(t, st)
+	sess := &model.Session{ID: "s1", Username: "tester", Role: "user"}
+
+	validInputs := map[string]any{
+		"reads":        map[string]any{"class": "File", "location": "ws:///t/reads.fq"},
+		"outdir":       map[string]any{"class": "Directory", "location": "ws:///t/out"},
+		"items":        []any{1, 2, 3},
+		"counts":       []any{1, 2, 3},
+		"long_val":     9999999999,
+		"chunk_method": "fixed",
+	}
+	invalidInputs := map[string]any{
+		"reads":        map[string]any{"class": "File", "location": "ws:///t/reads.fq"},
+		"outdir":       map[string]any{"class": "Directory", "location": "ws:///t/out"},
+		"items":        []any{1, 2, 3},
+		"counts":       []any{1, 2, 3},
+		"long_val":     9999999999,
+		"chunk_method": "bogus_symbol",
+	}
+
+	now := time.Now().UTC()
+	validSub := &model.Submission{ID: "sub_valid", WorkflowID: wf.ID, WorkflowName: wf.Name, State: model.SubmissionStatePending, Inputs: validInputs, Outputs: map[string]any{}, CreatedAt: now, SubmittedBy: sess.Username}
+	invalidSub := &model.Submission{ID: "sub_invalid", WorkflowID: wf.ID, WorkflowName: wf.Name, State: model.SubmissionStatePending, Inputs: invalidInputs, Outputs: map[string]any{}, CreatedAt: now, SubmittedBy: sess.Username}
+	if err := st.CreateSubmission(context.Background(), validSub); err != nil {
+		t.Fatalf("create valid submission: %v", err)
+	}
+	if err := st.CreateSubmission(context.Background(), invalidSub); err != nil {
+		t.Fatalf("create invalid submission: %v", err)
+	}
+
+	getDetail := func(id, query string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/submissions/"+id+query, nil)
+		req = withSession(req, sess)
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		u.HandleSubmissionDetail(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("submission detail status = %d, body: %s", rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	const attackerText = "PWNED-BY-QUERY-PARAM"
+	body := getDetail("sub_valid", "?warning="+url.QueryEscape(attackerText))
+	if strings.Contains(body, attackerText) {
+		t.Errorf("legacy ?warning= param was reflected into the page:\n%s", body)
+	}
+
+	body = getDetail("sub_valid", "?validation=warn")
+	if strings.Contains(body, "Input validation warning") {
+		t.Errorf("?validation=warn on a submission with valid inputs fabricated a warning:\n%s", body)
+	}
+
+	body = getDetail("sub_invalid", "?validation=warn")
+	if !strings.Contains(body, "Input validation warning") || !strings.Contains(body, "chunk_method") {
+		t.Errorf("?validation=warn on a submission with invalid inputs should show the real, recomputed warning:\n%s", body)
 	}
 }
 

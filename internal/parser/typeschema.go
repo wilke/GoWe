@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -63,7 +64,11 @@ func (d *schemaDefs) add(def map[string]any) {
 }
 
 // merge returns a schemaDefs containing the entries of d and other. Entries
-// already present in d are not overwritten by other (see add).
+// already present in d are not overwritten by other (see add) - d takes
+// precedence. Callers combining a process's own SchemaDefRequirement with
+// one inherited from an enclosing document call it as
+// local.merge(parent) so the process's own definitions win (#273 review
+// #6): d must be the local entries and other the inherited ones.
 func (d *schemaDefs) merge(other *schemaDefs) *schemaDefs {
 	if other == nil || len(other.byName) == 0 {
 		if d == nil {
@@ -82,6 +87,64 @@ func (d *schemaDefs) merge(other *schemaDefs) *schemaDefs {
 		merged.add(def)
 	}
 	return merged
+}
+
+// mergeGraphEntry combines d with an additional $graph entry's
+// SchemaDefRequirement types. Unlike merge (used for local-over-parent
+// precedence), $graph siblings have no precedence over each other: an exact
+// name declared identically by two entries is kept, but a name declared
+// DIFFERENTLY by two entries is ambiguous and is dropped from the result
+// entirely, so lookupWithName fails for it - normalizeType then leaves the
+// reference unresolved, and the validator always treats an unresolved
+// reference as valid (never a rejection).
+func (d *schemaDefs) mergeGraphEntry(entry *schemaDefs) *schemaDefs {
+	if entry == nil || len(entry.byName) == 0 {
+		if d == nil {
+			return newSchemaDefs()
+		}
+		return d
+	}
+	if d == nil {
+		d = newSchemaDefs()
+	}
+	merged := newSchemaDefs()
+	conflicted := make(map[string]bool)
+	for name, def := range d.byName {
+		merged.add(def)
+		if other, ok := entry.byName[name]; ok && !reflect.DeepEqual(def, other) {
+			conflicted[name] = true
+		}
+	}
+	for name, def := range entry.byName {
+		if _, ok := d.byName[name]; !ok {
+			merged.add(def)
+		}
+	}
+	for name := range conflicted {
+		merged.remove(name)
+	}
+	return merged
+}
+
+// remove deletes name (and its short-name index entry) from d.
+func (d *schemaDefs) remove(name string) {
+	if d == nil {
+		return
+	}
+	delete(d.byName, name)
+	short := shortName(name)
+	names := d.byShort[short]
+	for i, n := range names {
+		if n == name {
+			names = append(names[:i], names[i+1:]...)
+			break
+		}
+	}
+	if len(names) == 0 {
+		delete(d.byShort, short)
+	} else {
+		d.byShort[short] = names
+	}
 }
 
 // lookupWithName resolves a type reference string to its raw definition and
@@ -133,10 +196,12 @@ func collectSchemaDefsFromRequirements(reqs map[string]any) *schemaDefs {
 }
 
 // defsFromRawRequirements normalizes raw["requirements"] (either CWL form)
-// and collects its SchemaDefRequirement types, merged with parent.
+// and collects its SchemaDefRequirement types, merged with parent - the
+// process's own (local) entries take precedence over inherited (parent)
+// ones (#273 review #6).
 func defsFromRawRequirements(raw map[string]any, parent *schemaDefs) *schemaDefs {
 	local := collectSchemaDefsFromRequirements(normalizeHintsToMap(raw["requirements"]))
-	return parent.merge(local)
+	return local.merge(parent)
 }
 
 // normalizeType converts a raw CWL type expression (as decoded from

@@ -2666,9 +2666,18 @@ func (r *Runner) validateTopLevelInputs(wf *cwl.Workflow, inputs map[string]any)
 	if mode == validate.ModeOff {
 		return nil
 	}
+	// Inputs named by a cwltool:Secrets hint/requirement must never have
+	// their value echoed into a FieldError message or the log line below
+	// (#273 review #7) - mirrors what SubmissionInputs does server-side via
+	// model.Workflow.SecretInputs, which isn't available here (wf is the
+	// parsed pkg/cwl.Workflow, not the persisted model.Workflow).
+	secret := make(map[string]bool)
+	for _, id := range parser.ExtractSecretInputs(wf.Hints, wf.Requirements, r.namespaces) {
+		secret[id] = true
+	}
 	params := make(map[string]validate.ParamSpec, len(wf.Inputs))
 	for id, in := range wf.Inputs {
-		params[id] = validate.ParamSpec{TypeSchema: in.TypeSchema, Default: in.Default, HasDefault: in.Default != nil}
+		params[id] = validate.ParamSpec{TypeSchema: in.TypeSchema, Default: in.Default, HasDefault: in.Default != nil, Secret: secret[id]}
 	}
 	errs := validate.ValidateInputs(params, inputs, validate.Options{})
 	if len(errs) == 0 {

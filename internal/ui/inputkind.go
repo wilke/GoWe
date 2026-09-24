@@ -3,15 +3,14 @@ package ui
 import "strings"
 
 // isFileType reports whether a workflow input's flattened CWL type string
-// (model.WorkflowInput.Type, e.g. "File", "File?") denotes a File input.
-// It also matches "File[]" — an existing quirk of the submission form: the
-// input_field template checks isFileType before isArrayType, so a
-// File-array input renders a single File picker rather than an array
-// textarea. convertFormInput mirrors that same precedence so the value it
-// builds matches the widget the form actually showed.
+// (model.WorkflowInput.Type, e.g. "File", "File?") denotes a single
+// (non-array) File input. "File[]"/"File[]?" are array types — see
+// isArrayType — and are handled by convertArrayInput/the array textarea
+// widget, not this one (#273: File[]/Directory[] must build a JSON array of
+// File/Directory objects, not a single one).
 func isFileType(t string) bool {
 	t = strings.TrimSuffix(t, "?")
-	return t == "File" || strings.HasPrefix(t, "File[")
+	return t == "File"
 }
 
 // isDirectoryType reports whether t denotes a (non-array) Directory input.
@@ -20,12 +19,11 @@ func isDirectoryType(t string) bool {
 	return t == "Directory"
 }
 
-// isArrayType reports whether t denotes an array input (checked after
-// isFileType/isDirectoryType by callers, so "File[]" is claimed by
-// isFileType first — see its comment).
+// isArrayType reports whether t denotes an array input, e.g. "int[]",
+// "File[]", "File[]?".
 func isArrayType(t string) bool {
 	t = strings.TrimSuffix(t, "?")
-	return strings.HasSuffix(t, "[]") || strings.HasPrefix(t, "File[]")
+	return strings.HasSuffix(t, "[]")
 }
 
 // arrayItemType strips the optional "?" and a trailing "[]" from an array

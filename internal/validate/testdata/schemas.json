@@ -707,17 +707,75 @@
       "valid": true
     },
     {
-      "name": "File needs class",
+      "name": "File without class but with location is valid (engine normalizes it)",
       "schema": "File",
       "value": {
         "location": "a.txt"
       },
+      "valid": true
+    },
+    {
+      "name": "File bare non-empty string is valid (engine normalizes it)",
+      "schema": "File",
+      "value": "/user@bvbrc/home/a.txt",
+      "valid": true
+    },
+    {
+      "name": "File map without class, location, path, or contents is invalid",
+      "schema": "File",
+      "value": {
+        "format": "text/plain"
+      },
       "valid": false
     },
     {
-      "name": "File rejects bare string",
+      "name": "File empty string is invalid",
       "schema": "File",
-      "value": "/user@bvbrc/home/a.txt",
+      "value": "",
+      "valid": false
+    },
+    {
+      "name": "File rejects non-string non-map value",
+      "schema": "File",
+      "value": 5,
+      "valid": false
+    },
+    {
+      "name": "File without class but with path is valid (engine normalizes it)",
+      "schema": "File",
+      "value": {
+        "path": "/tmp/a.txt"
+      },
+      "valid": true
+    },
+    {
+      "name": "File without class but with contents is valid (literal file)",
+      "schema": "File",
+      "value": {
+        "contents": "hello"
+      },
+      "valid": true
+    },
+    {
+      "name": "Directory without class but with location is valid (engine normalizes it)",
+      "schema": "Directory",
+      "value": {
+        "location": "ws:///u@bvbrc/home/d"
+      },
+      "valid": true
+    },
+    {
+      "name": "Directory bare non-empty string is valid (engine normalizes it)",
+      "schema": "Directory",
+      "value": "/u@bvbrc/home/d",
+      "valid": true
+    },
+    {
+      "name": "Directory map without class/location/path is invalid (contents does not count)",
+      "schema": "Directory",
+      "value": {
+        "contents": "hello"
+      },
       "valid": false
     },
     {
@@ -833,6 +891,7 @@
       "schema": "int",
       "hasDefault": false,
       "present": false,
+      "checkMissing": true,
       "valid": false
     },
     {
@@ -841,6 +900,7 @@
       "hasDefault": false,
       "present": true,
       "value": null,
+      "checkMissing": true,
       "valid": false
     },
     {
@@ -861,7 +921,15 @@
       ],
       "hasDefault": false,
       "present": false,
+      "checkMissing": true,
       "valid": false
+    },
+    {
+      "name": "missing required not reported by default (CheckMissing=false)",
+      "schema": "int",
+      "hasDefault": false,
+      "present": false,
+      "valid": true
     },
     {
       "name": "nil schema skipped",

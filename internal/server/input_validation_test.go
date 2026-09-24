@@ -10,6 +10,7 @@ import (
 
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/validate"
+	"github.com/me/gowe/pkg/model"
 )
 
 // enumToolCWL is a minimal bare CommandLineTool (ParseGraph wraps it as a
@@ -220,6 +221,45 @@ func TestInputValidation_DryRun(t *testing.T) {
 	}
 }
 
+// TestInputValidation_DryRun_NoDuplicateMissingInputError is the #273
+// review-#2/#6 regression test: a dry run with a required input omitted
+// entirely must report it exactly once - the pre-existing legacy check in
+// buildDryRunReport ("required input X is missing") - not also the new
+// validator's own "required input missing (expected ...)" message
+// (validate.SubmissionInputs is called with the default Options{}, i.e.
+// CheckMissing=false, specifically so it never duplicates that check).
+func TestInputValidation_DryRun_NoDuplicateMissingInputError(t *testing.T) {
+	srv := testServer(WithInputValidation(validate.ModeWarn))
+	wfID := createEnumWorkflow(t, srv)
+
+	body := map[string]any{
+		"workflow_id": wfID,
+		"inputs":      map[string]any{},
+	}
+	bodyJSON, _ := json.Marshal(body)
+	w, env := doPost(t, srv, "/api/v1/submissions/?dry_run=true", string(bodyJSON))
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry-run status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var report map[string]any
+	json.Unmarshal(env.Data, &report)
+
+	errs, _ := report["errors"].([]any)
+	matching := 0
+	for _, e := range errs {
+		em, _ := e.(map[string]any)
+		if em["field"] == "inputs.chunk_method" {
+			matching++
+			if msg, _ := em["message"].(string); strings.Contains(msg, "required input missing (expected") {
+				t.Errorf("message = %q, want the legacy dry-run message only, not the new validator's duplicate", msg)
+			}
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("errors for inputs.chunk_method = %d, want exactly 1 (no duplicate), errors=%v", matching, errs)
+	}
+}
+
 // TestInputValidation_AnonymousSubmission confirms an anonymous submission
 // (no auth header — testServerWithStore enables anonymous access by
 // default) is validated exactly like an authenticated one.
@@ -265,7 +305,8 @@ func TestInputValidation_RawCWLParseFailure(t *testing.T) {
 }
 
 // TestInputValidation_BodyTooLarge: POST /submissions bodies over the 16 MiB
-// cap are refused rather than fully buffered.
+// cap are refused with 413 (not the generic 400 "Invalid JSON body") and a
+// clear message (#273 review #8).
 func TestInputValidation_BodyTooLarge(t *testing.T) {
 	srv := testServer()
 	wfID := createEnumWorkflow(t, srv)
@@ -275,8 +316,17 @@ func TestInputValidation_BodyTooLarge(t *testing.T) {
 		"workflow_id": wfID,
 		"inputs":      map[string]any{"chunk_method": "fixed", "padding": huge},
 	})
-	w, _ := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
-	if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status=%d, want 400 or 413 for an oversized body", w.Code)
+	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d, want 413 for an oversized body, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil {
+		t.Fatal("expected an error envelope")
+	}
+	if env.Error.Code != model.ErrPayloadTooLarge {
+		t.Errorf("error code = %q, want %q", env.Error.Code, model.ErrPayloadTooLarge)
+	}
+	if strings.Contains(env.Error.Message, "Invalid JSON body") {
+		t.Errorf("message = %q, want a dedicated too-large message, not the generic JSON-parse one", env.Error.Message)
 	}
 }

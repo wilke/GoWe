@@ -335,6 +335,176 @@ $graph:
 	})
 }
 
+// TestParser_SchemaDefPrecedence_LocalWinsOverParent is a #273 review-#6
+// regression test: a process's own SchemaDefRequirement entries must win
+// over ones it inherits from an enclosing document. An inline step tool
+// redeclares "Shared" with different symbols than the parent workflow; the
+// tool's own input must resolve to ITS OWN definition, not the parent's.
+func TestParser_SchemaDefPrecedence_LocalWinsOverParent(t *testing.T) {
+	p := testParser()
+	data := []byte(`cwlVersion: v1.2
+class: Workflow
+requirements:
+  - class: SchemaDefRequirement
+    types:
+      - name: Shared
+        type: enum
+        symbols: [a, b]
+inputs: {}
+outputs: {}
+steps:
+  run_tool:
+    run:
+      class: CommandLineTool
+      baseCommand: [echo]
+      requirements:
+        - class: SchemaDefRequirement
+          types:
+            - name: Shared
+              type: enum
+              symbols: [x, y, z]
+      inputs:
+        choice: Shared
+      outputs: {}
+    in: {}
+    out: []
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+	tool, ok := graph.Tools["run_tool_inline"]
+	if !ok {
+		t.Fatalf("inline tool 'run_tool_inline' not found, tools: %v", graph.Tools)
+	}
+	inp := tool.Inputs["choice"]
+	assertTypeSchema(t, "choice", inp.TypeSchema, map[string]any{
+		"type":    "enum",
+		"symbols": []any{"x", "y", "z"},
+	})
+}
+
+// TestParser_SchemaDefInlining_AmbiguousAcrossGraphEntries is a #273
+// review-#6 regression test: in the $graph pre-pass, two SIBLING entries
+// declaring the same exact SchemaDefRequirement name with DIFFERENT
+// definitions makes that name ambiguous - it must stay unresolved (a bare
+// string TypeSchema), never silently resolve to whichever entry happened to
+// be collected first.
+func TestParser_SchemaDefInlining_AmbiguousAcrossGraphEntries(t *testing.T) {
+	p := testParser()
+	data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: main
+    class: Workflow
+    requirements:
+      - class: SchemaDefRequirement
+        types:
+          - name: Shared
+            type: enum
+            symbols: [a, b]
+    inputs: {}
+    outputs: {}
+    steps:
+      run_tool:
+        run: "#tool"
+        in: {}
+        out: []
+  - id: tool
+    class: CommandLineTool
+    baseCommand: [echo]
+    requirements:
+      - class: SchemaDefRequirement
+        types:
+          - name: Shared
+            type: enum
+            symbols: [x, y, z]
+    inputs:
+      choice2: Shared
+    outputs: {}
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+	tool, ok := graph.Tools["tool"]
+	if !ok {
+		t.Fatal("tool 'tool' not found")
+	}
+	inp := tool.Inputs["choice2"]
+	// The tool's own SchemaDefRequirement always wins locally regardless of
+	// the ambiguity above it (#273 review #6, local-over-parent
+	// precedence) - "choice2: Shared" is a direct reference to the tool's
+	// OWN local "Shared", not a lookup through the ambiguous global pool.
+	assertTypeSchema(t, "choice2", inp.TypeSchema, map[string]any{
+		"type":    "enum",
+		"symbols": []any{"x", "y", "z"},
+	})
+}
+
+// TestParser_SchemaDefInlining_AmbiguousGraphNameStaysUnresolved exercises
+// the ambiguity itself directly: a name declared identically by two
+// sibling $graph entries is fine (still resolves), but declared
+// differently, a THIRD entry with no local redefinition of its own that
+// references the name by short name must see it as unresolved (a bare
+// string TypeSchema) - never the arbitrary first-collected definition.
+func TestParser_SchemaDefInlining_AmbiguousGraphNameStaysUnresolved(t *testing.T) {
+	p := testParser()
+	data := []byte(`cwlVersion: v1.2
+$graph:
+  - id: main
+    class: Workflow
+    requirements:
+      - class: SchemaDefRequirement
+        types:
+          - name: Shared
+            type: enum
+            symbols: [a, b]
+    inputs: {}
+    outputs: {}
+    steps:
+      run_tool:
+        run: "#tool"
+        in: {}
+        out: []
+      run_other:
+        run: "#other"
+        in: {}
+        out: []
+  - id: tool
+    class: CommandLineTool
+    baseCommand: [echo]
+    requirements:
+      - class: SchemaDefRequirement
+        types:
+          - name: Shared
+            type: enum
+            symbols: [x, y, z]
+    inputs:
+      choice2: Shared
+    outputs: {}
+  - id: other
+    class: CommandLineTool
+    baseCommand: [echo]
+    inputs:
+      choice3: Shared
+    outputs: {}
+`)
+	graph, err := p.ParseGraph(data)
+	if err != nil {
+		t.Fatalf("ParseGraph: %v", err)
+	}
+	other, ok := graph.Tools["other"]
+	if !ok {
+		t.Fatal("tool 'other' not found")
+	}
+	inp := other.Inputs["choice3"]
+	// "other" has no local SchemaDefRequirement of its own, so it falls
+	// back to the (ambiguous, conflicting) global pool - "Shared" must stay
+	// an unresolved string, never resolve to either "main"'s or "tool"'s
+	// conflicting definition.
+	assertTypeSchema(t, "choice3", inp.TypeSchema, "Shared")
+}
+
 // --- Conformance fixtures ---
 
 func loadConformanceFixture(t *testing.T, rel string) []byte {

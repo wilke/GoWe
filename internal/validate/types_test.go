@@ -22,12 +22,18 @@ type validateCase struct {
 }
 
 type paramCase struct {
-	Name           string `json:"name"`
-	Schema         any    `json:"schema"`
-	HasDefault     bool   `json:"hasDefault"`
-	Present        bool   `json:"present"`
-	Value          any    `json:"value"`
-	Secret         bool   `json:"secret"`
+	Name       string `json:"name"`
+	Schema     any    `json:"schema"`
+	HasDefault bool   `json:"hasDefault"`
+	Present    bool   `json:"present"`
+	Value      any    `json:"value"`
+	Secret     bool   `json:"secret"`
+	// CheckMissing mirrors Options.CheckMissing (#273 review #2): the
+	// fixture's missing/null cases opt into the pre-#273 required/default/
+	// nullable behaviour explicitly; every other case exercises the new
+	// default (false), where a missing/null top-level value is never
+	// reported.
+	CheckMissing   bool   `json:"checkMissing"`
 	Valid          bool   `json:"valid"`
 	ErrContains    string `json:"errContains"`
 	ErrPath        string `json:"errPath"`
@@ -114,7 +120,7 @@ func TestFixtureParams(t *testing.T) {
 			if tc.Present {
 				inputs["value"] = tc.Value
 			}
-			errs := ValidateInputs(params, inputs, Options{})
+			errs := ValidateInputs(params, inputs, Options{CheckMissing: tc.CheckMissing})
 			checkCommon(t, errs, tc.Valid, tc.ErrContains, tc.ErrPath, tc.ErrNotContains)
 		})
 	}
@@ -380,7 +386,12 @@ outputs: []
 		{"valid", wf, nil, map[string]any{"chunk_method": "semantic", "password": "x", "flag": true}, nil, ""},
 		{"bad enum lists symbols", wf, nil, map[string]any{"chunk_method": "semantic_pooled_typo", "password": "x", "flag": true}, []string{"chunk_method"}, ""},
 		{"null uses default", wf, nil, map[string]any{"size": nil, "password": "x", "flag": false}, nil, ""},
-		{"missing required and wrong type", wf, nil, map[string]any{"password": "x", "size": "big"}, []string{"flag", "size"}, ""},
+		// "flag" is missing (required, no default) but not reported: production
+		// callers (like SubmissionInputs, called here with the default
+		// Options{}) leave CheckMissing false, so a missing top-level value is
+		// never reported by this package - see TestSubmissionInputs_MissingRequiredNotReportedByDefault
+		// and TestValidateInputs_CheckMissingDefaultFalse below (#273 review #2).
+		{"missing required and wrong type", wf, nil, map[string]any{"password": "x", "size": "big"}, []string{"size"}, ""},
 		{"secret never echoed", wf, []string{"password"}, map[string]any{"password": 12345678901, "flag": true}, []string{"password"}, "12345678901"},
 		{"bare tool is wrapped", tool, nil, map[string]any{"n": "three"}, []string{"n"}, ""},
 		{"undeclared keys ignored", tool, nil, map[string]any{"n": 3, "cwl:requirements": []any{}}, nil, ""},
@@ -410,6 +421,53 @@ outputs: []
 		errs, err := SubmissionInputs([]byte("::: not yaml :::"), nil, nil, Options{})
 		if err == nil || errs != nil {
 			t.Fatalf("want parse error and no field errors, got errs=%v err=%v", errs, err)
+		}
+	})
+}
+
+// TestValidateInputs_CheckMissingDefaultFalse is the #273 review-#2
+// regression test: Options{} (the zero value, i.e. CheckMissing=false,
+// what every production caller passes) must report nothing for a missing
+// required top-level input - production callers rely on their own,
+// pre-existing required-input check for that and would otherwise get a
+// duplicate error (review #6). Required fields missing from a *supplied*
+// record are unaffected (still reported unconditionally).
+func TestValidateInputs_CheckMissingDefaultFalse(t *testing.T) {
+	params := map[string]ParamSpec{
+		"required_no_default": {TypeSchema: "int"},
+		"required_record": {TypeSchema: map[string]any{
+			"type":   "record",
+			"fields": []any{map[string]any{"name": "a", "type": "string"}},
+		}},
+	}
+
+	t.Run("missing top-level input", func(t *testing.T) {
+		errs := ValidateInputs(params, map[string]any{}, Options{})
+		if len(errs) != 0 {
+			t.Fatalf("want no errors for a missing required input under the default (CheckMissing=false), got %+v", errs)
+		}
+	})
+
+	t.Run("explicit null top-level input", func(t *testing.T) {
+		inputs := map[string]any{"required_no_default": nil}
+		errs := ValidateInputs(params, inputs, Options{})
+		if len(errs) != 0 {
+			t.Fatalf("want no errors for an explicit-null required input under the default (CheckMissing=false), got %+v", errs)
+		}
+	})
+
+	t.Run("but a missing field inside a SUPPLIED record is still reported", func(t *testing.T) {
+		inputs := map[string]any{"required_record": map[string]any{}}
+		errs := ValidateInputs(params, inputs, Options{})
+		if len(errs) != 1 || errs[0].Path != ".a" {
+			t.Fatalf("want exactly one error at path \".a\" for the record's own missing required field, got %+v", errs)
+		}
+	})
+
+	t.Run("CheckMissing=true restores the required check", func(t *testing.T) {
+		errs := ValidateInputs(params, map[string]any{}, Options{CheckMissing: true})
+		if len(errs) != 2 {
+			t.Fatalf("want 2 errors (both missing top-level inputs) with CheckMissing=true, got %+v", errs)
 		}
 	})
 }

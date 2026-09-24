@@ -634,6 +634,25 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		timingReport = nil
 	}
 
+	// Warning surfaces a non-blocking input-validation notice (#273,
+	// validate.ModeWarn) carried through the post-create redirect. The
+	// redirect only carries a boolean ?validation=warn flag (never the
+	// message text - a raw ?warning=<text> param would let anyone render
+	// arbitrary text on the page, #273 review); when present, the warning
+	// is recomputed here, server-side, from the stored submission's own
+	// inputs and the workflow's own CWL/secret list, so it can only ever
+	// show what the validator itself would emit.
+	var warning string
+	if r.URL.Query().Get("validation") == "warn" && workflow != nil {
+		inputs := sub.SubmittedInputs
+		if inputs == nil {
+			inputs = sub.Inputs
+		}
+		if fieldErrs, verr := validate.SubmissionInputs([]byte(workflow.RawCWL), workflow.SecretInputs, inputs, validate.Options{}); verr == nil && len(fieldErrs) > 0 {
+			warning = formatFieldErrors(fieldErrs)
+		}
+	}
+
 	data := map[string]any{
 		"Title":                      fmt.Sprintf("Submission %s - GoWe", sub.ID),
 		"Session":                    sess,
@@ -643,9 +662,7 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		"SubworkflowDescendantTotal": subworkflowDescendantTotal(descendants),
 		"Timing":                     timingReport,
 		"TimingBars":                 buildTimingBars(timingReport),
-		// Warning surfaces a non-blocking input-validation notice (#273,
-		// validate.ModeWarn) carried through the post-create redirect.
-		"Warning": r.URL.Query().Get("warning"),
+		"Warning":                    warning,
 	}
 	ui.render(w, "submissions/detail", data)
 }
@@ -759,6 +776,21 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			validationWarning = msg
+			// Mirror the server's warn-mode accounting (handler_submissions.go):
+			// one gowe_input_validation_failures_total observation per distinct
+			// input, plus a structured log line naming only the fields, never
+			// values.
+			fields := make([]string, 0, len(fieldErrs))
+			seen := make(map[string]bool, len(fieldErrs))
+			for _, fe := range fieldErrs {
+				fields = append(fields, fe.Field)
+				if !seen[fe.Field] {
+					seen[fe.Field] = true
+					ui.metrics.IncInputValidationFailure(wf.Name, fe.Field, string(mode))
+				}
+			}
+			ui.logger.Warn("submission accepted with input validation warnings",
+				"workflow_id", wf.ID, "workflow", wf.Name, "fields", fields)
 		}
 	}
 
@@ -826,7 +858,12 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)
 	dest := "/submissions/" + sub.ID
 	if validationWarning != "" {
-		dest += "?warning=" + url.QueryEscape(validationWarning)
+		// A boolean flag, never the message itself: the detail page below
+		// recomputes the warning server-side from the stored submission and
+		// workflow rather than rendering arbitrary text reflected off the
+		// query string (#273 review - a `?warning=<attacker text>` param
+		// would otherwise be rendered verbatim on the detail page).
+		dest += "?validation=warn"
 	}
 	http.Redirect(w, r, ui.href(dest), http.StatusSeeOther)
 }

@@ -108,7 +108,11 @@ func (p *Parser) parseGraphFromRaw(raw map[string]any) (*cwl.GraphDocument, erro
 	globalDefs := newSchemaDefs()
 	for _, entry := range entries {
 		if m, ok := entry.(map[string]any); ok {
-			globalDefs = globalDefs.merge(collectSchemaDefsFromRequirements(normalizeHintsToMap(m["requirements"])))
+			// $graph siblings have no precedence over each other: an exact
+			// name clash between entries with different definitions makes
+			// that name ambiguous (unresolved), not "first entry wins" —
+			// see mergeGraphEntry (#273 review #6).
+			globalDefs = globalDefs.mergeGraphEntry(collectSchemaDefsFromRequirements(normalizeHintsToMap(m["requirements"])))
 		}
 	}
 
@@ -679,7 +683,9 @@ func (p *Parser) parseWorkflow(raw map[string]any, defs *schemaDefs) (workflowPa
 		Requirements: normalizeHintsToMap(raw["requirements"]),
 	}
 
-	localDefs := defs.merge(collectSchemaDefsFromRequirements(wf.Requirements))
+	// Local (this workflow's own) SchemaDefRequirement entries win over
+	// inherited (parent-document) ones (#273 review #6).
+	localDefs := collectSchemaDefsFromRequirements(wf.Requirements).merge(defs)
 
 	// Parse inputs: supports both array-style and map-style.
 	inputs := normalizeToMap(raw["inputs"])
@@ -1130,7 +1136,9 @@ func (p *Parser) parseTool(raw map[string]any, defs *schemaDefs, fromTaskMap boo
 	tool.TemporaryFailCodes = intSlice(raw, "temporaryFailCodes")
 	tool.PermanentFailCodes = intSlice(raw, "permanentFailCodes")
 
-	localDefs := defs.merge(collectSchemaDefsFromRequirements(tool.Requirements))
+	// Local (this tool's own) SchemaDefRequirement entries win over
+	// inherited (parent-document) ones (#273 review #6).
+	localDefs := collectSchemaDefsFromRequirements(tool.Requirements).merge(defs)
 
 	// Parse tool inputs: supports both array-style and map-style.
 	inputs := normalizeToMap(raw["inputs"])
@@ -1218,7 +1226,9 @@ func (p *Parser) parseExpressionTool(raw map[string]any, defs *schemaDefs) (*cwl
 		Outputs:      make(map[string]cwl.ExpressionToolOutputParam),
 	}
 
-	localDefs := defs.merge(collectSchemaDefsFromRequirements(tool.Requirements))
+	// Local (this tool's own) SchemaDefRequirement entries win over
+	// inherited (parent-document) ones (#273 review #6).
+	localDefs := collectSchemaDefsFromRequirements(tool.Requirements).merge(defs)
 
 	// Parse tool inputs: supports both array-style and map-style.
 	inputs := normalizeToMap(raw["inputs"])
@@ -2046,6 +2056,15 @@ func cwltoolSecretsKeys(namespaces map[string]string) []string {
 		}
 	}
 	return keys
+}
+
+// ExtractSecretInputs is the exported form of extractSecretInputs, for
+// callers outside this package that already hold a parsed
+// hints/requirements map and don't go through model.Workflow.SecretInputs
+// (e.g. internal/cwlrunner, which validates top-level job inputs against a
+// pkg/cwl.Workflow rather than a persisted model.Workflow) (#273 review #7).
+func ExtractSecretInputs(hints, requirements map[string]any, namespaces map[string]string) []string {
+	return extractSecretInputs(hints, requirements, namespaces)
 }
 
 // extractSecretInputs looks for a top-level cwltool:Secrets hint or

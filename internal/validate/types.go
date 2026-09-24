@@ -66,6 +66,16 @@ type Options struct {
 	// validation runs on a worker/executor where values must never be
 	// logged or returned verbatim.
 	ToolLevel bool
+	// CheckMissing, when true, applies the required/default/nullable rules
+	// to a missing or explicit-null top-level parameter value (the
+	// pre-#273 behaviour). When false (the default), a missing or null
+	// top-level value is never reported by this package - production
+	// callers already have their own legacy required-input checks (e.g.
+	// the dry-run report, the scheduler), and duplicating them here just
+	// produces two error messages for the same problem. This only affects
+	// the top-level present/nil check in validateParam: a required field
+	// missing from a *supplied* record is still reported unconditionally.
+	CheckMissing bool
 }
 
 const (
@@ -245,6 +255,9 @@ func validateParam(id string, spec ParamSpec, value any, present bool, opts Opti
 	c := &collector{field: id, maxErrors: opts.MaxErrors, maxDepth: opts.MaxDepth, redact: redact}
 
 	if !present || value == nil {
+		if !opts.CheckMissing {
+			return nil
+		}
 		if spec.HasDefault || schemaAllowsNull(spec.TypeSchema) {
 			return nil
 		}
@@ -361,16 +374,54 @@ func validatePrimitive(value any, name string, path string, c *collector) {
 	}
 }
 
+// validateFileOrDir applies the engine's own leniency for File/Directory
+// (and stdin, which behaves as File) values: the scheduler
+// (normalizeDirectory in internal/scheduler/resolve.go) and the BV-BRC
+// executor (internal/executor/bvbrc.go) both accept a bare non-empty string
+// path and a class-less map carrying a location/path (or, for File,
+// contents), normalizing either into a proper {class, location} object
+// before execution. The validator must never reject what the engine
+// accepts, so it mirrors that leniency here:
+//
+//   - a map whose class equals class: accepted (checked further only by
+//     shape, not by field presence - the engine fills those in);
+//   - a map without class that has a non-empty location, path, or (for
+//     File) contents: accepted, since the engine normalizes it;
+//   - a non-empty string: accepted, since the engine normalizes it;
+//   - anything else (wrong class, a map with none of those keys, an empty
+//     string, or a non-string/non-map value) is rejected.
 func validateFileOrDir(value any, class string, path string, c *collector) {
-	m, ok := value.(map[string]any)
-	if !ok {
-		addTypeError(c, path, fmt.Sprintf("%s (object with class %q)", class, class), value)
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			addTypeError(c, path, fmt.Sprintf("%s (object with class %q, or a non-empty path string)", class, class), value)
+		}
 		return
+	case map[string]any:
+		if cls, hasClass := v["class"]; hasClass {
+			clsStr, _ := cls.(string)
+			if clsStr != class {
+				addTypeError(c, path, fmt.Sprintf("%s (class %q)", class, class), value)
+			}
+			return
+		}
+		if nonEmptyStringField(v, "location") || nonEmptyStringField(v, "path") {
+			return
+		}
+		if class == "File" && nonEmptyStringField(v, "contents") {
+			return
+		}
+		addTypeError(c, path, fmt.Sprintf("%s (object with class %q, location, or path)", class, class), value)
+	default:
+		addTypeError(c, path, fmt.Sprintf("%s (object with class %q, or a non-empty path string)", class, class), value)
 	}
-	cls, _ := m["class"].(string)
-	if cls != class {
-		addTypeError(c, path, fmt.Sprintf("%s (class %q)", class, class), value)
-	}
+}
+
+// nonEmptyStringField reports whether m[key] is a string with non-zero
+// length.
+func nonEmptyStringField(m map[string]any, key string) bool {
+	s, ok := m[key].(string)
+	return ok && s != ""
 }
 
 func validateComposite(value any, m map[string]any, path string, depth int, c *collector) {
