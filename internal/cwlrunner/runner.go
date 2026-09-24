@@ -1769,6 +1769,10 @@ func resolveStepInputs(step cwl.Step, workflowInputs map[string]any, stepOutputs
 					return nil, fmt.Errorf("input %s: %w", inputID, err)
 				}
 				v = picked
+			} else if stepInput.LinkMerge != "" {
+				// Explicit linkMerge applies to a single source too; see
+				// internal/stepinput.ResolveInputs (#273).
+				v = cwloutput.ApplyLinkMerge([]any{v}, stepInput.LinkMerge)
 			}
 			value = v
 		} else if len(stepInput.Sources) > 1 {
