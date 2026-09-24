@@ -74,6 +74,11 @@ type UI struct {
 	// through href (or the "base" template func) so it lands under this
 	// prefix when set.
 	basePath string
+
+	// inputValidation is the server's --input-validation mode (#273),
+	// copied from Config.InputValidation. Read through Effective() (never
+	// the zero value directly) so an unset mode means warn.
+	inputValidation validate.Mode
 }
 
 // Config holds UI configuration.
@@ -132,6 +137,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		uploadMaxSize:       uploadMaxSize,
 		grafanaURL:          cfg.GrafanaURL,
 		basePath:            cfg.BasePath,
+		inputValidation:     cfg.InputValidation,
 	}
 }
 
@@ -637,6 +643,9 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		"SubworkflowDescendantTotal": subworkflowDescendantTotal(descendants),
 		"Timing":                     timingReport,
 		"TimingBars":                 buildTimingBars(timingReport),
+		// Warning surfaces a non-blocking input-validation notice (#273,
+		// validate.ModeWarn) carried through the post-create redirect.
+		"Warning": r.URL.Query().Get("warning"),
 	}
 	ui.render(w, "submissions/detail", data)
 }
@@ -714,7 +723,10 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Collect inputs from form fields named inputs[key].
+	// Collect inputs from form fields named inputs[key], building proper CWL
+	// values (File/Directory objects, typed arrays, long/int/float/double/
+	// boolean) per the input's declared type BEFORE validation and storage
+	// (#273) — see convertFormInput.
 	inputs := make(map[string]any)
 	for _, inp := range wf.Inputs {
 		val := r.FormValue("inputs[" + inp.ID + "]")
@@ -724,23 +736,30 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 			}
 			continue
 		}
-		// Coerce values based on declared type.
-		switch {
-		case inp.Type == "int" || inp.Type == "int?":
-			if n, err := strconv.Atoi(val); err == nil {
-				inputs[inp.ID] = n
-				continue
+		inputs[inp.ID] = convertFormInput(val, inp.Type)
+	}
+
+	// Validate inputs against the workflow's declared CWL types (#273),
+	// unless the server has input validation switched off entirely. A parse
+	// failure of the stored CWL is logged and never blocks the submission —
+	// it means "could not validate", not "rejected". enforce re-renders the
+	// creation form with a visible error instead of creating anything; warn
+	// creates the submission as usual and carries a non-blocking notice
+	// through to the resulting page.
+	var validationWarning string
+	mode := ui.inputValidation.Effective()
+	if mode != validate.ModeOff {
+		fieldErrs, verr := validate.SubmissionInputs([]byte(wf.RawCWL), wf.SecretInputs, inputs, validate.Options{})
+		if verr != nil {
+			ui.logger.Error("submission input validation: parse failed, skipping", "workflow_id", wf.ID, "error", verr)
+		} else if len(fieldErrs) > 0 {
+			msg := formatFieldErrors(fieldErrs)
+			if mode == validate.ModeEnforce {
+				http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+workflowID+"&error="+url.QueryEscape(msg)), http.StatusSeeOther)
+				return
 			}
-		case inp.Type == "float" || inp.Type == "double" || inp.Type == "float?" || inp.Type == "double?":
-			if f, err := strconv.ParseFloat(val, 64); err == nil {
-				inputs[inp.ID] = f
-				continue
-			}
-		case inp.Type == "boolean" || inp.Type == "boolean?":
-			inputs[inp.ID] = val == "true" || val == "on" || val == "1"
-			continue
+			validationWarning = msg
 		}
-		inputs[inp.ID] = val
 	}
 
 	// Parse optional labels JSON.
@@ -805,7 +824,11 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 
 	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)
-	http.Redirect(w, r, ui.href("/submissions/"+sub.ID), http.StatusSeeOther)
+	dest := "/submissions/" + sub.ID
+	if validationWarning != "" {
+		dest += "?warning=" + url.QueryEscape(validationWarning)
+	}
+	http.Redirect(w, r, ui.href(dest), http.StatusSeeOther)
 }
 
 // HandleSubmissionCancel cancels a running submission (HTMX).

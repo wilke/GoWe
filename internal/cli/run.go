@@ -214,6 +214,7 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 	}
 	subResp, err := client.Post("/api/v1/submissions/", subReq)
 	if err != nil {
+		printAPIErrorDetails(os.Stderr, err)
 		return fmt.Errorf("create submission: %w", err)
 	}
 
@@ -224,6 +225,7 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "Submission created: %s\n", subData.ID)
+		printSubmissionWarnings(os.Stderr, subResp.Data)
 	}
 
 	// 4. Poll until completion or timeout.
