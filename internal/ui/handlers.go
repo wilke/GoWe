@@ -23,6 +23,7 @@ import (
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/timing"
+	"github.com/me/gowe/internal/validate"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
 )
@@ -77,6 +78,10 @@ type UI struct {
 
 // Config holds UI configuration.
 type Config struct {
+	// InputValidation is the server's --input-validation mode (#273): how the
+	// submission form treats input values that do not match their declared CWL
+	// types. The zero value means warn.
+	InputValidation validate.Mode
 	// SecureCookies forces the Secure attribute on session cookies for every
 	// request. Set this when TLS is terminated in-process, or by a trusted
 	// upstream proxy that always speaks HTTPS to clients.
