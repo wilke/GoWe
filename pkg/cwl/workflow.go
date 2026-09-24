@@ -18,19 +18,25 @@ type Workflow struct {
 // InputParam is a normalized CWL workflow input.
 // Handles both shorthand ("reads_r1: File") and expanded form.
 type InputParam struct {
-	Type    string
-	Doc     string
-	Default any
+	Type    string `json:"type,omitempty"`
+	Doc     string `json:"doc,omitempty"`
+	Default any    `json:"default,omitempty"`
 
 	// RecordFields contains field definitions for record types.
 	// Used for resolving secondaryFiles on record fields.
-	RecordFields []RecordField
+	RecordFields []RecordField `json:"recordFields,omitempty"`
 
 	// SecondaryFiles specifies additional files associated with this input.
-	SecondaryFiles []SecondaryFileSchema
+	SecondaryFiles []SecondaryFileSchema `json:"secondaryFiles,omitempty"`
 
 	// LoadContents reads the file contents into the contents field.
-	LoadContents bool
+	LoadContents bool `json:"loadContents,omitempty"`
+
+	// TypeSchema is the canonical, JSON-safe normalized form of this input's
+	// raw CWL type (shorthand-expanded, named types inlined via
+	// SchemaDefRequirement). Populated by the parser from real CWL source;
+	// nil means "do not validate" (see internal/parser/typeschema.go).
+	TypeSchema any `json:"typeSchema,omitempty"`
 }
 
 // OutputParam is a CWL workflow output.
