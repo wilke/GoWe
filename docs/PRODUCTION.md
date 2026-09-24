@@ -437,6 +437,32 @@ Uses the same `GOWE_TOKEN_KEY`/`--token-key-file` encryption key as provider tok
 separate key to manage. With no key configured, a submission carrying `secrets` is refused
 (fail-closed) unless `--allow-plaintext-tokens`, exactly like a delegated provider token.
 
+
+### Input type validation (`--input-validation`)
+
+**`--input-validation warn|enforce|off`** (env `GOWE_INPUT_VALIDATION`, flag wins; default
+`warn`) controls how the server treats input values that do not match their declared CWL
+type (#273). The server stamps the mode into every task, so workers follow it without a flag
+of their own; a task with no mode (created by an older server) behaves as `warn`.
+
+- `warn`: accept, return `warnings` on the create response, log the input ids (never values)
+  and count `gowe_input_validation_failures_total{workflow,input,mode}`.
+- `enforce`: reject submissions with `400`; a type mismatch detected just before a tool runs
+  fails that task once, without retries.
+- `off`: skip the new checks; the existing required/null checks still apply.
+
+Rollout: run `warn` first and watch the counter. Before switching, replay stored submissions
+against the new rules with the read-only report tool, on a **copy** of the database (it refuses
+to open the live file):
+
+```bash
+cp /scout/wf/gowe/gowe.db /tmp/gowe-copy.db
+go run ./cmd/validate-replay --db /tmp/gowe-copy.db
+```
+
+Switch to `enforce` once real traffic shows no warnings. `cwl-runner` enforces by default;
+`--no-input-validation` turns it off.
+
 ## GPU Assignment
 
 GPU 0 is reserved for interactive/other use. The start script assigns workers to GPUs starting at index 1:

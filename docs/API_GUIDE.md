@@ -347,6 +347,45 @@ File inputs support workspace paths for BV-BRC integration:
 }
 ```
 
+
+### Input Type Validation
+
+The server checks each submitted input value against the type the workflow
+declares (issue #273). Enum inputs must use one of their symbols; `int` must be
+a whole number in the 32-bit range; `boolean` must be `true`/`false` (not
+`"true"`); arrays, records and unions are checked recursively. File and
+Directory inputs accept an object with a matching `class`, an object with a
+`location`/`path`, or a plain path string. Missing inputs and nulls keep their
+existing handling (defaults apply first), and inputs whose type the server
+cannot resolve are never rejected.
+
+What happens on a mismatch depends on the server's `--input-validation` mode:
+
+| Mode | Result |
+|------|--------|
+| `warn` (default) | Accepted with `201`; the response carries `warnings` |
+| `enforce` | Rejected with `400 VALIDATION_ERROR`; nothing is created |
+| `off` | New type checks skipped |
+
+An `enforce` rejection names the input and, for enums, the allowed symbols:
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "input \"chunk_method\": expected one of [fixed, fixed_token, sentence, words, semantic], got \"semantic_pooled_typo\"",
+    "details": [
+      {"field": "inputs.chunk_method", "message": "expected one of [fixed, fixed_token, sentence, words, semantic], got \"semantic_pooled_typo\""}
+    ]
+  }
+}
+```
+
+Nested problems carry a `path` (for example `[3]` or `.bait`). The dry run
+below always reports type errors, in every mode. Values of secret inputs are
+never echoed in errors.
+
 ---
 
 ## 5. Validate Before Submitting (Dry Run)
