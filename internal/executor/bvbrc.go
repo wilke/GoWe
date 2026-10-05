@@ -24,6 +24,51 @@ var reservedKeys = map[string]bool{
 	"_bvbrc_app_id": true,
 }
 
+// bvbrcTaskDetails is the subset of AppService.query_task_details we need
+// for logs and the job's exit status.
+type bvbrcTaskDetails struct {
+	StdoutURL string `json:"stdout_url"`
+	StderrURL string `json:"stderr_url"`
+	ExitCode  any    `json:"exitcode"`
+}
+
+// parseBVBRCExitCode normalises the exitcode field, which the App Service
+// returns as a number, a numeric string, or null depending on job state.
+func parseBVBRCExitCode(v any) *int {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case float64:
+		n := int(x)
+		return &n
+	case json.Number:
+		n64, err := x.Int64()
+		if err != nil {
+			return nil
+		}
+		n := int(n64)
+		return &n
+	case string:
+		if x == "" {
+			return nil
+		}
+		n, err := strconv.Atoi(x)
+		if err != nil {
+			return nil
+		}
+		return &n
+	default:
+		return nil
+	}
+}
+
+func truncateForErr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 // BVBRCExecutor submits and monitors bioinformatics jobs on BV-BRC
 // via JSON-RPC 1.1. Submit is async — it returns a job UUID immediately
 // and the scheduler polls Status until terminal.
@@ -38,6 +83,7 @@ type BVBRCExecutor struct {
 	appServiceURL string          // BV-BRC App Service endpoint
 	defaultCaller bvbrc.RPCCaller // Optional: default caller for status/logs
 	logger        *slog.Logger
+	httpClient    *http.Client // Used to fetch stdout/stderr URLs; nil = http.DefaultClient
 }
 
 // NewBVBRCExecutor creates a BVBRCExecutor.
@@ -444,70 +490,123 @@ func (e *BVBRCExecutor) Cancel(ctx context.Context, task *model.Task) error {
 	return nil
 }
 
-// Logs calls AppService.query_app_log. On failure it falls back to stored task logs.
+// tokenForTask returns the BV-BRC token used to authenticate log-URL fetches.
+//
+// This must NOT be confused with getTaskCaller's second return value, which is
+// the *username* parsed from the token (used to build workspace paths).
+func (e *BVBRCExecutor) tokenForTask(task *model.Task, caller bvbrc.RPCCaller) string {
+	if task.RuntimeHints != nil &&
+		task.RuntimeHints.StagerOverrides != nil &&
+		task.RuntimeHints.StagerOverrides.HTTPCredential != nil {
+		if tok := task.RuntimeHints.StagerOverrides.HTTPCredential.Token; tok != "" {
+			return tok
+		}
+	}
+	if hc, ok := caller.(*bvbrc.HTTPRPCCaller); ok {
+		return hc.Token()
+	}
+	return ""
+}
+
+// Logs retrieves stdout/stderr for a BV-BRC job.
+//
+// AppService.query_app_log is not a valid method on the live service. Instead:
+//  1. Call AppService.query_task_details for stdout_url / stderr_url / exitcode
+//  2. GET those URLs with Authorization: OAuth <token>
+//
+// On failure it falls back to stored task logs. When exitcode is present it is
+// written onto task.ExitCode as a side effect so callers can persist it —
+// without this, every BV-BRC job failure reaches the database with a NULL
+// exit code and no diagnostics.
 func (e *BVBRCExecutor) Logs(ctx context.Context, task *model.Task) (string, string, error) {
 	if task.ExternalID == "" {
 		return task.Stdout, task.Stderr, nil
 	}
 
-	caller, token, err := e.getTaskCaller(task)
+	caller, _, err := e.getTaskCaller(task)
 	if err != nil {
+		e.logger.Debug("no caller for logs, using stored logs", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil
 	}
 
-	// Get stderr/stdout URLs from task details.
+	token := e.tokenForTask(task, caller)
+
 	result, err := caller.Call(ctx, "AppService.query_task_details", []any{task.ExternalID})
 	if err != nil {
-		e.logger.Debug("query_task_details failed", "task_id", task.ID, "error", err)
+		e.logger.Debug("query_task_details failed, using stored logs", "task_id", task.ID, "error", err)
 		return task.Stdout, task.Stderr, nil
 	}
 
-	var details []struct {
-		StderrURL string `json:"stderr_url"`
-		StdoutURL string `json:"stdout_url"`
-	}
+	var details []bvbrcTaskDetails
 	if err := json.Unmarshal(result, &details); err != nil || len(details) == 0 {
+		e.logger.Debug("parse query_task_details failed, using stored logs",
+			"task_id", task.ID, "error", err)
+		return task.Stdout, task.Stderr, nil
+	}
+	d := details[0]
+
+	if ec := parseBVBRCExitCode(d.ExitCode); ec != nil {
+		task.ExitCode = ec
+	}
+
+	stdout, stdoutErr := e.fetchLogURL(ctx, d.StdoutURL, token)
+	stderr, stderrErr := e.fetchLogURL(ctx, d.StderrURL, token)
+	if stdoutErr != nil {
+		e.logger.Warn("fetch stdout failed", "task_id", task.ID, "url", d.StdoutURL, "error", stdoutErr)
+	}
+	if stderrErr != nil {
+		e.logger.Warn("fetch stderr failed", "task_id", task.ID, "url", d.StderrURL, "error", stderrErr)
+	}
+
+	// Both fetches failed and produced nothing — keep whatever was stored.
+	if stdout == "" && stderr == "" && (stdoutErr != nil || stderrErr != nil) {
 		return task.Stdout, task.Stderr, nil
 	}
 
-	// Fetch logs via HTTP with OAuth auth.
-	var stdout, stderr string
-	if details[0].StdoutURL != "" {
-		stdout = e.fetchLog(ctx, details[0].StdoutURL, token)
-	}
-	if details[0].StderrURL != "" {
-		stderr = e.fetchLog(ctx, details[0].StderrURL, token)
-	}
-
-	if stdout == "" && stderr == "" {
-		return task.Stdout, task.Stderr, nil
-	}
 	return stdout, stderr, nil
 }
 
-// fetchLog downloads a log file from BV-BRC using OAuth authentication.
-func (e *BVBRCExecutor) fetchLog(ctx context.Context, url, token string) string {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return ""
+// fetchLogURL downloads a log file from BV-BRC using OAuth authentication.
+//
+// Unlike the previous fetchLog, this returns the error instead of swallowing
+// it. A silent "" on a 401 is what made BV-BRC failures look diagnostic-free.
+func (e *BVBRCExecutor) fetchLogURL(ctx context.Context, logURL, token string) (string, error) {
+	if logURL == "" {
+		return "", nil
 	}
-	req.Header.Set("Authorization", "OAuth "+token)
 
-	resp, err := http.DefaultClient.Do(req)
+	client := e.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, logURL, nil)
 	if err != nil {
-		return ""
+		return "", err
+	}
+	if token != "" {
+		auth := token
+		if !strings.HasPrefix(strings.ToLower(auth), "oauth ") {
+			auth = "OAuth " + token
+		}
+		req.Header.Set("Authorization", auth)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-
-	body, err := io.ReadAll(resp.Body)
+	const maxLogBytes = 5 << 20 // 5 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxLogBytes))
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return string(body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateForErr(string(body), 200))
+	}
+	return string(body), nil
 }
 
 // resolveBVBRCInput converts CWL File/Directory objects to workspace path strings.

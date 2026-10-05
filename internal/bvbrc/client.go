@@ -67,6 +67,13 @@ type HTTPRPCCaller struct {
 	seq    atomic.Int64
 }
 
+// Token returns the bearer token this caller authenticates with. It is used
+// to authenticate follow-up HTTP fetches (such as BV-BRC log URLs) that are
+// not themselves JSON-RPC calls.
+func (c *HTTPRPCCaller) Token() string {
+	return c.token
+}
+
 // NewHTTPRPCCaller creates a caller targeting the configured App Service URL.
 func NewHTTPRPCCaller(cfg ClientConfig, logger *slog.Logger) *HTTPRPCCaller {
 	return &HTTPRPCCaller{

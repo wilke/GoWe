@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/me/gowe/internal/bvbrc"
@@ -499,4 +502,159 @@ func TestBVBRCExecutor_LogsFailure(t *testing.T) {
 	if stderr != "stored stderr" {
 		t.Errorf("stderr = %q, want %q", stderr, "stored stderr")
 	}
+}
+
+// --- BV-BRC job log / exit-code retrieval ---------------------------------
+
+func TestParseBVBRCExitCode(t *testing.T) {
+	one := 1
+	cases := []struct {
+		name string
+		in   any
+		want *int
+	}{
+		{"nil", nil, nil},
+		{"float", float64(1), &one},
+		{"string", "1", &one},
+		{"empty string", "", nil},
+		{"garbage", "not-a-number", nil},
+		{"wrong type", []string{"1"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseBVBRCExitCode(tc.in)
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("got %d, want nil", *got)
+			case tc.want != nil && got == nil:
+				t.Errorf("got nil, want %d", *tc.want)
+			case tc.want != nil && *got != *tc.want:
+				t.Errorf("got %d, want %d", *got, *tc.want)
+			}
+		})
+	}
+}
+
+func TestBVBRCExecutor_LogsURLFetchFailureFallsBack(t *testing.T) {
+	mock := &mockRPCCaller{
+		result: json.RawMessage(`[{
+			"stdout_url":"http://127.0.0.1:1/stdout",
+			"stderr_url":"http://127.0.0.1:1/stderr",
+			"exitcode":"1"
+		}]`),
+	}
+	e := newTestBVBRCExecutor(mock)
+	task := &model.Task{
+		ID:         "task_1",
+		ExternalID: "job-1",
+		Stdout:     "stored stdout",
+		Stderr:     "stored stderr",
+	}
+
+	stdout, stderr, err := e.Logs(context.Background(), task)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout != "stored stdout" || stderr != "stored stderr" {
+		t.Errorf("got (%q,%q), want stored logs", stdout, stderr)
+	}
+	// The exit code must still be captured even when the log bodies are
+	// unreachable — otherwise failures land in the DB with a NULL exit code.
+	if task.ExitCode == nil || *task.ExitCode != 1 {
+		t.Errorf("ExitCode = %v, want 1", task.ExitCode)
+	}
+}
+
+// --- Regression guards for the empty-stderr bug --------------------------
+//
+// Logs() used to pass getTaskCaller's second return value — which is the
+// *username*, not the token — as the OAuth credential. Every log fetch 401'd
+// and fetchLog swallowed the error, so BV-BRC failures were persisted with
+// empty stdout/stderr and a NULL exit code. See SYSTEM_NOTES.md §4.4.
+
+func TestBVBRCExecutor_TokenForTask(t *testing.T) {
+	const fullToken = "un=someone@patricbrc.org|tokenid=abc|sig=deadbeef"
+	e := newTestBVBRCExecutor(&mockRPCCaller{})
+
+	t.Run("prefers the RuntimeHints credential", func(t *testing.T) {
+		task := &model.Task{
+			RuntimeHints: &model.RuntimeHints{
+				StagerOverrides: &model.StagerOverrides{
+					HTTPCredential: &model.HTTPCredential{Token: fullToken},
+				},
+			},
+		}
+		if got := e.tokenForTask(task, &mockRPCCaller{}); got != fullToken {
+			t.Errorf("got %q, want the full token", got)
+		}
+	})
+
+	t.Run("falls back to the caller's token", func(t *testing.T) {
+		caller := bvbrc.NewHTTPRPCCaller(
+			bvbrc.ClientConfig{AppServiceURL: bvbrc.DefaultAppServiceURL, Token: fullToken},
+			bvbrcLogger(),
+		)
+		if got := e.tokenForTask(&model.Task{}, caller); got != fullToken {
+			t.Errorf("got %q, want the full token", got)
+		}
+	})
+
+	t.Run("is never the bare username", func(t *testing.T) {
+		caller := bvbrc.NewHTTPRPCCaller(
+			bvbrc.ClientConfig{AppServiceURL: bvbrc.DefaultAppServiceURL, Token: fullToken},
+			bvbrcLogger(),
+		)
+		if got := e.tokenForTask(&model.Task{}, caller); got == "someone@patricbrc.org" {
+			t.Error("tokenForTask returned the username — this is the bug it exists to prevent")
+		}
+	})
+}
+
+func TestBVBRCExecutor_FetchLogURL(t *testing.T) {
+	const fullToken = "un=someone@patricbrc.org|tokenid=abc|sig=deadbeef"
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if gotAuth != "OAuth "+fullToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, "bad credential")
+			return
+		}
+		_, _ = io.WriteString(w, "real log body")
+	}))
+	defer srv.Close()
+
+	e := newTestBVBRCExecutor(&mockRPCCaller{})
+	e.httpClient = srv.Client()
+
+	t.Run("sends the token as an OAuth credential", func(t *testing.T) {
+		body, err := e.fetchLogURL(context.Background(), srv.URL, fullToken)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "OAuth "+fullToken {
+			t.Errorf("Authorization = %q, want the full token", gotAuth)
+		}
+		if body != "real log body" {
+			t.Errorf("body = %q, want the fetched log", body)
+		}
+	})
+
+	t.Run("surfaces a non-200 instead of swallowing it", func(t *testing.T) {
+		_, err := e.fetchLogURL(context.Background(), srv.URL, "someone@patricbrc.org")
+		if err == nil {
+			t.Fatal("want an error for a 401, got nil — this silent \"\" is the original bug")
+		}
+		if !strings.Contains(err.Error(), "401") {
+			t.Errorf("error = %v, want it to mention the status", err)
+		}
+	})
+
+	t.Run("empty url is not an error", func(t *testing.T) {
+		body, err := e.fetchLogURL(context.Background(), "", fullToken)
+		if err != nil || body != "" {
+			t.Errorf("got (%q, %v), want (\"\", nil)", body, err)
+		}
+	})
 }
