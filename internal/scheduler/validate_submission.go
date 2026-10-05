@@ -126,5 +126,3 @@ func ValidateSubmissionInputsJSON(logger *slog.Logger, wf *model.Workflow, input
 func validateSubmissionInputsForHandler(logger *slog.Logger, wf *model.Workflow, inputs map[string]any) error {
 	return ValidateSubmissionInputs(logger, wf, inputs)
 }
-
-

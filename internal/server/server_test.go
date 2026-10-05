@@ -130,7 +130,7 @@ func createTestSubmission(t *testing.T, srv *Server) (string, string) {
 	wfID := createTestWorkflow(t, srv)
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
-		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"inputs":      map[string]any{"reads_r1": "test.fastq", "reads_r2": "test2.fastq", "scientific_name": "E. coli", "taxonomy_id": 562},
 		"labels":      map[string]string{"project": "test"},
 	})
 	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
@@ -759,7 +759,7 @@ func TestCreateSubmission(t *testing.T) {
 
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
-		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"inputs":      map[string]any{"reads_r1": "test.fastq", "reads_r2": "test2.fastq", "scientific_name": "E. coli", "taxonomy_id": 562},
 		"labels":      map[string]string{"project": "test"},
 	})
 	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
@@ -808,7 +808,7 @@ func TestCreateSubmission_ByWorkflowName(t *testing.T) {
 
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": "test-workflow",
-		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"inputs":      map[string]any{"reads_r1": "test.fastq", "reads_r2": "test2.fastq", "scientific_name": "E. coli", "taxonomy_id": 562},
 	})
 	w, env := doPost(t, srv, "/api/v1/submissions/", string(bodyJSON))
 

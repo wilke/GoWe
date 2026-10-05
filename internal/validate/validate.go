@@ -212,10 +212,10 @@ func checkRecordKeys(context string, rec map[string]any, validFields map[string]
 			for f := range validFields {
 				valid = append(valid, f)
 			}
-		return fmt.Errorf(
-			"unknown field %q in record input %s (valid fields: %s): %w",
-			key, context, strings.Join(valid, ", "), ErrInputValidation,
-		)
+			return fmt.Errorf(
+				"unknown field %q in record input %s (valid fields: %s): %w",
+				key, context, strings.Join(valid, ", "), ErrInputValidation,
+			)
 		}
 	}
 	return nil

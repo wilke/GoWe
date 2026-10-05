@@ -74,7 +74,7 @@ func submitTestWorkflow(t *testing.T, serverURL string) string {
 	// Create submission.
 	subResp, err := c.Post("/api/v1/submissions/", map[string]any{
 		"workflow_id": wfID,
-		"inputs":      map[string]any{"reads_r1": "test.fastq"},
+		"inputs":      map[string]any{"reads_r1": "test.fastq", "reads_r2": "test2.fastq", "scientific_name": "E. coli", "taxonomy_id": 562},
 	})
 	if err != nil {
 		t.Fatalf("create submission: %v", err)

@@ -82,6 +82,18 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Dry-run: report on the inputs without creating a submission.
+	//
+	// This must come BEFORE the hard validation below. The whole point of a
+	// dry run is to be told what is wrong with the inputs, so it answers 200
+	// with inputs_valid/errors in the report (buildDryRunReport runs its own
+	// ValidateSubmissionInputsJSON). Rejecting it with a 400 first would make
+	// dry_run useless for exactly the inputs it exists to diagnose.
+	if r.URL.Query().Get("dry_run") == "true" {
+		respondOK(w, reqID, s.buildDryRunReport(wf, req.Inputs))
+		return
+	}
+
 	// Validate inputs against each step's CWL schema (record fields,
 	// shape, required inputs). This catches errors synchronously before
 	// the submission is created — the agent gets a real HTTP 400 instead
@@ -90,12 +102,6 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		respondError(w, reqID, http.StatusBadRequest,
 			model.NewValidationError("input validation failed",
 				model.FieldError{Field: "inputs", Message: err.Error()}))
-		return
-	}
-
-	// Dry-run: validate without creating a submission.
-	if r.URL.Query().Get("dry_run") == "true" {
-		respondOK(w, reqID, s.buildDryRunReport(wf, req.Inputs))
 		return
 	}
 
