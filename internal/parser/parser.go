@@ -684,11 +684,9 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 			// Parse secondaryFiles if present at the input level.
 			inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
 
-			// Parse record fields if this is a record type.
+			// Parse record fields for a record type or an array of records.
 			if typeMap, ok := val["type"].(map[string]any); ok {
-				if typeMap["type"] == "record" {
-					inp.RecordFields = parseRecordFields(typeMap["fields"])
-				}
+				inp.RecordFields = recordFieldsFromType(typeMap)
 			}
 			wf.Inputs[id] = inp
 		default:
@@ -1247,11 +1245,10 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 			// Extract item type name(s) for schema type lookup.
 			inp.ArrayItemTypes = extractArrayItemTypes(typeMap["items"])
 		}
-		// Parse record field definitions.
+		// Parse record field definitions, for a bare record or an array of
+		// records (see recordFieldsFromType).
 		// Example: type: { type: record, fields: [{name: a, type: int, inputBinding: {prefix: -a}}] }
-		if typeMap["type"] == "record" {
-			inp.RecordFields = parseRecordFields(typeMap["fields"])
-		}
+		inp.RecordFields = recordFieldsFromType(typeMap)
 	}
 
 	// When re-parsing from JSON-serialized task.Tool, the type is already a string
@@ -1434,6 +1431,36 @@ func parseInputBinding(ib map[string]any) *cwl.InputBinding {
 	}
 
 	return binding
+}
+
+// recordFieldsFromType extracts inline record field definitions from a CWL
+// type map, covering both a bare record and an array whose items are records.
+//
+//	type: {type: record, fields: [...]}                        -> fields
+//	type: {type: array, items: {type: record, fields: [...]}}  -> items.fields
+//
+// Only the first form was handled before, so an array-of-records input such as
+// Gene Tree's `sequences` parsed with RecordFields empty. Every consumer of
+// RecordFields short-circuits on an empty slice, which silently disabled
+// ApplyRecordFieldDefaults, ValidateRecordFields and ValidateRecordShape for
+// 31 of the 32 registered BV-BRC specs — the whole record-validation feature.
+// Malformed payloads (a bare path, or an array of paths, where records were
+// declared) therefore reached BV-BRC and failed in Perl preflight.
+func recordFieldsFromType(typeMap map[string]any) []cwl.RecordField {
+	if typeMap == nil {
+		return nil
+	}
+	if typeMap["type"] == "record" {
+		return parseRecordFields(typeMap["fields"])
+	}
+	if typeMap["type"] == "array" {
+		if itemMap, ok := typeMap["items"].(map[string]any); ok {
+			if itemMap["type"] == "record" {
+				return parseRecordFields(itemMap["fields"])
+			}
+		}
+	}
+	return nil
 }
 
 // parseRecordFields parses record field definitions from a CWL type.
