@@ -1750,11 +1750,17 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 			continue
 		}
 
+		// Fold the failed attempt's output into a bounded history rather than
+		// discarding it. Clearing these made a retried failure look like one
+		// that never produced any output at all, so the reason the first
+		// attempt failed was lost by the time the task went terminal.
+		failedAttempt := task.RetryCount
+		task.Stdout = foldAttemptLog(task.Stdout, task.Stdout, failedAttempt)
+		task.Stderr = foldAttemptLog(task.Stderr, task.Stderr, failedAttempt)
+
 		task.State = model.TaskStateScheduled
 		task.RetryCount++
 		task.ExitCode = nil
-		task.Stdout = ""
-		task.Stderr = ""
 		task.CompletedAt = nil
 		task.StartedAt = nil
 
@@ -2538,6 +2544,31 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 		if task.RetryCount >= task.MaxRetries {
 			continue
 		}
+
+		// A BV-BRC task that already carries an ExternalID had a real job
+		// created by AppService.start_app. start_app has no idempotency key,
+		// so a retry does not re-run that job — it submits a *second* one.
+		// With the default of 3 retries, one failing BV-BRC job became four
+		// real jobs, all consuming the user's compute, and the duplicates were
+		// invisible here because ExternalID is a single column that each retry
+		// overwrote. Exhaust the retries so the failure stays terminal.
+		//
+		// Submit failures are still retried: when start_app itself errors,
+		// no job was created and ExternalID is empty, so a transient RPC
+		// failure can legitimately be retried.
+		if task.ExecutorType == model.ExecutorTypeBVBRC && task.ExternalID != "" {
+			l.logger.Info("retry suppressed: BV-BRC job already submitted, a retry would duplicate it",
+				"task_id", task.ID,
+				"external_id", task.ExternalID,
+				"retry_count", task.RetryCount,
+				"max_retries", task.MaxRetries)
+			task.MaxRetries = task.RetryCount
+			if err := l.store.UpdateTask(ctx, task); err != nil {
+				l.logger.Error("pin max_retries on bvbrc task", "task_id", task.ID, "error", err)
+			}
+			continue
+		}
+
 		// CAS write: only flip FAILED→RETRYING while the task is still FAILED
 		// — a concurrent cancel may have SKIPPED it since the list above was
 		// taken, and a retry must not resurrect a terminal task.
@@ -2555,6 +2586,36 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 	}
 
 	return nil
+}
+
+// maxAttemptLogBytes bounds the accumulated per-attempt log history so a
+// retry loop cannot grow a task row without limit.
+const maxAttemptLogBytes = 32 << 10
+
+// foldAttemptLog records the output of an attempt that just failed, so the
+// next attempt does not erase it.
+//
+// The first attempt's output is usually the root cause and later attempts
+// repeat it, so when the history exceeds the cap the oldest entries are kept
+// and the newest are dropped, with a marker.
+func foldAttemptLog(history, attemptOutput string, attempt int) string {
+	if strings.TrimSpace(attemptOutput) == "" {
+		return history
+	}
+	entry := fmt.Sprintf("--- attempt %d ---\n%s", attempt+1, attemptOutput)
+
+	// First failure: the history IS this attempt's output.
+	if history == attemptOutput || history == "" {
+		return clampAttemptLog(entry)
+	}
+	return clampAttemptLog(history + "\n" + entry)
+}
+
+func clampAttemptLog(s string) string {
+	if len(s) <= maxAttemptLogBytes {
+		return s
+	}
+	return s[:maxAttemptLogBytes] + "\n--- earlier attempts kept; later output truncated ---"
 }
 
 // collectWorkflowOutputsFromSteps gathers workflow outputs from step instance outputs.

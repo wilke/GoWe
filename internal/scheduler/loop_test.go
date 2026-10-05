@@ -1292,3 +1292,163 @@ func TestGroupAutoInjectsToken(t *testing.T) {
 		t.Error("empty TokenInjectGroups must never auto-inject")
 	}
 }
+
+// TestMarkRetries_BVBRCJobAlreadySubmittedIsNotRetried guards against
+// duplicate BV-BRC jobs.
+//
+// AppService.start_app has no idempotency key, so retrying a task that already
+// created a job submits a second one. With the default 3 retries, one failing
+// BV-BRC job produced four real jobs — the "one prompt, four BLAST jobs" report.
+// A task whose ExternalID is empty never created a job, so a transient submit
+// failure must still be retried.
+func TestMarkRetries_BVBRCJobAlreadySubmittedIsNotRetried(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+
+	steps := []model.Step{{
+		ID:         "run_tool",
+		ToolInline: &model.Tool{ID: "t", Class: "CommandLineTool", BaseCommand: []string{"true"}},
+	}}
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 3)
+
+	now := time.Now().UTC()
+	mkTask := func(id string, execType model.ExecutorType, externalID string) *model.Task {
+		task := &model.Task{
+			ID:           id,
+			SubmissionID: subID,
+			StepID:       "run_tool",
+			State:        model.TaskStateFailed,
+			ExecutorType: execType,
+			ExternalID:   externalID,
+			Inputs:       map[string]any{},
+			Outputs:      map[string]any{},
+			RetryCount:   0,
+			MaxRetries:   3,
+			CompletedAt:  &now,
+			CreatedAt:    now,
+		}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatalf("CreateTask %s: %v", id, err)
+		}
+		return task
+	}
+
+	submitted := mkTask("task_bvbrc_submitted", model.ExecutorTypeBVBRC, "bvbrc-job-123")
+	notSubmitted := mkTask("task_bvbrc_no_job", model.ExecutorTypeBVBRC, "")
+	local := mkTask("task_local", model.ExecutorTypeLocal, "")
+
+	affected := map[string]bool{}
+	if err := sched.markRetries(ctx, affected); err != nil {
+		t.Fatalf("markRetries: %v", err)
+	}
+
+	// The already-submitted BV-BRC job must stay terminal, with retries pinned
+	// so later ticks do not reconsider it.
+	got, err := st.GetTask(ctx, submitted.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != model.TaskStateFailed {
+		t.Errorf("submitted bvbrc task: state = %q, want FAILED (a retry would duplicate the job)", got.State)
+	}
+	if got.MaxRetries != got.RetryCount {
+		t.Errorf("submitted bvbrc task: MaxRetries = %d, RetryCount = %d — want them equal so retries are exhausted",
+			got.MaxRetries, got.RetryCount)
+	}
+
+	// A BV-BRC task that never created a job is still retryable.
+	got, err = st.GetTask(ctx, notSubmitted.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != model.TaskStateRetrying {
+		t.Errorf("bvbrc task with no external id: state = %q, want RETRYING", got.State)
+	}
+
+	// Non-BV-BRC executors are unaffected.
+	got, err = st.GetTask(ctx, local.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.State != model.TaskStateRetrying {
+		t.Errorf("local task: state = %q, want RETRYING", got.State)
+	}
+}
+
+func TestFoldAttemptLog(t *testing.T) {
+	t.Run("first failure keeps the output once, labelled", func(t *testing.T) {
+		got := foldAttemptLog("boom", "boom", 0)
+		want := "--- attempt 1 ---\nboom"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("second failure appends without losing the first", func(t *testing.T) {
+		first := foldAttemptLog("boom", "boom", 0)
+		got := foldAttemptLog(first, "boom again", 1)
+		if !strings.Contains(got, "boom") || !strings.Contains(got, "boom again") {
+			t.Errorf("lost an attempt: %q", got)
+		}
+		if !strings.Contains(got, "attempt 1") || !strings.Contains(got, "attempt 2") {
+			t.Errorf("missing attempt markers: %q", got)
+		}
+	})
+
+	t.Run("empty output is not recorded", func(t *testing.T) {
+		if got := foldAttemptLog("prior", "   ", 1); got != "prior" {
+			t.Errorf("got %q, want the history unchanged", got)
+		}
+	})
+
+	t.Run("bounded", func(t *testing.T) {
+		big := strings.Repeat("x", maxAttemptLogBytes*2)
+		got := foldAttemptLog("prior", big, 1)
+		if len(got) > maxAttemptLogBytes+128 {
+			t.Errorf("len = %d, want it clamped near %d", len(got), maxAttemptLogBytes)
+		}
+		if !strings.HasPrefix(got, "prior") {
+			t.Error("clamping dropped the earlier attempt, which is usually the root cause")
+		}
+	})
+}
+
+func TestTick_RetryPreservesPriorAttemptLogs(t *testing.T) {
+	sched, st := testSetup(t)
+	sched.config.MaxRetries = 2
+	ctx := context.Background()
+
+	steps := []model.Step{{
+		ID: "fail_step",
+		ToolInline: &model.Tool{
+			ID:          "fail_tool",
+			Class:       "CommandLineTool",
+			BaseCommand: []string{"false"},
+		},
+	}}
+	_, subID := createPipeline(t, st, steps, map[string]any{}, 2)
+
+	// Three ticks: fail -> retry -> fail -> retry -> fail (retries exhausted).
+	for i := 1; i <= 3; i++ {
+		if err := sched.Tick(ctx); err != nil {
+			t.Fatalf("Tick %d: %v", i, err)
+		}
+	}
+
+	tasks, err := st.ListTasksBySubmission(ctx, subID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("ListTasksBySubmission: err=%v, count=%d", err, len(tasks))
+	}
+	task := tasks[0]
+	if task.State != model.TaskStateFailed {
+		t.Fatalf("state = %q, want FAILED", task.State)
+	}
+
+	// The terminal task must still carry evidence from the earlier attempts,
+	// not just whatever the last one produced.
+	combined := task.Stdout + task.Stderr
+	if strings.TrimSpace(combined) != "" && !strings.Contains(combined, "attempt 1") {
+		t.Errorf("no attempt-1 record survived the retries; logs = stdout=%q stderr=%q",
+			task.Stdout, task.Stderr)
+	}
+}
