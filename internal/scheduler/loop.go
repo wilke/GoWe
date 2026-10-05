@@ -1550,6 +1550,12 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		return
 	}
 
+	// Executors write their run output straight onto the task (the local
+	// executor assigns task.Stdout/task.Stderr from the command result), which
+	// wipes the previous attempt's logs before we can fold them. Snapshot the
+	// history here so the fold below has something to append to.
+	prevStdout, prevStderr := task.Stdout, task.Stderr
+
 	now := time.Now().UTC()
 	task.StartedAt = &now
 	externalID, submitErr := exec.Submit(ctx, task)
@@ -1557,7 +1563,9 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 
 	if submitErr != nil {
 		task.State = model.TaskStateFailed
-		task.Stderr = submitErr.Error()
+		// Fold onto the snapshot, not onto task.Stderr — the executor may
+		// already have replaced that with this attempt's output.
+		task.Stderr = foldAttemptLog(prevStderr, submitErr.Error(), task.RetryCount)
 		completedAt := time.Now().UTC()
 		task.CompletedAt = &completedAt
 
@@ -1578,8 +1586,11 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 			completedAt := time.Now().UTC()
 			task.CompletedAt = &completedAt
 			stdout, stderr, _ := exec.Logs(ctx, task)
-			task.Stdout = stdout
-			task.Stderr = stderr
+			// Fold onto the pre-Submit snapshot: this is the synchronous
+			// completion path (local/container), where the executor has
+			// already overwritten task.Stdout/task.Stderr with this attempt.
+			task.Stdout = foldAttemptLog(prevStdout, stdout, task.RetryCount)
+			task.Stderr = foldAttemptLog(prevStderr, stderr, task.RetryCount)
 			scrubTaskToken(task)
 			l.logger.Info("task completed", "task_id", task.ID, "state", newState, "step_id", task.StepID)
 		} else {
@@ -1750,14 +1761,10 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 			continue
 		}
 
-		// Fold the failed attempt's output into a bounded history rather than
-		// discarding it. Clearing these made a retried failure look like one
-		// that never produced any output at all, so the reason the first
-		// attempt failed was lost by the time the task went terminal.
-		failedAttempt := task.RetryCount
-		task.Stdout = foldAttemptLog(task.Stdout, task.Stdout, failedAttempt)
-		task.Stderr = foldAttemptLog(task.Stderr, task.Stderr, failedAttempt)
-
+		// Stdout/Stderr are deliberately NOT cleared here: they carry the
+		// failed attempt's output, and the next failure folds onto them (see
+		// foldAttemptLog at the failure sites). Clearing them made a retried
+		// failure indistinguishable from one that produced no output at all.
 		task.State = model.TaskStateScheduled
 		task.RetryCount++
 		task.ExitCode = nil
@@ -1813,8 +1820,8 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				now := time.Now().UTC()
 				task.CompletedAt = &now
 				stdout, stderr, _ := exec.Logs(ctx, task)
-				task.Stdout = stdout
-				task.Stderr = stderr
+				task.Stdout = foldAttemptLog(task.Stdout, stdout, task.RetryCount)
+				task.Stderr = foldAttemptLog(task.Stderr, stderr, task.RetryCount)
 				scrubTaskToken(task)
 				l.logger.Info("task completed (poll)", "task_id", task.ID, "state", newState)
 
@@ -2592,8 +2599,15 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 // retry loop cannot grow a task row without limit.
 const maxAttemptLogBytes = 32 << 10
 
-// foldAttemptLog records the output of an attempt that just failed, so the
-// next attempt does not erase it.
+// foldAttemptLog appends one attempt's output to the accumulated history.
+//
+// Called at each site that records a failure, so a retry adds to the record
+// instead of replacing it. attempt is the 0-based retry count at the time the
+// output was produced.
+//
+// The first attempt is stored bare, with no marker, so the common
+// single-attempt case reads exactly as it always did. Markers appear only
+// once there is more than one attempt to tell apart.
 //
 // The first attempt's output is usually the root cause and later attempts
 // repeat it, so when the history exceeds the cap the oldest entries are kept
@@ -2602,13 +2616,18 @@ func foldAttemptLog(history, attemptOutput string, attempt int) string {
 	if strings.TrimSpace(attemptOutput) == "" {
 		return history
 	}
-	entry := fmt.Sprintf("--- attempt %d ---\n%s", attempt+1, attemptOutput)
-
-	// First failure: the history IS this attempt's output.
-	if history == attemptOutput || history == "" {
-		return clampAttemptLog(entry)
+	if strings.TrimSpace(history) == "" {
+		if attempt == 0 {
+			return clampAttemptLog(attemptOutput)
+		}
+		return clampAttemptLog(fmt.Sprintf("--- attempt %d ---\n%s", attempt+1, attemptOutput))
 	}
-	return clampAttemptLog(history + "\n" + entry)
+	// Avoid duplicating identical output from a repeated deterministic failure.
+	if history == attemptOutput {
+		return history
+	}
+	return clampAttemptLog(fmt.Sprintf(
+		"%s\n--- attempt %d ---\n%s", history, attempt+1, attemptOutput))
 }
 
 func clampAttemptLog(s string) string {

@@ -71,21 +71,54 @@ func ValidateRecordShape(tool *cwl.CommandLineTool, inputs map[string]any) error
 		typeStr := inputDef.Type
 		isArray := strings.Contains(typeStr, "[]")
 
-		switch value.(type) {
+		// Field names are quoted into the error so the caller (usually an
+		// LLM populating the inputs) can correct itself without another
+		// round trip to GET /workflows/:id/inputs.
+		fieldNames := make([]string, 0, len(inputDef.RecordFields))
+		for _, f := range inputDef.RecordFields {
+			fieldNames = append(fieldNames, f.Name)
+		}
+		shape := fmt.Sprintf("a record with fields %v", fieldNames)
+		if isArray {
+			shape = fmt.Sprintf("an array of records with fields %v", fieldNames)
+		}
+
+		switch v := value.(type) {
 		case []any:
 			if !isArray {
 				return fmt.Errorf(
-					"%s expects a single record, got an array (%w)",
-					inputID, ErrInputValidation,
+					"%s expects %s, got an array (%w)",
+					inputID, shape, ErrInputValidation,
 				)
+			}
+			// Every element must itself be a record. Checking only the
+			// container let `["/path/to/file"]` through for a record[] input,
+			// which reached BV-BRC and died in Perl preflight with
+			// "Can't use string as a HASH ref" — 11 Gene Tree and 11 MSA SNP
+			// failures before this was caught (2026-10-05).
+			for i, elem := range v {
+				if _, ok := elem.(map[string]any); !ok {
+					return fmt.Errorf(
+						"%s[%d] expects %s, got %T (%w)",
+						inputID, i, shape, elem, ErrInputValidation,
+					)
+				}
 			}
 		case map[string]any:
 			if isArray {
 				return fmt.Errorf(
-					"%s expects an array of records, got a single object (%w)",
-					inputID, ErrInputValidation,
+					"%s expects %s, got a single object (%w)",
+					inputID, shape, ErrInputValidation,
 				)
 			}
+		default:
+			// A scalar for a record input matched neither case above and
+			// fell through silently. This is the MSA SNP failure mode: a
+			// bare workspace path where a record was declared.
+			return fmt.Errorf(
+				"%s expects %s, got %T (%w)",
+				inputID, shape, value, ErrInputValidation,
+			)
 		}
 	}
 	return nil

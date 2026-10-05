@@ -1376,39 +1376,57 @@ func TestMarkRetries_BVBRCJobAlreadySubmittedIsNotRetried(t *testing.T) {
 }
 
 func TestFoldAttemptLog(t *testing.T) {
-	t.Run("first failure keeps the output once, labelled", func(t *testing.T) {
-		got := foldAttemptLog("boom", "boom", 0)
-		want := "--- attempt 1 ---\nboom"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+	t.Run("first attempt is stored bare, no marker", func(t *testing.T) {
+		got := foldAttemptLog("", "boom", 0)
+		if got != "boom" {
+			t.Errorf("got %q, want %q", got, "boom")
 		}
 	})
 
-	t.Run("second failure appends without losing the first", func(t *testing.T) {
-		first := foldAttemptLog("boom", "boom", 0)
-		got := foldAttemptLog(first, "boom again", 1)
+	t.Run("second failure appends with a marker, keeping the first", func(t *testing.T) {
+		got := foldAttemptLog("boom", "boom again", 1)
 		if !strings.Contains(got, "boom") || !strings.Contains(got, "boom again") {
-			t.Errorf("lost an attempt: %q", got)
+			t.Fatalf("lost an attempt: %q", got)
 		}
-		if !strings.Contains(got, "attempt 1") || !strings.Contains(got, "attempt 2") {
-			t.Errorf("missing attempt markers: %q", got)
+		if !strings.Contains(got, "--- attempt 2 ---") {
+			t.Errorf("missing marker for the second attempt: %q", got)
+		}
+		if strings.Index(got, "boom") > strings.Index(got, "boom again") {
+			t.Error("history order reversed; earliest attempt should come first")
 		}
 	})
 
-	t.Run("empty output is not recorded", func(t *testing.T) {
+	t.Run("three attempts all survive", func(t *testing.T) {
+		h := foldAttemptLog("", "first", 0)
+		h = foldAttemptLog(h, "second", 1)
+		h = foldAttemptLog(h, "third", 2)
+		for _, want := range []string{"first", "second", "third", "attempt 2", "attempt 3"} {
+			if !strings.Contains(h, want) {
+				t.Errorf("missing %q in %q", want, h)
+			}
+		}
+	})
+
+	t.Run("empty new output leaves history untouched", func(t *testing.T) {
 		if got := foldAttemptLog("prior", "   ", 1); got != "prior" {
 			t.Errorf("got %q, want the history unchanged", got)
 		}
 	})
 
-	t.Run("bounded", func(t *testing.T) {
+	t.Run("identical repeated output is not duplicated", func(t *testing.T) {
+		if got := foldAttemptLog("same", "same", 1); got != "same" {
+			t.Errorf("got %q, want no duplication", got)
+		}
+	})
+
+	t.Run("bounded, keeping the earliest", func(t *testing.T) {
 		big := strings.Repeat("x", maxAttemptLogBytes*2)
 		got := foldAttemptLog("prior", big, 1)
 		if len(got) > maxAttemptLogBytes+128 {
 			t.Errorf("len = %d, want it clamped near %d", len(got), maxAttemptLogBytes)
 		}
 		if !strings.HasPrefix(got, "prior") {
-			t.Error("clamping dropped the earlier attempt, which is usually the root cause")
+			t.Error("clamping dropped the earliest attempt, which is usually the root cause")
 		}
 	})
 }
@@ -1418,17 +1436,20 @@ func TestTick_RetryPreservesPriorAttemptLogs(t *testing.T) {
 	sched.config.MaxRetries = 2
 	ctx := context.Background()
 
+	// A command that does not exist: the local executor reports a real error
+	// on every attempt, so there IS output to preserve. (An earlier version of
+	// this test used `false`, which produces no stderr at all — so the
+	// assertion was skipped and the test passed while the code was broken.)
 	steps := []model.Step{{
 		ID: "fail_step",
 		ToolInline: &model.Tool{
 			ID:          "fail_tool",
 			Class:       "CommandLineTool",
-			BaseCommand: []string{"false"},
+			BaseCommand: []string{"definitely-not-a-real-binary-xyz"},
 		},
 	}}
 	_, subID := createPipeline(t, st, steps, map[string]any{}, 2)
 
-	// Three ticks: fail -> retry -> fail -> retry -> fail (retries exhausted).
 	for i := 1; i <= 3; i++ {
 		if err := sched.Tick(ctx); err != nil {
 			t.Fatalf("Tick %d: %v", i, err)
@@ -1443,12 +1464,27 @@ func TestTick_RetryPreservesPriorAttemptLogs(t *testing.T) {
 	if task.State != model.TaskStateFailed {
 		t.Fatalf("state = %q, want FAILED", task.State)
 	}
+	if task.RetryCount == 0 {
+		t.Fatalf("RetryCount = 0, expected the task to have retried")
+	}
 
-	// The terminal task must still carry evidence from the earlier attempts,
-	// not just whatever the last one produced.
+	// The first attempt's diagnosis must survive all the retries. Before the
+	// fix, each attempt overwrote the last (the local executor assigns
+	// task.Stderr from the command result), so the terminal task carried only
+	// the final attempt — and if that attempt produced nothing, nothing at all.
 	combined := task.Stdout + task.Stderr
-	if strings.TrimSpace(combined) != "" && !strings.Contains(combined, "attempt 1") {
-		t.Errorf("no attempt-1 record survived the retries; logs = stdout=%q stderr=%q",
-			task.Stdout, task.Stderr)
+	if strings.TrimSpace(combined) == "" {
+		t.Fatal("no output recorded at all — the failure reason was lost")
+	}
+	if !strings.Contains(combined, "executable file not found") {
+		t.Errorf("original failure reason not preserved across retries; stderr=%q", task.Stderr)
+	}
+	// This failure is deterministic, so every attempt produces identical text
+	// and foldAttemptLog deduplicates rather than repeating it. Guard that we
+	// are not accumulating copies. Differing-output accumulation and the
+	// attempt markers are covered by TestFoldAttemptLog.
+	if strings.Count(combined, "executable file not found") != 1 {
+		t.Errorf("identical attempt output was duplicated %d times; stderr=%q",
+			strings.Count(combined, "executable file not found"), task.Stderr)
 	}
 }
