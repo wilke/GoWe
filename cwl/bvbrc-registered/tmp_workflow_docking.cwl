@@ -32,15 +32,20 @@ inputs:
 
   ligand_library_type:
     type: string
-    doc: "Type of ligand input [enum: ws_file, named_library, smiles_list] [bvbrc:enum]. ws_file requires ligand_ws_file; named_library requires ligand_named_library; smiles_list requires ligand_smiles_list. If the user has given no ligand at all, ASK before submitting."
+    doc: "Type of ligand input [enum: smiles_list, ws_file, named_library] [bvbrc:enum]. smiles_list requires ligand_smiles_list; ws_file requires ligand_ws_file. DO NOT USE named_library: the BV-BRC app rejects it with 'Unknown ligand library type selected named_library' (DockingCompute.pm), and the website form carries the comment 'ligand library is not working just yet' — it is an unfinished feature. Prefer smiles_list, or ws_file for a workspace file. If the user has given no ligand at all, ASK before submitting."
 
   ligand_named_library:
     type: string?
-    doc: "Name of a built-in ligand library. Required when ligand_library_type=named_library"
+    doc: "Name of a built-in ligand library [enum: small_db, approved-drugs, experimental_drugs] [bvbrc:enum] (small_db = Exemplar Drug Compounds, approved-drugs = Approved Drug Compounds, experimental_drugs = Experimental Drug Compounds; values taken from the website form). Required when ligand_library_type=named_library — but see that input: named_library is rejected by the app."
 
   ligand_smiles_list:
-    type: string[]?
-    doc: "SMILES strings. Required when ligand_library_type=smiles_list [bvbrc:array]"
+    type:
+      - "null"
+      - type: array
+        items:
+          type: array
+          items: string
+    doc: "Ligands as [id, smiles] PAIRS — an array of two-element arrays, e.g. [[\"id-1\", \"CCO\"], [\"aspirin\", \"CC(=O)Oc1ccccc1C(=O)O\"]]. NOT a flat list of SMILES strings. The website form builds this by splitting each line on whitespace: a line with two columns becomes [id, smiles], and a bare SMILES string gets a generated id (id-1, id-2, ...). Required when ligand_library_type=smiles_list [bvbrc:array]"
 
   ligand_ws_file:
     type: string?
