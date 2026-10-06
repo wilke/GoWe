@@ -2520,12 +2520,8 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 			subErr.Context.TaskID = task.ID
 			subErr.Context.ExitCode = task.ExitCode
 
-			// Include a stderr snippet (truncate to 1000 chars for storage).
-			stderr := task.Stderr
-			if len(stderr) > 1000 {
-				stderr = stderr[:1000] + "...(truncated)"
-			}
-			if stderr != "" {
+			// Include a stderr snippet for the API and the chat message.
+			if stderr := stderrSnippet(task.Stderr); stderr != "" {
 				subErr.Context.Stderr = stderr
 			}
 
@@ -2593,6 +2589,34 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 	}
 
 	return nil
+}
+
+// maxStderrSnippetBytes bounds the stderr carried in a submission's error
+// context. It is surfaced through GET /api/v1/submissions/:id and ends up in
+// the user's chat message, so it must stay small.
+const maxStderrSnippetBytes = 2000
+
+// stderrSnippet trims task stderr for the submission error context, keeping
+// the END of the output.
+//
+// This used to keep the first 1000 bytes. For BV-BRC app failures that is
+// exactly the wrong half: a job's stderr opens with a long environment dump
+// (data paths, container path, "Logging to ...") and the actual diagnosis is
+// the last line or two before the stack trace. Gene Tree job 23710821 is the
+// example -- 4,760 bytes of stderr whose operative line was
+// "number of sequences is 2, less than 4. Cannot build a tree.", while the
+// stored snippet held only setup boilerplate and the user was told
+// "unknown error".
+func stderrSnippet(stderr string) string {
+	if len(stderr) <= maxStderrSnippetBytes {
+		return stderr
+	}
+	tail := stderr[len(stderr)-maxStderrSnippetBytes:]
+	// Start on a line boundary so the snippet does not open mid-word.
+	if i := strings.IndexByte(tail, '\n'); i >= 0 && i < 200 {
+		tail = tail[i+1:]
+	}
+	return "...(earlier output truncated)\n" + tail
 }
 
 // maxAttemptLogBytes bounds the accumulated per-attempt log history so a

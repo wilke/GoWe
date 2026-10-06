@@ -1488,3 +1488,48 @@ func TestTick_RetryPreservesPriorAttemptLogs(t *testing.T) {
 			strings.Count(combined, "executable file not found"), task.Stderr)
 	}
 }
+
+// TestStderrSnippet guards which half of a long stderr survives.
+//
+// The old code kept the first 1000 bytes. BV-BRC job stderr opens with an
+// environment dump and ends with the diagnosis, so that stored boilerplate and
+// threw away the reason -- Gene Tree job 23710821 reported "unknown error" to
+// the user while its stderr said "number of sequences is 2, less than 4".
+func TestStderrSnippet(t *testing.T) {
+	t.Run("short output is returned whole", func(t *testing.T) {
+		if got := stderrSnippet("boom"); got != "boom" {
+			t.Errorf("got %q, want %q", got, "boom")
+		}
+	})
+
+	t.Run("empty stays empty", func(t *testing.T) {
+		if got := stderrSnippet(""); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("keeps the diagnosis at the end, drops the boilerplate", func(t *testing.T) {
+		boiler := strings.Repeat("Container path: /disks/patric-common/cache\n", 200)
+		reason := "After retrieval, number of sequences is 2, less than 4. Cannot build a tree."
+		got := stderrSnippet(boiler + reason)
+
+		if !strings.Contains(got, reason) {
+			t.Error("the operative last line was dropped — this is the bug this guards")
+		}
+		if len(got) > maxStderrSnippetBytes+64 {
+			t.Errorf("len = %d, want near %d", len(got), maxStderrSnippetBytes)
+		}
+		if !strings.HasPrefix(got, "...(earlier output truncated)") {
+			t.Errorf("missing the truncation marker: %.60q", got)
+		}
+	})
+
+	t.Run("does not open mid-line", func(t *testing.T) {
+		body := strings.Repeat("aaaaaaaaaaaaaaaaaaaa\n", 300) + "final line\n"
+		got := stderrSnippet(body)
+		after := strings.TrimPrefix(got, "...(earlier output truncated)\n")
+		if strings.HasPrefix(after, "aaa") && !strings.HasPrefix(after, "aaaaaaaaaaaaaaaaaaaa\n") {
+			t.Errorf("snippet opens mid-line: %.40q", after)
+		}
+	})
+}
