@@ -58,6 +58,14 @@ type ToolInputParam struct {
 	// (e.g., ["#Stage"] or ["#Map1", "#Map2"] for union types).
 	ArrayItemTypes []string `json:"arrayItemTypes,omitempty"`
 
+	// Symbols holds the permitted values for an enum-typed input.
+	//
+	// Populated from a real CWL enum (`type: {type: enum, symbols: [...]}`)
+	// or from the `[enum: a, b, c]` convention in the doc string, which is
+	// what every BV-BRC spec actually uses (81 occurrences across 27 of 32
+	// specs; none declare a real CWL enum).
+	Symbols []string `json:"symbols,omitempty"`
+
 	// RecordFields contains field definitions for record types.
 	// Each field may have its own inputBinding for command line generation.
 	RecordFields []RecordField `json:"recordFields,omitempty"`

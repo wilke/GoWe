@@ -79,6 +79,9 @@ func ValidateSubmissionInputs(logger *slog.Logger, wf *model.Workflow, inputs ma
 		if err := validate.ValidateRecordShape(cwlTool, job); err != nil {
 			return fmt.Errorf("step %s: %w", step.ID, err)
 		}
+		if err := validate.ValidateEnumValues(cwlTool, job); err != nil {
+			return fmt.Errorf("step %s: %w", step.ID, err)
+		}
 		if err := validate.ToolInputs(cwlTool, job); err != nil {
 			return fmt.Errorf("step %s: %w", step.ID, err)
 		}

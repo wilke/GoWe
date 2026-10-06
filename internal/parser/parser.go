@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -684,9 +685,14 @@ func (p *Parser) parseWorkflow(raw map[string]any) (workflowParseResult, error) 
 			// Parse secondaryFiles if present at the input level.
 			inp.SecondaryFiles = parseSecondaryFiles(val["secondaryFiles"])
 
-			// Parse record fields for a record type or an array of records.
+			// Parse record fields for a record type or an array of records,
+			// and enum symbols for an enum-typed input.
 			if typeMap, ok := val["type"].(map[string]any); ok {
 				inp.RecordFields = recordFieldsFromType(typeMap)
+				inp.Symbols = symbolsFromType(typeMap)
+			}
+			if len(inp.Symbols) == 0 {
+				inp.Symbols = symbolsFromDoc(inp.Doc)
 			}
 			wf.Inputs[id] = inp
 		default:
@@ -1249,6 +1255,7 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 		// records (see recordFieldsFromType).
 		// Example: type: { type: record, fields: [{name: a, type: int, inputBinding: {prefix: -a}}] }
 		inp.RecordFields = recordFieldsFromType(typeMap)
+		inp.Symbols = symbolsFromType(typeMap)
 	}
 
 	// When re-parsing from JSON-serialized task.Tool, the type is already a string
@@ -1263,6 +1270,14 @@ func parseToolInput(val map[string]any) cwl.ToolInputParam {
 		if rf := val["recordFields"]; rf != nil {
 			inp.RecordFields = parseRecordFields(rf)
 		}
+	}
+	if len(inp.Symbols) == 0 {
+		// Re-parsed from JSON-serialized task.Tool.
+		inp.Symbols = stringSlice(val, "symbols")
+	}
+	if len(inp.Symbols) == 0 {
+		// The convention every BV-BRC spec actually uses.
+		inp.Symbols = symbolsFromDoc(inp.Doc)
 	}
 	if len(inp.ArrayItemTypes) == 0 {
 		if ait, ok := val["arrayItemTypes"].([]any); ok {
@@ -1431,6 +1446,53 @@ func parseInputBinding(ib map[string]any) *cwl.InputBinding {
 	}
 
 	return binding
+}
+
+// docEnumPattern matches the `[enum: a, b, c]` convention used in BV-BRC spec
+// doc strings.
+var docEnumPattern = regexp.MustCompile(`\[enum:([^\]]*)\]`)
+
+// symbolsFromType extracts permitted values for an enum-typed input from a
+// real CWL enum declaration, covering a bare enum and an array of enums:
+//
+//	type: {type: enum, symbols: [a, b]}
+//	type: {type: array, items: {type: enum, symbols: [a, b]}}
+func symbolsFromType(typeMap map[string]any) []string {
+	if typeMap == nil {
+		return nil
+	}
+	if typeMap["type"] == "enum" {
+		return stringSlice(typeMap, "symbols")
+	}
+	if typeMap["type"] == "array" {
+		if itemMap, ok := typeMap["items"].(map[string]any); ok {
+			if itemMap["type"] == "enum" {
+				return stringSlice(itemMap, "symbols")
+			}
+		}
+	}
+	return nil
+}
+
+// symbolsFromDoc extracts permitted values from the `[enum: a, b, c]`
+// convention in a doc string.
+//
+// No BV-BRC spec declares a real CWL enum — all 81 enum declarations across
+// 27 specs live in doc strings — so without this, enum validation would apply
+// to nothing. Values are trimmed; an empty list returns nil so callers can
+// treat "no symbols" uniformly.
+func symbolsFromDoc(doc string) []string {
+	m := docEnumPattern.FindStringSubmatch(doc)
+	if m == nil {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(m[1], ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // recordFieldsFromType extracts inline record field definitions from a CWL
@@ -1645,6 +1707,9 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 			Required: !strings.HasSuffix(inp.Type, "?") && inp.Default == nil,
 			Default:  inp.Default,
 			Doc:      inp.Doc,
+			// Permitted values, so a caller reading GET /inputs can pick a
+			// valid one instead of inferring it from the doc prose.
+			Symbols: inp.Symbols,
 		}
 
 		// Populate record field summaries for record-typed inputs.

@@ -456,3 +456,64 @@ func resolveNamespacePrefix(s string, namespaces map[string]string) string {
 
 	return s
 }
+
+// ValidateEnumValues checks that any enum-typed input carries one of its
+// permitted values.
+//
+// Enum violations were previously invisible to GoWe: the submission was
+// accepted, reached BV-BRC, and failed minutes later inside the app. Observed
+// cases, all of which this catches at submit time:
+//
+//	Docking   ligand_library_type = "named_library"
+//	          -> "Unknown ligand library type selected named_library"
+//	BLAST     input_source = "id_list" where a feature group was meant
+//	GeneTree  sequences[].type = "fasta_file", not one of the declared values
+//
+// Handles a scalar value and an array of scalars (for a multi-valued enum).
+// Non-string values are left alone — type checking is not this function's job.
+// An input with no declared symbols is skipped, so this is inert for specs
+// that declare none.
+func ValidateEnumValues(tool *cwl.CommandLineTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.Symbols) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+
+		allowed := make(map[string]bool, len(inputDef.Symbols))
+		for _, sym := range inputDef.Symbols {
+			allowed[sym] = true
+		}
+
+		switch v := value.(type) {
+		case string:
+			if !allowed[v] {
+				return enumError(inputID, "", v, inputDef.Symbols)
+			}
+		case []any:
+			for i, elem := range v {
+				sv, ok := elem.(string)
+				if !ok {
+					continue
+				}
+				if !allowed[sv] {
+					return enumError(inputID, fmt.Sprintf("[%d]", i), sv, inputDef.Symbols)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// enumError names the offending value and lists the permitted ones, so the
+// caller (usually an LLM populating inputs) can correct itself without
+// re-reading the workflow schema.
+func enumError(inputID, index, got string, symbols []string) error {
+	return fmt.Errorf(
+		"%s%s: %q is not a permitted value; expected one of %v (%w)",
+		inputID, index, got, symbols, ErrInputValidation,
+	)
+}

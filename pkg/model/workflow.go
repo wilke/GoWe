@@ -37,6 +37,7 @@ type WorkflowInput struct {
 	Required bool                 `json:"required"`
 	Default  any                  `json:"default,omitempty"`
 	Doc      string               `json:"doc,omitempty"`
+	Symbols  []string             `json:"symbols,omitempty"`
 	Fields   []RecordFieldSummary `json:"fields,omitempty"`
 }
 

@@ -22,6 +22,10 @@ type InputParam struct {
 	Doc     string
 	Default any
 
+	// Symbols holds the permitted values for an enum-typed input. See the
+	// identically-named field on ToolInputParam.
+	Symbols []string
+
 	// RecordFields contains field definitions for record types.
 	// Used for resolving secondaryFiles on record fields.
 	RecordFields []RecordField
