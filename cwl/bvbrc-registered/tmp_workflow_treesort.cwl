@@ -30,8 +30,7 @@ inputs:
 
   input_fasta_existing_dataset:
     type: string?
-    doc: "Directory with previously prepared dataset files"
-    default: ""
+    doc: "Directory with previously prepared dataset files. Omit when unused — the app's own default is undef, and sending an empty string makes the key present-but-empty."
 
   input_fasta_file_id:
     type: string?
@@ -58,8 +57,7 @@ inputs:
 
   segments:
     type: string?
-    doc: "Segments to analyze (empty string = all segments)"
-    default: ""
+    doc: "Segments to analyze. OMIT this input entirely to analyze all segments — do not pass an empty string. The app declares default undef; an empty string can be split into a one-element list and then crash prepare_input_file."
 
   match_type:
     type: string?
@@ -68,8 +66,7 @@ inputs:
 
   match_regex:
     type: string?
-    doc: "Custom regex to match segments (used when match_type is regex)"
-    default: ""
+    doc: "Custom regex to match segments. Required when match_type=regex; omit otherwise — do not pass an empty string."
 
   p_value:
     type: float?
@@ -93,8 +90,7 @@ inputs:
 
   clades_path:
     type: string?
-    doc: "Output file path for clades with evidence of reassortment"
-    default: ""
+    doc: "Output file path for clades with evidence of reassortment. Omit when not wanted — do not pass an empty string."
 
   output_path:
     type: string
