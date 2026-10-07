@@ -310,3 +310,90 @@ func TestValidateRecordRequiredFields_DefaultFilledFirst(t *testing.T) {
 		t.Errorf("platform has a default and should have been filled: %v", err)
 	}
 }
+
+// --- plain array shape ------------------------------------------------------
+//
+// ValidateRecordShape covers arrays of records; these cover the plain ones,
+// which nothing checked until 2026-10-07. The MSA SNP case below is the exact
+// payload behind all 11 of its failures.
+
+func arrayShapeTool() *cwl.CommandLineTool {
+	return &cwl.CommandLineTool{
+		Inputs: map[string]cwl.ToolInputParam{
+			"feature_groups": {Type: "string[]?"},
+			"genome_ids":     {Type: "string[]?"},
+			"bootstrap":      {Type: "int?"},
+			"alphabet":       {Type: "string"},
+			// An array of records belongs to ValidateRecordShape, which gives
+			// a better message; this check must leave it alone.
+			"sequences": {
+				Type:         "record:sequence_input[]",
+				RecordFields: []cwl.RecordField{{Name: "filename", Type: "string"}},
+			},
+		},
+	}
+}
+
+func TestValidateArrayShape_RejectsTheMSASNPFailure(t *testing.T) {
+	// All 11 MSA SNP failures passed feature_groups as a bare string; the one
+	// success passed a one-element list.
+	err := ValidateArrayShape(arrayShapeTool(), map[string]any{
+		"feature_groups": "/clark.cucinell@patricbrc.org/home/Feature Groups/rpoB_feature_group_20",
+	})
+	if err == nil {
+		t.Fatal("a bare string where string[]? is declared was accepted")
+	}
+	// The message must name the input and show the corrected shape, so an LLM
+	// can fix it without re-reading the schema.
+	for _, want := range []string{"feature_groups", "expects an array", "wrap it in a list", "rpoB_feature_group_20"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err.Error(), want)
+		}
+	}
+	if !errors.Is(err, ErrInputValidation) {
+		t.Errorf("should wrap ErrInputValidation, got %v", err)
+	}
+}
+
+func TestValidateArrayShape_RejectsObjectAndNumber(t *testing.T) {
+	if err := ValidateArrayShape(arrayShapeTool(), map[string]any{
+		"genome_ids": map[string]any{"id": "1313.1"},
+	}); err == nil || !strings.Contains(err.Error(), "got an object") {
+		t.Errorf("an object where an array is declared should be refused, got %v", err)
+	}
+	if err := ValidateArrayShape(arrayShapeTool(), map[string]any{
+		"genome_ids": 1313.1,
+	}); err == nil {
+		t.Error("a number where an array is declared should be refused")
+	}
+}
+
+func TestValidateArrayShape_Accepts(t *testing.T) {
+	cases := map[string]map[string]any{
+		"proper list":           {"feature_groups": []any{"/a", "/b"}},
+		"one-element list":      {"feature_groups": []any{"/a"}},
+		"empty list":            {"feature_groups": []any{}},
+		"absent":                {},
+		"nil":                   {"feature_groups": nil},
+		"scalar on scalar type": {"alphabet": "dna", "bootstrap": 100},
+		// Left to ValidateRecordShape, which names the expected fields.
+		"record array given a string": {"sequences": "/path/to/file"},
+	}
+	for name, inputs := range cases {
+		if err := ValidateArrayShape(arrayShapeTool(), inputs); err != nil {
+			t.Errorf("%s: should be accepted here, got %v", name, err)
+		}
+	}
+}
+
+// The two checks must not both fire on the same input, or the caller gets the
+// less useful message.
+func TestValidateArrayShape_DefersToRecordShape(t *testing.T) {
+	inputs := map[string]any{"sequences": "/path/to/file"}
+	if err := ValidateArrayShape(arrayShapeTool(), inputs); err != nil {
+		t.Fatalf("ValidateArrayShape should ignore record arrays: %v", err)
+	}
+	if err := ValidateRecordShape(arrayShapeTool(), inputs); err == nil {
+		t.Error("ValidateRecordShape should be the one to refuse it")
+	}
+}

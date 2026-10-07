@@ -95,8 +95,13 @@ func ValidateRecordShape(tool *cwl.CommandLineTool, inputs map[string]any) error
 			// Every element must itself be a record. Checking only the
 			// container let `["/path/to/file"]` through for a record[] input,
 			// which reached BV-BRC and died in Perl preflight with
-			// "Can't use string as a HASH ref" — 11 Gene Tree and 11 MSA SNP
-			// failures before this was caught (2026-10-05).
+			// "Can't use string as a HASH ref" — 11 Gene Tree failures before
+			// this was caught (2026-10-05).
+			//
+			// This comment previously also credited 11 MSA SNP failures.
+			// Wrong: those passed `feature_groups` as a bare string on a
+			// plain string[]? input, which is not a record at all and is
+			// caught by ValidateArrayShape instead.
 			for i, elem := range v {
 				if _, ok := elem.(map[string]any); !ok {
 					return fmt.Errorf(
@@ -327,6 +332,71 @@ func checkRequiredKeys(context string, rec map[string]any, required []string) er
 		}
 	}
 	return nil
+}
+
+// ValidateArrayShape rejects a scalar passed where a plain array is declared.
+//
+// ValidateRecordShape covers arrays OF RECORDS; this covers the plain ones
+// (string[], int[], …), which nothing checked until 2026-10-07. The catalog
+// declares 35 such inputs across 19 workflows, among them the ones agents
+// touch most: srr_ids, genome_ids, genome_groups, feature_groups.
+//
+// The evidence that this is always an error, never a tolerated shorthand, is
+// unanimous in the submission history:
+//
+//	COMPLETED   0 of 81 array-valued inputs passed a scalar
+//	FAILED     15 of 32 did
+//
+// All 11 MSA SNP failures are this bug — `feature_groups` as a bare string —
+// and the single MSA SNP success passed a one-element list. BV-BRC's Perl
+// reads these as array refs, so a scalar is a type error there, not a
+// convenience.
+//
+// Rejects rather than silently wrapping the value in a list: coercing would
+// hide the caller's mistake, and an LLM that gets a named error corrects
+// itself, while one whose payload is quietly fixed never learns.
+func ValidateArrayShape(tool *cwl.CommandLineTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		baseType := strings.TrimSuffix(inputDef.Type, "?")
+		if !strings.HasSuffix(baseType, "[]") {
+			continue
+		}
+		// Arrays of records belong to ValidateRecordShape, which reports a
+		// more specific message naming the expected fields.
+		if strings.HasPrefix(baseType, "record:") || len(inputDef.RecordFields) > 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+		switch value.(type) {
+		case []any:
+			// Correct shape. Element types are ToolInputs' business.
+		case map[string]any:
+			return fmt.Errorf(
+				"%s expects an array (%s), got an object (%w)",
+				inputID, inputDef.Type, ErrInputValidation,
+			)
+		default:
+			return fmt.Errorf(
+				"%s expects an array (%s), got a single %T — wrap it in a list, "+
+					"e.g. [%v] (%w)",
+				inputID, inputDef.Type, value, formatScalar(value), ErrInputValidation,
+			)
+		}
+	}
+	return nil
+}
+
+// formatScalar renders a scalar the way it should appear inside the suggested
+// list, so the error text can be copied verbatim: quoted for a string, bare
+// otherwise.
+func formatScalar(v any) string {
+	if sv, ok := v.(string); ok {
+		return fmt.Sprintf("%q", sv)
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // IsOptionalType checks if a CWL type is optional (can be null).

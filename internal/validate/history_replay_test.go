@@ -17,6 +17,17 @@ import (
 // deployed. A payload that BV-BRC ran to completion is the strongest evidence
 // available that a rejection is wrong.
 func TestHistoryReplay_RequiredRecordFields(t *testing.T) {
+	replayCompleted(t, "ValidateRecordRequiredFields", ValidateRecordRequiredFields)
+}
+
+// Same guard for the plain-array check. Expected to refuse nothing: a scalar
+// where an array is declared appears in 0 of 81 array-valued inputs across
+// every COMPLETED submission, and in 15 of 32 across the failures.
+func TestHistoryReplay_ArrayShape(t *testing.T) {
+	replayCompleted(t, "ValidateArrayShape", ValidateArrayShape)
+}
+
+func replayCompleted(t *testing.T, label string, check func(*cwl.CommandLineTool, map[string]any) error) {
 	db := os.Getenv("GOWE_DB")
 	if db == "" {
 		t.Skip("set GOWE_DB to replay submission history")
@@ -62,18 +73,18 @@ func TestHistoryReplay_RequiredRecordFields(t *testing.T) {
 		}
 		total++
 		ApplyRecordFieldDefaults(tool, inputs)
-		if err := ValidateRecordRequiredFields(tool, inputs); err != nil {
+		if err := check(tool, inputs); err != nil {
 			rejected++
 			byReason[name+": "+err.Error()]++
 		}
 	}
-	t.Logf("replayed %d COMPLETED submissions through ValidateRecordRequiredFields", total)
+	t.Logf("replayed %d COMPLETED submissions through %s", total, label)
 	t.Logf("rejected: %d", rejected)
 	for r, n := range byReason {
 		t.Logf("   (%d) %s", n, r)
 	}
 	if rejected > 0 {
-		t.Errorf("%d payload(s) that COMPLETED on BV-BRC would now be refused -- "+
-			"the required-field rule is too strict", rejected)
+		t.Errorf("%d payload(s) that COMPLETED on BV-BRC would now be refused by %s "+
+			"-- the rule is too strict", rejected, label)
 	}
 }
