@@ -45,11 +45,12 @@ type WorkflowInput struct {
 // Exposed in GET /workflows/:id/inputs so callers (including LLMs) know
 // the exact field names, types, and defaults for record inputs.
 type RecordFieldSummary struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Required bool   `json:"required"`
-	Default  any    `json:"default,omitempty"`
-	Doc      string `json:"doc,omitempty"`
+	Name     string   `json:"name"`
+	Type     string   `json:"type"`
+	Required bool     `json:"required"`
+	Default  any      `json:"default,omitempty"`
+	Doc      string   `json:"doc,omitempty"`
+	Symbols  []string `json:"symbols,omitempty"`
 }
 
 // WorkflowOutput describes a typed output of a Workflow.

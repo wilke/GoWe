@@ -97,3 +97,115 @@ func TestValidateEnumValues_SkipsWhatItShould(t *testing.T) {
 		}
 	})
 }
+
+// --- record-field enums -----------------------------------------------------
+//
+// These were entirely unvalidated until 2026-10-07: ValidateEnumValues walked
+// only tool.Inputs, leaving 47 of the catalog's 298 declared values unchecked.
+// The GeneTree shape below is the real one, and the failing value is the one an
+// agent actually produced (an *aligned* FASTA labelled "feature_dna_fasta",
+// which validated, reached BV-BRC and failed inside the app).
+
+func geneTreeLikeTool() *cwl.CommandLineTool {
+	return &cwl.CommandLineTool{
+		Inputs: map[string]cwl.ToolInputParam{
+			"sequences": {
+				Type: "record:sequence_input[]",
+				RecordFields: []cwl.RecordField{
+					{Name: "filename", Type: "string"},
+					{
+						Name: "type",
+						Type: "string",
+						Doc:  "What the path is [enum: feature_group, aligned_dna_fasta, feature_dna_fasta] [bvbrc:enum]",
+						Symbols: []string{
+							"feature_group", "aligned_dna_fasta", "feature_dna_fasta",
+						},
+					},
+				},
+			},
+			// A single record, not an array — Fastq Utils and two others.
+			"paired_end_libs": {
+				Type: "record:paired_end_lib?",
+				RecordFields: []cwl.RecordField{
+					{Name: "read1", Type: "string"},
+					{Name: "platform", Type: "string?", Symbols: []string{"infer", "illumina"}},
+				},
+			},
+		},
+	}
+}
+
+func TestValidateEnumValues_RecordFieldRejected(t *testing.T) {
+	err := ValidateEnumValues(geneTreeLikeTool(), map[string]any{
+		"sequences": []any{
+			map[string]any{"filename": "/x/y.afa", "type": "TOTALLY_BOGUS_TYPE"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected a rejection for an undeclared record-field enum value")
+	}
+	// The message must name the field path, the offending value AND the
+	// permitted set, or an LLM cannot correct itself from it.
+	for _, want := range []string{"sequences[0].type", "TOTALLY_BOGUS_TYPE", "aligned_dna_fasta"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	if !errors.Is(err, ErrInputValidation) {
+		t.Errorf("error should wrap ErrInputValidation, got %v", err)
+	}
+}
+
+func TestValidateEnumValues_RecordFieldIndexReported(t *testing.T) {
+	err := ValidateEnumValues(geneTreeLikeTool(), map[string]any{
+		"sequences": []any{
+			map[string]any{"filename": "/a.afa", "type": "feature_group"},
+			map[string]any{"filename": "/b.afa", "type": "nope"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected a rejection")
+	}
+	if !strings.Contains(err.Error(), "sequences[1].type") {
+		t.Errorf("error should point at index 1, got %q", err.Error())
+	}
+}
+
+func TestValidateEnumValues_SingleRecordNotArray(t *testing.T) {
+	err := ValidateEnumValues(geneTreeLikeTool(), map[string]any{
+		"paired_end_libs": map[string]any{"read1": "/r1.fq", "platform": "bogus"},
+	})
+	if err == nil {
+		t.Fatal("expected a rejection for a single (non-array) record")
+	}
+	if !strings.Contains(err.Error(), "paired_end_libs.platform") {
+		t.Errorf("error should name the field without an index, got %q", err.Error())
+	}
+}
+
+func TestValidateEnumValues_RecordFieldAccepted(t *testing.T) {
+	for _, v := range []string{"feature_group", "aligned_dna_fasta", "feature_dna_fasta"} {
+		err := ValidateEnumValues(geneTreeLikeTool(), map[string]any{
+			"sequences": []any{map[string]any{"filename": "/x.afa", "type": v}},
+		})
+		if err != nil {
+			t.Errorf("declared value %q was rejected: %v", v, err)
+		}
+	}
+}
+
+func TestValidateEnumValues_RecordFieldSkips(t *testing.T) {
+	cases := map[string]map[string]any{
+		"field absent":        {"sequences": []any{map[string]any{"filename": "/x.afa"}}},
+		"field nil":           {"sequences": []any{map[string]any{"type": nil}}},
+		"non-string value":    {"sequences": []any{map[string]any{"type": 42}}},
+		"element not record":  {"sequences": []any{"/just/a/path"}},
+		"input absent":        {},
+		"field has no symbol": {"paired_end_libs": map[string]any{"read1": "anything at all"}},
+	}
+	for name, inputs := range cases {
+		if err := ValidateEnumValues(geneTreeLikeTool(), inputs); err != nil {
+			t.Errorf("%s: should be skipped, got %v", name, err)
+		}
+	}
+}

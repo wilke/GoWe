@@ -1566,6 +1566,16 @@ func parseRecordField(m map[string]any) cwl.RecordField {
 		Label:   stringField(m, "label"),
 	}
 
+	// Permitted values, from a real CWL enum first and the doc convention
+	// second -- the same order used for a top-level input, so the two can
+	// never disagree about what a spec declares.
+	if typeMap, ok := m["type"].(map[string]any); ok {
+		field.Symbols = symbolsFromType(typeMap)
+	}
+	if len(field.Symbols) == 0 {
+		field.Symbols = symbolsFromDoc(field.Doc)
+	}
+
 	// Parse inputBinding for this field.
 	if ib, ok := m["inputBinding"].(map[string]any); ok {
 		field.InputBinding = parseInputBinding(ib)
@@ -1721,6 +1731,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 					Required: !strings.HasSuffix(rf.Type, "?") && rf.Default == nil,
 					Default:  rf.Default,
 					Doc:      rf.Doc,
+					Symbols:  rf.Symbols,
 				})
 			}
 		}

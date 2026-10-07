@@ -188,6 +188,13 @@ type RecordField struct {
 	// Doc is documentation for this field.
 	Doc string `json:"doc,omitempty"`
 
+	// Symbols holds the permitted values for an enum-typed field, from a real
+	// CWL enum or from the `[enum: a, b, c]` convention in Doc. Record FIELDS
+	// carry enums just as top-level inputs do -- 47 of the catalog's 298
+	// declared values live only here (GeneTree's sequences[].type among them)
+	// -- and until this existed ValidateEnumValues could not see any of them.
+	Symbols []string `json:"symbols,omitempty"`
+
 	// Label is a human-readable label.
 	Label string `json:"label,omitempty"`
 }

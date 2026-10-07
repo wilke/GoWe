@@ -469,10 +469,18 @@ func resolveNamespacePrefix(s string, namespaces map[string]string) string {
 //	BLAST     input_source = "id_list" where a feature group was meant
 //	GeneTree  sequences[].type = "fasta_file", not one of the declared values
 //
-// Handles a scalar value and an array of scalars (for a multi-valued enum).
+// Handles a scalar value, an array of scalars (for a multi-valued enum), and
+// enum-typed fields INSIDE a record — a single record or an array of them.
+// Record fields were invisible here until 2026-10-07: this walked only
+// tool.Inputs, so 47 of the catalog's 298 declared values were unchecked, the
+// GeneTree sequences[].type case above among them. Observed consequence: an
+// agent asked about an *aligned* FASTA set type to "feature_dna_fasta", a
+// declared-but-wrong value; the submission validated, reached BV-BRC and
+// failed in the app.
+//
 // Non-string values are left alone — type checking is not this function's job.
-// An input with no declared symbols is skipped, so this is inert for specs
-// that declare none.
+// An input or field with no declared symbols is skipped, so this stays inert
+// for specs that declare none.
 func ValidateEnumValues(tool *cwl.CommandLineTool, inputs map[string]any) error {
 	for inputID, inputDef := range tool.Inputs {
 		if len(inputDef.Symbols) == 0 {
@@ -501,6 +509,72 @@ func ValidateEnumValues(tool *cwl.CommandLineTool, inputs map[string]any) error 
 				}
 				if !allowed[sv] {
 					return enumError(inputID, fmt.Sprintf("[%d]", i), sv, inputDef.Symbols)
+				}
+			}
+		}
+	}
+
+	// Enum-typed fields inside a record. Kept in a second pass rather than
+	// folded into the loop above because an input has either Symbols or
+	// RecordFields, never both, and the two walks share nothing.
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.RecordFields) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+		switch v := value.(type) {
+		case map[string]any:
+			if err := checkRecordEnums(inputID, v, inputDef.RecordFields); err != nil {
+				return err
+			}
+		case []any:
+			for i, item := range v {
+				rec, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				path := fmt.Sprintf("%s[%d]", inputID, i)
+				if err := checkRecordEnums(path, rec, inputDef.RecordFields); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkRecordEnums validates one record's enum-typed fields against their
+// declared symbols. Fields with no symbols, absent fields and non-string
+// values are skipped, matching the top-level behaviour.
+func checkRecordEnums(path string, rec map[string]any, fields []cwl.RecordField) error {
+	for _, rf := range fields {
+		if len(rf.Symbols) == 0 {
+			continue
+		}
+		raw, exists := rec[rf.Name]
+		if !exists || raw == nil {
+			continue
+		}
+		allowed := make(map[string]bool, len(rf.Symbols))
+		for _, sym := range rf.Symbols {
+			allowed[sym] = true
+		}
+		switch v := raw.(type) {
+		case string:
+			if !allowed[v] {
+				return enumError(path+"."+rf.Name, "", v, rf.Symbols)
+			}
+		case []any:
+			for i, elem := range v {
+				sv, ok := elem.(string)
+				if !ok {
+					continue
+				}
+				if !allowed[sv] {
+					return enumError(path+"."+rf.Name, fmt.Sprintf("[%d]", i), sv, rf.Symbols)
 				}
 			}
 		}
