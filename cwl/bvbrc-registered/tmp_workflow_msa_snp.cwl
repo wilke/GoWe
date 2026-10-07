@@ -27,7 +27,7 @@ inputs:
               doc: "FASTA sequence file"
             - name: type
               type: string?
-              doc: "File type (feature_dna_fasta or feature_protein_fasta)"
+              doc: "File type [enum: feature_dna_fasta, feature_protein_fasta] [bvbrc:enum]"
     doc: " [bvbrc:group]"
   feature_groups:
     type: string[]?
