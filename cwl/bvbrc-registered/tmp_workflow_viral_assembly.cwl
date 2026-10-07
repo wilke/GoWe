@@ -58,7 +58,7 @@ inputs:
 
   module:
     type: string?
-    doc: "Virus module [enum: FLU, FLU-alt, FLU-avian, FLU-avian-residual, FLU-fast, FLU-lowQC, FLU-minion, FLU-pacbio, FLU-pgm, FLU-ref, FLU-roche, FLU-secondary, FLU-sensitive, FLU-utr, CoV, RSV, EBOLA, FLU_AD] [bvbrc:enum]"
+    doc: "Virus module [enum: FLU, FLU-alt, FLU-avian, FLU-avian-residual, FLU-fast, FLU-lowQC, FLU-minion, FLU-pacbio, FLU-pgm, FLU-roche, FLU-secondary, FLU-sensitive, FLU-utr, CoV, RSV, EBOLA, FLU_AD] [bvbrc:enum]"
 
   reference_type:
     type: string?

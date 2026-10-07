@@ -104,3 +104,56 @@ func TestSymbolsFromDoc_Direct(t *testing.T) {
 		}
 	}
 }
+
+// A bare CommandLineTool is wrapped in a synthetic Workflow, and the wrap
+// dropped Symbols -- so GET /inputs reported no permitted values for any
+// top-level enum on any of the 30 registered BV-BRC workflows, all of which
+// are wrapped tools. Record fields were unaffected only because they travel
+// inside RecordFields, which the wrap did copy.
+func TestWrappedToolKeepsTopLevelSymbols(t *testing.T) {
+	const spec = `
+class: CommandLineTool
+cwlVersion: v1.2
+baseCommand: echo
+inputs:
+  aligner:
+    type: string?
+    doc: "Alignment program [enum: muscle, mafft] [bvbrc:enum]"
+  libs:
+    type:
+      type: array
+      items:
+        type: record
+        name: lib
+        fields:
+          - name: platform
+            type: string?
+            doc: "Platform [enum: illumina, nanopore] [bvbrc:enum]"
+outputs: []
+`
+	doc, err := New(slog.New(slog.NewTextHandler(io.Discard, nil))).ParseGraph([]byte(spec))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if doc.Workflow == nil {
+		t.Fatal("tool was not wrapped into a workflow")
+	}
+	top, ok := doc.Workflow.Inputs["aligner"]
+	if !ok {
+		t.Fatal("aligner missing from the wrapped workflow inputs")
+	}
+	if len(top.Symbols) != 2 {
+		t.Errorf("top-level symbols lost in the wrap: got %v, want [muscle mafft]", top.Symbols)
+	}
+	// And the record-field symbols that already worked must keep working.
+	libs := doc.Workflow.Inputs["libs"]
+	var pf []string
+	for _, rf := range libs.RecordFields {
+		if rf.Name == "platform" {
+			pf = rf.Symbols
+		}
+	}
+	if len(pf) != 2 {
+		t.Errorf("record-field symbols: got %v, want [illumina nanopore]", pf)
+	}
+}

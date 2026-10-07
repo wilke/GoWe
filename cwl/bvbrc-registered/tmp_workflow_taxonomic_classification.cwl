@@ -99,7 +99,7 @@ inputs:
 
   confidence_interval:
     type: float?
-    doc: "Confidence interval for classification (0.0 to 1.0)"
+    doc: "Confidence interval for classification [enum: 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1] [bvbrc:enum]"
     default: 0.1
 
   output_path:

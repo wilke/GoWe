@@ -518,6 +518,7 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 				Type:    inp.Type,
 				Doc:     inp.Doc,
 				Default: inp.Default,
+				Symbols: inp.Symbols,
 			}
 		}
 
@@ -561,6 +562,16 @@ func (p *Parser) wrapToolAsWorkflow(toolRaw map[string]any, version string) (*cw
 				Default:        inp.Default,
 				RecordFields:   inp.RecordFields,
 				SecondaryFiles: inp.SecondaryFiles,
+				// Symbols was omitted here, so GET /inputs reported no
+				// `symbols` for ANY top-level enum on ANY of the 30 registered
+				// BV-BRC workflows -- every one is a wrapped CommandLineTool.
+				// Record-field symbols came through only because they travel
+				// inside RecordFields, which was copied. Validation was
+				// unaffected (it re-parses RawCWL and reads tool.Inputs
+				// directly), but the field the enum work added for callers was
+				// dead, and agents had to parse `[enum: ...]` out of the doc
+				// prose instead.
+				Symbols: inp.Symbols,
 			}
 		}
 

@@ -153,12 +153,26 @@ def audit():
                         f"`{pid}` is required by the app but absent from our CWL"))
                 continue
 
-            # 2. required by the app, optional for us.
-            if app_required and not mine.get("required"):
+            # 2. Required by the app and genuinely omissible for us.
+            #
+            # GET /inputs reports required=False for anything carrying a
+            # default, but MergeWorkflowInputDefaults fills those before
+            # dispatch, so the app always receives a value and there is no
+            # problem. Only an input with NO default can actually reach the
+            # app absent.
+            #
+            # Comparing required flags alone flagged MSA SNP alphabet
+            # (default "dna"), Metagenomic Binning force_local_assembly
+            # (default false) and Docking batch_size (default 10) as bugs.
+            # All three were artefacts -- the fourth artefact class this
+            # script produced.
+            if app_required and not mine.get("required") \
+                    and mine.get("default") is None:
                 findings[name].append((
                     "required-mismatch",
-                    f"`{pid}` required by the app, optional in our CWL "
-                    f"(type {mine['type']})"))
+                    f"`{pid}` is required by the app, optional for us, and has "
+                    f"NO default — it can reach the app absent (type "
+                    f"{mine['type']})"))
 
             # 3/4. enums.
             # Normalise to strings: a spec may write a numeric enum as
