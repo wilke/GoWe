@@ -209,3 +209,104 @@ func TestValidateEnumValues_RecordFieldSkips(t *testing.T) {
 		}
 	}
 }
+
+// --- required record fields -------------------------------------------------
+//
+// ValidateRecordFields catches a field that should not be there; these cover
+// the opposite, which nothing checked until 2026-10-07. A half-built record
+// validated and then failed inside the BV-BRC app.
+
+func requiredFieldTool() *cwl.CommandLineTool {
+	return &cwl.CommandLineTool{
+		Inputs: map[string]cwl.ToolInputParam{
+			// Gene Tree's real shape: both fields required, no defaults.
+			"sequences": {
+				Type: "record:sequence_input[]",
+				RecordFields: []cwl.RecordField{
+					{Name: "filename", Type: "string"},
+					{Name: "type", Type: "string"},
+				},
+			},
+			// A single record mixing required, nullable and defaulted fields.
+			"paired_end_libs": {
+				Type: "record:paired_end_lib?",
+				RecordFields: []cwl.RecordField{
+					{Name: "read1", Type: "string"},
+					{Name: "read2", Type: "string?"},
+					{Name: "platform", Type: "string", Default: "infer"},
+				},
+			},
+		},
+	}
+}
+
+func TestValidateRecordRequiredFields_MissingRejected(t *testing.T) {
+	// The exact payload that was accepted before this check existed.
+	err := ValidateRecordRequiredFields(requiredFieldTool(), map[string]any{
+		"sequences": []any{map[string]any{"type": "feature_group"}},
+	})
+	if err == nil {
+		t.Fatal("a record missing a required field was accepted")
+	}
+	for _, want := range []string{"sequences[0]", "filename"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	if !errors.Is(err, ErrInputValidation) {
+		t.Errorf("should wrap ErrInputValidation, got %v", err)
+	}
+}
+
+func TestValidateRecordRequiredFields_NullCountsAsMissing(t *testing.T) {
+	err := ValidateRecordRequiredFields(requiredFieldTool(), map[string]any{
+		"sequences": []any{map[string]any{"filename": nil, "type": "feature_group"}},
+	})
+	if err == nil {
+		t.Fatal("an explicit null in a required field was accepted; the app sees nothing either way")
+	}
+}
+
+func TestValidateRecordRequiredFields_IndexReported(t *testing.T) {
+	err := ValidateRecordRequiredFields(requiredFieldTool(), map[string]any{
+		"sequences": []any{
+			map[string]any{"filename": "/a.afa", "type": "feature_group"},
+			map[string]any{"filename": "/b.afa"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sequences[1]") {
+		t.Fatalf("should point at index 1, got %v", err)
+	}
+}
+
+func TestValidateRecordRequiredFields_Accepts(t *testing.T) {
+	cases := map[string]map[string]any{
+		"all required present": {
+			"sequences": []any{map[string]any{"filename": "/a.afa", "type": "feature_group"}},
+		},
+		"nullable field omitted": {
+			"paired_end_libs": map[string]any{"read1": "/r1.fq", "platform": "illumina"},
+		},
+		"input absent":        {},
+		"input nil":           {"sequences": nil},
+		"element not record":  {"sequences": []any{"/just/a/path"}},
+		"extra field present": {"sequences": []any{map[string]any{"filename": "/a", "type": "t", "zzz": 1}}},
+	}
+	for name, inputs := range cases {
+		if err := ValidateRecordRequiredFields(requiredFieldTool(), inputs); err != nil {
+			t.Errorf("%s: should be accepted here, got %v", name, err)
+		}
+	}
+}
+
+// A field with a declared default must not be reported missing once
+// ApplyRecordFieldDefaults has run -- which is why the submission path calls
+// them in that order.
+func TestValidateRecordRequiredFields_DefaultFilledFirst(t *testing.T) {
+	tool := requiredFieldTool()
+	inputs := map[string]any{"paired_end_libs": map[string]any{"read1": "/r1.fq"}}
+	ApplyRecordFieldDefaults(tool, inputs)
+	if err := ValidateRecordRequiredFields(tool, inputs); err != nil {
+		t.Errorf("platform has a default and should have been filled: %v", err)
+	}
+}

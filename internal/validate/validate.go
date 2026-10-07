@@ -5,6 +5,7 @@ package validate
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
@@ -245,9 +246,83 @@ func checkRecordKeys(context string, rec map[string]any, validFields map[string]
 			for f := range validFields {
 				valid = append(valid, f)
 			}
+			sort.Strings(valid)
 			return fmt.Errorf(
 				"unknown field %q in record input %s (valid fields: %s): %w",
 				key, context, strings.Join(valid, ", "), ErrInputValidation,
+			)
+		}
+	}
+	return nil
+}
+
+// ValidateRecordRequiredFields checks that each record carries the fields its
+// schema declares as required.
+//
+// ValidateRecordFields catches a field that should not be there; this catches
+// one that should. Nothing checked for a MISSING required field until
+// 2026-10-07, so a half-built record validated and then failed inside the
+// BV-BRC app. Proven on Gene Tree, whose own CWL marks sequences[].filename
+// required:
+//
+//	{"sequences": [{"type": "feature_group"}]}  ->  accepted, no filename
+//
+// A field counts as required when its type is not nullable (no "?" suffix) and
+// it declares no default — the same rule GET /inputs reports as
+// `required: true`. Call this AFTER ApplyRecordFieldDefaults, so a field with
+// a declared default has already been filled and is not reported missing.
+//
+// A nil or non-record value is left to ValidateRecordShape, and an absent
+// input to ToolInputs; this function only inspects records that are present.
+func ValidateRecordRequiredFields(tool *cwl.CommandLineTool, inputs map[string]any) error {
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.RecordFields) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+
+		var required []string
+		for _, rf := range inputDef.RecordFields {
+			if !strings.HasSuffix(rf.Type, "?") && rf.Default == nil {
+				required = append(required, rf.Name)
+			}
+		}
+		if len(required) == 0 {
+			continue
+		}
+
+		switch v := value.(type) {
+		case map[string]any:
+			if err := checkRequiredKeys(inputID, v, required); err != nil {
+				return err
+			}
+		case []any:
+			for i, item := range v {
+				rec, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if err := checkRequiredKeys(fmt.Sprintf("%s[%d]", inputID, i), rec, required); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkRequiredKeys reports the first required field absent from one record.
+// A present-but-null value counts as absent: the app sees nothing either way.
+func checkRequiredKeys(context string, rec map[string]any, required []string) error {
+	for _, name := range required {
+		v, ok := rec[name]
+		if !ok || v == nil {
+			return fmt.Errorf(
+				"record input %s is missing required field %q: %w",
+				context, name, ErrInputValidation,
 			)
 		}
 	}

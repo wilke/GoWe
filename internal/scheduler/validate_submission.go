@@ -79,6 +79,11 @@ func ValidateSubmissionInputs(logger *slog.Logger, wf *model.Workflow, inputs ma
 		if err := validate.ValidateRecordShape(cwlTool, job); err != nil {
 			return fmt.Errorf("step %s: %w", step.ID, err)
 		}
+		// After ApplyRecordFieldDefaults, so a field with a declared default
+		// has been filled and is not reported missing.
+		if err := validate.ValidateRecordRequiredFields(cwlTool, job); err != nil {
+			return fmt.Errorf("step %s: %w", step.ID, err)
+		}
 		if err := validate.ValidateEnumValues(cwlTool, job); err != nil {
 			return fmt.Errorf("step %s: %w", step.ID, err)
 		}
