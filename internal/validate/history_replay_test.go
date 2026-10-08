@@ -27,6 +27,76 @@ func TestHistoryReplay_ArrayShape(t *testing.T) {
 	replayCompleted(t, "ValidateArrayShape", ValidateArrayShape)
 }
 
+// Reports how many COMPLETED submissions would carry a declared-type warning.
+// It does NOT assert zero, because a warning is not an error and the count
+// legitimately moves as CWLs are corrected -- fixing GenomeAssembly's
+// genome_size to string? removes 5 of them.
+//
+// This measurement is why the type check reports instead of rejecting. Run
+// against a strict version before anything was wired in, it refused 22:
+//
+//	14  Metagenomic Read Mapping  srr_ids     passed as a list
+//	 5  GenomeAssembly            genome_size "5M"
+//	 2  RNASeq                    contrasts   []
+//	 1  GenomeAnnotation          contigs     an object
+//
+// All ran to completion on BV-BRC. **If anyone promotes these warnings to a
+// gate, add it to replayCompleted above and it must come back zero first.**
+func TestHistoryReplay_InputTypeWarningCount(t *testing.T) {
+	db := os.Getenv("GOWE_DB")
+	if db == "" {
+		t.Skip("set GOWE_DB to replay submission history")
+	}
+	conn, err := sql.Open("sqlite", "file:"+db+"?mode=ro")
+	if err != nil {
+		t.Skipf("open: %v", err)
+	}
+	defer conn.Close()
+	rows, err := conn.Query(`SELECT w.name, w.raw_cwl, s.inputs
+		FROM submissions s JOIN workflows w ON w.id = s.workflow_id
+		WHERE s.state = 'COMPLETED' AND COALESCE(w.raw_cwl,'') != ''`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	p := parser.New(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	counts := map[string]int{}
+	total, flagged := 0, 0
+	for rows.Next() {
+		var name, raw, inputsJSON string
+		if err := rows.Scan(&name, &raw, &inputsJSON); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		var inputs map[string]any
+		if json.Unmarshal([]byte(inputsJSON), &inputs) != nil {
+			continue
+		}
+		doc, err := p.ParseGraph([]byte(raw))
+		if err != nil {
+			continue
+		}
+		var tool *cwl.CommandLineTool
+		for _, clt := range doc.Tools {
+			tool = clt
+			break
+		}
+		if tool == nil {
+			continue
+		}
+		total++
+		ApplyRecordFieldDefaults(tool, inputs)
+		if w := InputTypeWarnings(tool, inputs); len(w) > 0 {
+			flagged++
+			counts[name+": "+w[0]]++
+		}
+	}
+	t.Logf("%d of %d COMPLETED submissions carry a declared-type warning", flagged, total)
+	for k, n := range counts {
+		t.Logf("   (%d) %s", n, k)
+	}
+}
+
 func replayCompleted(t *testing.T, label string, check func(*cwl.CommandLineTool, map[string]any) error) {
 	db := os.Getenv("GOWE_DB")
 	if db == "" {

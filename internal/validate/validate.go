@@ -5,7 +5,9 @@ package validate
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
@@ -331,6 +333,159 @@ func checkRequiredKeys(context string, rec map[string]any, required []string) er
 			)
 		}
 	}
+	return nil
+}
+
+// InputTypeWarnings reports values whose kind does not match the declared
+// type. It REPORTS, it does not reject -- and that is a deliberate, measured
+// decision rather than caution.
+//
+// Nothing enforced declared types until 2026-10-08. Probed against the live
+// service, all of these were accepted:
+//
+//	srr_libs[].condition = "Cd0"        declared int?   (a LABEL, not an index)
+//	srr_libs[].condition = ["a","b"]    declared int?
+//	bootstrap            = "not-a-num"  declared int?
+//
+// A strict version of this check was written and then replayed against every
+// COMPLETED submission BEFORE being wired in. It refused 22 of them:
+//
+//	14  Metagenomic Read Mapping  srr_ids   = ["ERR5260468"]   declared string?
+//	 5  GenomeAssembly            genome_size = "5M"           declared int
+//	 2  RNASeq                    contrasts = []               declared string?
+//	 1  GenomeAnnotation          contigs   an object          declared string?
+//
+// Every one of those ran to completion on BV-BRC. So the app layer is loosely
+// typed by design -- "5M" is a human-readable genome size, and several of our
+// CWLs simply under-declare -- and a type gate would refuse payloads that
+// demonstrably work. The declared type is not a contract BV-BRC honours.
+//
+// Reporting still has value: it is how the three CWL under-declarations above
+// were found, and a wrong `condition` is invisible otherwise. Warnings surface
+// in the dry-run report, where an agent or a developer can act on them without
+// a submission being blocked.
+//
+// If a future case justifies rejecting a specific field, reject THAT field --
+// do not promote this to a gate wholesale. The replay is the test that would
+// catch it: internal/validate/history_replay_test.go.
+func InputTypeWarnings(tool *cwl.CommandLineTool, inputs map[string]any) []string {
+	var warnings []string
+	for inputID, inputDef := range tool.Inputs {
+		base := strings.TrimSuffix(inputDef.Type, "?")
+		if strings.HasSuffix(base, "[]") || strings.HasPrefix(base, "record:") ||
+			len(inputDef.RecordFields) > 0 {
+			continue // ValidateArrayShape / ValidateRecordShape own these.
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+		if err := checkScalarKind(inputID, base, value); err != nil {
+			warnings = append(warnings, err.Error())
+		}
+	}
+
+	// Record fields carry declared types too, and condition -- the field that
+	// motivated this -- is one of them.
+	for inputID, inputDef := range tool.Inputs {
+		if len(inputDef.RecordFields) == 0 {
+			continue
+		}
+		value, exists := inputs[inputID]
+		if !exists || value == nil {
+			continue
+		}
+		switch v := value.(type) {
+		case map[string]any:
+			warnings = append(warnings, checkRecordKinds(inputID, v, inputDef.RecordFields)...)
+		case []any:
+			for i, item := range v {
+				rec, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				path := fmt.Sprintf("%s[%d]", inputID, i)
+				warnings = append(warnings, checkRecordKinds(path, rec, inputDef.RecordFields)...)
+			}
+		}
+	}
+	return warnings
+}
+
+func checkRecordKinds(path string, rec map[string]any, fields []cwl.RecordField) []string {
+	var warnings []string
+	for _, rf := range fields {
+		base := strings.TrimSuffix(rf.Type, "?")
+		if strings.HasSuffix(base, "[]") {
+			continue
+		}
+		v, ok := rec[rf.Name]
+		if !ok || v == nil {
+			continue
+		}
+		if err := checkScalarKind(path+"."+rf.Name, base, v); err != nil {
+			warnings = append(warnings, err.Error())
+		}
+	}
+	return warnings
+}
+
+// checkScalarKind reports whether one value can be the declared scalar type.
+func checkScalarKind(path, declared string, value any) error {
+	switch value.(type) {
+	case []any:
+		return fmt.Errorf("%s expects %s, got a list (%w)",
+			path, declared, ErrInputValidation)
+	case map[string]any:
+		return fmt.Errorf("%s expects %s, got an object (%w)",
+			path, declared, ErrInputValidation)
+	}
+
+	switch declared {
+	case "int", "long":
+		switch v := value.(type) {
+		case float64:
+			if v != math.Trunc(v) {
+				return fmt.Errorf("%s expects a whole number (%s), got %v (%w)",
+					path, declared, v, ErrInputValidation)
+			}
+		case string:
+			if _, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err != nil {
+				return fmt.Errorf(
+					"%s expects %s, got the string %q (%w)",
+					path, declared, v, ErrInputValidation)
+			}
+		case bool:
+			return fmt.Errorf("%s expects %s, got a boolean (%w)",
+				path, declared, ErrInputValidation)
+		}
+	case "float", "double":
+		switch v := value.(type) {
+		case float64:
+		case string:
+			if _, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err != nil {
+				return fmt.Errorf("%s expects %s, got the string %q (%w)",
+					path, declared, v, ErrInputValidation)
+			}
+		case bool:
+			return fmt.Errorf("%s expects %s, got a boolean (%w)",
+				path, declared, ErrInputValidation)
+		}
+	case "boolean":
+		switch v := value.(type) {
+		case bool:
+		case string:
+			if _, err := strconv.ParseBool(strings.TrimSpace(v)); err != nil {
+				return fmt.Errorf("%s expects a boolean, got the string %q (%w)",
+					path, v, ErrInputValidation)
+			}
+		case float64:
+			return fmt.Errorf("%s expects a boolean, got the number %v (%w)",
+				path, v, ErrInputValidation)
+		}
+	}
+	// string, File, Any and anything unrecognised accept any scalar: a JSON
+	// number for a string input is a coercion BV-BRC performs happily.
 	return nil
 }
 

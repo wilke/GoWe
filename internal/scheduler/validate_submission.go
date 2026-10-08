@@ -120,6 +120,66 @@ func allSourcesAreWorkflowInputs(step model.Step, wfInputIDs map[string]bool) bo
 	return true
 }
 
+// InputTypeWarningsJSON reports declared-type mismatches for every step whose
+// inputs are fully determined by workflow inputs. Non-blocking by design --
+// see validate.InputTypeWarnings for why a gate is not safe here.
+func InputTypeWarningsJSON(logger *slog.Logger, wf *model.Workflow, inputs map[string]any) []string {
+	if wf.RawCWL == "" {
+		return nil
+	}
+	p := parser.New(logger)
+	graphDoc, err := p.ParseGraph([]byte(wf.RawCWL))
+	if err != nil {
+		return nil
+	}
+	merged := MergeWorkflowInputDefaults(wf, inputs)
+	wfInputIDs := make(map[string]bool, len(wf.Inputs))
+	for _, inp := range wf.Inputs {
+		wfInputIDs[inp.ID] = true
+	}
+
+	var out []string
+	seen := map[string]bool{}
+	for _, step := range wf.Steps {
+		if !allSourcesAreWorkflowInputs(step, wfInputIDs) {
+			continue
+		}
+		var cwlTool *cwl.CommandLineTool
+		for id, clt := range graphDoc.Tools {
+			if strings.TrimPrefix(id, "#") == step.ToolRef || id == step.ToolRef {
+				cwlTool = clt
+				break
+			}
+		}
+		if cwlTool == nil {
+			continue
+		}
+		stepInputDefs := make([]stepinput.InputDef, len(step.In))
+		for i, si := range step.In {
+			stepInputDefs[i] = stepinput.InputDefFromModel(
+				si.ID, si.Sources, si.Source,
+				si.Default, si.ValueFrom, si.LoadContents, si.LinkMerge,
+			)
+		}
+		job, err := stepinput.ResolveInputs(
+			stepInputDefs, merged, nil, stepinput.Options{SkipAllValueFrom: true},
+		)
+		if err != nil {
+			continue
+		}
+		validate.ApplyRecordFieldDefaults(cwlTool, job)
+		// A multi-step workflow can resolve the same input into several steps;
+		// report each distinct mismatch once.
+		for _, w := range validate.InputTypeWarnings(cwlTool, job) {
+			if !seen[w] {
+				seen[w] = true
+				out = append(out, w)
+			}
+		}
+	}
+	return out
+}
+
 // ValidateSubmissionInputsJSON is a convenience wrapper that accepts the
 // raw JSON submission inputs and converts them. Used by the dry-run report.
 func ValidateSubmissionInputsJSON(logger *slog.Logger, wf *model.Workflow, inputs map[string]any) []map[string]string {

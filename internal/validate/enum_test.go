@@ -397,3 +397,71 @@ func TestValidateArrayShape_DefersToRecordShape(t *testing.T) {
 		t.Error("ValidateRecordShape should be the one to refuse it")
 	}
 }
+
+// --- declared-type warnings --------------------------------------------------
+//
+// NOT a gate. A strict version was replayed against every COMPLETED submission
+// before being wired in and refused 22 of them, so these report only. See
+// InputTypeWarnings for the measurements.
+
+func typeWarnTool() *cwl.CommandLineTool {
+	return &cwl.CommandLineTool{
+		Inputs: map[string]cwl.ToolInputParam{
+			"bootstrap":   {Type: "int?"},
+			"p_value":     {Type: "float?"},
+			"trim":        {Type: "boolean?"},
+			"genome_size": {Type: "string?"},
+			"srr_libs": {
+				Type: "record:srr_lib[]?",
+				RecordFields: []cwl.RecordField{
+					{Name: "srr_accession", Type: "string"},
+					{Name: "condition", Type: "int?"},
+				},
+			},
+		},
+	}
+}
+
+func TestInputTypeWarnings_FlagsTheRealBugs(t *testing.T) {
+	// condition is an INDEX into experimental_conditions, so a label silently
+	// breaks DESeq grouping. A prepared payload of ours had exactly this.
+	w := InputTypeWarnings(typeWarnTool(), map[string]any{
+		"srr_libs": []any{map[string]any{"srr_accession": "SRR1", "condition": "Cd0"}},
+	})
+	if len(w) != 1 || !strings.Contains(w[0], "srr_libs[0].condition") {
+		t.Fatalf("expected a warning naming the field, got %v", w)
+	}
+	if !strings.Contains(w[0], `"Cd0"`) {
+		t.Errorf("warning should quote the offending value: %v", w)
+	}
+}
+
+func TestInputTypeWarnings_Cases(t *testing.T) {
+	for name, tc := range map[string]struct {
+		inputs map[string]any
+		want   int
+	}{
+		"non-numeric string for int":   {map[string]any{"bootstrap": "not-a-number"}, 1},
+		"list where scalar declared":   {map[string]any{"bootstrap": []any{1, 2}}, 1},
+		"object where scalar":          {map[string]any{"bootstrap": map[string]any{"a": 1}}, 1},
+		"non-integral for int":         {map[string]any{"bootstrap": 1.5}, 1},
+		"boolean for int":              {map[string]any{"bootstrap": true}, 1},
+		"non-numeric string for float": {map[string]any{"p_value": "high"}, 1},
+		"non-bool string for boolean":  {map[string]any{"trim": "yes please"}, 1},
+
+		// Coercions real submissions rely on -- must NOT warn.
+		"number for a string input":   {map[string]any{"genome_size": 4600000}, 0},
+		"human size for string input": {map[string]any{"genome_size": "5M"}, 0},
+		"numeric string for int":      {map[string]any{"bootstrap": "100"}, 0},
+		"integral float for int":      {map[string]any{"bootstrap": 100.0}, 0},
+		"bool string for boolean":     {map[string]any{"trim": "true"}, 0},
+		"proper types":                {map[string]any{"bootstrap": 100.0, "p_value": 0.05, "trim": true}, 0},
+		"absent":                      {map[string]any{}, 0},
+		"explicit null":               {map[string]any{"bootstrap": nil}, 0},
+	} {
+		got := InputTypeWarnings(typeWarnTool(), tc.inputs)
+		if len(got) != tc.want {
+			t.Errorf("%s: want %d warning(s), got %d: %v", name, tc.want, len(got), got)
+		}
+	}
+}

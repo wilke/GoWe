@@ -671,6 +671,18 @@ func (s *Server) buildDryRunReport(wf *model.Workflow, inputs map[string]any) ma
 		}
 	}
 
+	// --- Declared-type mismatches, reported but NOT blocking ---
+	// BV-BRC is loosely typed in practice: "5M" completes for an int-declared
+	// genome_size, and several CWLs under-declare arity. A gate here would
+	// refuse 22 payloads that ran to completion (see InputTypeWarnings), so
+	// these surface as warnings for an agent or developer to act on.
+	for _, w := range scheduler.InputTypeWarningsJSON(s.logger, wf, inputs) {
+		warnings = append(warnings, map[string]string{
+			"field":   "inputs",
+			"message": w,
+		})
+	}
+
 	// --- Step analysis ---
 	steps := make([]map[string]any, 0, len(wf.Steps))
 	executorSet := make(map[model.ExecutorType]bool)

@@ -112,8 +112,8 @@ inputs:
     default: 5
 
   genome_size:
-    type: int?
-    doc: "Estimated genome size (for canu)"
+    type: string?
+    doc: "Estimated genome size for canu, e.g. 5M or 4600000. The app spec declares this a string with default 5M, and 5 completed submissions passed \"5M\"; it was declared int? here until 2026-10-08."
     default: 5000000
 
   output_path:
