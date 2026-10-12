@@ -35,7 +35,7 @@ So the folder only has to be visible to the workers that run the job:
     # run.yml
     run_path: /nfs/seq-data/RUN_241012_NB551234
 
-    gowe submit --workflow esviritu-run -i run.yml --group anlseq
+    gowe submit --workflow esviritu-run -i run.yml --group esviritu
 
 Steps:
 1. **pair:** finds `<sample>_S<n>_R1_001.fastq.gz` / `_R2_` pairs (also `<sample>_R1.fastq.gz` and `<sample>_1.fq.gz`).

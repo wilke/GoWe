@@ -12,7 +12,7 @@ doc: |
   the worker's --extra-bind paths. Everything runs on workers, and the reads
   are read in place, never copied or uploaded. Submit with --group <group>
   to pin the run to the workers that sit next to the data
-  (e.g. --group anlseq).
+  (e.g. --group esviritu).
 
   Defaults suit Illumina NextSeq paired-end data: fastp quality filtering is
   on, which also trims NextSeq poly-G tails.
