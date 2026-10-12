@@ -1,0 +1,8 @@
+# One NextSeq run folder, two FASTQ files per sample
+# (e.g. PatientA_S1_R1_001.fastq.gz + PatientA_S1_R2_001.fastq.gz).
+# Absolute path on the worker host; must be under the worker's --extra-bind.
+run_path: /nfs/seq-data/RUN_241012_NB551234
+# Optional settings:
+# project_name: virome_oct24     # default is the run folder name
+# dedup: true
+# min_align_length: 60           # only for 2x75 runs
