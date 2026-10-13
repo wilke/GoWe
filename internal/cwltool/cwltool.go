@@ -73,6 +73,8 @@ type Config struct {
 	MaxCPUs               int                  // Worker max CPUs (0 = no limit)
 	MaxMemMB              int64                // Worker max memory in MiB (0 = no limit)
 	ApptainerCgroups      bool                 // System supports cgroups v2 unified
+	CgroupCPU             bool                 // cpu controller usable (Apptainer --cpus)
+	CgroupMemory          bool                 // memory controller usable (Apptainer --memory)
 	DockerHostPathMap     map[string]string    // Container path -> host path for DinD
 	DockerVolume          string               // Named Docker volume shared with tool containers
 	ResolveSecondary      bool                 // Resolve secondary files from tool definitions
@@ -155,6 +157,8 @@ func resolveResources(runtime *cwlexpr.RuntimeContext, cfg Config, tool *cwl.Com
 	// else: no limit, keep runtime default for expressions
 
 	res.ApptainerCgroups = cfg.ApptainerCgroups
+	res.CgroupCPU = cfg.CgroupCPU
+	res.CgroupMemory = cfg.CgroupMemory
 	return res, nil
 }
 

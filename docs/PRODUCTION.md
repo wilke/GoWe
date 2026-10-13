@@ -103,6 +103,20 @@ NUM_WORKERS=4 LOG_LEVEL=debug ./scripts/start-server.sh
 5. Writes PIDs to `$BASE_DIR/gowe/pids/`
 6. Logs to `$BASE_DIR/gowe/logs/`
 
+### Apptainer resource limits (`--apptainer-cgroups`)
+
+A task's `runtime.cores` / `runtime.ram` become Apptainer `--cpus` / `--memory` limits when the
+host can enforce them. With the default `--apptainer-cgroups=auto` the worker checks which cgroup v2
+controllers Apptainer can use: all controllers at the cgroup root when running as root, otherwise
+those enabled for `user@<uid>.service/user.slice` (where rootless Apptainer creates its scopes, even
+when the worker itself runs in an ssh `session-N.scope`). A missing controller skips only its flag
+and logs one WARN at startup, e.g. `cpu limit not enforced: cpu controller not delegated to …`;
+tools still receive the core count through `runtime.cores` (for example `--cpu $(runtime.cores)`).
+
+Many distros delegate only `memory pids` to user services. To enforce CPU limits for rootless
+workers, an admin adds `Delegate=cpu cpuset io memory pids` to a `user@.service` drop-in. Use
+`--apptainer-cgroups=on` to force both flags, or `off` to never pass them.
+
 ## Server-side Workspace Pre-staging (`--workspace-staging server`)
 
 With `--workspace-staging server` (the production default via `start-server.sh`), the

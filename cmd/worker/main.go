@@ -66,6 +66,7 @@ func main() {
 	// Resource limit flags.
 	flag.Int64Var(&cfg.Resources.MaxMemMB, "max-mem", 0, "Maximum memory in MiB for containers (0 = auto-detect from system)")
 	flag.IntVar(&cfg.Resources.MaxCPUs, "max-cpus", 0, "Maximum CPUs for containers (0 = auto-detect from system)")
+	flag.StringVar(&cfg.Resources.ApptainerCgroupsMode, "apptainer-cgroups", "auto", "Apptainer --cpus/--memory limits: auto (only for cgroup controllers delegated to the user's systemd service, or all when root), on (always), off (never)")
 
 	// Image directory for local SIF files.
 	flag.StringVar(&cfg.ImageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")

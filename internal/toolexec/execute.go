@@ -774,10 +774,10 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// Apptainer --memory/--cpus require cgroups v2 unified mode.
 	// On systems without it (most HPC), skip these flags silently.
 	if opts.Resources.ApptainerCgroups {
-		if opts.Resources.RamMB > 0 {
+		if opts.Resources.RamMB > 0 && opts.Resources.CgroupMemory {
 			apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
 		}
-		if opts.Resources.Cores > 0 {
+		if opts.Resources.Cores > 0 && opts.Resources.CgroupCPU {
 			apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
 		}
 	}
