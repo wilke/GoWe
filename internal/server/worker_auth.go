@@ -19,6 +19,10 @@ import (
 
 const ctxKeyWorkerAuth ctxKey = "worker_auth"
 
+// anonymousWorkerKeyID is the KeyID of the context used when worker auth is
+// disabled (no keys configured).
+const anonymousWorkerKeyID = "none"
+
 // WorkerAuthContext holds authenticated worker info for a request.
 type WorkerAuthContext struct {
 	KeyID  string   // Stable key identifier (or key hash) for attribution/logging
@@ -238,7 +242,7 @@ func workerAuthMiddleware(auth *WorkerKeyAuthenticator, logger *slog.Logger) fun
 			if auth == nil || !auth.Enabled(r.Context()) {
 				// Create anonymous worker context — allow any group.
 				workerCtx := &WorkerAuthContext{
-					KeyID:  "none",
+					KeyID:  anonymousWorkerKeyID,
 					Groups: nil, // nil means any group is allowed
 				}
 				ctx := context.WithValue(r.Context(), ctxKeyWorkerAuth, workerCtx)
