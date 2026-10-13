@@ -104,6 +104,11 @@ func (c *Client) Post(path string, body any) (*apiResponse, error) {
 	return c.do("POST", path, body)
 }
 
+// Delete performs a DELETE request with an optional JSON body.
+func (c *Client) Delete(path string, body any) (*apiResponse, error) {
+	return c.do("DELETE", path, body)
+}
+
 // Put performs a PUT request.
 func (c *Client) Put(path string, body any) (*apiResponse, error) {
 	return c.do("PUT", path, body)

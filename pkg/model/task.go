@@ -111,6 +111,24 @@ type RuntimeHints struct {
 	// token as BVBRC_TOKEN env var into the container execution.
 	InjectBVBRCToken bool `json:"inject_bvbrc_token,omitempty"`
 
+	// TokenEnvNames are the environment variable names the worker uses when
+	// injecting the user's token (from the tool blessing). Metadata only; the
+	// token itself lives in StagerOverrides.HTTPCredential. Survives ScrubSecrets.
+	TokenEnvNames []string `json:"token_env_names,omitempty"`
+
+	// ToolHash is the tool-blessing digest ("sha256:...") of the final
+	// post-merge tool this task runs. Metadata; survives ScrubSecrets.
+	ToolHash string `json:"tool_hash,omitempty"`
+
+	// TokenBlessingID is the id of the tool blessing that authorised token
+	// injection for this task. Metadata; survives ScrubSecrets.
+	TokenBlessingID string `json:"token_blessing_id,omitempty"`
+
+	// ImageSHA256s are the blessed image digests (one per host build); the
+	// worker must verify its resolved image is a member before
+	// injecting the token. Metadata; survives ScrubSecrets.
+	ImageSHA256s []string `json:"image_sha256s,omitempty"`
+
 	// RequiredDatasets lists reference datasets needed by this task.
 	// Parsed from the gowe:ResourceData CWL hint.
 	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`

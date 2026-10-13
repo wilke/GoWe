@@ -1018,6 +1018,81 @@ allow re-uploads from the shared stage-out directory.
 
 ---
 
+## 11. Admin: Tool Blessings
+
+A *blessing* is an administrator's decision that one specific tool (identified
+by a content hash) may receive the submitting user's token, pinned to a list of
+image sha256 digests. This release only **records** blessings; nothing consults
+them yet (submission and dispatch are unchanged). See
+[security/tool-blessing.md](security/tool-blessing.md) for the model.
+
+All endpoints require the admin role (401 when unauthenticated, 403 for a non-admin; a worker key alone is not enough) and live under
+`/api/v1/admin/tool-blessings`. Blessings are never deleted; revoking sets
+`revoked_at`. Blessings do not expire.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/admin/tool-blessings[?include_revoked=true]` | List blessings (active only by default) |
+| GET | `/admin/tool-blessings/pending` | Registered tools that request the token (`gowe:Execution.inject_bvbrc_token` in `hints`) but have no active blessing |
+| POST | `/admin/tool-blessings/inspect` | Hash + review report for a tool; blesses nothing |
+| POST | `/admin/tool-blessings` | Bless a tool (201; 409 if an active blessing for that hash exists) |
+| POST | `/admin/tool-blessings/{id}/images` | Add another allowed image digest (`{id}` may also be an active `sha256:...` tool hash) |
+| DELETE | `/admin/tool-blessings/{id}` | Revoke (`{"reason": "..."}` required); `{id}` may also be an active `sha256:...` tool hash (as on `POST /{id}/images`) |
+
+### Inspect
+
+```bash
+curl -X POST $GOWE/api/v1/admin/tool-blessings/inspect \
+  -d '{"workflow": "bvbrc-helper"}'          # registered workflow/tool id or name
+# or: {"cwl": "<raw CWL text>", "tool_id": "helper"}   (gowe:// run references are resolved)
+```
+
+Response `data`: `tool_id`, `tool_hash` (`sha256:...`), `hash_version`,
+`image_ref`, `requests_token`, `summary` (command, requirement/hint classes,
+every InitialWorkDirRequirement script verbatim in `summary.scripts`, and
+`summary.flags`), `warnings`, and `active_blessing` if one exists. Review flags
+cover declared `stdout:`/`stderr:` outputs, shell stream redirection (`2>&1`),
+verbose/debug flags, scripts that print the environment or request headers,
+input-derived executable content and `NetworkAccess`.
+
+### Bless
+
+```bash
+curl -X POST $GOWE/api/v1/admin/tool-blessings -d '{
+  "workflow": "bvbrc-helper", "tool_id": "helper",
+  "tool_hash": "sha256:...",                  # optional; refused (400) if it differs from the recomputed hash
+  "image_sha256s": ["<64 hex>"],              # REQUIRED, at least one
+  "env_names": ["BVBRC_TOKEN"],               # optional; default BVBRC_TOKEN, KB_AUTH_TOKEN
+  "worker_groups": ["default"],               # optional extra restriction; default any
+  "note": "reviewed 2026-10-12"
+}'
+```
+
+Instead of `workflow`, a `tool_hash` alone selects a registered tool with that
+hash. The server always recomputes the hash from the registered CWL. The tool
+must declare `DockerRequirement.dockerPull` that is a `.sif` path or a `name@sha256:<64 hex>` reference (tags such as `:latest` are refused), `worker_groups` must be plain group names, and it must not put `gowe:Execution`
+under `requirements` (only `hints` is honoured).
+
+### CLI
+
+```bash
+gowe admin bless bvbrc-helper --image-file /scout/containers/python.sif \
+    --env BVBRC_TOKEN --groups default --note "reviewed"       # prints the report, asks to confirm
+gowe admin bless ./tool.cwl --tool helper --image-sha256 <hex> --yes
+gowe admin blessings [--all] [--pending] [--json]
+gowe admin blessings add-image <id> --image-file other-host.sif
+gowe admin unbless <id|sha256:hash> --reason "found echoing env"
+```
+
+`--image-file` computes the sha256 locally. A local `.cwl` file is only
+inspected; the tool must be registered for the server to bless it by hash.
+
+Each action logs an `AUDIT tool blessing ...` line and increments
+`gowe_tool_blessing_events_total{action="create|add_image|revoke"}`. The web UI
+equivalent is `/admin/tool-blessings`.
+
+---
+
 ## Complete MCP Server Example
 
 Here's a minimal MCP tool that submits a job and polls for completion. This shows the typical flow an MCP server would implement:
