@@ -184,6 +184,14 @@ type Store interface {
 	CountWorkerKeys(ctx context.Context) (int, error)
 	TouchWorkerKey(ctx context.Context, id string, when time.Time) error
 
+	// Tool blessing operations (admin-approved token injection; rows are never deleted)
+	CreateToolBlessing(ctx context.Context, b *model.ToolBlessing) error
+	GetToolBlessing(ctx context.Context, id string) (*model.ToolBlessing, error)
+	GetActiveToolBlessingByHash(ctx context.Context, toolHash string) (*model.ToolBlessing, error)
+	ListToolBlessings(ctx context.Context, includeRevoked bool) ([]*model.ToolBlessing, error)
+	RevokeToolBlessing(ctx context.Context, id, revokedBy, reason string) error
+	AddToolBlessingImageSHA256(ctx context.Context, id, sha256 string) error
+
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)
 	GetOrCreateUser(ctx context.Context, username string, provider model.AuthProvider) (*model.User, error)

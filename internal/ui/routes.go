@@ -88,6 +88,13 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Post("/worker-keys", ui.HandleAdminWorkerKeyCreate)
 			r.Delete("/worker-keys/{id}", ui.HandleAdminWorkerKeyRevoke)
 
+			// Tool blessings (recorded, not yet enforced).
+			r.Get("/tool-blessings", ui.HandleAdminToolBlessings)
+			r.Post("/tool-blessings", ui.HandleAdminToolBlessingCreate)
+			r.Post("/tool-blessings/inspect", ui.HandleAdminToolBlessingInspect)
+			r.Post("/tool-blessings/{id}/images", ui.HandleAdminToolBlessingAddImage)
+			r.Post("/tool-blessings/{id}/revoke", ui.HandleAdminToolBlessingRevoke)
+
 			// Output verification / redelivery.
 			r.Get("/outputs", ui.HandleAdminOutputs)
 			r.Post("/outputs/verify", ui.HandleAdminOutputsVerify)

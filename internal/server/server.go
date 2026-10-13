@@ -519,6 +519,7 @@ func (s *Server) routes() {
 						r.Delete("/", s.handleRevokeWorkerKey)
 					})
 				})
+				r.Route("/tool-blessings", s.toolBlessingRoutes)
 				r.Route("/labels", func(r chi.Router) {
 					r.Get("/", s.handleListLabelVocabulary)
 					r.Post("/", s.handleCreateLabelVocabulary)

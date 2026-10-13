@@ -178,11 +178,23 @@ func (m *mockStore) GetWorkerKeyByID(context.Context, string) (*model.WorkerKey,
 func (m *mockStore) GetWorkerKeyByHash(context.Context, string) (*model.WorkerKey, error) {
 	return nil, nil
 }
-func (m *mockStore) ListWorkerKeys(context.Context) ([]*model.WorkerKey, error) { return nil, nil }
-func (m *mockStore) UpdateWorkerKey(context.Context, *model.WorkerKey) error    { return nil }
-func (m *mockStore) DeleteWorkerKey(context.Context, string) error              { return nil }
-func (m *mockStore) CountWorkerKeys(context.Context) (int, error)               { return 0, nil }
-func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error    { return nil }
+func (m *mockStore) ListWorkerKeys(context.Context) ([]*model.WorkerKey, error)    { return nil, nil }
+func (m *mockStore) UpdateWorkerKey(context.Context, *model.WorkerKey) error       { return nil }
+func (m *mockStore) DeleteWorkerKey(context.Context, string) error                 { return nil }
+func (m *mockStore) CreateToolBlessing(context.Context, *model.ToolBlessing) error { return nil }
+func (m *mockStore) GetToolBlessing(context.Context, string) (*model.ToolBlessing, error) {
+	return nil, nil
+}
+func (m *mockStore) GetActiveToolBlessingByHash(context.Context, string) (*model.ToolBlessing, error) {
+	return nil, nil
+}
+func (m *mockStore) ListToolBlessings(context.Context, bool) ([]*model.ToolBlessing, error) {
+	return nil, nil
+}
+func (m *mockStore) RevokeToolBlessing(context.Context, string, string, string) error { return nil }
+func (m *mockStore) AddToolBlessingImageSHA256(context.Context, string, string) error { return nil }
+func (m *mockStore) CountWorkerKeys(context.Context) (int, error)                     { return 0, nil }
+func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error          { return nil }
 
 func (m *mockStore) GetUser(context.Context, string) (*model.User, error) { return nil, nil }
 func (m *mockStore) GetOrCreateUser(context.Context, string, model.AuthProvider) (*model.User, error) {
