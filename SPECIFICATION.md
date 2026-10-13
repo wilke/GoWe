@@ -636,6 +636,20 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 - A worker key MUST be rejected (`401`) if it is disabled/revoked or past its `expires_at`.
   Per-worker keys are independently issuable and revocable, so revoking one MUST NOT affect any
   other key.
+- **Key-to-worker binding.** A worker is bound to the key that registered it (`workers.key_id`,
+  the key's stable id). Every `/workers/{id}/*` route (heartbeat, work checkout, task status,
+  task complete, deregister) MUST return `403` unless the calling key's id equals the worker's
+  `key_id`; `GET /workers` with a worker key MUST return only the workers bound to that key.
+  Workers that predate the binding (`key_id = ''`) are adopted by the first caller whose key
+  may join the worker's group (compare-and-set, logged at INFO); a key that may not join the
+  group MUST be refused. Checkout MUST additionally re-check that the key may still join the
+  worker's group, so narrowing a key's groups stops task delivery. Binding is per *key*: workers
+  sharing one key (e.g. a static fleet key) share one identity and can still act on each
+  other's worker ids until the shared key is replaced by per-group keys. When no keys are
+  configured (open access) no binding is enforced. A key's id is its configured `id`, else a
+  hash prefix of the secret, so static keys SHOULD set `id`; changing a key's id (rotating an
+  id-less key's secret, or adding an `id`) orphans its workers until they re-register. Static
+  key ids MUST be unique and MUST NOT be `none`.
 - Worker-key enforcement is **optional**: if no keys are configured at all — neither static nor
   per-worker — worker endpoints are open. Operators SHOULD configure keys in any multi-tenant
   or networked deployment. If a store error prevents determining whether keys exist, the server

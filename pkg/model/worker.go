@@ -22,6 +22,11 @@ type Worker struct {
 	LastSeen     time.Time         `json:"last_seen"`
 	CurrentTask  string            `json:"current_task,omitempty"`
 	RegisteredAt time.Time         `json:"registered_at"`
+	// KeyID is the id of the worker key that registered this worker. All
+	// /workers/{id}/* routes require the caller's key id to match. Empty on
+	// legacy rows (adopted on first authorized touch) and when worker auth is
+	// disabled.
+	KeyID string `json:"key_id,omitempty"`
 }
 
 // HeartbeatRequest is the body a worker sends on each heartbeat. RunningTasks is

@@ -97,6 +97,12 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		LastSeen:     now,
 		RegisteredAt: now,
 	}
+	// Bind the worker to the registering key. "none" is the anonymous context
+	// used when worker auth is disabled; leave those rows unbound ('') so they
+	// are adopted if auth is enabled later.
+	if workerAuth != nil && !workerAuth.Anonymous {
+		worker.KeyID = workerAuth.KeyID
+	}
 	if worker.Labels == nil {
 		worker.Labels = map[string]string{}
 	}
@@ -120,14 +126,8 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	worker, err := s.store.GetWorker(r.Context(), id)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			model.NewInternalError(err.Error()))
-		return
-	}
-	if worker == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
+	worker, ok := s.authorizeWorker(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -188,14 +188,20 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	worker, err := s.store.GetWorker(r.Context(), id)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			model.NewInternalError(err.Error()))
+	worker, ok := s.authorizeWorker(w, r, id)
+	if !ok {
 		return
 	}
-	if worker == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
+
+	// A key whose groups were narrowed after registration must stop receiving
+	// tasks for the group it can no longer join.
+	if wa := WorkerAuthFromContext(r.Context()); wa != nil && !wa.CanJoinGroup(worker.Group) {
+		s.logger.Warn("worker checkout denied: key no longer allows group",
+			"worker_id", id, "key_id", wa.KeyID, "group", worker.Group)
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    model.ErrForbidden,
+			Message: "worker key does not allow group: " + worker.Group,
+		})
 		return
 	}
 
@@ -222,13 +228,16 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 // non-terminal (terminal results go through /complete, which stamps
 // completed_at and outputs — this endpoint could otherwise terminalize with
 // neither, F-L), and the reporting worker must own the task (external_id).
-// These defend against stale or duplicate workers — NOT adversaries: the
-// worker key is not bound to the worker id, so a valid key can report under
-// any worker id (S2, documented limitation).
+// The calling key must be the one bound to the worker id (authorizeWorker);
+// the task checks defend against stale or duplicate workers.
 func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	workerID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
+
+	if _, ok := s.authorizeWorker(w, r, workerID); !ok {
+		return
+	}
 
 	var req struct {
 		State string `json:"state"`
@@ -311,6 +320,10 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	workerID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
 
+	if _, ok := s.authorizeWorker(w, r, workerID); !ok {
+		return
+	}
+
 	var req struct {
 		State      string         `json:"state"`
 		ExitCode   *int           `json:"exit_code"`
@@ -344,9 +357,8 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	}
 
 	// The guards below defend against stale or duplicate workers — a requeued
-	// task re-reported by its former owner, or a double report after a retry —
-	// NOT against adversaries: the worker key is not bound to the worker id,
-	// so a valid key can report under any worker id (S2, documented limitation).
+	// task re-reported by its former owner, or a double report after a retry.
+	// Key-to-worker binding is enforced by authorizeWorker above.
 	if task.State.IsTerminal() {
 		respondError(w, reqID, http.StatusConflict, &model.APIError{
 			Code:    model.ErrConflict,
@@ -466,6 +478,10 @@ func (s *Server) handleDeregisterWorker(w http.ResponseWriter, r *http.Request) 
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
+	if _, ok := s.authorizeWorker(w, r, id); !ok {
+		return
+	}
+
 	if err := s.store.DeleteWorker(r.Context(), id); err != nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
 		return
@@ -480,7 +496,15 @@ func (s *Server) handleDeregisterWorker(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
-	workers, err := s.store.ListWorkers(r.Context())
+	// Worker-key callers see only the workers bound to their key. With worker
+	// auth disabled (anonymous context) the full list is returned.
+	var workers []*model.Worker
+	var err error
+	if wa := WorkerAuthFromContext(r.Context()); wa != nil && !wa.Anonymous {
+		workers, err = s.store.ListWorkersByKey(r.Context(), wa.KeyID)
+	} else {
+		workers, err = s.store.ListWorkers(r.Context())
+	}
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
@@ -515,4 +539,71 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 		Offset:  opts.Offset,
 		HasMore: end < total,
 	})
+}
+
+// authorizeWorker loads worker id and verifies the calling worker key is the
+// one bound to it. On failure it writes the response and returns ok=false.
+//
+//   - worker auth disabled (anonymous context): allowed, as before;
+//   - worker.KeyID == caller key id: allowed;
+//   - legacy row (KeyID == ""): the caller adopts it, but only if its key may
+//     join the worker's group (CAS, so exactly one adopter wins);
+//   - anything else: 403 (404 is returned for unknown ids, as before).
+func (s *Server) authorizeWorker(w http.ResponseWriter, r *http.Request, id string) (*model.Worker, bool) {
+	reqID := RequestIDFromContext(r.Context())
+
+	worker, err := s.store.GetWorker(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			model.NewInternalError(err.Error()))
+		return nil, false
+	}
+	if worker == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
+		return nil, false
+	}
+
+	wa := WorkerAuthFromContext(r.Context())
+	if wa == nil {
+		// Worker routes always sit behind workerAuthMiddleware; a missing
+		// context means a wiring bug, so fail closed.
+		respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+			Code:    model.ErrUnauthorized,
+			Message: "worker authentication required",
+		})
+		return nil, false
+	}
+	if wa.Anonymous {
+		return worker, true
+	}
+	if worker.KeyID == wa.KeyID {
+		return worker, true
+	}
+
+	if worker.KeyID == "" && wa.CanJoinGroup(worker.Group) {
+		adopted, err := s.store.AdoptWorkerKey(r.Context(), id, wa.KeyID)
+		if err != nil {
+			respondError(w, reqID, http.StatusInternalServerError,
+				model.NewInternalError(err.Error()))
+			return nil, false
+		}
+		if adopted {
+			worker.KeyID = wa.KeyID
+			s.logger.Info("legacy worker adopted by key",
+				"worker_id", id, "key_id", wa.KeyID, "group", worker.Group)
+			return worker, true
+		}
+		// Lost the race: re-read and compare against the winner.
+		if cur, err := s.store.GetWorker(r.Context(), id); err == nil && cur != nil && cur.KeyID == wa.KeyID {
+			return cur, true
+		}
+	}
+
+	s.logger.Warn("worker access denied: key not bound to worker",
+		"worker_id", id, "key_id", wa.KeyID, "bound_key_id", worker.KeyID, "group", worker.Group)
+	respondError(w, reqID, http.StatusForbidden, &model.APIError{
+		Code:    model.ErrForbidden,
+		Message: "worker key is not authorized for worker " + id,
+	})
+	return nil, false
 }

@@ -147,12 +147,16 @@ func (m *mockStore) DeleteSession(context.Context, string) error                
 func (m *mockStore) DeleteExpiredSessions(context.Context) (int64, error)          { return 0, nil }
 func (m *mockStore) DeleteSessionsByUserID(context.Context, string) (int64, error) { return 0, nil }
 
-func (m *mockStore) CreateWorker(context.Context, *model.Worker) error        { return nil }
-func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error) { return nil, nil }
-func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error        { return nil }
-func (m *mockStore) DeleteWorker(context.Context, string) error               { return nil }
-func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)     { return nil, nil }
-func (m *mockStore) ListWorkerGroups(context.Context) ([]string, error)       { return nil, nil }
+func (m *mockStore) CreateWorker(context.Context, *model.Worker) error            { return nil }
+func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error)     { return nil, nil }
+func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error            { return nil }
+func (m *mockStore) DeleteWorker(context.Context, string) error                   { return nil }
+func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)         { return nil, nil }
+func (m *mockStore) AdoptWorkerKey(context.Context, string, string) (bool, error) { return false, nil }
+func (m *mockStore) ListWorkersByKey(context.Context, string) ([]*model.Worker, error) {
+	return nil, nil
+}
+func (m *mockStore) ListWorkerGroups(context.Context) ([]string, error) { return nil, nil }
 func (m *mockStore) CheckoutTask(context.Context, string, string, model.ContainerRuntime) (*model.Task, error) {
 	return nil, nil
 }

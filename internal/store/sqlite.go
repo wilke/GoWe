@@ -2451,12 +2451,12 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
-		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version,
+		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version, w.KeyID,
 	)
 	return err
 }
@@ -2469,10 +2469,10 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	var gpuEnabled int
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
 		 FROM workers WHERE id = ?`, id,
 	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version)
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2549,12 +2549,35 @@ func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
 	return nil
 }
 
+// AdoptWorkerKey binds a legacy worker row (key_id = ”) to keyID. It is a
+// compare-and-set: it reports true only when this call performed the binding,
+// so two concurrent adopters cannot both win.
+func (s *SQLiteStore) AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error) {
+	s.logger.Debug("sql", "op", "update", "table", "workers", "id", id, "col", "key_id")
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET key_id = ? WHERE id = ? AND key_id = ''`, keyID, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ListWorkersByKey returns the workers bound to the given worker key id.
+func (s *SQLiteStore) ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "WHERE key_id = ?", keyID)
+}
+
 func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "")
+}
+
+func (s *SQLiteStore) listWorkers(ctx context.Context, where string, args ...any) ([]*model.Worker, error) {
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
-		 FROM workers ORDER BY registered_at`)
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
+		 FROM workers `+where+` ORDER BY registered_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2567,7 +2590,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		var gpuEnabled int
 
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID); err != nil {
 			return nil, err
 		}
 
@@ -2882,7 +2905,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	// Find stale workers first.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
 		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
 	if err != nil {
 		return nil, err
@@ -2895,7 +2918,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 		var gpuEnabled int
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID); err != nil {
 			return nil, err
 		}
 		w.State = model.WorkerState(state)

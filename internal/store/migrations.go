@@ -284,6 +284,13 @@ var alterStatements = []struct {
 		column:   "version",
 		alterSQL: "ALTER TABLE workers ADD COLUMN version TEXT NOT NULL DEFAULT ''",
 	},
+	// Worker key binding: id of the worker key that registered the worker
+	// ('' = legacy row, adopted on first authorized touch).
+	{
+		table:    "workers",
+		column:   "key_id",
+		alterSQL: "ALTER TABLE workers ADD COLUMN key_id TEXT NOT NULL DEFAULT ''",
+	},
 	// Output destination for workspace result uploads
 	{
 		table:    "submissions",

@@ -165,6 +165,9 @@ type Store interface {
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	ListWorkerGroups(ctx context.Context) ([]string, error)
+	// AdoptWorkerKey binds a legacy worker (key_id='') to keyID; CAS, true if bound by this call.
+	AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error)
+	ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error)
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
 	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
 	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
