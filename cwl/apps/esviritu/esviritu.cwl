@@ -28,8 +28,8 @@ requirements:
   DockerRequirement:
     dockerPull: esviritu-1.3.4-db3.2.4.sif
   ResourceRequirement:
-    coresMin: 4
-    ramMin: 8000
+    coresMin: $(inputs.threads)
+    ramMin: $(inputs.ram_mb)
   EnvVarRequirement:
     envDef:
       - envName: ESV_SAMPLE
@@ -153,6 +153,16 @@ inputs:
     type: boolean
     default: false
     label: Keep intermediate files (BAMs etc.)
+  threads:
+    type: int
+    default: 4
+    label: CPU threads
+    doc: Cores reserved for the task and passed to EsViritu as --cpu.
+  ram_mb:
+    type: int
+    default: 8000
+    label: Memory (MB)
+    doc: Memory reserved for the task. Lower minimap2_K if a sample runs out of memory.
   database:
     type: Directory?
     label: Custom EsViritu database directory

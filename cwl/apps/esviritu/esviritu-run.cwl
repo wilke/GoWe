@@ -56,6 +56,14 @@ inputs:
   filter_dir:
     type: Directory?
     label: Host/spike-in filter directory (contains filter_seqs.fna)
+  threads:
+    type: int
+    default: 4
+    label: CPU threads per sample
+  ram_mb:
+    type: int
+    default: 8000
+    label: Memory per sample (MB)
 
 steps:
   pair:
@@ -92,6 +100,8 @@ steps:
       species_threshold: species_threshold
       subspecies_threshold: subspecies_threshold
       filter_dir: filter_dir
+      threads: threads
+      ram_mb: ram_mb
     out: [output_dir, tax_profile, report_html]
 
   summarize:
