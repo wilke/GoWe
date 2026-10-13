@@ -31,8 +31,8 @@ func main() {
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
 	var workerKeyArgv, workerKeyFile string
-	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file or "+workerKeyEnv)
-	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read); alternatively set "+workerKeyEnv+" (less safe: the environment stays readable in /proc/<pid>/environ for the worker's lifetime; refused with --runtime none or --apptainer-no-containall)")
+	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file")
+	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read). Key file only: --worker-key (argv) and "+workerKeyEnv+" (environment) are refused because both are readable by same-uid host processes (/proc/<pid>/cmdline, /proc/<pid>/environ), and tools without DockerRequirement run on the host on every worker")
 	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime(s), comma-separated (docker, apptainer, none)")
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
@@ -172,23 +172,12 @@ func main() {
 			workerKeyOnArgv = true
 		}
 	})
-	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv, os.Unsetenv)
+	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 	cfg.WorkerKey = workerKey
-
-	if workerKeyFromEnv(workerKeyFile, workerKey) {
-		warn, err := checkWorkerKeySource(true, cfg.Runtime, cfg.ApptainerNoContainall)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			os.Exit(1)
-		}
-		if warn {
-			logger.Warn(workerKeyEnv + " is set: the key remains readable in /proc/<pid>/environ by same-uid processes outside a PID namespace for the worker's lifetime (os.Unsetenv does not clear it); prefer --worker-key-file")
-		}
-	}
 
 	if cfg.InheritHostEnv {
 		logger.Warn("--inherit-host-env is set: tools running directly on the host inherit the worker's full environment, including any provider tokens or secrets in it")

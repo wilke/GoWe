@@ -452,7 +452,7 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `--server` | `http://localhost:8080` | Server URL |
 | `--name` | hostname | Worker name |
 | `--group` | `default` | Worker group for task routing |
-| `--worker-key-file` | `""` | File (mode 0600) holding the worker key; preferred; `GOWE_WORKER_KEY` is readable in `/proc/<pid>/environ` and refused with `--runtime none`/no-containall. `--worker-key` on argv is refused |
+| `--worker-key-file` | `""` | File (mode 0600) holding the worker key; required (key file only). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused: both are readable by same-uid host processes |
 | `--inherit-host-env` | `false` | Degraded: host-run tools inherit the worker's full environment |
 | `--apptainer-no-containall` | `false` | Degraded: run Apptainer without `--containall` (`--cleanenv` is kept) |
 | `--runtime` | `none` | `docker`, `apptainer`, `none` |

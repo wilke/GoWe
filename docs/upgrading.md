@@ -9,9 +9,10 @@ below cover the exceptions.
 Provider-token containment (`security!:`). Do these in order:
 
 1. **Back up** `gowe.db` and the token key. Old backups still hold key-protected credentials on terminal task rows.
-2. **Worker start scripts**: switch to `--worker-key-file`. `GOWE_WORKER_KEY` still works but stays readable in
-   `/proc/<pid>/environ` for the worker's lifetime and is refused with `--runtime none` or `--apptainer-no-containall`; the key
-   on argv is refused by the new worker.
+2. **Worker start scripts**: switch to `--worker-key-file` (0600 file). The 0.22 worker refuses the key on argv
+   (`--worker-key`) and in the environment (`GOWE_WORKER_KEY`): both are readable by same-uid host processes. Production start
+   scripts that still pass `--worker-key "$KEY"` on argv (or export `GOWE_WORKER_KEY`) must switch before rolling, otherwise
+   the 0.22 worker exits at startup.
 3. **Upgrade the server.** At startup it clears stale credentials from terminal task rows (raw sweep, logged) and strips the
    unblessed token request from queued pre-upgrade tasks (WARN with count; they run without the token in their
    environment — the staging credential stays on the row for data staging, only the injection request is removed). The server

@@ -631,9 +631,9 @@ gowe-server ... --worker-keys /path/worker-keys.json
 gowe-worker ... --worker-key-file /path/worker-key.raw
 ```
 
-The env form `GOWE_WORKER_KEY` is a less safe fallback: it stays readable in `/proc/<pid>/environ` for the worker's
-lifetime (unsetting it inside the process does not clear the kernel's copy), and the worker refuses it on hosts that
-run tools without a PID namespace (`--runtime none`, `--apptainer-no-containall`).
+Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by
+same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the
+host on every worker.
 
 `--worker-key-file` must name a regular file with mode 0600 or stricter, located outside `--workdir`, `--image-dir`,
 `--pre-stage-dir` and every `--extra-bind`/`--dataset` path (tools run as the worker uid and could read it); the
@@ -641,7 +641,7 @@ worker refuses to start otherwise.
 A non-empty `--worker-key` on the command line is **refused with no override**: argv is readable by every local
 process through `/proc/<pid>/cmdline`, including tool containers and `--runtime none` tools. Check a host with
 `ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
-`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (key file preferred; `GOWE_WORKER_KEY` is a deprecated, warned fallback).
+`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (required; the key file is the only accepted source).
 
 ### Provider-token policy flags (server)
 
