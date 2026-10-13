@@ -2117,11 +2117,36 @@ func extractSecretInputs(hints, requirements map[string]any, namespaces map[stri
 // gowe:Execution declared under requirements; handlers map it to HTTP 400.
 var ErrExecutionUnderRequirements = errors.New("gowe:Execution under requirements")
 
-// isExecutionClass reports whether a hint/requirement key is the gowe:Execution
+// IsExecutionClass reports whether a hint/requirement key is the gowe:Execution
 // extension in any accepted spelling (prefixed, legacy goweHint, or full URI).
-// Mirrors toolhash.IsExecutionClass (which imports this package).
-func isExecutionClass(class string) bool {
+// It is the single predicate shared by the parser, toolhash and the server, so
+// every reader of the extension agrees on what counts as one.
+func IsExecutionClass(class string) bool {
 	return class == "gowe:Execution" || class == "goweHint" || strings.HasSuffix(class, "#Execution")
+}
+
+// executionHintMap returns the gowe:Execution body from a hints map in any
+// accepted spelling. The canonical spelling wins, then the legacy one, then
+// full-URI spellings in sorted key order (deterministic).
+func executionHintMap(hints map[string]any) (map[string]any, bool) {
+	for _, k := range []string{"gowe:Execution", "goweHint"} {
+		if m, ok := hints[k].(map[string]any); ok {
+			return m, true
+		}
+	}
+	var keys []string
+	for k := range hints {
+		if IsExecutionClass(k) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if m, ok := hints[k].(map[string]any); ok {
+			return m, true
+		}
+	}
+	return nil, false
 }
 
 // rejectExecutionUnderRequirements fails registration when gowe:Execution is
@@ -2130,7 +2155,7 @@ func isExecutionClass(class string) bool {
 // spelling for the token request that the blessing review does not cover.
 func rejectExecutionUnderRequirements(where string, requirements map[string]any) error {
 	for class := range requirements {
-		if isExecutionClass(class) {
+		if IsExecutionClass(class) {
 			return fmt.Errorf("%s: %s is declared under requirements; gowe:Execution is only honoured under hints (move it to hints): %w", where, class, ErrExecutionUnderRequirements)
 		}
 	}
@@ -2200,10 +2225,7 @@ func extractStepHints(hints map[string]any, requirements map[string]any) (*model
 
 	// GoWe-specific execution hints.
 	// Accept both "gowe:Execution" (canonical) and legacy "goweHint".
-	goweMap, ok := hints["gowe:Execution"].(map[string]any)
-	if !ok {
-		goweMap, ok = hints["goweHint"].(map[string]any)
-	}
+	goweMap, ok := executionHintMap(hints)
 	if ok {
 		h.BVBRCAppID = stringField(goweMap, "bvbrc_app_id")
 		if et := stringField(goweMap, "executor"); et != "" {

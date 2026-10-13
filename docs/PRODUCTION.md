@@ -649,9 +649,12 @@ process through `/proc/<pid>/cmdline`, including tool containers and `--runtime 
 | `--token-inject-groups` | Deprecated, staging-only (WARN at start): no longer injects; worker tasks get a staging credential by need. Remove it. |
 
 Upgrade notes: unblessed token requests are refused (`400 TOOL_NOT_BLESSED`), so bless the `bvbrc-*` helper
-tools before submitting `genome-analysis-pipeline`. At startup the server clears stale credentials from terminal task
-rows (raw JSON sweep, logged count). Tasks queued before the upgrade with the old injection flag and no blessing id are
-refused by the store; resubmit them. Requeue via the retry API, not SQL (SQL bypasses credential attachment).
+tools before submitting `genome-analysis-pipeline`. At startup the server (1) clears stale credentials from terminal
+task rows (raw JSON sweep, logged count) and (2) removes the token request (`inject_bvbrc_token`) from NON-terminal
+rows that have no blessing id (queued by a pre-policy server), logging a WARN with the count: those tasks run
+**without** the token rather than being injected unblessed. As a second layer, `CheckoutTask` never hands such a row to a
+worker, and the store refuses to write one. Requeue via the retry API, not SQL (SQL bypasses credential attachment).
+`--dev-image-dir` without `--token-blessing=dev` is a startup error (exit 2).
 
 ### Tool isolation defaults and their opt-outs (v0.21.x → next release)
 

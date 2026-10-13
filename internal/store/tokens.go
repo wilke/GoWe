@@ -399,3 +399,26 @@ WHERE state IN ('SUCCESS','FAILED','SKIPPED')
 	}
 	return int(n), nil
 }
+
+// ClearUnblessedInjectRaw removes the token-injection request from NON-terminal
+// task rows that carry inject_bvbrc_token without a token_blessing_id — rows
+// queued by a pre-policy server. Those tasks then run without the token in
+// their environment instead of being handed to a worker that would inject it
+// without a blessing. Raw JSON edit, no decryption, idempotent; rows whose
+// runtime_hints is not valid JSON are skipped. Returns the rows changed.
+func (s *SQLiteStore) ClearUnblessedInjectRaw(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks
+SET runtime_hints = json_remove(runtime_hints, '$.inject_bvbrc_token')
+WHERE state NOT IN ('SUCCESS','FAILED','SKIPPED')
+  AND json_valid(runtime_hints)
+  AND json_extract(runtime_hints, '$.inject_bvbrc_token') = 1
+  AND json_type(runtime_hints, '$.token_blessing_id') IS NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("clear unblessed token requests: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("clear unblessed token requests: rows affected: %w", err)
+	}
+	return int(n), nil
+}

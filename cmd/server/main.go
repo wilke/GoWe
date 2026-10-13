@@ -247,6 +247,12 @@ func main() {
 		logger.Info("cleared stale credentials from terminal task rows", "rows", n)
 	}
 
+	if n, serr := st.ClearUnblessedInjectRaw(context.Background()); serr != nil {
+		logger.Error("clearing unblessed token requests from queued tasks failed (continuing)", "error", serr)
+	} else if n > 0 {
+		logger.Warn("pre-upgrade tasks had their unblessed token request cleared; they run without the token", "tasks", n)
+	}
+
 	// Create executor registry and register executors.
 	reg := executor.NewRegistry(logger)
 	localExec := executor.NewLocalExecutor("", logger)
@@ -521,7 +527,8 @@ func main() {
 		logger.Warn("DEV MODE: --token-blessing=dev: tools that request the user's provider token are granted it WITHOUT an administrator blessing. Never use this on a production server.",
 			"dev_image_dir", *devImageDir)
 	} else if *devImageDir != "" {
-		logger.Warn("--dev-image-dir is ignored unless --token-blessing=dev")
+		fmt.Fprintln(os.Stderr, "--dev-image-dir requires --token-blessing=dev")
+		os.Exit(2)
 	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 	sched.SetMetrics(metricsReg)

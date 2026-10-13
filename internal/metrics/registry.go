@@ -161,7 +161,7 @@ func NewRegistry(cfg Config) *Registry {
 
 		tokenGrants: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "gowe_token_grants_total",
-			Help: "Total token-injection decisions for tasks whose tool requests the user's token, by workflow and outcome (granted, granted_dev, denied_unblessed, denied_group, denied_executor).",
+			Help: "Total token-injection decisions for tasks whose tool requests the user's token, by workflow and outcome (granted, granted_dev, denied_unblessed, denied_group, denied_executor, denied_invalid).",
 		}, []string{"workflow", "outcome"}),
 
 		tasksGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{

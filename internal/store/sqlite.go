@@ -2682,6 +2682,9 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	rows, err := tx.QueryContext(ctx,
 		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
+		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
+		               AND json_type(runtime_hints,'$.token_blessing_id') IS NULL) END, 0)
 		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
 		return nil, err

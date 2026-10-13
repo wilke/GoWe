@@ -116,6 +116,9 @@ without the token. After the task the worker drops the token. Code:
   reports `token_blessing: "dev"`, the UI shows a banner and the submission
   response carries a warning naming the tool. Blessed tools behave identically in
   both modes; nothing else is relaxed.
+- **BV-BRC executor**: a token request on a tool that runs on the BV-BRC
+  executor is a no-op, not a denial: that executor sends the submitter's token
+  as a request header and never places it in a tool environment.
 - **Migration**: bless the three `bvbrc-*` helper tools (`gowe admin bless`)
   before submitting `genome-analysis-pipeline`.
 
@@ -170,3 +173,14 @@ the network. Blessing is the trust decision about the tool's code.
   `internal/toolmerge`; admin logic: `internal/blessing`.
 - Storage: `blessed_tools` table, `internal/store/tool_blessings.go`.
 - API: [API_GUIDE.md](../API_GUIDE.md) section 11; CLI `gowe admin bless`.
+
+## Residuals
+
+- `ReconcileWorkerTasks`/`RequeueWorkerTasks` (worker loss, heartbeat reconcile)
+  reset RUNNING tasks to QUEUED without re-running the credential policy, so a
+  blessing revoked mid-flight is re-checked only on a real retry
+  (`attachCredentials`) or a new submission. The store guard still refuses a
+  live task with the inject flag and no blessing id.
+- Pre-policy rows: at startup, non-terminal rows with the inject flag and no
+  blessing id lose the request (they run without the token); `CheckoutTask`
+  never hands such a row to a worker.

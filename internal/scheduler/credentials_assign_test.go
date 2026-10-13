@@ -10,6 +10,10 @@ package scheduler
 //	pkg/model/task.go                   (ScrubSecrets: clearing)
 //	internal/store/tokens.go            (copy-on-write encrypt/decrypt)
 //
+// Whole-struct copies of RuntimeHints (cp := *h) are not flagged by design: the
+// store guard (ErrUnblessedInject) and the per-decision reset in
+// applyTokenGrant cover that case.
+//
 // The check is TYPE-AWARE (go/types): it resolves each selector to the field
 // object of model.RuntimeHints / model.StagerOverrides, so same-named fields
 // on other types (parser/model StepHints.InjectBVBRCToken, the worker's

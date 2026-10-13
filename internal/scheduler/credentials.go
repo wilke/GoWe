@@ -60,6 +60,7 @@ const (
 	grantGrantedDev       = "granted_dev"
 	grantDeniedUnblessed  = "denied_unblessed"
 	grantDeniedGroup      = "denied_group"
+	grantDeniedInvalid    = "denied_invalid"
 	grantDeniedExecutor   = "denied_executor"
 	defaultWorkerGroupKey = "default"
 )
@@ -146,21 +147,27 @@ func (l *Loop) applyTokenGrant(ctx context.Context, task *model.Task, step *mode
 		return nil
 	}
 
+	if task.ExecutorType == model.ExecutorTypeBVBRC {
+		// BV-BRC executor tasks never place the token in a tool environment:
+		// the executor sends it as a request header, which addUserToken
+		// already arranges. The request is a no-op there, not a denial.
+		return nil
+	}
 	if task.ExecutorType != model.ExecutorTypeWorker {
 		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedExecutor)
 		return fmt.Errorf("token injection denied: tool %q requests the user's token, which is only honoured on the worker executor (task executor is %q)",
 			l.toolLabel(task, step), task.ExecutorType)
 	}
 	if sub.UserToken == "" {
-		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedUnblessed)
+		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedInvalid)
 		return fmt.Errorf("token injection denied: tool %q requests the user's token but the submission carries none (anonymous or token-less authentication)", l.toolLabel(task, step))
 	}
 	if toolhash.ImageRef(task.Tool) == "" {
-		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedUnblessed)
+		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedInvalid)
 		return fmt.Errorf("token injection denied: tool %q requests the user's token but declares no container image (DockerRequirement.dockerPull); only tools in a pinned image can be blessed", l.toolLabel(task, step))
 	}
 	if hashErr != nil {
-		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedUnblessed)
+		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedInvalid)
 		return fmt.Errorf("token injection denied: cannot compute the content digest of tool %q: %w", l.toolLabel(task, step), hashErr)
 	}
 
@@ -184,7 +191,7 @@ func (l *Loop) applyTokenGrant(ctx context.Context, task *model.Task, step *mode
 			l.toolLabel(task, step), hash, b.ID, group, strings.Join(b.WorkerGroups, ", "))
 	}
 	if len(b.ImageSHA256s) == 0 {
-		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedUnblessed)
+		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedInvalid)
 		return fmt.Errorf("token injection denied: blessing %s for tool %q pins no image digest", b.ID, l.toolLabel(task, step))
 	}
 
@@ -204,7 +211,7 @@ func (l *Loop) grantDev(task *model.Task, step *model.Step, sub *model.Submissio
 	ref := toolhash.ImageRef(task.Tool)
 	sha, err := l.devImageDigest(ref)
 	if err != nil {
-		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedUnblessed)
+		l.metrics.IncTokenGrant(sub.WorkflowName, grantDeniedInvalid)
 		return fmt.Errorf("token injection denied (dev mode): tool %q (%s) is not blessed and its image cannot be pinned server-side: %v", l.toolLabel(task, step), hash, err)
 	}
 	h.InjectBVBRCToken = true

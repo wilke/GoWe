@@ -21,8 +21,10 @@ import (
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/metrics"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/timing"
+	"github.com/me/gowe/internal/tokencheck"
 	"github.com/me/gowe/internal/validate"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
@@ -809,6 +811,19 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	// Set worker group label if provided (mirrors CLI --group behavior).
 	if workerGroup := strings.TrimSpace(r.FormValue("worker_group")); workerGroup != "" {
 		labels["worker_group"] = workerGroup
+	}
+
+	// Provider-token policy fast-fail (same check as the REST API): a step
+	// whose tool requests the user's token must be admin-blessed. Without
+	// this the user would only see a pre-dispatch task failure.
+	tokenChecker := &tokencheck.Checker{Parser: parser.New(ui.logger), Store: ui.store, Logger: ui.logger, Dev: ui.tokenBlessingDev}
+	tokenErr, tokenWarnings := tokenChecker.Check(r.Context(), wf, inputs, labels, sess != nil && sess.Token != "")
+	if tokenErr != nil {
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+url.QueryEscape(workflowID)+"&error="+url.QueryEscape(string(tokenErr.Code)+": "+tokenErr.Message)), http.StatusSeeOther)
+		return
+	}
+	for _, tw := range tokenWarnings {
+		ui.logger.Warn("DEV MODE: submission accepted with an unblessed token-requesting tool", "workflow", wf.Name, "detail", tw.Message)
 	}
 
 	now := time.Now().UTC()

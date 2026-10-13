@@ -471,5 +471,5 @@ func ToolIDs(rawCWL string) ([]string, error) {
 // IsExecutionClass reports whether a hint/requirement key is the gowe:Execution
 // extension in any accepted spelling (prefixed, legacy goweHint, or full URI).
 func IsExecutionClass(class string) bool {
-	return class == "gowe:Execution" || class == "goweHint" || strings.HasSuffix(class, "#Execution")
+	return parser.IsExecutionClass(class)
 }
