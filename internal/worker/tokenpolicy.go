@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/toolexec"
@@ -106,13 +107,60 @@ func hashFileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// digestCache remembers sha256 digests of image files keyed on (path, dev,
+// ino, size, mtime, ctime), so a multi-GB image is hashed once per worker
+// rather than once per task. Any replacement or in-place modification changes
+// the key and forces a re-hash. A nil *digestCache hashes every time.
+type digestCache struct {
+	mu   sync.Mutex
+	m    map[string]string
+	hash func(string) (string, error) // defaults to hashFileSHA256
+}
+
+func (c *digestCache) digest(path string) (string, error) {
+	hash := hashFileSHA256
+	if c != nil && c.hash != nil {
+		hash = c.hash
+	}
+	if c == nil {
+		return hash(path)
+	}
+	key, ok := fileIdentity(path)
+	if !ok {
+		return hash(path)
+	}
+	key = path + "|" + key
+	c.mu.Lock()
+	d, hit := c.m[key]
+	c.mu.Unlock()
+	if hit {
+		return d, nil
+	}
+	d, err := hash(path)
+	if err != nil {
+		return "", err
+	}
+	// Re-check identity after hashing: if the file changed while being read,
+	// do not cache a digest that may describe neither version.
+	if key2, ok2 := fileIdentity(path); !ok2 || path+"|"+key2 != key {
+		return d, nil
+	}
+	c.mu.Lock()
+	if c.m == nil {
+		c.m = make(map[string]string)
+	}
+	c.m[key] = d
+	c.mu.Unlock()
+	return d, nil
+}
+
 // verifyImageForToken checks that the image a token-bearing task is about to
 // run matches a blessed digest. runtime is "docker" or "apptainer"; anything
 // else (local execution, no image) cannot carry a token. It returns the exact
 // image reference the caller must launch ("" for docker, which pulls the
 // digest-pinned ref as given; the symlink-resolved, hashed path for local .sif
 // files). Errors never contain the token.
-func verifyImageForToken(runtime, imageRef, imageDir string, allowed []string) (string, error) {
+func verifyImageForToken(runtime, imageRef, imageDir string, allowed []string, cache *digestCache) (string, error) {
 	if runtime != "docker" && runtime != "apptainer" {
 		return "", fmt.Errorf("token injection requires container execution with a blessed image (runtime %q, image %q)", runtime, imageRef)
 	}
@@ -145,7 +193,7 @@ func verifyImageForToken(runtime, imageRef, imageDir string, allowed []string) (
 	if err != nil {
 		return "", fmt.Errorf("token injection refused: resolve image %q: %w", resolved, err)
 	}
-	digest, err := hashFileSHA256(real)
+	digest, err := cache.digest(real)
 	if err != nil {
 		return "", fmt.Errorf("token injection refused: hash image %q: %w", real, err)
 	}
@@ -159,7 +207,7 @@ func verifyImageForToken(runtime, imageRef, imageDir string, allowed []string) (
 // token and records the verified image on cfg so execution launches the very
 // path that was hashed. It also pins cfg.ContainerRuntime to the runtime that
 // was checked.
-func prepareTokenImage(cfg *cwltool.Config, tool *cwl.CommandLineTool, hints *model.RuntimeHints) error {
+func prepareTokenImage(cfg *cwltool.Config, tool *cwl.CommandLineTool, hints *model.RuntimeHints, cache *digestCache) error {
 	rt := ""
 	if !cfg.NoContainer && cwltool.HasDockerRequirement(tool) {
 		rt = cfg.ContainerRuntime
@@ -167,7 +215,7 @@ func prepareTokenImage(cfg *cwltool.Config, tool *cwl.CommandLineTool, hints *mo
 			rt = cwltool.DetectContainerRuntime()
 		}
 	}
-	resolved, err := verifyImageForToken(rt, cwltool.GetDockerImage(tool), cfg.ImageDir, hints.ImageSHA256s)
+	resolved, err := verifyImageForToken(rt, cwltool.GetDockerImage(tool), cfg.ImageDir, hints.ImageSHA256s, cache)
 	if err != nil {
 		return err
 	}
@@ -192,7 +240,7 @@ func scrubTaskCredentials(task *model.Task) {
 }
 
 // redactTokenInOutputs returns outputs with every occurrence of token inside
-// any string value replaced by "[REDACTED]", and whether anything was
+// any string value replaced by "***REDACTED***", and whether anything was
 // replaced. outputs is not mutated.
 func redactTokenInOutputs(outputs map[string]any, token string) (map[string]any, bool) {
 	if token == "" || len(outputs) == 0 {
@@ -205,7 +253,7 @@ func redactTokenInOutputs(outputs map[string]any, token string) (map[string]any,
 		case string:
 			if strings.Contains(t, token) {
 				found = true
-				return strings.ReplaceAll(t, token, "[REDACTED]")
+				return strings.ReplaceAll(t, token, "***REDACTED***")
 			}
 			return t
 		case map[string]any:
@@ -213,7 +261,7 @@ func redactTokenInOutputs(outputs map[string]any, token string) (map[string]any,
 			for k, e := range t {
 				if strings.Contains(k, token) {
 					found = true
-					k = strings.ReplaceAll(k, token, "[REDACTED]")
+					k = strings.ReplaceAll(k, token, "***REDACTED***")
 				}
 				m[k] = walk(e)
 			}
@@ -222,6 +270,12 @@ func redactTokenInOutputs(outputs map[string]any, token string) (map[string]any,
 			s := make([]any, len(t))
 			for i, e := range t {
 				s[i] = walk(e)
+			}
+			return s
+		case []map[string]any:
+			s := make([]map[string]any, len(t))
+			for i, e := range t {
+				s[i], _ = walk(e).(map[string]any)
 			}
 			return s
 		case []string:
@@ -239,4 +293,27 @@ func redactTokenInOutputs(outputs map[string]any, token string) (map[string]any,
 		return outputs, false
 	}
 	return res, true
+}
+
+// redactedError carries a redacted message while preserving the wrapped
+// error's identity for errors.Is/As (e.g. validate.ErrInputValidation, which
+// makes a failure permanent). Error() never contains the masked values.
+type redactedError struct {
+	msg     string
+	wrapped error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.wrapped }
+
+// newRedactedError returns err unchanged when masking changes nothing.
+func newRedactedError(err error, mask map[string]string) error {
+	if err == nil {
+		return nil
+	}
+	msg := redactSecrets(err.Error(), mask)
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{msg: msg, wrapped: err}
 }

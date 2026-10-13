@@ -38,6 +38,7 @@ type Worker struct {
 	containerRuntime  string                   // "docker", "apptainer", or "none"
 	gpu               GPUWorkerConfig          // GPU configuration
 	resources         ResourceWorkerConfig     // Resource limits
+	imageDigests      digestCache              // sha256 cache for blessed-image checks
 	imageDir          string                   // Base directory for resolving .sif image paths
 	dockerHostPathMap map[string]string        // Docker-in-Docker path mapping
 	dockerVolume      string                   // Named Docker volume shared with tool containers
@@ -853,7 +854,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	// launch, and the same resolved path is what gets launched). Otherwise
 	// the token stays staging-only.
 	if wantsTokenInjection(task.RuntimeHints, w.logger, task.ID) {
-		if err := prepareTokenImage(&cfg, tool, task.RuntimeHints); err != nil {
+		if err := prepareTokenImage(&cfg, tool, task.RuntimeHints, &w.imageDigests); err != nil {
 			return w.reportFailure(ctx, task, err)
 		}
 		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
@@ -935,13 +936,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 				StageInMs: &stageInMs,
 			})
 		}
-		if errText != err.Error() {
-			// The error text carried the token: report the redacted text
-			// (this drops error wrapping, which only matters for validation
-			// errors that never carry credentials).
-			return w.reportFailure(ctx, task, fmt.Errorf("execute: %s", errText))
-		}
-		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", err))
+		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", newRedactedError(err, maskSet)))
 	}
 
 	// Stage out output files (worker owns this step).
@@ -976,9 +971,12 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 }
 
 // redactOutputsForReport scans outputs for the exact delegated token and
-// replaces any occurrence with "[REDACTED]" before they leave the worker,
+// replaces any occurrence with "***REDACTED***" before they leave the worker,
 // logging a WARN with the task id (never the value).
 func (w *Worker) redactOutputsForReport(taskID string, outputs map[string]any, token string) map[string]any {
+	if len(token) < redactSecretsMinLength {
+		return outputs
+	}
 	redacted, found := redactTokenInOutputs(outputs, token)
 	if found {
 		w.logger.Warn("delegated token found in task outputs; redacted before reporting", "task_id", taskID)
@@ -1201,6 +1199,11 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, 
 // bad input value fails identically on every retry, so the server should
 // make this FAILED terminal instead of consuming the task's retry budget.
 func (w *Worker) reportFailure(ctx context.Context, task *model.Task, execErr error) error {
+	// The delegated token is unconditionally part of the mask for anything
+	// reported, whichever path failed.
+	if tok := taskToken(task.RuntimeHints); len(tok) >= redactSecretsMinLength {
+		execErr = newRedactedError(execErr, map[string]string{"_delegated_token": tok})
+	}
 	exitCode := -1
 	reportErr := w.reportComplete(ctx, task.ID, TaskResult{
 		State:     model.TaskStateFailed,

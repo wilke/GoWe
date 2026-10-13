@@ -6,6 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/me/gowe/internal/validate"
 	"io"
 	"log/slog"
 	"net/http"
@@ -107,7 +110,7 @@ func TestVerifyImageForToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := verifyImageForToken(tt.runtime, tt.ref, dir, tt.allowed)
+			got, err := verifyImageForToken(tt.runtime, tt.ref, dir, tt.allowed, nil)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -150,7 +153,7 @@ func TestPrepareTokenImage_PinsLaunchedPath(t *testing.T) {
 	}
 	cfg := cwltool.Config{ContainerRuntime: "apptainer", ImageDir: dir}
 	hints := tokHints("tb_1", nil, []string{good})
-	if err := prepareTokenImage(&cfg, tool, hints); err != nil {
+	if err := prepareTokenImage(&cfg, tool, hints, nil); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.ResolvedImage != filepath.Join(dir, "good.sif") || cfg.ContainerRuntime != "apptainer" {
@@ -367,6 +370,7 @@ func TestRedactTokenInOutputs(t *testing.T) {
 		{"nested string", map[string]any{"f": map[string]any{"class": "File", "contents": "pre " + testToken + " post"}}, true},
 		{"in list", map[string]any{"l": []any{"ok", testToken}}, true},
 		{"in string slice", map[string]any{"l": []string{testToken}}, true},
+		{"in map slice", map[string]any{"l": []map[string]any{{"contents": testToken}}}, true},
 		{"in key", map[string]any{testToken: "v"}, true},
 		{"empty", nil, false},
 	}
@@ -381,7 +385,7 @@ func TestRedactTokenInOutputs(t *testing.T) {
 				t.Errorf("token remains: %s", b)
 			}
 			if tt.found {
-				if !strings.Contains(string(b), "[REDACTED]") {
+				if !strings.Contains(string(b), "***REDACTED***") {
 					t.Errorf("no marker: %s", b)
 				}
 				ib, _ := json.Marshal(tt.in)
@@ -390,5 +394,76 @@ func TestRedactTokenInOutputs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDigestCache(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.sif")
+	d1 := writeSIF(t, dir, "a.sif", "first contents")
+	calls := 0
+	c := &digestCache{hash: func(path string) (string, error) { calls++; return hashFileSHA256(path) }}
+
+	for i := 0; i < 3; i++ {
+		got, err := c.digest(p)
+		if err != nil || got != d1 {
+			t.Fatalf("got %q err %v want %q", got, err, d1)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("hash calls = %d, want 1 (cached)", calls)
+	}
+
+	// Replace with different content of the same size: identity (inode/ctime)
+	// changes, so the cache must miss and return the new digest.
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	d2 := writeSIF(t, dir, "a.sif", "other contents")
+	got, err := c.digest(p)
+	if err != nil || got != d2 || got == d1 {
+		t.Fatalf("after replace got %q err %v want %q", got, err, d2)
+	}
+	if calls != 2 {
+		t.Fatalf("hash calls = %d, want 2", calls)
+	}
+
+	// nil cache always hashes.
+	var nc *digestCache
+	if got, err := nc.digest(p); err != nil || got != d2 {
+		t.Fatalf("nil cache: %q %v", got, err)
+	}
+}
+
+func TestRedactedErrorPreservesSentinel(t *testing.T) {
+	base := fmt.Errorf("execute: %w: value %s", validate.ErrInputValidation, testToken)
+	err := newRedactedError(base, map[string]string{"t": testToken})
+	if strings.Contains(err.Error(), testToken) {
+		t.Errorf("not redacted: %v", err)
+	}
+	if !errors.Is(err, validate.ErrInputValidation) {
+		t.Error("sentinel lost")
+	}
+	if got := newRedactedError(errors.New("clean"), map[string]string{"t": testToken}); got.Error() != "clean" {
+		t.Errorf("clean error altered: %v", got)
+	}
+}
+
+func TestReportFailureRedactsToken(t *testing.T) {
+	var captured TaskResult
+	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		rw.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	w := newReportTestWorker(ts.URL)
+	task := &model.Task{ID: "t1", RuntimeHints: tokHints("", nil, nil)}
+	err := w.reportFailure(context.Background(), task, fmt.Errorf("stage-in: %w: bad %s", validate.ErrInputValidation, testToken))
+	if strings.Contains(captured.Stderr, testToken) || (err != nil && strings.Contains(err.Error(), testToken)) {
+		t.Errorf("token leaked: %q / %v", captured.Stderr, err)
+	}
+	if !captured.Permanent {
+		t.Error("permanent flag lost through redaction")
 	}
 }
