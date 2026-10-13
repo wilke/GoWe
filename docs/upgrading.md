@@ -11,7 +11,8 @@ Provider-token containment (`security!:`). Do these in order:
 1. **Back up** `gowe.db` and the token key. Old backups still hold key-protected credentials on terminal task rows.
 2. **Worker start scripts**: switch to `--worker-key-file` (or `GOWE_WORKER_KEY`); the key on argv is refused by the new worker.
 3. **Upgrade the server.** At startup it clears stale credentials from terminal task rows (raw sweep, logged) and strips the
-   unblessed token request from queued pre-upgrade tasks (WARN with count; they run without the token). Then immediately
+   unblessed token request from queued pre-upgrade tasks (WARN with count; they run without the token in their
+   environment — the staging credential stays on the row for data staging, only the injection request is removed). Then immediately
    bless the three helper tools, otherwise `genome-analysis-pipeline` is refused with `400 TOOL_NOT_BLESSED`:
    `gowe admin blessings --pending`, then `gowe admin bless <workflow>/<tool> --image-file /scout/containers/python.sif`
    for `bvbrc-get-genome-id`, `bvbrc-wait-for-pgfams`, `bvbrc-create-genome-group`.

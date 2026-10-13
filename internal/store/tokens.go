@@ -412,7 +412,7 @@ SET runtime_hints = json_remove(runtime_hints, '$.inject_bvbrc_token')
 WHERE state NOT IN ('SUCCESS','FAILED','SKIPPED')
   AND json_valid(runtime_hints)
   AND json_extract(runtime_hints, '$.inject_bvbrc_token') = 1
-  AND json_type(runtime_hints, '$.token_blessing_id') IS NULL`)
+  AND COALESCE(json_extract(runtime_hints, '$.token_blessing_id'), '') = ''`)
 	if err != nil {
 		return 0, fmt.Errorf("clear unblessed token requests: %w", err)
 	}
