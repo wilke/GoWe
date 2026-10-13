@@ -34,7 +34,7 @@ gowe-worker [flags]
 | `--name` | hostname | Worker name for identification |
 | `--group` | `default` | Worker group for targeted scheduling |
 | `--worker-key-file` | `""` | File holding the authentication key sent as `X-Worker-Key` (regular file, mode 0600 or stricter, and not under `--workdir`/`--image-dir`/`--pre-stage-dir`/`--extra-bind`/`--dataset` paths, which tools can read) — a per-worker key issued by an admin, or a shared static key. Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
-| `--worker-key` | `""` | **Refused (any use, even with an empty value).** A key on argv is readable in `/proc/<pid>/cmdline`; the worker exits with an error naming the two alternatives above |
+| `--worker-key` | `""` | **Refused (any use, even with an empty value).** A key on argv is readable in `/proc/<pid>/cmdline`; the worker exits with an error pointing at `--worker-key-file` |
 | `--inherit-host-env` | `false` | Degraded: tools run directly on the host (`--runtime none`) inherit the worker's full environment instead of an allow-list. WARN at start; registered as label `inherit_host_env=true` |
 | `--apptainer-no-containall` | `false` | Degraded: run Apptainer without `--containall` (`--cleanenv` is kept). WARN at start; registered as label `apptainer_containall=false` |
 | `--runtime` | `none` | Container runtime(s), comma-separated: docker, apptainer, none |

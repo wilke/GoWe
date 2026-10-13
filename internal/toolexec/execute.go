@@ -115,7 +115,7 @@ func secretEnvAssignments(secrets map[string]string, prefix string) []string {
 // directly on the host (no container boundary). Only an allow-list of host
 // variables is passed through (PATH, LANG, LC_*, TZ, USER, LOGNAME, SHELL,
 // TERM; plus NVIDIA_*, CUDA_* and LD_LIBRARY_PATH when GPU is enabled), so the
-// worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, GOWE_WORKER_KEY, ...)
+// worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, ...)
 // never reach the tool. opts.InheritHostEnv restores the full os.Environ().
 func baseToolEnv(opts *Options) []string {
 	if opts.InheritHostEnv {

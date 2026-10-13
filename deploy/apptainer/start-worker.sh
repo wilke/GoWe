@@ -45,7 +45,8 @@ GPU_ID="${GOWE_GPU_ID:-}"
 
 # The worker key is never passed on argv (/proc/<pid>/cmdline) or in the
 # environment (/proc/<pid>/environ): the worker refuses both. A 0600 key file
-# (GOWE_WORKER_KEY_FILE) is required.
+# (GOWE_WORKER_KEY_FILE) is the only accepted source; leave it empty only for
+# a keyless dev server (one started without --worker-keys).
 WORKER_KEY_FILE="${GOWE_WORKER_KEY_FILE:-}"
 DEBUG="${GOWE_DEBUG:-false}"
 
@@ -138,12 +139,11 @@ if [ "$GPU_ENABLED" = true ]; then
     fi
 fi
 
-if [ -z "$WORKER_KEY_FILE" ]; then
-    echo "ERROR: GOWE_WORKER_KEY_FILE (or --worker-key-file) is required: a 0600 file holding the worker key." >&2
-    echo "       The key is refused on argv and in the environment (GOWE_WORKER_KEY): both are readable by same-uid host processes." >&2
-    exit 1
+if [ -n "$WORKER_KEY_FILE" ]; then
+    CMD+=(-worker-key-file "$WORKER_KEY_FILE")
+else
+    echo "WARNING: GOWE_WORKER_KEY_FILE is empty; starting without a worker key (only works against a keyless dev server)." >&2
 fi
-CMD+=(-worker-key-file "$WORKER_KEY_FILE")
 
 if [ "$DEBUG" = true ]; then
     CMD+=(-debug)

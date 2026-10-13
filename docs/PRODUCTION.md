@@ -641,7 +641,7 @@ worker refuses to start otherwise.
 A non-empty `--worker-key` on the command line is **refused with no override**: argv is readable by every local
 process through `/proc/<pid>/cmdline`, including tool containers and `--runtime none` tools. Check a host with
 `ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
-`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (required; the key file is the only accepted source).
+`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (the key file is the only accepted source; omit it only for a keyless dev server).
 
 ### Provider-token policy flags (server)
 
