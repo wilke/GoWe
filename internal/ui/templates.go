@@ -638,6 +638,11 @@ var templates = map[string]string{
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
+    {{if .TokenBlessingDev}}
+    <div class="bg-red-600 text-white text-center text-sm font-semibold px-4 py-2" role="alert">
+        DEV MODE (--token-blessing=dev): tools that request your provider token receive it WITHOUT an administrator blessing. Do not run production workloads on this server.
+    </div>
+    {{end}}
     {{if .Session}}
     <nav class="bg-white shadow-sm border-b">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

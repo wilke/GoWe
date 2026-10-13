@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -39,6 +41,27 @@ func computeContentHash(version, cwlText string) string {
 type workflowCreateResponse struct {
 	*model.Workflow
 	Deduplicated bool `json:"deduplicated"`
+	// Warnings are non-fatal registration notes, e.g. a tool that requests
+	// the user's token but is not yet blessed.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// workflowUpdateResponse is a republished workflow plus registration warnings.
+type workflowUpdateResponse struct {
+	*model.Workflow
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// toModelErrorResponse maps a ToModel failure to an HTTP error: a
+// gowe:Execution under requirements is the author's mistake (400), anything
+// else stays an internal error.
+func toModelErrorResponse(w http.ResponseWriter, reqID string, err error) {
+	if errors.Is(err, parser.ErrExecutionUnderRequirements) {
+		respondError(w, reqID, http.StatusBadRequest, model.NewValidationError("CWL parse error: "+err.Error()))
+		return
+	}
+	respondError(w, reqID, http.StatusInternalServerError,
+		&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 }
 
 func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -106,8 +129,7 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	mw, err := s.parser.ToModel(graph, name)
 	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		toModelErrorResponse(w, reqID, err)
 		return
 	}
 
@@ -166,7 +188,11 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("workflow created", "id", mw.ID, "name", mw.Name, "steps", len(mw.Steps))
-	respondCreated(w, reqID, &workflowCreateResponse{Workflow: mw, Deduplicated: false})
+	respondCreated(w, reqID, &workflowCreateResponse{
+		Workflow:     mw,
+		Deduplicated: false,
+		Warnings:     s.unblessedTokenToolWarnings(r.Context(), req.CWL),
+	})
 }
 
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -367,8 +393,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		updated, err := s.parser.ToModel(graph, name)
 		if err != nil {
-			respondError(w, reqID, http.StatusInternalServerError,
-				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+			toModelErrorResponse(w, reqID, err)
 			return
 		}
 		// New row: fresh id, fresh timestamps, fresh content hash.
@@ -404,7 +429,10 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logger.Info("workflow republished as new version", "old_id", id, "new_id", updated.ID, "name", updated.Name)
-		respondOK(w, reqID, updated)
+		respondOK(w, reqID, &workflowUpdateResponse{
+			Workflow: updated,
+			Warnings: s.unblessedTokenToolWarnings(r.Context(), req.CWL),
+		})
 		return
 	}
 

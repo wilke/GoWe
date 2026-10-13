@@ -212,6 +212,15 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Provider-token policy fast-fail (SPECIFICATION.md §13.5): every step
+	// whose tool requests the user's token must be admin-blessed, byte for
+	// byte as it will run. Dispatch re-checks authoritatively.
+	tokenErr, tokenWarnings := s.checkTokenRequests(r.Context(), wf, req.Inputs, req.Labels, userCtx.Token != "")
+	if tokenErr != nil {
+		respondError(w, reqID, http.StatusBadRequest, tokenErr)
+		return
+	}
+
 	// Anonymous submissions never carry secrets. A submission's secrets are
 	// scoped to its submitter (owner/admin-only purge, retention tied to
 	// the submitting identity); the anonymous identity is shared by every
@@ -444,6 +453,12 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	sub.Tasks = []model.Task{}
 
 	resp := newSubmissionResponse(sub)
+	if len(tokenWarnings) > 0 {
+		resp.Warnings = append(resp.Warnings, tokenWarnings...)
+		for _, tw := range tokenWarnings {
+			s.logger.Warn("DEV MODE: submission accepted with an unblessed token-requesting tool", "id", sub.ID, "workflow", wf.Name, "detail", tw.Message)
+		}
+	}
 
 	// warn mode (#273): the submission was accepted despite type mismatches
 	// (enforce already returned 400 above, off never populated

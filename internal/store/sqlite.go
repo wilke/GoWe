@@ -1606,6 +1606,17 @@ const taskColumns = `id, submission_id, step_id, step_instance_id, state, execut
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
 	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms`
 
+// checkInjectBlessed refuses to persist a non-terminal task that asks for the
+// user's token to be injected into the tool environment without naming the
+// blessing that authorised it (model.ErrUnblessedInject). Terminal tasks are
+// exempt so a failed/cancelled row can always be written.
+func checkInjectBlessed(task *model.Task) error {
+	if h := task.RuntimeHints; h != nil && h.InjectBVBRCToken && h.TokenBlessingID == "" && !task.State.IsTerminal() {
+		return fmt.Errorf("task %s: %w", task.ID, model.ErrUnblessedInject)
+	}
+	return nil
+}
+
 // insertTask marshals the task (including runtime-hint encryption) and runs
 // the shared INSERT on the given execer. It is the single insert path behind
 // CreateTask and CreateTasksAndDispatchStep so both persist the same field
@@ -1630,6 +1641,9 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 	jobJSON, err := json.Marshal(task.Job)
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
+	}
+	if err := checkInjectBlessed(task); err != nil {
+		return err
 	}
 	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
@@ -1795,6 +1809,9 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 	jobJSON, err := json.Marshal(task.Job)
 	if err != nil {
 		return 0, fmt.Errorf("marshal job: %w", err)
+	}
+	if err := checkInjectBlessed(task); err != nil {
+		return 0, err
 	}
 	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
@@ -2665,6 +2682,9 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	rows, err := tx.QueryContext(ctx,
 		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
+		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
+		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)
 		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
 		return nil, err

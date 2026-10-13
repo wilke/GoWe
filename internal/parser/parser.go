@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1691,6 +1692,10 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 		UpdatedAt:   now,
 	}
 
+	if err := rejectExecutionUnderRequirements("workflow", wf.Requirements); err != nil {
+		return nil, err
+	}
+
 	// Convert inputs.
 	for id, inp := range wf.Inputs {
 		mw.Inputs = append(mw.Inputs, model.WorkflowInput{
@@ -1785,15 +1790,22 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 			ms.ToolInline = inlineTool
 		}
 
-		// Extract GoWe hints from step or resolved tool.
+		// gowe:Execution is honoured under hints only (never requirements).
+		if err := rejectExecutionUnderRequirements("step "+stepID, step.Requirements); err != nil {
+			return nil, err
+		}
+
+		// Extract GoWe hints from the step and the resolved tool and merge
+		// them field-wise (mergeStepHints): the step may route, never inject.
 		stepHints, err := extractStepHints(step.Hints, nil)
 		if err != nil {
 			return nil, fmt.Errorf("step %s: %w", stepID, err)
 		}
-		ms.Hints = stepHints
-		if ms.Hints == nil && ms.ToolInline != nil {
-			ms.Hints = ms.ToolInline.Hints
+		var toolHints *model.StepHints
+		if ms.ToolInline != nil {
+			toolHints = ms.ToolInline.Hints
 		}
+		ms.Hints = mergeStepHints(toolHints, stepHints)
 
 		// Compute DependsOn from source references.
 		ms.DependsOn = computeDependsOn(ms.In, inputIDs)
@@ -1863,6 +1875,11 @@ func convertTool(ct *cwl.CommandLineTool) (*model.Tool, error) {
 	sort.Slice(t.Outputs, func(i, j int) bool {
 		return t.Outputs[i].ID < t.Outputs[j].ID
 	})
+
+	// gowe:Execution is honoured under hints only (never requirements).
+	if err := rejectExecutionUnderRequirements("tool "+ct.ID, ct.Requirements); err != nil {
+		return nil, err
+	}
 
 	// Extract tool hints (check both hints and requirements for DockerRequirement).
 	hints, err := extractStepHints(ct.Hints, ct.Requirements)
@@ -2096,6 +2113,107 @@ func extractSecretInputs(hints, requirements map[string]any, namespaces map[stri
 	return nil
 }
 
+// ErrExecutionUnderRequirements is wrapped by the registration error for a
+// gowe:Execution declared under requirements; handlers map it to HTTP 400.
+var ErrExecutionUnderRequirements = errors.New("gowe:Execution under requirements")
+
+// IsExecutionClass reports whether a hint/requirement key is the gowe:Execution
+// extension in any accepted spelling (prefixed, legacy goweHint, or full URI).
+// It is the single predicate shared by the parser, toolhash and the server, so
+// every reader of the extension agrees on what counts as one.
+func IsExecutionClass(class string) bool {
+	return class == "gowe:Execution" || class == "goweHint" || strings.HasSuffix(class, "#Execution")
+}
+
+// executionHintMap returns the gowe:Execution body from a hints map in any
+// accepted spelling. The canonical spelling wins, then the legacy one, then
+// full-URI spellings in sorted key order (deterministic).
+func executionHintMap(hints map[string]any) (map[string]any, bool) {
+	for _, k := range []string{"gowe:Execution", "goweHint"} {
+		if m, ok := hints[k].(map[string]any); ok {
+			return m, true
+		}
+	}
+	var keys []string
+	for k := range hints {
+		if IsExecutionClass(k) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if m, ok := hints[k].(map[string]any); ok {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// rejectExecutionUnderRequirements fails registration when gowe:Execution is
+// declared under "requirements". The extension is a routing/policy hint and is
+// read from "hints" only; accepting it under requirements would give a second
+// spelling for the token request that the blessing review does not cover.
+func rejectExecutionUnderRequirements(where string, requirements map[string]any) error {
+	for class := range requirements {
+		if IsExecutionClass(class) {
+			return fmt.Errorf("%s: %s is declared under requirements; gowe:Execution is only honoured under hints (move it to hints): %w", where, class, ErrExecutionUnderRequirements)
+		}
+	}
+	return nil
+}
+
+// mergeStepHints combines a tool document's gowe hints with the workflow
+// step's, field by field, replacing the old "step hints replace tool hints
+// wholesale" behaviour (F3):
+//
+//   - InjectBVBRCToken comes ONLY from the tool document. A step can never
+//     request the user's token.
+//   - DockerImage: the tool wins when both set one (the blessing covers the
+//     tool's image; a step must not swap it).
+//   - ExecutorType, WorkerGroup, BVBRCAppID, RequiresGPU, RequiredDatasets
+//     and the #260 secret opt-ins: the step wins when it sets them, otherwise
+//     the tool's value stands.
+//
+// Either argument may be nil; nil is returned when both are.
+func mergeStepHints(tool, step *model.StepHints) *model.StepHints {
+	if tool == nil && step == nil {
+		return nil
+	}
+	var out model.StepHints
+	if tool != nil {
+		out = *tool
+	}
+	if step == nil {
+		return &out
+	}
+	if step.BVBRCAppID != "" {
+		out.BVBRCAppID = step.BVBRCAppID
+	}
+	if step.ExecutorType != "" {
+		out.ExecutorType = step.ExecutorType
+	}
+	if out.DockerImage == "" {
+		out.DockerImage = step.DockerImage
+	}
+	if step.WorkerGroup != "" {
+		out.WorkerGroup = step.WorkerGroup
+	}
+	if step.RequiresGPU {
+		out.RequiresGPU = true
+	}
+	if len(step.RequiredDatasets) > 0 {
+		out.RequiredDatasets = step.RequiredDatasets
+	}
+	if len(step.SecretEnv) > 0 {
+		out.SecretEnv = step.SecretEnv
+	}
+	if step.InjectSecrets {
+		out.InjectSecrets = true
+	}
+	// out.InjectBVBRCToken stays the tool's: never copied from step.
+	return &out
+}
+
 // extractStepHints extracts GoWe-specific hints and CWL DockerRequirement from hints and requirements maps.
 // DockerRequirement may appear in either hints or requirements; both are checked.
 func extractStepHints(hints map[string]any, requirements map[string]any) (*model.StepHints, error) {
@@ -2107,10 +2225,7 @@ func extractStepHints(hints map[string]any, requirements map[string]any) (*model
 
 	// GoWe-specific execution hints.
 	// Accept both "gowe:Execution" (canonical) and legacy "goweHint".
-	goweMap, ok := hints["gowe:Execution"].(map[string]any)
-	if !ok {
-		goweMap, ok = hints["goweHint"].(map[string]any)
-	}
+	goweMap, ok := executionHintMap(hints)
 	if ok {
 		h.BVBRCAppID = stringField(goweMap, "bvbrc_app_id")
 		if et := stringField(goweMap, "executor"); et != "" {
@@ -2188,7 +2303,7 @@ func extractStepHints(hints map[string]any, requirements map[string]any) (*model
 	}
 
 	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && h.WorkerGroup == "" &&
-		len(h.RequiredDatasets) == 0 && len(h.SecretEnv) == 0 && !h.InjectSecrets {
+		len(h.RequiredDatasets) == 0 && len(h.SecretEnv) == 0 && !h.InjectSecrets && !h.InjectBVBRCToken {
 		return nil, nil
 	}
 	return &h, nil

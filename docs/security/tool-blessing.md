@@ -1,13 +1,10 @@
 # Tool blessing
 
-Status: **worker side enforced; server side in progress.** Blessings can be
-created, listed, extended and revoked (REST, `gowe admin`, and the
-`/admin/tool-blessings` UI page). The worker already refuses to inject the
-token into a tool's environment unless the scheduler stamped the task with a
-blessing id and the image matches a blessed digest (see "Worker side"). The
-server-side wiring that stamps those fields (scheduler grant, submission-time
-checks, `--token-blessing=enforce|dev`) is documented when it lands; until
-then no task carries a blessing id, so no worker injects.
+Status: **enforced end to end.** The scheduler grants the user's token to a tool
+only if the tool requests it and an active blessing covers its exact content
+(see "Policy" below), and the worker refuses to inject unless the task carries
+the blessing id and the resolved image matches a blessed digest (see "Worker
+side"). `--token-blessing=dev` is the loud development escape hatch.
 
 ## Why
 
@@ -91,6 +88,40 @@ without the token. After the task the worker drops the token. Code:
   --image-sha256 <hex>`), not a hash of any file. The worker compares that
   digest and relies on the runtime to pull by it.
 
+## Policy
+
+- **Request**: only the tool document can ask for the token
+  (`gowe:Execution.inject_bvbrc_token: true` under the tool's `hints`).
+  Steps may route (`executor`, `worker_group`, `gpu`, secret opt-ins) but never
+  request; `gowe:Execution` under `requirements` is a registration error.
+- **Submit** (fast-fail, `400`): a step whose tool requests the token needs an
+  active blessing for the digest the scheduler will compute (workflow, step and
+  job requirements merged; nested sub-workflow steps against the child root;
+  the error names the inherited class that broke a blessing) and an allowed
+  worker group (`TOOL_NOT_BLESSED`); job `cwl:requirements` and step-level
+  `DockerRequirement`/`gowe:Execution.docker_image` (requirements or hints) are
+  refused (`TOKEN_TOOL_OVERRIDE_REFUSED`). Registration only warns.
+- **Dispatch** (authoritative): the scheduler recomputes the digest of the final
+  `task.Tool`, requires the worker executor, an active blessing and an allowed
+  group, then sets `InjectBVBRCToken`, `TokenBlessingID`, `TokenEnvNames`,
+  `ImageSHA256s`. Any denial fails the task before it is queued
+  (`gowe_token_grants_total{workflow,outcome}`: granted, granted_dev,
+  denied_unblessed, denied_group, denied_executor). Retries redo the check, so a
+  revoked blessing stops a retry.
+- **Dev mode** (`gowe-server --token-blessing=dev`, default `enforce`): an
+  unblessed request is granted with `TokenBlessingID="dev-mode"`, the default
+  env names, and the sha256 of the tool's `.sif` computed from
+  `--dev-image-dir` (the worker still verifies it). Anything else (registry
+  image, no dir, missing file) is denied. Every grant logs a WARN, `/api/v1/health`
+  reports `token_blessing: "dev"`, the UI shows a banner and the submission
+  response carries a warning naming the tool. Blessed tools behave identically in
+  both modes; nothing else is relaxed.
+- **BV-BRC executor**: a token request on a tool that runs on the BV-BRC
+  executor is a no-op, not a denial: that executor sends the submitter's token
+  as a request header and never places it in a tool environment.
+- **Migration**: bless the three `bvbrc-*` helper tools (`gowe admin bless`)
+  before submitting `genome-analysis-pipeline`.
+
 ## Lifecycle
 
 - `inspect` computes the hash and review report without recording anything.
@@ -142,3 +173,14 @@ the network. Blessing is the trust decision about the tool's code.
   `internal/toolmerge`; admin logic: `internal/blessing`.
 - Storage: `blessed_tools` table, `internal/store/tool_blessings.go`.
 - API: [API_GUIDE.md](../API_GUIDE.md) section 11; CLI `gowe admin bless`.
+
+## Residuals
+
+- `ReconcileWorkerTasks`/`RequeueWorkerTasks` (worker loss, heartbeat reconcile)
+  reset RUNNING tasks to QUEUED without re-running the credential policy, so a
+  blessing revoked mid-flight is re-checked only on a real retry
+  (`attachCredentials`) or a new submission. The store guard still refuses a
+  live task with the inject flag and no blessing id.
+- Pre-policy rows: at startup, non-terminal rows with the inject flag and no
+  blessing id lose the request (they run without the token); `CheckoutTask`
+  never hands such a row to a worker.

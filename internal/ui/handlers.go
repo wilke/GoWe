@@ -21,8 +21,10 @@ import (
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/metrics"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/timing"
+	"github.com/me/gowe/internal/tokencheck"
 	"github.com/me/gowe/internal/validate"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
@@ -78,7 +80,8 @@ type UI struct {
 	// inputValidation is the server's --input-validation mode (#273),
 	// copied from Config.InputValidation. Read through Effective() (never
 	// the zero value directly) so an unset mode means warn.
-	inputValidation validate.Mode
+	inputValidation  validate.Mode
+	tokenBlessingDev bool // --token-blessing=dev banner
 }
 
 // Config holds UI configuration.
@@ -106,6 +109,10 @@ type Config struct {
 	// GrafanaURL is an external link to a Grafana instance, rendered in the
 	// nav/header when non-empty (target _blank). Empty hides the link.
 	GrafanaURL string
+	// TokenBlessingDev shows a loud banner on every page: the server runs with
+	// --token-blessing=dev, so tools that request the user's token get it
+	// without an administrator blessing.
+	TokenBlessingDev bool
 	// BasePath mounts the UI under this path prefix behind a reverse proxy.
 	// Empty (the default) is root-mounted, byte-identical to pre-#250
 	// behavior. Must already be normalized — see cmd/server's
@@ -138,6 +145,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		grafanaURL:          cfg.GrafanaURL,
 		basePath:            cfg.BasePath,
 		inputValidation:     cfg.InputValidation,
+		tokenBlessingDev:    cfg.TokenBlessingDev,
 	}
 }
 
@@ -803,6 +811,19 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	// Set worker group label if provided (mirrors CLI --group behavior).
 	if workerGroup := strings.TrimSpace(r.FormValue("worker_group")); workerGroup != "" {
 		labels["worker_group"] = workerGroup
+	}
+
+	// Provider-token policy fast-fail (same check as the REST API): a step
+	// whose tool requests the user's token must be admin-blessed. Without
+	// this the user would only see a pre-dispatch task failure.
+	tokenChecker := &tokencheck.Checker{Parser: parser.New(ui.logger), Store: ui.store, Logger: ui.logger, Dev: ui.tokenBlessingDev}
+	tokenErr, tokenWarnings := tokenChecker.Check(r.Context(), wf, inputs, labels, sess != nil && sess.Token != "")
+	if tokenErr != nil {
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+url.QueryEscape(workflowID)+"&error="+url.QueryEscape(string(tokenErr.Code)+": "+tokenErr.Message)), http.StatusSeeOther)
+		return
+	}
+	for _, tw := range tokenWarnings {
+		ui.logger.Warn("DEV MODE: submission accepted with an unblessed token-requesting tool", "workflow", wf.Name, "detail", tw.Message)
 	}
 
 	now := time.Now().UTC()
@@ -2080,6 +2101,7 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 	if _, ok := data["BasePath"]; !ok {
 		data["BasePath"] = ui.basePath
 	}
+	data["TokenBlessingDev"] = ui.tokenBlessingDev
 
 	var buf bytes.Buffer
 	if err := renderTemplate(&buf, template, data); err != nil {

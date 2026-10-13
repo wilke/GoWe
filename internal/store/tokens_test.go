@@ -49,6 +49,7 @@ func tokenTask(id, token string) *model.Task {
 		CreatedAt:    time.Now().UTC().Truncate(time.Second),
 		RuntimeHints: &model.RuntimeHints{
 			InjectBVBRCToken: true,
+			TokenBlessingID:  "tb_test",
 			StagerOverrides: &model.StagerOverrides{
 				HTTPCredential: &model.HTTPCredential{Type: "bearer", Token: token},
 			},

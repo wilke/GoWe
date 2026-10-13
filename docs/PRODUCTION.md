@@ -640,6 +640,22 @@ process through `/proc/<pid>/cmdline`, including tool containers and `--runtime 
 `ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
 `GOWE_WORKER_KEY_FILE` / `--worker-key-file` (or `GOWE_WORKER_KEY` in the environment).
 
+### Provider-token policy flags (server)
+
+| Flag | Meaning |
+|---|---|
+| `--token-blessing enforce\|dev` | Default `enforce`: a tool gets the user's token in its environment only if it requests it AND an administrator blessed its exact content (`gowe admin bless`). `dev` also grants unblessed requesting tools; loud (WARN per grant, `token_blessing:"dev"` in `/api/v1/health`, UI banner, warning on submissions). Never use in production. |
+| `--dev-image-dir DIR` | Dev mode only: resolves relative `.sif` image refs to compute the image digest the worker verifies; without it an unblessed grant is denied. |
+| `--token-inject-groups` | Deprecated, staging-only (WARN at start): no longer injects; worker tasks get a staging credential by need. Remove it. |
+
+Upgrade notes: unblessed token requests are refused (`400 TOOL_NOT_BLESSED`), so bless the `bvbrc-*` helper
+tools before submitting `genome-analysis-pipeline`. At startup the server (1) clears stale credentials from terminal
+task rows (raw JSON sweep, logged count) and (2) removes the token request (`inject_bvbrc_token`) from NON-terminal
+rows that have no blessing id (queued by a pre-policy server), logging a WARN with the count: those tasks run
+**without** the token rather than being injected unblessed. As a second layer, `CheckoutTask` never hands such a row to a
+worker, and the store refuses to write one. Requeue via the retry API, not SQL (SQL bypasses credential attachment).
+`--dev-image-dir` without `--token-blessing=dev` is a startup error (exit 2).
+
 ### Tool isolation defaults and their opt-outs (v0.21.x → next release)
 
 - **Apptainer** tools run with `--containall --cleanenv`: private PID namespace (`cat /proc/1/cmdline` inside a task

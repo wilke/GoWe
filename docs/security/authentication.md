@@ -69,14 +69,16 @@ request (Bearer token)
 
 ## 4. When does a task carry the user's token?
 
-`internal/scheduler/loop.go` `addUserToken` — the token is attached to a task **only** when:
+`internal/scheduler/credentials.go` `attachCredentials` (the single entry point: `applyTokenGrant` -> `addUserToken` -> `addSecrets`, used by dispatch, scatter dispatch and retries) embeds the token as the task's HTTP credential **only** when:
 
-1. the task targets the **bvbrc executor** (it cannot call the BV-BRC AppService without it), or
-2. the tool opted in via the CWL hint `gowe:Execution.inject_bvbrc_token: true`, or
-3. the task's worker group is listed in `--token-inject-groups` (group-level policy for staging only: the worker refuses to inject without a blessing id, so this flag no longer places the token in a tool's environment), or
-4. **passthrough staging mode**: the server was started *without* `--workspace-staging server`. Then workers do their own `ws://` staging and **every task** carries the submitter's token.
+1. the task targets the **bvbrc executor** (it cannot call the BV-BRC AppService without it; header only, unchanged), or
+2. the tool **requests** the token (`gowe:Execution.inject_bvbrc_token: true` in the tool document's `hints`) **and** an administrator **blessed that exact tool** (see `docs/security/tool-blessing.md`) **and** the executor is `worker` and the worker group is allowed: the grant also sets `InjectBVBRCToken` + the blessing metadata, or
+3. a **worker** task needs it for **staging**: `ws://`/`shock://` inputs in its job, or the submission has an `output_destination`. This is need-based and identical in passthrough and server-staging mode; it never causes injection into the tool environment, or
+4. (deprecated, staging-only) the worker group is listed in `--token-inject-groups`.
 
-Deployment consequence: in server-staging mode (recommended; production runs it) the default is **no token in the task** — staging happens server-side and the token stays in the server. In passthrough mode the isolation story is materially weaker; choose it knowingly.
+There is no longer a "passthrough mode puts the token in every task" clause. A step cannot request the token; unblessed requests are refused (`400 TOOL_NOT_BLESSED` at submit, task failed pre-dispatch otherwise). `--token-blessing=dev` grants unblessed requests too (loud; development only).
+
+Who uploads what: the worker uploads its own outputs to the output destination whenever it holds the credential; in server-staging mode the server pre-stages `ws://` inputs and its post-stage uploads only leftover `file://` outputs plus `_gowe_outputs.json`.
 
 ## 5. How the token reaches the BV-BRC API
 
@@ -181,8 +183,10 @@ A per-submission `secrets_retention` in the create request overrides the server 
 | `--allow-unverified-mgrast` | re-enable the unverified MG-RAST header path |
 | `GOWE_TOKEN_KEY` / `--token-key-file` | AES-256-GCM key for tokens at rest (32 bytes, base64/hex) |
 | `--allow-plaintext-tokens` | permit plaintext at rest when no key is set (migration/dev) |
-| `--token-inject-groups g1,g2` | group-level token policy (§4.3); staging-only, the worker injects only for blessed tasks (§6) |
-| `--workspace-staging server` | keep tokens server-side for `ws://` staging (§4.4) |
+| `--token-inject-groups g1,g2` | **deprecated, staging-only**: staging credential for these groups; never injects (§4.4) |
+| `--token-blessing enforce\|dev` | provider-token policy; `dev` also grants unblessed tools (loud, development only) |
+| `--dev-image-dir <dir>` | dev mode: resolve relative `.sif` refs to pin the image digest |
+| `--workspace-staging server` | pre/post-stage `ws://` on the server (§4); a worker still gets a staging credential when it uploads to an output destination |
 | `--worker-keys <file>` | static worker keys (`X-Worker-Key`) |
 | `--admins` / `GOWE_ADMINS` | admin usernames |
 | `--allow-anonymous`, `--anonymous-executors` | anonymous access policy |

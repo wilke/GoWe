@@ -1,6 +1,9 @@
 package model
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrorCode represents a structured API error code.
 type ErrorCode string
@@ -83,3 +86,10 @@ type InvalidTransitionError struct {
 func (e *InvalidTransitionError) Error() string {
 	return fmt.Sprintf("invalid %s state transition: %s → %s (entity %s)", e.Entity, e.From, e.To, e.ID)
 }
+
+// ErrUnblessedInject is returned by the store when asked to persist a
+// non-terminal task whose RuntimeHints request token injection
+// (InjectBVBRCToken) without a TokenBlessingID. Only the scheduler's
+// attachCredentials may set the flag, always together with the blessing id;
+// this is the belt-and-braces check behind it.
+var ErrUnblessedInject = errors.New("task has InjectBVBRCToken without TokenBlessingID")
