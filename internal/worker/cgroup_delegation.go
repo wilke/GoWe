@@ -32,9 +32,13 @@ type cgroupLimits struct {
 // user manager for a scope under user@<uid>.service/user.slice regardless of
 // which cgroup the worker process itself runs in (a worker started with nohup
 // from an ssh session lives in session-N.scope but its containers still land
-// under user@<uid>.service). Only the controllers enabled for that slice can
-// be set; distros often delegate just "memory pids", and requesting --cpus
-// there fails at container creation ("openat2 .../cpu.max: no such file").
+// under user@<uid>.service). Usable controllers are the ones *delegated* to
+// the user manager: user@<uid>.service/cgroup.controllers (the same check
+// podman documents for rootless limits). Child slices such as user.slice list
+// only what systemd has enabled so far and gain delegated controllers on
+// demand, so they must not be consulted. Distros often delegate just
+// "memory pids"; requesting --cpus there fails at container creation
+// ("openat2 .../cpu.max: no such file").
 func detectCgroupLimits(root string, uid int, mode, selfCgroup string) (cgroupLimits, error) {
 	switch mode {
 	case ApptainerCgroupsOff:
@@ -47,7 +51,9 @@ func detectCgroupLimits(root string, uid int, mode, selfCgroup string) (cgroupLi
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "cgroup.controllers")); err != nil {
-		// cgroups v1 or no cgroupfs: Apptainer --cpus/--memory unavailable (common on HPC).
+		// No unified cgroup v2 hierarchy at root: cgroups v1, hybrid mode (v2
+		// mounted only at /sys/fs/cgroup/unified, as on coconut) or no cgroupfs.
+		// Apptainer --cpus/--memory are not applied (common on HPC).
 		return cgroupLimits{}, nil
 	}
 
@@ -55,8 +61,7 @@ func detectCgroupLimits(root string, uid int, mode, selfCgroup string) (cgroupLi
 	if uid == 0 {
 		candidates = []string{root}
 	} else {
-		svc := filepath.Join(root, "user.slice", fmt.Sprintf("user-%d.slice", uid), fmt.Sprintf("user@%d.service", uid))
-		candidates = []string{filepath.Join(svc, "user.slice"), svc}
+		candidates = []string{filepath.Join(root, "user.slice", fmt.Sprintf("user-%d.slice", uid), fmt.Sprintf("user@%d.service", uid))}
 	}
 
 	for _, dir := range candidates {

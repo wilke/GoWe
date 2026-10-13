@@ -108,14 +108,19 @@ NUM_WORKERS=4 LOG_LEVEL=debug ./scripts/start-server.sh
 A task's `runtime.cores` / `runtime.ram` become Apptainer `--cpus` / `--memory` limits when the
 host can enforce them. With the default `--apptainer-cgroups=auto` the worker checks which cgroup v2
 controllers Apptainer can use: all controllers at the cgroup root when running as root, otherwise
-those enabled for `user@<uid>.service/user.slice` (where rootless Apptainer creates its scopes, even
-when the worker itself runs in an ssh `session-N.scope`). A missing controller skips only its flag
-and logs one WARN at startup, e.g. `cpu limit not enforced: cpu controller not delegated to …`;
-tools still receive the core count through `runtime.cores` (for example `--cpu $(runtime.cores)`).
+those delegated to the user's systemd manager, `user@<uid>.service/cgroup.controllers`. Rootless
+Apptainer creates its scopes under that service even when the worker itself runs in an ssh
+`session-N.scope`. Check a host with
+`cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`.
+A missing controller skips only its flag and logs one WARN at startup, e.g.
+`cpu limit not enforced: cpu controller not delegated to …`; tools still receive the core count
+through `runtime.cores` (for example `--cpu $(runtime.cores)`).
 
 Many distros delegate only `memory pids` to user services. To enforce CPU limits for rootless
 workers, an admin adds `Delegate=cpu cpuset io memory pids` to a `user@.service` drop-in. Use
-`--apptainer-cgroups=on` to force both flags, or `off` to never pass them.
+`--apptainer-cgroups=on` to force both flags, or `off` to never pass them. Hosts without a unified
+cgroup v2 hierarchy (v1 or hybrid) get no limits. With `systemd cgroups = no` in `apptainer.conf`,
+rootless limits fail regardless of delegation.
 
 ## Server-side Workspace Pre-staging (`--workspace-staging server`)
 
