@@ -770,14 +770,16 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		}
 	}
 
-	// Resource limits for container execution.
-	// Apptainer --memory/--cpus require cgroups v2 unified mode.
-	// On systems without it (most HPC), skip these flags silently.
+	// Resource limits for container execution. Apptainer --memory/--cpus need
+	// cgroups v2 unified mode and, rootless, the matching controller delegated
+	// to the user's systemd manager. The worker detects both at startup
+	// (internal/worker/cgroup_delegation.go) and logs a WARN for each limit it
+	// cannot enforce; each flag is gated on its own controller.
 	if opts.Resources.ApptainerCgroups {
-		if opts.Resources.RamMB > 0 {
+		if opts.Resources.RamMB > 0 && opts.Resources.CgroupMemory {
 			apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
 		}
-		if opts.Resources.Cores > 0 {
+		if opts.Resources.Cores > 0 && opts.Resources.CgroupCPU {
 			apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
 		}
 	}

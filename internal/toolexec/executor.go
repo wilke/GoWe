@@ -51,6 +51,8 @@ type ResourceConfig struct {
 	Cores            int   // Effective CPU cores for this task
 	RamMB            int64 // Effective memory in MiB for this task
 	ApptainerCgroups bool  // System supports cgroups v2 unified (Apptainer --memory/--cpus)
+	CgroupCPU        bool  // cpu controller usable: gate for Apptainer --cpus
+	CgroupMemory     bool  // memory controller usable: gate for Apptainer --memory
 }
 
 // ExtraBind represents an additional bind mount for container execution.

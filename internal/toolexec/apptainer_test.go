@@ -124,3 +124,28 @@ func TestApptainerIsolationArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestApptainerArgs_ResourceLimitsPerController(t *testing.T) {
+	tests := []struct {
+		name             string
+		cpu, mem         bool
+		wantCPU, wantMem bool
+	}{
+		{"memory delegated, cpu not", false, true, false, true},
+		{"cpu and memory delegated", true, true, true, true},
+		{"nothing delegated", false, false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, _ := runFakeApptainer(t, func(o *Options) {
+				o.Resources = ResourceConfig{Cores: 4, RamMB: 8000, ApptainerCgroups: tt.cpu || tt.mem, CgroupCPU: tt.cpu, CgroupMemory: tt.mem}
+			})
+			if got := indexOf(args, "--cpus") >= 0; got != tt.wantCPU {
+				t.Errorf("--cpus present = %v, want %v (args %v)", got, tt.wantCPU, args)
+			}
+			if got := indexOf(args, "--memory") >= 0; got != tt.wantMem {
+				t.Errorf("--memory present = %v, want %v (args %v)", got, tt.wantMem, args)
+			}
+		})
+	}
+}

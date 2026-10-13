@@ -208,7 +208,7 @@ The `local` path executes the tool as a **direct child of the worker process** w
 - `--read-only` + tmpfs scratch
 - `--pids-limit` (fork-bomb guard)
 
-Apptainer's `--memory`/`--cpus` are additionally gated on `opts.Resources.ApptainerCgroups` and skipped silently on systems without cgroups v2 — i.e. **most HPC** (`execute.go:648-657`).
+Apptainer's `--memory`/`--cpus` are additionally gated per controller (`opts.Resources.CgroupMemory` / `CgroupCPU`): they are skipped on hosts without a unified cgroup v2 hierarchy (**most HPC**) and, for rootless workers, when the controller is not delegated to `user@<uid>.service`. The worker logs a startup WARN for each limit it cannot enforce (`internal/worker/cgroup_delegation.go`; flags applied in `internal/toolexec/execute.go`).
 
 ### F7 — Implicit image resolution, no provenance verification · **Medium**
 

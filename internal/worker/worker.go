@@ -145,6 +145,14 @@ type ResourceWorkerConfig struct {
 	MaxCPUs          int   // Max CPUs for containers (0 = auto-detect)
 	MaxMemMB         int64 // Max memory in MiB for containers (0 = auto-detect)
 	ApptainerCgroups bool  // System supports cgroups v2 unified (detected at startup)
+	// CgroupCPU / CgroupMemory report whether the cpu / memory controllers are
+	// usable by this process (delegated to the user's systemd service when
+	// rootless). Apptainer --cpus / --memory fail at container creation when
+	// the matching controller is not delegated, so each flag is gated on its own.
+	CgroupCPU    bool
+	CgroupMemory bool
+	// ApptainerCgroupsMode is auto (detect), on or off (--apptainer-cgroups).
+	ApptainerCgroupsMode string
 }
 
 // New creates a Worker from configuration.
@@ -173,14 +181,24 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	if cfg.Resources.MaxCPUs == 0 {
 		cfg.Resources.MaxCPUs = runtime.NumCPU()
 	}
-	// Detect cgroups v2 unified mode for Apptainer resource limits.
-	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
-		cfg.Resources.ApptainerCgroups = true
+	// Decide which Apptainer resource limits (--cpus/--memory) can be enforced.
+	selfCgroup, _ := os.ReadFile("/proc/self/cgroup")
+	lim, err := detectCgroupLimits("/sys/fs/cgroup", os.Getuid(), cfg.Resources.ApptainerCgroupsMode, string(selfCgroup))
+	if err != nil {
+		return nil, err
+	}
+	cfg.Resources.ApptainerCgroups = lim.CPU || lim.Memory
+	cfg.Resources.CgroupCPU = lim.CPU
+	cfg.Resources.CgroupMemory = lim.Memory
+	for _, w := range lim.Warnings {
+		logger.Warn(w)
 	}
 	logger.Info("worker resource limits",
 		"max_cpus", cfg.Resources.MaxCPUs,
 		"max_mem_mb", cfg.Resources.MaxMemMB,
 		"apptainer_cgroups", cfg.Resources.ApptainerCgroups,
+		"cgroup_cpu", cfg.Resources.CgroupCPU,
+		"cgroup_memory", cfg.Resources.CgroupMemory,
 	)
 
 	// Build TLS config.
@@ -817,6 +835,8 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		MaxCPUs:               w.resources.MaxCPUs,
 		MaxMemMB:              w.resources.MaxMemMB,
 		ApptainerCgroups:      w.resources.ApptainerCgroups,
+		CgroupCPU:             w.resources.CgroupCPU,
+		CgroupMemory:          w.resources.CgroupMemory,
 		ImageDir:              w.imageDir,
 		ResolveSecondary:      task.StepInstanceID == "",
 		RemoveDefaultListings: true,
