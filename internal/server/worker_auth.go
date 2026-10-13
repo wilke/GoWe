@@ -25,8 +25,11 @@ const anonymousWorkerKeyID = "none"
 
 // WorkerAuthContext holds authenticated worker info for a request.
 type WorkerAuthContext struct {
-	KeyID  string   // Stable key identifier (or key hash) for attribution/logging
-	Groups []string // Groups this key can join
+	KeyID string // Stable key identifier (or key hash) for attribution/logging
+	// Anonymous is true only for the open-access context (no keys configured).
+	// Binding checks key off this flag, never off KeyID.
+	Anonymous bool
+	Groups    []string // Groups this key can join
 }
 
 // WorkerAuthFromContext extracts the WorkerAuthContext from request context.
@@ -105,8 +108,31 @@ func LoadWorkerKeyConfig(configFile string) (*WorkerKeyConfig, error) {
 		}
 	}
 
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	cfg.build()
 	return cfg, nil
+}
+
+// validate rejects key ids that would break key-to-worker binding: the reserved
+// "none" (the open-access log label) and duplicate non-empty ids (which would
+// silently merge two keys into one identity).
+func (c *WorkerKeyConfig) validate() error {
+	seen := make(map[string]bool, len(c.Keys))
+	for _, entry := range c.Keys {
+		if entry.ID == "" {
+			continue
+		}
+		if entry.ID == anonymousWorkerKeyID {
+			return fmt.Errorf("worker key id %q is reserved", anonymousWorkerKeyID)
+		}
+		if seen[entry.ID] {
+			return fmt.Errorf("duplicate worker key id %q", entry.ID)
+		}
+		seen[entry.ID] = true
+	}
+	return nil
 }
 
 // build constructs the hash index from Keys. Entries whose map key uses the
@@ -242,8 +268,9 @@ func workerAuthMiddleware(auth *WorkerKeyAuthenticator, logger *slog.Logger) fun
 			if auth == nil || !auth.Enabled(r.Context()) {
 				// Create anonymous worker context — allow any group.
 				workerCtx := &WorkerAuthContext{
-					KeyID:  anonymousWorkerKeyID,
-					Groups: nil, // nil means any group is allowed
+					KeyID:     anonymousWorkerKeyID,
+					Anonymous: true,
+					Groups:    nil, // nil means any group is allowed
 				}
 				ctx := context.WithValue(r.Context(), ctxKeyWorkerAuth, workerCtx)
 				next.ServeHTTP(w, r.WithContext(ctx))

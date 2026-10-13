@@ -631,7 +631,9 @@ gowe-server ... --worker-keys /path/worker-keys.json
 gowe-worker ... --worker-key "$(cat /path/worker-key.raw)"     # see #257 for a file/env option
 ```
 
-Once keys are on, `GET /api/v1/workers` requires a worker key too. **UIs that show fleet status must use
+- Key ids: workers are bound to the id of the key that registered them. Static keys SHOULD set `id`; otherwise the id is a 16-hex sha256 prefix of the secret, so rotating the secret of an id-less key (or adding an `id` to it) changes the key id and orphans its workers (403 on every route; workers do not re-register on 4xx) until they are restarted. `id` must be unique and not `none` (the server refuses to start otherwise).
+
+Once keys are on, `GET /api/v1/workers` requires a worker key too and lists only that key's workers. **UIs that show fleet status must use
 `GET /api/v1/fleet`** instead: user-authenticated (the normal provider token), read-only, a slim projection
 (`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no hostnames.
 Migrate UIs before or with enabling keys — otherwise their browser sessions receive 401 from `/workers`.

@@ -2565,25 +2565,19 @@ func (s *SQLiteStore) AdoptWorkerKey(ctx context.Context, id, keyID string) (boo
 
 // ListWorkersByKey returns the workers bound to the given worker key id.
 func (s *SQLiteStore) ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error) {
-	all, err := s.ListWorkers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []*model.Worker
-	for _, w := range all {
-		if w.KeyID == keyID {
-			out = append(out, w)
-		}
-	}
-	return out, nil
+	return s.listWorkers(ctx, "WHERE key_id = ?", keyID)
 }
 
 func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "")
+}
+
+func (s *SQLiteStore) listWorkers(ctx context.Context, where string, args ...any) ([]*model.Worker, error) {
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
-		 FROM workers ORDER BY registered_at`)
+		 FROM workers `+where+` ORDER BY registered_at`, args...)
 	if err != nil {
 		return nil, err
 	}

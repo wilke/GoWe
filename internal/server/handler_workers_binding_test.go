@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,11 +86,20 @@ func TestWorkerKeyBinding_ForeignKeyForbidden(t *testing.T) {
 		t.Fatal("worker was deleted by a foreign key")
 	}
 
+	// A task already assigned to the worker, so the owner can post a status.
+	statusTask := &model.Task{ID: "task_bind_status", SubmissionID: subID, StepID: "step2",
+		State: model.TaskStateQueued, ExecutorType: model.ExecutorTypeWorker, ExternalID: wid,
+		Inputs: map[string]any{}, Outputs: map[string]any{}, Job: map[string]any{}, ScatterIndex: -1}
+	if err := srv.store.CreateTask(context.Background(), statusTask); err != nil {
+		t.Fatalf("seed status task: %v", err)
+	}
+
 	// The owning key works on the same routes.
 	ownerRoutes := []struct {
 		name, method, path, body string
 	}{
 		{"heartbeat", "PUT", "/api/v1/workers/" + wid + "/heartbeat", `{}`},
+		{"status", "PUT", "/api/v1/workers/" + wid + "/tasks/task_bind_status/status", `{"state":"RUNNING"}`},
 		{"checkout", "GET", "/api/v1/workers/" + wid + "/work", ``},
 		{"complete", "PUT", "/api/v1/workers/" + wid + "/tasks/" + taskID + "/complete", `{"state":"SUCCESS","exit_code":0}`},
 		{"deregister", "DELETE", "/api/v1/workers/" + wid, ``},
@@ -160,11 +171,7 @@ func TestLegacyWorker_Adoption(t *testing.T) {
 			}
 			if tc.wantKeyID != "" {
 				// Once adopted, a different key is locked out.
-				other := "secretB"
-				if tc.secret == "secretB" {
-					other = "secretA"
-				}
-				if w, _ := keyedDo(t, srv, other, "PUT", "/api/v1/workers/wrk_legacy/heartbeat", `{}`); w.Code != http.StatusForbidden {
+				if w, _ := keyedDo(t, srv, "secretB", "PUT", "/api/v1/workers/wrk_legacy/heartbeat", `{}`); w.Code != http.StatusForbidden {
 					t.Errorf("post-adoption foreign status=%d, want 403", w.Code)
 				}
 			}
@@ -218,5 +225,81 @@ func TestListWorkers_ScopedToKey(t *testing.T) {
 	}
 	if got := ids("secretB"); len(got) != 1 || got[0] != b1 {
 		t.Errorf("key B list = %v, want [%s]", got, b1)
+	}
+}
+
+func TestLoadWorkerKeyConfig_RejectsReservedAndDuplicateIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		bad  bool
+	}{
+		{"reserved none", `{"keys":{"k1":{"id":"none"}}}`, true},
+		{"duplicate ids", `{"keys":{"k1":{"id":"dup"},"k2":{"id":"dup"}}}`, true},
+		{"empty ids may repeat", `{"keys":{"k1":{},"k2":{}}}`, false},
+		{"distinct ids", `{"keys":{"k1":{"id":"a"},"k2":{"id":"b"}}}`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "keys.json")
+			if err := os.WriteFile(path, []byte(tc.json), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadWorkerKeyConfig(path)
+			if (err != nil) != tc.bad {
+				t.Fatalf("err = %v, want error=%v", err, tc.bad)
+			}
+		})
+	}
+}
+
+// A key whose id is "none" must not be treated as the anonymous context.
+func TestWorkerKeyBinding_KeyNamedNoneIsNotAnonymous(t *testing.T) {
+	cfg := &WorkerKeyConfig{Keys: map[string]WorkerKeyEntry{
+		"secretN": {ID: "none"},
+		"secretB": {ID: "keyB"},
+	}}
+	srv, _ := testServerWithStore(WithWorkerKeyConfig(cfg))
+	wid := keyedRegister(t, srv, "secretB", "default")
+	if w, _ := keyedDo(t, srv, "secretN", "PUT", "/api/v1/workers/"+wid+"/heartbeat", `{}`); w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+}
+
+func TestAdoptWorkerKey_CAS(t *testing.T) {
+	_, st := testServerWithStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.CreateWorker(ctx, &model.Worker{ID: "wrk_cas", Name: "c", Group: "default",
+		State: model.WorkerStateOnline, Runtime: model.RuntimeNone, LastSeen: now, RegisteredAt: now,
+		Labels: map[string]string{}, Datasets: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.AdoptWorkerKey(ctx, "wrk_cas", "k1"); err != nil || !ok {
+		t.Fatalf("first adopt = %v, %v; want true", ok, err)
+	}
+	if ok, _ := st.AdoptWorkerKey(ctx, "wrk_cas", "k2"); ok {
+		t.Fatal("second adopt succeeded; must not overwrite")
+	}
+	if w, _ := st.GetWorker(ctx, "wrk_cas"); w.KeyID != "k1" {
+		t.Errorf("key_id = %q, want k1", w.KeyID)
+	}
+}
+
+func TestOpenAccessRegistration_UnboundThenAdopted(t *testing.T) {
+	srv, st := testServerWithStore()
+	wid := registerTestWorker(t, srv)
+	if w, _ := st.GetWorker(context.Background(), wid); w.KeyID != "" {
+		t.Fatalf("open-access key_id = %q, want empty", w.KeyID)
+	}
+	// Keys get enabled later: swap in an authenticator over the same store.
+	// (mutate in place: the router captured the authenticator pointer.)
+	srv.workerAuth.static = &WorkerKeyConfig{Keys: map[string]WorkerKeyEntry{
+		"secretA": {ID: "keyA"}, "secretB": {ID: "keyB"}}}
+	if w, _ := keyedDo(t, srv, "secretA", "PUT", "/api/v1/workers/"+wid+"/heartbeat", `{}`); w.Code != http.StatusOK {
+		t.Fatalf("adopting heartbeat status=%d, want 200", w.Code)
+	}
+	if w, _ := keyedDo(t, srv, "secretB", "PUT", "/api/v1/workers/"+wid+"/heartbeat", `{}`); w.Code != http.StatusForbidden {
+		t.Fatalf("foreign heartbeat status=%d, want 403", w.Code)
 	}
 }

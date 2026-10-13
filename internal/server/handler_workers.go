@@ -100,7 +100,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	// Bind the worker to the registering key. "none" is the anonymous context
 	// used when worker auth is disabled; leave those rows unbound ('') so they
 	// are adopted if auth is enabled later.
-	if workerAuth != nil && workerAuth.KeyID != anonymousWorkerKeyID {
+	if workerAuth != nil && !workerAuth.Anonymous {
 		worker.KeyID = workerAuth.KeyID
 	}
 	if worker.Labels == nil {
@@ -500,7 +500,7 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 	// auth disabled (anonymous context) the full list is returned.
 	var workers []*model.Worker
 	var err error
-	if wa := WorkerAuthFromContext(r.Context()); wa != nil && wa.KeyID != anonymousWorkerKeyID {
+	if wa := WorkerAuthFromContext(r.Context()); wa != nil && !wa.Anonymous {
 		workers, err = s.store.ListWorkersByKey(r.Context(), wa.KeyID)
 	} else {
 		workers, err = s.store.ListWorkers(r.Context())
@@ -573,7 +573,7 @@ func (s *Server) authorizeWorker(w http.ResponseWriter, r *http.Request, id stri
 		})
 		return nil, false
 	}
-	if wa.KeyID == anonymousWorkerKeyID {
+	if wa.Anonymous {
 		return worker, true
 	}
 	if worker.KeyID == wa.KeyID {
