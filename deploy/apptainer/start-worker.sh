@@ -44,8 +44,11 @@ GPU_ENABLED="${GOWE_GPU:-false}"
 GPU_ID="${GOWE_GPU_ID:-}"
 
 # The worker key is never passed on argv (it would be readable in
-# /proc/<pid>/cmdline). Use a 0600 key file (preferred) or GOWE_WORKER_KEY,
-# which the worker reads from its environment and then unsets.
+# /proc/<pid>/cmdline). Use a 0600 key file (GOWE_WORKER_KEY_FILE, preferred).
+# GOWE_WORKER_KEY is a deprecated fallback: the environment stays readable in
+# /proc/<pid>/environ for the worker's lifetime (unsetting it inside the worker
+# does not clear the kernel's copy), and the worker refuses it with
+# --runtime none or --apptainer-no-containall.
 WORKER_KEY_FILE="${GOWE_WORKER_KEY_FILE:-}"
 DEBUG="${GOWE_DEBUG:-false}"
 
@@ -141,7 +144,9 @@ fi
 if [ -n "$WORKER_KEY_FILE" ]; then
     CMD+=(-worker-key-file "$WORKER_KEY_FILE")
 elif [ -n "${GOWE_WORKER_KEY:-}" ]; then
-    # Passed to the worker through the environment only, never on argv.
+    # Deprecated fallback. Never on argv, but readable in /proc/<pid>/environ
+    # by same-uid processes for the worker's lifetime. Prefer GOWE_WORKER_KEY_FILE.
+    echo "WARNING: using GOWE_WORKER_KEY from the environment; it stays readable in /proc/<pid>/environ. Prefer GOWE_WORKER_KEY_FILE (0600 file)." >&2
     export GOWE_WORKER_KEY
 fi
 

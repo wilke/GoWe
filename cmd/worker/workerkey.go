@@ -9,8 +9,12 @@ import (
 )
 
 // workerKeyEnv is the environment variable that carries the worker key. It is
-// read once at startup and then removed from the process environment so that
-// tool processes the worker spawns can never inherit it.
+// read once at startup and removed from the process environment so that tool
+// processes the worker spawns do not inherit it. That is NOT protection against
+// reading it: os.Unsetenv only edits Go's private copy, and the kernel keeps
+// the exec-time environment block, which /proc/<pid>/environ exposes for the
+// worker's whole lifetime to same-uid processes sharing the host PID
+// namespace. Prefer --worker-key-file; see checkWorkerKeySource.
 const workerKeyEnv = "GOWE_WORKER_KEY"
 
 // errWorkerKeyOnArgv is returned when --worker-key is given a value. There is
@@ -19,6 +23,34 @@ const workerKeyEnv = "GOWE_WORKER_KEY"
 var errWorkerKeyOnArgv = errors.New("--worker-key must not be passed on the command line: " +
 	"the key would be readable in /proc/<pid>/cmdline by every local process; " +
 	"use --worker-key-file <path> (regular file, mode 0600) or the " + workerKeyEnv + " environment variable")
+
+// checkWorkerKeySource decides whether a key sourced from the environment is
+// acceptable. fromEnv is true when the key came from GOWE_WORKER_KEY. runtimes
+// is the comma-separated --runtime value ("none" anywhere means tools run
+// directly on the host with no PID namespace); noContainall is
+// --apptainer-no-containall. It returns warn=true when the env form is used
+// but allowed, and an error when it must be refused. The key file has no such
+// residue, so a file source never warns or refuses.
+func checkWorkerKeySource(fromEnv bool, runtimes string, noContainall bool) (warn bool, err error) {
+	if !fromEnv {
+		return false, nil
+	}
+	for _, rt := range strings.Split(runtimes, ",") {
+		if strings.TrimSpace(rt) == "none" {
+			return false, fmt.Errorf("%s is refused with --runtime %q: tools run on the host without a PID namespace and could read the key from /proc/<pid>/environ; use --worker-key-file", workerKeyEnv, runtimes)
+		}
+	}
+	if noContainall {
+		return false, fmt.Errorf("%s is refused with --apptainer-no-containall: Apptainer tools share the host PID namespace and could read the key from /proc/<pid>/environ; use --worker-key-file", workerKeyEnv)
+	}
+	return true, nil
+}
+
+// workerKeyFromEnv reports whether the resolved key came from the environment:
+// no key file was given and the key is non-empty.
+func workerKeyFromEnv(keyFile, key string) bool {
+	return keyFile == "" && key != ""
+}
 
 // resolveWorkerKey determines the worker key from, in order of precedence, the
 // key file and the GOWE_WORKER_KEY environment variable. Any use of --worker-key (argvKeySet, even with an

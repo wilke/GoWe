@@ -9,15 +9,20 @@ below cover the exceptions.
 Provider-token containment (`security!:`). Do these in order:
 
 1. **Back up** `gowe.db` and the token key. Old backups still hold key-protected credentials on terminal task rows.
-2. **Worker start scripts**: switch to `--worker-key-file` (or `GOWE_WORKER_KEY`); the key on argv is refused by the new worker.
+2. **Worker start scripts**: switch to `--worker-key-file`. `GOWE_WORKER_KEY` still works but stays readable in
+   `/proc/<pid>/environ` for the worker's lifetime and is refused with `--runtime none` or `--apptainer-no-containall`; the key
+   on argv is refused by the new worker.
 3. **Upgrade the server.** At startup it clears stale credentials from terminal task rows (raw sweep, logged) and strips the
    unblessed token request from queued pre-upgrade tasks (WARN with count; they run without the token in their
-   environment — the staging credential stays on the row for data staging, only the injection request is removed). Then immediately
-   bless the three helper tools, otherwise `genome-analysis-pipeline` is refused with `400 TOOL_NOT_BLESSED`:
-   `gowe admin blessings --pending`, then `gowe admin bless <workflow>/<tool> --image-file /scout/containers/python.sif`
-   for `bvbrc-get-genome-id`, `bvbrc-wait-for-pgfams`, `bvbrc-create-genome-group`.
-4. **Roll workers** group by group to the matching release (the worker verifies the blessed image digest before injecting).
-5. **Verify**: `/api/v1/health` shows `token_blessing: "enforce"`; submit the pipeline; `gowe_token_grants_total{outcome="granted"}`
+   environment — the staging credential stays on the row for data staging, only the injection request is removed). The server
+   now refuses unblessed token requests (`400 TOOL_NOT_BLESSED`), so `genome-analysis-pipeline` fails until step 5. Do NOT bless yet.
+4. **Roll EVERY worker** in the groups the blessing will allow to 0.22 (the worker verifies the blessed image digest before injecting).
+5. **Then bless** the three helper tools: `gowe admin blessings --pending`, then
+   `gowe admin bless <workflow>/<tool> --image-file /scout/containers/python.sif` for `bvbrc-get-genome-id`,
+   `bvbrc-wait-for-pgfams`, `bvbrc-create-genome-group` (or restrict the blessing's `worker_groups` to groups already rolled).
+   Why this order: a 0.21 worker that checks out a blessed task injects the token on the old gate (no image digest check, no
+   `--containall --cleanenv`, no env allow-list, no post-task scrub).
+6. **Verify**: `/api/v1/health` shows `token_blessing: "enforce"`; submit the pipeline; `gowe_token_grants_total{outcome="granted"}`
    increments; `denied_*` stays at zero for expected workloads.
 
 What changes for users: a tool gets the token only if its own document requests it (hints) AND it is blessed; a step cannot

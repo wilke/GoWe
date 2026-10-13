@@ -289,7 +289,12 @@ process. Under Apptainer without `--containall` the host PID namespace was share
 the worker's command line and steal the key**; on `--runtime none` hosts every tool process could.
 
 > **Status: fixed in two layers.** (1) `--worker-key-file <path>` (regular file, mode 0600 or stricter) and
-> `GOWE_WORKER_KEY` (read, then `os.Unsetenv`) are the only ways to supply the key; a non-empty `--worker-key` on
+> `GOWE_WORKER_KEY` are the only ways to supply the key. The key file is preferred: the env form is readable in
+> `/proc/<pid>/environ` for the worker's whole lifetime (`os.Unsetenv` edits only Go's private copy; the kernel keeps
+> the exec-time block) by any same-uid process sharing the host PID namespace, so the worker logs a WARN for it and
+> refuses it on hosts that run tools without a PID namespace (`--runtime none`, `--apptainer-no-containall`). The
+> same residue applies to the server's `GOWE_TOKEN_KEY` / `GOWE_WORKER_KEYS` env forms; prefer files there too.
+> A non-empty `--worker-key` on
 > argv is refused at startup with an error naming both alternatives, and there is no override flag (an override would
 > reopen the leak on `--runtime none` hosts where nothing else protects the key). (2) Apptainer `--containall` gives
 > tools a private PID namespace, so even a legacy cmdline is unreadable from inside a container. The shipped

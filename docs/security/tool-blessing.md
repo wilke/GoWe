@@ -120,7 +120,11 @@ without the token. After the task the worker drops the token. Code:
   executor is a no-op, not a denial: that executor sends the submitter's token
   as a request header and never places it in a tool environment.
 - **Migration**: bless the three `bvbrc-*` helper tools (`gowe admin bless`)
-  before submitting `genome-analysis-pipeline`.
+  before submitting `genome-analysis-pipeline`, but only after every worker in
+  the groups the blessing allows runs 0.22 (or restrict `worker_groups` to
+  groups already rolled). A 0.21 worker that checks out a blessed task injects
+  the token on the old gate: no image digest check, no `--containall
+  --cleanenv`, no env allow-list, no post-task scrub.
 
 ## Lifecycle
 

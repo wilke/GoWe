@@ -187,7 +187,7 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--secret-file` | Load secrets from file (`NAME=value` per line) |
 | `--image-dir` | Base directory for resolving relative `.sif` image paths |
 | `--gpu` / `--gpu-id` | GPU passthrough |
-| `--worker-key-file` / `GOWE_WORKER_KEY` | Worker auth key from a regular file (mode 0600 or stricter) or the environment (read, then unset). `--worker-key` on argv is **refused** (it is readable in `/proc/<pid>/cmdline`) |
+| `--worker-key-file` / `GOWE_WORKER_KEY` | Worker auth key from a regular file (mode 0600 or stricter) or the environment (key file preferred: the env form stays readable in `/proc/<pid>/environ` and is refused with `--runtime none` / `--apptainer-no-containall`). `--worker-key` on argv is **refused** (it is readable in `/proc/<pid>/cmdline`) |
 | `--inherit-host-env` | Degraded: host-run tools (`--runtime none`) inherit the worker env instead of the allow-list (WARN; label `inherit_host_env=true`) |
 | `--apptainer-no-containall` | Degraded: Apptainer without `--containall`, `--cleanenv` kept (WARN; label `apptainer_containall=false`) |
 | `--keep-task-dirs` | Keep task dirs after success (failed tasks always kept; `gowe submit --debug` keeps a single job's) |
