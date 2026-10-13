@@ -73,7 +73,7 @@ request (Bearer token)
 
 1. the task targets the **bvbrc executor** (it cannot call the BV-BRC AppService without it), or
 2. the tool opted in via the CWL hint `gowe:Execution.inject_bvbrc_token: true`, or
-3. the task's worker group is listed in `--token-inject-groups` (group-level policy; also flips the same hint so the worker enforces it), or
+3. the task's worker group is listed in `--token-inject-groups` (group-level policy for staging only: the worker refuses to inject without a blessing id, so this flag no longer places the token in a tool's environment), or
 4. **passthrough staging mode**: the server was started *without* `--workspace-staging server`. Then workers do their own `ws://` staging and **every task** carries the submitter's token.
 
 Deployment consequence: in server-staging mode (recommended; production runs it) the default is **no token in the task** — staging happens server-side and the token stays in the server. In passthrough mode the isolation story is materially weaker; choose it knowingly.
@@ -92,12 +92,17 @@ Workspace paths are derived from the **verified** `un=` claim, used verbatim (`/
 
 ## 6. How the token reaches apps/containers
 
-Only via **explicit opt-in** (§4 conditions 2–3). The worker (`internal/worker/worker.go` `injectBVBRCTokenEnv`) injects the token into the tool's container environment as:
+The worker holds the submitter's token **only to stage data in and out**, and drops it when the task ends (`scrubTaskCredentials` in `internal/worker/tokenpolicy.go`, deferred in `executeTask`, so it runs on success, failure, cancellation and panic; Go strings cannot be zeroed, so this releases the last references rather than overwriting memory).
 
-- `BVBRC_TOKEN`
-- `KB_AUTH_TOKEN`
+It places the token in a tool's environment (`injectBVBRCTokenEnv`) only when **all** of these hold:
 
-Nothing else is injected — a tool that does not opt in runs with **no ambient credential** (behavior restored in v0.18.0, #133/#229; a scan of 490 registered workflows found zero relying on the old ambient injection). Worker-local `--secret NAME=value` / `--secret-file` env vars are injected into every container by that worker but are **never sent to the server**, stored in task data, or exposed via the API.
+1. the scheduler set `RuntimeHints.InjectBVBRCToken` **and** a `TokenBlessingID` (the tool is blessed, see [`tool-blessing.md`](tool-blessing.md)); the worker never reads the tool's own hints for this decision. A request without a blessing id (old scheduler, `--token-inject-groups`) is refused: the worker logs `token injection requested without blessing; refusing` at WARN and runs the task **without** the token;
+2. a credential is present in `StagerOverrides.HTTPCredential`;
+3. the **image digest check** passes. Before launch, the worker resolves the image exactly as execution will (`toolexec.ResolveApptainerImage` for `.sif`, then `filepath.EvalSymlinks`), streams a sha256 of that file and requires it to be in `RuntimeHints.ImageSHA256s` (the blessing's digest list, case-insensitive). The very path that was hashed is what gets launched. Registry references (Docker, or non-`.sif` Apptainer) must carry `@sha256:<digest>` with a blessed digest. Local (non-container) execution can never carry the token. Any mismatch, an empty digest list or an unpinned ref **fails the task before launch** with an error naming the resolved path, its digest and the expected digests (never the token).
+
+The names used are `RuntimeHints.TokenEnvNames`, or `BVBRC_TOKEN` and `KB_AUTH_TOKEN` when empty. The token is always in the redaction mask for the reported stdout/stderr and a scan replaces it with `***REDACTED***` in reported outputs (WARN with the task id), even for staging-only tasks. Files a tool wrote to disk are not rewritten. Hashing only happens for tasks that will receive the token.
+
+Nothing else is injected — a tool that is not blessed runs with **no ambient credential** (behavior restored in v0.18.0, #133/#229; a scan of 490 registered workflows found zero relying on the old ambient injection). Worker-local `--secret NAME=value` / `--secret-file` env vars are injected into every container by that worker but are **never sent to the server**, stored in task data, or exposed via the API.
 
 ## 7. Trust boundaries and isolation properties
 
@@ -176,7 +181,7 @@ A per-submission `secrets_retention` in the create request overrides the server 
 | `--allow-unverified-mgrast` | re-enable the unverified MG-RAST header path |
 | `GOWE_TOKEN_KEY` / `--token-key-file` | AES-256-GCM key for tokens at rest (32 bytes, base64/hex) |
 | `--allow-plaintext-tokens` | permit plaintext at rest when no key is set (migration/dev) |
-| `--token-inject-groups g1,g2` | group-level token injection policy (§4.3) |
+| `--token-inject-groups g1,g2` | group-level token policy (§4.3); staging-only, the worker injects only for blessed tasks (§6) |
 | `--workspace-staging server` | keep tokens server-side for `ws://` staging (§4.4) |
 | `--worker-keys <file>` | static worker keys (`X-Worker-Key`) |
 | `--admins` / `GOWE_ADMINS` | admin usernames |

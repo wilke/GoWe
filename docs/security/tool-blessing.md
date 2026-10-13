@@ -1,10 +1,13 @@
 # Tool blessing
 
-Status: **infrastructure only.** Blessings can be created, listed, extended and
-revoked (REST, `gowe admin`, and the `/admin/tool-blessings` UI page), but no
-code consults them yet. Token injection, submission-time checks and the
-scheduler are unchanged by this change. The policy wiring (what a missing
-blessing does, `--token-blessing=enforce|dev`) is documented when it lands.
+Status: **worker side enforced; server side in progress.** Blessings can be
+created, listed, extended and revoked (REST, `gowe admin`, and the
+`/admin/tool-blessings` UI page). The worker already refuses to inject the
+token into a tool's environment unless the scheduler stamped the task with a
+blessing id and the image matches a blessed digest (see "Worker side"). The
+server-side wiring that stamps those fields (scheduler grant, submission-time
+checks, `--token-blessing=enforce|dev`) is documented when it lands; until
+then no task carries a blessing id, so no worker injects.
 
 ## Why
 
@@ -59,9 +62,34 @@ gowe admin blessings add-image <id> --image-file /other/host/python.sif
 ```
 
 `docker://` references used by a blessed tool must be `@sha256:`-pinned.
-`worker_groups` is an optional extra restriction on where the tool may run. The
-worker-side digest check (verify the resolved image file before injecting) is
-part of the later enforcement change.
+`worker_groups` is an optional extra restriction on where the tool may run.
+
+## Worker side
+
+The scheduler stamps a blessed task with `TokenBlessingID`, `TokenEnvNames` and
+the blessing's `ImageSHA256s`. The worker injects the token only when the
+blessing id is present, a credential exists, and the image it is about to run
+matches one of those digests: it resolves the image as execution will
+(`.sif` through `--image-dir` and symlinks), hashes the file, and launches the
+same resolved path. Registry refs must be `@sha256:`-pinned and listed. A
+mismatch fails the task before launch (error names the path, the digest and the
+expected list). Without a blessing id the worker logs a WARN and runs the task
+without the token. After the task the worker drops the token. Code:
+`internal/worker/tokenpolicy.go`.
+
+- **Hashing cost.** Images can be tens of GB, so the worker caches each
+  digest in memory keyed on path, device, inode, size, mtime and ctime; an
+  image is hashed once per worker process and again only if the file is
+  replaced or modified.
+- **TOCTOU residual.** The file is hashed and then launched as two steps. A
+  swap in between requires write access to the image directory, i.e. the
+  operator's uid; the image directory is operator-owned and out of the tool's
+  reach. The worker does not refuse group/world-writable images (operators
+  commonly keep shared image directories group-writable).
+- **Registry refs.** For a `docker://` or Docker reference, the digest to bless
+  is the manifest digest from the `@sha256:` in the ref (`gowe admin bless
+  --image-sha256 <hex>`), not a hash of any file. The worker compares that
+  digest and relies on the runtime to pull by it.
 
 ## Lifecycle
 

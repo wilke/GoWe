@@ -38,6 +38,7 @@ type Worker struct {
 	containerRuntime  string                   // "docker", "apptainer", or "none"
 	gpu               GPUWorkerConfig          // GPU configuration
 	resources         ResourceWorkerConfig     // Resource limits
+	imageDigests      digestCache              // sha256 cache for blessed-image checks
 	imageDir          string                   // Base directory for resolving .sif image paths
 	dockerHostPathMap map[string]string        // Docker-in-Docker path mapping
 	dockerVolume      string                   // Named Docker volume shared with tool containers
@@ -522,6 +523,11 @@ func (w *Worker) pollAndExecute(ctx context.Context) error {
 
 // executeTask runs a single task: stage-in → run → collect outputs → stage-out → report.
 func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
+	// The worker holds the submitter's credentials only for the lifetime of
+	// this task. Deferred first so it runs after every other deferred func and
+	// on every exit path: success, failure, cancellation and panic.
+	defer scrubTaskCredentials(task)
+
 	taskDir := filepath.Join(w.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return w.reportFailure(ctx, task, fmt.Errorf("create task dir: %w", err))
@@ -788,37 +794,6 @@ func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task
 	}
 }
 
-// injectBVBRCTokenEnv returns secretEnvVars with BVBRC_TOKEN and its
-// KB_AUTH_TOKEN alias added when, and only when, the tool explicitly opted in
-// via gowe:Execution.inject_bvbrc_token (RuntimeHints.InjectBVBRCToken) and a
-// user token is present. This is the sole gate on which worker-executed tools
-// receive the submitter's BV-BRC credential in their environment; a token
-// merely being present in RuntimeHints.StagerOverrides (e.g. embedded for
-// staging under wsStager==nil, or for a BV-BRC executor task) is NOT
-// sufficient by itself — least privilege requires per-tool opt-in
-// (SPECIFICATION.md §13.5, #133). secretEnvVars is never mutated in place
-// (it may be the worker's shared w.secrets map); a copy is made only when a
-// token is actually injected.
-func injectBVBRCTokenEnv(secretEnvVars map[string]string, hints *model.RuntimeHints) map[string]string {
-	if hints == nil || !hints.InjectBVBRCToken {
-		return secretEnvVars
-	}
-	if hints.StagerOverrides == nil || hints.StagerOverrides.HTTPCredential == nil {
-		return secretEnvVars
-	}
-	token := hints.StagerOverrides.HTTPCredential.Token
-	if token == "" {
-		return secretEnvVars
-	}
-	copied := make(map[string]string, len(secretEnvVars)+2)
-	for k, v := range secretEnvVars {
-		copied[k] = v
-	}
-	copied["BVBRC_TOKEN"] = token
-	copied["KB_AUTH_TOKEN"] = token
-	return copied
-}
-
 // executeWithCWLTool executes a task using the cwltool package with full CWL support.
 func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string) error {
 	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
@@ -856,6 +831,32 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
 		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
+	}
+
+	// The delegated token is always part of the redaction mask for the
+	// reported stdout/stderr/outputs, even for staging-only tasks, and is
+	// captured before staging. On-disk task files are NOT rewritten.
+	stageToken := taskToken(task.RuntimeHints)
+	var tokenMask map[string]string
+	if len(stageToken) >= redactSecretsMinLength {
+		tokenMask = map[string]string{"_delegated_token": stageToken}
+	}
+
+	// Parse the tool up front: the image check below needs its image ref, and
+	// a malformed tool should fail before any data is staged.
+	tool, err := w.parser.ParseToolFromMap(task.Tool)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
+	}
+
+	// Token injection into the tool environment: only for a scheduler-blessed
+	// task whose image hashes to a blessed digest (verified here, before
+	// launch, and the same resolved path is what gets launched). Otherwise
+	// the token stays staging-only.
+	if wantsTokenInjection(task.RuntimeHints, w.logger, task.ID) {
+		if err := prepareTokenImage(&cfg, tool, task.RuntimeHints, &w.imageDigests); err != nil {
+			return w.reportFailure(ctx, task, err)
+		}
 		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
 	}
 
@@ -890,14 +891,15 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 	stageInMs := time.Since(stageInStart).Milliseconds()
 
-	// Parse tool from task.Tool map using the proper parser.
-	tool, err := w.parser.ParseToolFromMap(task.Tool)
-	if err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
-	}
-
 	// Execute the tool.
 	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
+
+	// Build the redaction mask now, then drop the config's references to the
+	// secret maps. Go strings cannot be zeroed; this releases the last
+	// references this function holds so the values become collectable.
+	maskSet := mergeSecretsForRedaction(mergeSecretsForRedaction(cfg.SecretEnvVars, cfg.SecretValues), tokenMask)
+	cfg.SecretEnvVars = nil
+	cfg.SecretValues = nil
 
 	// Redact any injected secret values (e.g. BVBRC_TOKEN/KB_AUTH_TOKEN, task
 	// secrets, and job-only cwltool:Secrets values) a tool may have echoed
@@ -909,7 +911,6 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	// (SPECIFICATION.md §13.2) requires injected secrets never be
 	// transmitted to or persisted by the server.
 	if result != nil {
-		maskSet := mergeSecretsForRedaction(cfg.SecretEnvVars, cfg.SecretValues)
 		result.Stdout = redactSecrets(result.Stdout, maskSet)
 		result.Stderr = redactSecrets(result.Stderr, maskSet)
 	}
@@ -922,6 +923,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
 			return cerr
 		}
+		errText := redactSecrets(err.Error(), maskSet)
 		if result != nil {
 			// This attempt did stage in (we got as far as running the tool),
 			// so attach StageInMs to the report even though it's a failure.
@@ -929,12 +931,12 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 				State:     model.TaskStateFailed,
 				ExitCode:  &result.ExitCode,
 				Stdout:    result.Stdout,
-				Stderr:    result.Stderr + "\n" + err.Error(),
-				Outputs:   result.Outputs,
+				Stderr:    result.Stderr + "\n" + errText,
+				Outputs:   w.redactOutputsForReport(task.ID, result.Outputs, stageToken),
 				StageInMs: &stageInMs,
 			})
 		}
-		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", err))
+		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", newRedactedError(err, maskSet)))
 	}
 
 	// Stage out output files (worker owns this step).
@@ -958,7 +960,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		ExitCode:   &result.ExitCode,
 		Stdout:     result.Stdout,
 		Stderr:     result.Stderr,
-		Outputs:    stagedOutputs,
+		Outputs:    w.redactOutputsForReport(task.ID, stagedOutputs, stageToken),
 		StageInMs:  &stageInMs,
 		StageOutMs: &stageOutMs,
 	}); err != nil {
@@ -966,6 +968,20 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 	w.cleanupTaskDir(task, stagedOutputs)
 	return nil
+}
+
+// redactOutputsForReport scans outputs for the exact delegated token and
+// replaces any occurrence with "***REDACTED***" before they leave the worker,
+// logging a WARN with the task id (never the value).
+func (w *Worker) redactOutputsForReport(taskID string, outputs map[string]any, token string) map[string]any {
+	if len(token) < redactSecretsMinLength {
+		return outputs
+	}
+	redacted, found := redactTokenInOutputs(outputs, token)
+	if found {
+		w.logger.Warn("delegated token found in task outputs; redacted before reporting", "task_id", taskID)
+	}
+	return redacted
 }
 
 // executeLegacy executes a task using the legacy _base_command approach.
@@ -1183,6 +1199,11 @@ func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, 
 // bad input value fails identically on every retry, so the server should
 // make this FAILED terminal instead of consuming the task's retry budget.
 func (w *Worker) reportFailure(ctx context.Context, task *model.Task, execErr error) error {
+	// The delegated token is unconditionally part of the mask for anything
+	// reported, whichever path failed.
+	if tok := taskToken(task.RuntimeHints); len(tok) >= redactSecretsMinLength {
+		execErr = newRedactedError(execErr, map[string]string{"_delegated_token": tok})
+	}
 	exitCode := -1
 	reportErr := w.reportComplete(ctx, task.ID, TaskResult{
 		State:     model.TaskStateFailed,

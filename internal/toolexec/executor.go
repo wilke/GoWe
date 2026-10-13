@@ -108,6 +108,12 @@ type Options struct {
 	// it is resolved relative to this directory.
 	ImageDir string
 
+	// ResolvedImage, when non-empty, is the exact image reference passed to
+	// Apptainer instead of ResolveApptainerImage(DockerImage, ImageDir). The
+	// worker sets it to the symlink-resolved path whose sha256 it verified
+	// against the blessed digests, so verification and launch use the same file.
+	ResolvedImage string
+
 	// GPU configuration for container execution.
 	GPU GPUConfig
 
