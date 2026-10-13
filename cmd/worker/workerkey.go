@@ -8,9 +8,11 @@ import (
 	"strings"
 )
 
-// workerKeyEnv is the environment variable that carries the worker key. It is
-// read once at startup and then removed from the process environment so that
-// tool processes the worker spawns can never inherit it.
+// workerKeyEnv names the environment variable that is REFUSED as a key source.
+// A value in the worker's environment stays readable in /proc/<pid>/environ for
+// the worker's whole lifetime by same-uid host processes, and tools without a
+// DockerRequirement run on the host as the worker uid on every worker, so no
+// runtime choice can hide it.
 const workerKeyEnv = "GOWE_WORKER_KEY"
 
 // errWorkerKeyOnArgv is returned when --worker-key is given a value. There is
@@ -18,32 +20,29 @@ const workerKeyEnv = "GOWE_WORKER_KEY"
 // every local process, including tool containers and --runtime none tools.
 var errWorkerKeyOnArgv = errors.New("--worker-key must not be passed on the command line: " +
 	"the key would be readable in /proc/<pid>/cmdline by every local process; " +
-	"use --worker-key-file <path> (regular file, mode 0600) or the " + workerKeyEnv + " environment variable")
+	"use --worker-key-file <path> (regular file, mode 0600)")
 
-// resolveWorkerKey determines the worker key from, in order of precedence, the
-// key file and the GOWE_WORKER_KEY environment variable. Any use of --worker-key (argvKeySet, even with an
-// empty value, so a start script with an unset variable fails loudly) is
-// refused. getenv/unsetenv are injected for testing.
-func resolveWorkerKey(argvKeySet bool, keyFile string, getenv func(string) string, unsetenv func(string) error) (string, error) {
+// errWorkerKeyInEnv is returned when GOWE_WORKER_KEY is set in the environment.
+var errWorkerKeyInEnv = errors.New(workerKeyEnv + " must not be set: the value stays readable in " +
+	"/proc/<pid>/environ for the worker's lifetime by same-uid host processes; " +
+	"unset it and pass the key with --worker-key-file <path> (regular file, mode 0600)")
+
+// resolveWorkerKey reads the worker key from the key file. Any use of
+// --worker-key (argvKeySet, even with an empty value, so a start script with an
+// unset variable fails loudly) and any non-empty GOWE_WORKER_KEY in the
+// environment (whether or not a key file is also given) is refused. getenv is
+// injected for testing.
+func resolveWorkerKey(argvKeySet bool, keyFile string, getenv func(string) string) (string, error) {
 	if argvKeySet {
 		return "", errWorkerKeyOnArgv
 	}
-
-	// Always take the env var out of the process environment, whichever
-	// source wins.
-	envKey := strings.TrimSpace(getenv(workerKeyEnv))
-	if err := unsetenv(workerKeyEnv); err != nil {
-		return "", fmt.Errorf("unset %s: %w", workerKeyEnv, err)
+	if strings.TrimSpace(getenv(workerKeyEnv)) != "" {
+		return "", errWorkerKeyInEnv
 	}
-
-	if keyFile != "" {
-		key, err := readWorkerKeyFile(keyFile)
-		if err != nil {
-			return "", err
-		}
-		return key, nil
+	if keyFile == "" {
+		return "", nil
 	}
-	return envKey, nil
+	return readWorkerKeyFile(keyFile)
 }
 
 // checkKeyFileNotBound refuses a key file located under any path that is

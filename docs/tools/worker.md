@@ -33,8 +33,8 @@ gowe-worker [flags]
 | `--server` | `http://localhost:8080` | GoWe server URL |
 | `--name` | hostname | Worker name for identification |
 | `--group` | `default` | Worker group for targeted scheduling |
-| `--worker-key-file` | `""` | File holding the authentication key sent as `X-Worker-Key` (regular file, mode 0600 or stricter, and not under `--workdir`/`--image-dir`/`--pre-stage-dir`/`--extra-bind`/`--dataset` paths, which tools can read) — a per-worker key issued by an admin, or a shared static key. Alternatively set `GOWE_WORKER_KEY` (read, then unset) |
-| `--worker-key` | `""` | **Refused (any use, even with an empty value).** A key on argv is readable in `/proc/<pid>/cmdline`; the worker exits with an error naming the two alternatives above |
+| `--worker-key-file` | `""` | File holding the authentication key sent as `X-Worker-Key` (regular file, mode 0600 or stricter, and not under `--workdir`/`--image-dir`/`--pre-stage-dir`/`--extra-bind`/`--dataset` paths, which tools can read) — a per-worker key issued by an admin, or a shared static key. Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
+| `--worker-key` | `""` | **Refused (any use, even with an empty value).** A key on argv is readable in `/proc/<pid>/cmdline`; the worker exits with an error pointing at `--worker-key-file` |
 | `--inherit-host-env` | `false` | Degraded: tools run directly on the host (`--runtime none`) inherit the worker's full environment instead of an allow-list. WARN at start; registered as label `inherit_host_env=true` |
 | `--apptainer-no-containall` | `false` | Degraded: run Apptainer without `--containall` (`--cleanenv` is kept). WARN at start; registered as label `apptainer_containall=false` |
 | `--runtime` | `none` | Container runtime(s), comma-separated: docker, apptainer, none |
@@ -243,7 +243,7 @@ The server validates worker keys against its configuration (see server.md). Task
 
 ### Worker keys
 
-A worker authenticates by sending its key in the `X-Worker-Key` header (via `--worker-key-file` or `GOWE_WORKER_KEY`). GoWe supports two kinds of keys, and validates against both:
+A worker authenticates by sending its key in the `X-Worker-Key` header (via `--worker-key-file`; argv and environment forms are refused). GoWe supports two kinds of keys, and validates against both:
 
 | Kind | Source | Lifecycle | At-rest storage |
 |------|--------|-----------|-----------------|
@@ -266,7 +266,7 @@ curl -s -X POST http://gowe-server:8080/api/v1/admin/worker-keys \
 Hand the returned `key` to exactly one worker:
 
 ```bash
-# write the key to a 0600 file (never pass it on argv; GOWE_WORKER_KEY also works)
+# write the key to a 0600 file (never pass it on argv or in GOWE_WORKER_KEY: the worker refuses both)
 install -m 600 /dev/null /etc/gowe/worker.key && printf '%s' "gwk_XXXXXXXX..." > /etc/gowe/worker.key
 gowe-worker --server http://gowe-server:8080 --group esmfold --worker-key-file /etc/gowe/worker.key
 ```

@@ -627,10 +627,13 @@ state. Production deployments should configure it:
 # server: a JSON file of static keys (0600). Keys can also be minted per worker via the admin API.
 gowe-server ... --worker-keys /path/worker-keys.json
 #   {"keys": {"<raw-key>": {"id": "prod-shared", "groups": [], "description": "..."}}}
-# every worker: the key is read from a 0600 file (or GOWE_WORKER_KEY), NEVER from argv
+# every worker: the key is read from a 0600 file (preferred), NEVER from argv
 gowe-worker ... --worker-key-file /path/worker-key.raw
-GOWE_WORKER_KEY="$(cat /path/worker-key.raw)" gowe-worker ...   # env fallback; read, then unset
 ```
+
+Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by
+same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the
+host on every worker.
 
 `--worker-key-file` must name a regular file with mode 0600 or stricter, located outside `--workdir`, `--image-dir`,
 `--pre-stage-dir` and every `--extra-bind`/`--dataset` path (tools run as the worker uid and could read it); the
@@ -638,7 +641,7 @@ worker refuses to start otherwise.
 A non-empty `--worker-key` on the command line is **refused with no override**: argv is readable by every local
 process through `/proc/<pid>/cmdline`, including tool containers and `--runtime none` tools. Check a host with
 `ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
-`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (or `GOWE_WORKER_KEY` in the environment).
+`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (the key file is the only accepted source; omit it only for a keyless dev server).
 
 ### Provider-token policy flags (server)
 
@@ -649,7 +652,10 @@ process through `/proc/<pid>/cmdline`, including tool containers and `--runtime 
 | `--token-inject-groups` | Deprecated, staging-only (WARN at start): no longer injects; worker tasks get a staging credential by need. Remove it. |
 
 Upgrade notes: unblessed token requests are refused (`400 TOOL_NOT_BLESSED`), so bless the `bvbrc-*` helper
-tools before submitting `genome-analysis-pipeline`. At startup the server (1) clears stale credentials from terminal
+tools before submitting `genome-analysis-pipeline`, but only AFTER every worker in the groups the blessing allows is
+running 0.22 (a 0.21 worker would inject the token on the old gate: no image digest check, no `--containall --cleanenv`,
+no env allow-list, no post-task scrub); otherwise restrict the blessing's `worker_groups` to groups already rolled.
+At startup the server (1) clears stale credentials from terminal
 task rows (raw JSON sweep, logged count) and (2) removes the token request (`inject_bvbrc_token`) from NON-terminal
 rows that have no blessing id (queued by a pre-policy server), logging a WARN with the count: those tasks run
 **without** the token rather than being injected unblessed. As a second layer, `CheckoutTask` never hands such a row to a

@@ -31,8 +31,8 @@ func main() {
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
 	var workerKeyArgv, workerKeyFile string
-	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file or "+workerKeyEnv)
-	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read); alternatively set "+workerKeyEnv)
+	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file")
+	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read). Key file only: --worker-key (argv) and "+workerKeyEnv+" (environment) are refused because both are readable by same-uid host processes (/proc/<pid>/cmdline, /proc/<pid>/environ), and tools without DockerRequirement run on the host on every worker")
 	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime(s), comma-separated (docker, apptainer, none)")
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
@@ -172,7 +172,7 @@ func main() {
 			workerKeyOnArgv = true
 		}
 	})
-	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv, os.Unsetenv)
+	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)

@@ -43,9 +43,10 @@ SHOCK_USE_HTTP="${SHOCK_USE_HTTP:-true}"
 GPU_ENABLED="${GOWE_GPU:-false}"
 GPU_ID="${GOWE_GPU_ID:-}"
 
-# The worker key is never passed on argv (it would be readable in
-# /proc/<pid>/cmdline). Use a 0600 key file (preferred) or GOWE_WORKER_KEY,
-# which the worker reads from its environment and then unsets.
+# The worker key is never passed on argv (/proc/<pid>/cmdline) or in the
+# environment (/proc/<pid>/environ): the worker refuses both. A 0600 key file
+# (GOWE_WORKER_KEY_FILE) is the only accepted source; leave it empty only for
+# a keyless dev server (one started without --worker-keys).
 WORKER_KEY_FILE="${GOWE_WORKER_KEY_FILE:-}"
 DEBUG="${GOWE_DEBUG:-false}"
 
@@ -140,9 +141,8 @@ fi
 
 if [ -n "$WORKER_KEY_FILE" ]; then
     CMD+=(-worker-key-file "$WORKER_KEY_FILE")
-elif [ -n "${GOWE_WORKER_KEY:-}" ]; then
-    # Passed to the worker through the environment only, never on argv.
-    export GOWE_WORKER_KEY
+else
+    echo "WARNING: GOWE_WORKER_KEY_FILE is empty; starting without a worker key (only works against a keyless dev server)." >&2
 fi
 
 if [ "$DEBUG" = true ]; then

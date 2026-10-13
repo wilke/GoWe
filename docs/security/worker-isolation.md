@@ -288,10 +288,12 @@ The worker authentication key was passed as `--worker-key <secret>` (`cmd/worker
 process. Under Apptainer without `--containall` the host PID namespace was shared, so a **tool container could read
 the worker's command line and steal the key**; on `--runtime none` hosts every tool process could.
 
-> **Status: fixed in two layers.** (1) `--worker-key-file <path>` (regular file, mode 0600 or stricter) and
-> `GOWE_WORKER_KEY` (read, then `os.Unsetenv`) are the only ways to supply the key; a non-empty `--worker-key` on
-> argv is refused at startup with an error naming both alternatives, and there is no override flag (an override would
-> reopen the leak on `--runtime none` hosts where nothing else protects the key). (2) Apptainer `--containall` gives
+> **Status: fixed in two layers.** (1) Key file only: `--worker-key-file <path>` (regular file, mode 0600 or
+> stricter) is the only way to supply the key. `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused at
+> startup because both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`;
+> `os.Unsetenv` edits only Go's private copy), and tools without a DockerRequirement run on the host on every worker.
+> The same environ residue applies to the server's `GOWE_TOKEN_KEY` / `GOWE_WORKER_KEYS` env forms; prefer files there
+> too (no server change in this fix). There is no override flag. (2) Apptainer `--containall` gives
 > tools a private PID namespace, so even a legacy cmdline is unreadable from inside a container. The shipped
 > `start-worker.sh` uses `GOWE_WORKER_KEY_FILE`. Existing keys are kept, not rotated.
 

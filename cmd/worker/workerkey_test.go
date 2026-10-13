@@ -27,7 +27,6 @@ func TestResolveWorkerKey(t *testing.T) {
 		env        string
 		want       string
 		wantErr    string // substring
-		wantUnset  bool   // env var must be removed afterwards
 		wantNoRead bool
 	}{
 		{
@@ -39,7 +38,7 @@ func TestResolveWorkerKey(t *testing.T) {
 			name:    "argv key refused even when file is also given",
 			argv:    true,
 			file:    func(t *testing.T) string { return writeKeyFile(t, "k\n", 0o600) },
-			wantErr: workerKeyEnv,
+			wantErr: "--worker-key-file",
 		},
 		{
 			name: "file 0600 accepted and trimmed",
@@ -77,17 +76,15 @@ func TestResolveWorkerKey(t *testing.T) {
 			wantErr: "empty",
 		},
 		{
-			name:      "env accepted and unset",
-			env:       "envkey",
-			want:      "envkey",
-			wantUnset: true,
+			name:    "exported env key refused without a key file",
+			env:     "envkey",
+			wantErr: "must not be set",
 		},
 		{
-			name:      "file wins over env and env is still unset",
-			file:      func(t *testing.T) string { return writeKeyFile(t, "filekey", 0o600) },
-			env:       "envkey",
-			want:      "filekey",
-			wantUnset: true,
+			name:    "exported env key refused even with a key file",
+			file:    func(t *testing.T) string { return writeKeyFile(t, "filekey", 0o600) },
+			env:     "envkey",
+			wantErr: "must not be set",
 		},
 		{
 			name:    "argv key flag present but empty is still refused",
@@ -106,7 +103,7 @@ func TestResolveWorkerKey(t *testing.T) {
 			if tt.file != nil {
 				file = tt.file(t)
 			}
-			got, err := resolveWorkerKey(tt.argv, file, os.Getenv, os.Unsetenv)
+			got, err := resolveWorkerKey(tt.argv, file, os.Getenv)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
@@ -118,11 +115,6 @@ func TestResolveWorkerKey(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("key = %q, want %q", got, tt.want)
-			}
-			if tt.wantUnset {
-				if _, ok := os.LookupEnv(workerKeyEnv); ok {
-					t.Errorf("%s still set in the process environment", workerKeyEnv)
-				}
 			}
 		})
 	}
@@ -172,7 +164,7 @@ func TestCheckKeyFileNotBound(t *testing.T) {
 
 func TestArgvKeyErrorNamesAlternatives(t *testing.T) {
 	msg := errWorkerKeyOnArgv.Error()
-	for _, want := range []string{"--worker-key-file", "GOWE_WORKER_KEY", "/proc"} {
+	for _, want := range []string{"--worker-key-file", "/proc"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q missing %q", msg, want)
 		}
