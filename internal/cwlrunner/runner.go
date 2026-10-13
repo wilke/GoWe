@@ -43,6 +43,12 @@ type Runner struct {
 	OutputFormat     string // "json" or "yaml"
 	ProcessID        string // specific process ID to run from $graph document
 
+	// PreserveEnv lists host environment variable names that tools run
+	// directly on the host may inherit in addition to the allow-list;
+	// PreserveEntireEnv passes the whole host environment (cwltool parity).
+	PreserveEnv       []string
+	PreserveEntireEnv bool
+
 	// Parallel execution configuration.
 	Parallel ParallelConfig
 
@@ -410,6 +416,8 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		JobRequirements:  r.jobRequirements,
 		OutDir:           r.OutDir,
 		InputValidation:  r.InputValidation,
+		PreserveEnv:      r.PreserveEnv,
+		InheritHostEnv:   r.PreserveEntireEnv,
 	}
 
 	result, execErr := cwltool.ExecuteTool(ctx, cfg, tool, inputs, workDir)

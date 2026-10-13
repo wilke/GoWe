@@ -31,6 +31,9 @@ var (
 	collectMetrics    bool
 	imageDir          string
 	noInputValidation bool
+
+	preserveEnv       []string
+	preserveEntireEnv bool
 )
 
 const version = "1.2.1-dev"
@@ -90,6 +93,12 @@ Examples:
 	// hatch.
 	rootCmd.PersistentFlags().BoolVar(&noInputValidation, "no-input-validation", false, "Disable validation of input values against their declared CWL types (default: enforced)")
 
+	// Tools run directly on the host get an allow-listed environment
+	// (PATH, LANG, LC_*, TZ, USER, LOGNAME, SHELL, TERM) rather than the
+	// full host environment; these flags (cwltool parity) opt variables back in.
+	rootCmd.PersistentFlags().StringArrayVar(&preserveEnv, "preserve-environment", nil, "Host environment variable NAME to pass to tools run on the host, in addition to the allow-list (repeatable)")
+	rootCmd.PersistentFlags().BoolVar(&preserveEntireEnv, "preserve-entire-environment", false, "Pass the entire host environment to tools run on the host")
+
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
 	rootCmd.AddCommand(dagCmd())
@@ -148,6 +157,9 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 
 	// Configure image directory for local SIF files.
 	r.ImageDir = imageDir
+
+	r.PreserveEnv = preserveEnv
+	r.PreserveEntireEnv = preserveEntireEnv
 
 	// Configure input validation (#273): enforce by default (set in
 	// cwlrunner.NewRunner), --no-input-validation disables it entirely.

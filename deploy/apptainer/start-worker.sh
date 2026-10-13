@@ -43,7 +43,10 @@ SHOCK_USE_HTTP="${SHOCK_USE_HTTP:-true}"
 GPU_ENABLED="${GOWE_GPU:-false}"
 GPU_ID="${GOWE_GPU_ID:-}"
 
-WORKER_KEY="${GOWE_WORKER_KEY:-}"
+# The worker key is never passed on argv (it would be readable in
+# /proc/<pid>/cmdline). Use a 0600 key file (preferred) or GOWE_WORKER_KEY,
+# which the worker reads from its environment and then unsets.
+WORKER_KEY_FILE="${GOWE_WORKER_KEY_FILE:-}"
 DEBUG="${GOWE_DEBUG:-false}"
 
 WORKER_BINARY="${GOWE_WORKER_BINARY:-$SCRIPT_DIR/../../bin/worker}"
@@ -64,7 +67,7 @@ while [[ $# -gt 0 ]]; do
         --shock-token)  SHOCK_TOKEN="$2";   shift ;;
         --gpu)          GPU_ENABLED=true    ;;
         --gpu-id)       GPU_ID="$2"; GPU_ENABLED=true; shift ;;
-        --worker-key)   WORKER_KEY="$2";    shift ;;
+        --worker-key-file) WORKER_KEY_FILE="$2"; shift ;;
         --debug)        DEBUG=true          ;;
         --binary)       WORKER_BINARY="$2"; shift ;;
         -h|--help)
@@ -135,8 +138,11 @@ if [ "$GPU_ENABLED" = true ]; then
     fi
 fi
 
-if [ -n "$WORKER_KEY" ]; then
-    CMD+=(-worker-key "$WORKER_KEY")
+if [ -n "$WORKER_KEY_FILE" ]; then
+    CMD+=(-worker-key-file "$WORKER_KEY_FILE")
+elif [ -n "${GOWE_WORKER_KEY:-}" ]; then
+    # Passed to the worker through the environment only, never on argv.
+    export GOWE_WORKER_KEY
 fi
 
 if [ "$DEBUG" = true ]; then

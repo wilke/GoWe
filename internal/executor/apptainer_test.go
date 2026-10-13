@@ -58,7 +58,7 @@ func TestApptainerExecutor_SubmitSuccess(t *testing.T) {
 		t.Errorf("command = %q, want apptainer", call.name)
 	}
 	// Check key args are present.
-	for _, want := range []string{"exec", "--pwd", "/work", "docker://alpine:latest", "echo", "hello"} {
+	for _, want := range []string{"exec", "--containall", "--cleanenv", "--pwd", "/work", "docker://alpine:latest", "echo", "hello"} {
 		found := false
 		for _, a := range call.args {
 			if a == want {

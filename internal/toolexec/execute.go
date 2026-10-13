@@ -12,6 +12,7 @@ import (
 
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/pkg/model"
+	gort "github.com/me/gowe/pkg/runtime"
 	"github.com/me/gowe/pkg/staging"
 )
 
@@ -110,6 +111,35 @@ func secretEnvAssignments(secrets map[string]string, prefix string) []string {
 	return out
 }
 
+// baseToolEnv returns the base environment for a tool process that runs
+// directly on the host (no container boundary). Only an allow-list of host
+// variables is passed through (PATH, LANG, LC_*, TZ, USER, LOGNAME, SHELL,
+// TERM; plus NVIDIA_*, CUDA_* and LD_LIBRARY_PATH when GPU is enabled), so the
+// worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, GOWE_WORKER_KEY, ...)
+// never reach the tool. opts.InheritHostEnv restores the full os.Environ().
+func baseToolEnv(opts *Options) []string {
+	if opts.InheritHostEnv {
+		return os.Environ()
+	}
+	env := gort.BaseHostEnv(opts.GPU.Enabled)
+	for _, name := range opts.PreserveEnv {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
+
+// ApptainerIsolationArgs returns the isolation flags placed right after the
+// apptainer subcommand: "--containall --cleanenv" by default, or only
+// "--cleanenv" when noContainall is set (worker --apptainer-no-containall).
+func ApptainerIsolationArgs(noContainall bool) []string {
+	if noContainall {
+		return []string{"--cleanenv"}
+	}
+	return []string{"--containall", "--cleanenv"}
+}
+
 // executeLocal executes a tool locally without Docker in the specified work directory.
 func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
@@ -147,8 +177,10 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	cmd.Dir = workDir
 
 	// Set environment variables.
-	// Start with current environment, then override with CWL required vars.
-	cmd.Env = os.Environ()
+	// Start from an allow-listed base environment (never the full host
+	// environment, which can carry provider tokens and worker secrets), then
+	// add the CWL-required vars. --inherit-host-env restores the old behavior.
+	cmd.Env = baseToolEnv(opts)
 
 	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
 	tmpDir := workDir + "_tmp"
@@ -659,6 +691,12 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerSubcmd = "run"
 	}
 	apptainerArgs := []string{apptainerSubcmd}
+	// Isolation: --containall gives the container its own PID namespace, a
+	// private /tmp and /var/tmp and no implicit host mounts ($HOME, cwd);
+	// --cleanenv stops the host environment (worker secrets) leaking in.
+	// Everything the tool needs is bound explicitly below. Secrets are still
+	// delivered via APPTAINERENV_* in the process environment.
+	apptainerArgs = append(apptainerArgs, ApptainerIsolationArgs(opts.ApptainerNoContainall)...)
 
 	// Determine container working directory.
 	containerWorkDir := "/var/spool/cwl"
@@ -768,9 +806,11 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	e.logger.Debug("apptainer command", "args", MaskSecretValues(apptainerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
-	// cmd.Env must start from the current environment (matching executeLocal)
-	// so nothing else breaks, plus one APPTAINERENV_NAME=value assignment per
-	// secret — see the H5 note above the (removed) --env loop.
+	// The apptainer client process itself keeps the current environment (it
+	// needs HOME, PATH, APPTAINER_* settings); --cleanenv keeps all of it out of
+	// the container. One APPTAINERENV_NAME=value assignment per secret is the
+	// only way values enter the container — see the H5 note above the
+	// (removed) --env loop.
 	cmd.Env = append(os.Environ(), secretEnvAssignments(opts.SecretEnvVars, "APPTAINERENV_")...)
 
 	// Handle stdin.

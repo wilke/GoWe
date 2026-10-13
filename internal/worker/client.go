@@ -56,6 +56,7 @@ type RegisterOptions struct {
 	GPUDevice  string
 	Version    string            // Build version (git commit hash)
 	Datasets   map[string]string // Dataset ID → host path
+	Labels     map[string]string // Registration labels (e.g. degraded-mode flags)
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -76,6 +77,9 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		}
 		if len(opts[0].Datasets) > 0 {
 			reg["datasets"] = opts[0].Datasets
+		}
+		if len(opts[0].Labels) > 0 {
+			reg["labels"] = opts[0].Labels
 		}
 	}
 	body, err := json.Marshal(reg)

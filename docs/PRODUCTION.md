@@ -627,9 +627,43 @@ state. Production deployments should configure it:
 # server: a JSON file of static keys (0600). Keys can also be minted per worker via the admin API.
 gowe-server ... --worker-keys /path/worker-keys.json
 #   {"keys": {"<raw-key>": {"id": "prod-shared", "groups": [], "description": "..."}}}
-# every worker:
-gowe-worker ... --worker-key "$(cat /path/worker-key.raw)"     # see #257 for a file/env option
+# every worker: the key is read from a 0600 file (or GOWE_WORKER_KEY), NEVER from argv
+gowe-worker ... --worker-key-file /path/worker-key.raw
+GOWE_WORKER_KEY="$(cat /path/worker-key.raw)" gowe-worker ...   # env fallback; read, then unset
 ```
+
+`--worker-key-file` must name a regular file with mode 0600 or stricter, located outside `--workdir`, `--image-dir`,
+`--pre-stage-dir` and every `--extra-bind`/`--dataset` path (tools run as the worker uid and could read it); the
+worker refuses to start otherwise.
+A non-empty `--worker-key` on the command line is **refused with no override**: argv is readable by every local
+process through `/proc/<pid>/cmdline`, including tool containers and `--runtime none` tools. Check a host with
+`ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
+`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (or `GOWE_WORKER_KEY` in the environment).
+
+### Tool isolation defaults and their opt-outs (v0.21.x → next release)
+
+- **Apptainer** tools run with `--containall --cleanenv`: private PID namespace (`cat /proc/1/cmdline` inside a task
+  shows `appinit`, the worker command line is unreadable), private `/tmp` and `/var/tmp`, no implicit `$HOME`/cwd
+  mounts, and no host environment. Everything a tool needs is still bound explicitly (`--home`, `--pwd`, `/tmp`,
+  inputs, `--pre-stage-dir`/`--extra-bind`, `--nv`), and secrets keep arriving via `APPTAINERENV_*`.
+  Hosts without PID/mount namespace support (some non-setuid HPC installs) can opt out of `--containall` only with
+  `--apptainer-no-containall` (`--cleanenv` is kept). The worker logs a WARN and registers the label
+  `apptainer_containall=false`. Run a `--nv` job after rolling a GPU worker.
+- **Local / `--runtime none` tools** (and the legacy `_base_command` bare runtime) get an allow-listed environment:
+  `PATH`, `LANG`, `LC_*`, `TZ`, `USER`, `LOGNAME`, `SHELL`, `TERM` (plus `NVIDIA_*`, `CUDA_*`, `LD_LIBRARY_PATH` with
+  `--gpu`), then `HOME`/`TMPDIR`, `EnvVarRequirement`, `--env` and `--secret` values. A tool that relied on other
+  worker environment variables must get them through `--env`/`--env-file` (or `--secret`/`--secret-file`).
+  `--inherit-host-env` restores the old behavior; the worker logs a WARN and registers the label
+  `inherit_host_env=true`.
+- Under `--containall` the container's `/tmp` is the per-task `<taskdir>_tmp` bind, but `/var/tmp` (and `/run`, `/dev/shm`)
+  are small in-memory session tmpfs mounts (about 64 MiB by default): tools that write large scratch files to
+  `/var/tmp` must use `$TMPDIR`/`/tmp` instead.
+- Both degraded flags show up as labels on the worker (`GET /api/v1/workers`) and as a "degraded" badge in the
+  admin fleet table (`GET /api/v1/fleet` carries the same labels).
+- `cwl-runner` (standalone) follows the same rule for tools run on the host: they no longer inherit the host
+  environment (PYTHONPATH, conda, proxies, ...). Pass variables with `--preserve-environment NAME` (repeatable),
+  `--preserve-entire-environment`, or an `EnvVarRequirement`.
+- The legacy `_base_command` bare runtime sets `HOME` to the task directory and `TMPDIR` to `<taskdir>_tmp`.
 
 - Key ids: workers are bound to the id of the key that registered them. Static keys SHOULD set `id`; otherwise the id is a 16-hex sha256 prefix of the secret, so rotating the secret of an id-less key (or adding an `id` to it) changes the key id and orphans its workers (403 on every route; workers do not re-register on 4xx) until they are restarted. `id` must be unique and not `none` (the server refuses to start otherwise).
 
