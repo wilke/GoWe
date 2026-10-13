@@ -30,8 +30,10 @@ Notes:
 - Binds are applied to every tool of the run: single tools, workflow steps, scatter, sub-workflows and `--parallel`.
 - Env precedence is the same as the worker: `--env-file` is loaded first and `--env` overrides entries of the same
   name. The result is applied after the tool's `EnvVarRequirement`, so `--env`/`--env-file` win over a same-named
-  `EnvVarRequirement` entry. `HOME` and `TMPDIR` are refused (the CWL spec fixes them). Values are never logged
-  (names only, at debug level).
+  `EnvVarRequirement` entry. `HOME` and `TMPDIR` are refused (the CWL spec fixes them). cwl-runner logs only
+  variable names; with `-v` the full container command line, including `--env` values, is logged, and the values
+  are visible on the process argv. Use `--env`/`--env-file` for non-secret settings only (cwl-runner has no
+  `--secret`).
 - `--env` is not `--preserve-environment NAME`: that copies a variable from the host environment to host-mode tools
   only (it does not reach containers); `--env` sets an explicit value for all tools.
 
@@ -45,9 +47,9 @@ cwl-runner --runtime apptainer --image-dir /scout/containers \
 with `worker-env.env`:
 
 ```
-# model locations and tokens, as passed to gowe-worker --env-file
+# model locations and settings (non-secret), as passed to gowe-worker --env-file
 CHAI_DOWNLOADS_DIR=/local_databases/chai
-HF_TOKEN=hf_abc123
+HF_HOME=/local_databases/cache
 ```
 
 Single paths: `--extra-bind /data/run42 --env FOO=bar`.
