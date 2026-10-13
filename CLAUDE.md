@@ -192,6 +192,8 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--apptainer-no-containall` | Degraded: Apptainer without `--containall`, `--cleanenv` kept (WARN; label `apptainer_containall=false`) |
 | `--keep-task-dirs` | Keep task dirs after success (failed tasks always kept; `gowe submit --debug` keeps a single job's) |
 
+`cwl-runner` accepts the same bind/env flags as the worker (`--pre-stage-dir`, `--dataset`, `--extra-bind`, `--env`, `--env-file`; shared parsing in `internal/hostres`; see `docs/tools/cwl-runner.md`) — under Apptainer `--containall` they are the only way host databases and env reach a container.
+
 ## Running the Server
 
 ```bash

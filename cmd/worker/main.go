@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/me/gowe/internal/hostres"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -75,19 +76,19 @@ func main() {
 	var extraBindPaths []string
 	var datasetAliases map[string]string
 	flag.StringVar(&preStageDir, "pre-stage-dir", "", "Directory with pre-staged datasets (auto-scanned, bind-mounted into containers)")
-	flag.Var(&stringSliceFlag{&extraBindPaths}, "extra-bind", "Extra bind mount path (repeatable, also comma-separated)")
-	flag.Var(&stringMapFlag{&datasetAliases}, "dataset", "Dataset alias 'id=path' (repeatable, also comma-separated)")
+	flag.Var(&hostres.StringSliceFlag{Values: &extraBindPaths}, "extra-bind", "Extra bind mount path (repeatable, also comma-separated)")
+	flag.Var(&hostres.StringMapFlag{Values: &datasetAliases}, "dataset", "Dataset alias 'id=path' (repeatable, also comma-separated)")
 
 	// Secret environment variables for containers.
 	var secretVars map[string]string
 	var secretFile string
-	flag.Var(&stringMapFlag{&secretVars}, "secret", "Secret env var 'NAME=value' injected into containers (repeatable, never sent to server)")
+	flag.Var(&hostres.StringMapFlag{Values: &secretVars}, "secret", "Secret env var 'NAME=value' injected into containers (repeatable, never sent to server)")
 	flag.StringVar(&secretFile, "secret-file", "", "File with secret env vars (NAME=value per line, # comments)")
 
 	// Non-secret environment variables for containers.
 	var envVars map[string]string
 	var envFile string
-	flag.Var(&stringMapFlag{&envVars}, "env", "Environment var 'NAME=value' injected into containers (repeatable)")
+	flag.Var(&hostres.StringMapFlag{Values: &envVars}, "env", "Environment var 'NAME=value' injected into containers (repeatable)")
 	flag.StringVar(&envFile, "env-file", "", "File with environment vars (NAME=value per line, # comments)")
 
 	// TLS flags (applies to server API + HTTPS staging).
@@ -247,7 +248,7 @@ func main() {
 	// Wire secrets: merge --secret flags with --secret-file.
 	secrets := make(map[string]string)
 	if secretFile != "" {
-		loaded, err := parseSecretFile(secretFile)
+		loaded, err := hostres.ParseEnvFile(secretFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "load secret file: %v\n", err)
 			os.Exit(1)
@@ -272,7 +273,7 @@ func main() {
 	// Wire env vars: merge --env flags with --env-file.
 	envMap := make(map[string]string)
 	if envFile != "" {
-		loaded, err := parseSecretFile(envFile) // same format: NAME=value
+		loaded, err := hostres.ParseEnvFile(envFile) // same format: NAME=value
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "load env file: %v\n", err)
 			os.Exit(1)
@@ -410,95 +411,6 @@ func parsePathMap(s string) map[string]string {
 		}
 	}
 	return result
-}
-
-// stringSliceFlag implements flag.Value to allow repeated flags like --extra-bind /a --extra-bind /b.
-// Each value is also split on commas, so --extra-bind /a,/b works too.
-type stringSliceFlag struct {
-	values *[]string
-}
-
-func (f *stringSliceFlag) String() string {
-	if f.values == nil {
-		return ""
-	}
-	return strings.Join(*f.values, ",")
-}
-
-func (f *stringSliceFlag) Set(val string) error {
-	for _, p := range strings.Split(val, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			*f.values = append(*f.values, p)
-		}
-	}
-	return nil
-}
-
-// stringMapFlag implements flag.Value to allow repeated flags like --dataset id1=path1 --dataset id2=path2.
-// Each value is also split on commas, so --dataset id1=path1,id2=path2 works too.
-type stringMapFlag struct {
-	values *map[string]string
-}
-
-func (f *stringMapFlag) String() string {
-	if f.values == nil {
-		return ""
-	}
-	var parts []string
-	for k, v := range *f.values {
-		parts = append(parts, k+"="+v)
-	}
-	return strings.Join(parts, ",")
-}
-
-func (f *stringMapFlag) Set(val string) error {
-	if *f.values == nil {
-		*f.values = make(map[string]string)
-	}
-	for _, rawPair := range strings.Split(val, ",") {
-		pair := strings.TrimSpace(rawPair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid dataset %q, expected id=path", pair)
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key == "" || value == "" {
-			return fmt.Errorf("invalid dataset %q, id and path must be non-empty", pair)
-		}
-		(*f.values)[key] = value
-	}
-	return nil
-}
-
-// parseSecretFile reads a secrets file with NAME=value lines.
-// Lines starting with # and blank lines are skipped.
-func parseSecretFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	secrets := make(map[string]string)
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key != "" {
-			secrets[key] = value
-		}
-	}
-	return secrets, nil
 }
 
 // validateInstalledRuntimes checks that each declared runtime binary actually

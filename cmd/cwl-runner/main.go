@@ -4,9 +4,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/me/gowe/internal/hostres"
+	"github.com/me/gowe/internal/toolexec"
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -34,7 +37,18 @@ var (
 
 	preserveEnv       []string
 	preserveEntireEnv bool
+
+	// Worker-parity host resource flags (shared parsing: internal/hostres).
+	preStageDir    string
+	datasetAliases map[string]string
+	extraBindPaths []string
+	envVars        map[string]string
+	envFile        string
 )
+
+// reservedEnvNames can not be set via --env/--env-file: the CWL spec fixes
+// HOME to the output directory and TMPDIR to the temp directory.
+var reservedEnvNames = []string{"HOME", "TMPDIR"}
 
 const version = "1.2.1-dev"
 
@@ -99,6 +113,8 @@ Examples:
 	rootCmd.PersistentFlags().StringArrayVar(&preserveEnv, "preserve-environment", nil, "Host environment variable NAME to pass to tools run on the host, in addition to the allow-list (repeatable)")
 	rootCmd.PersistentFlags().BoolVar(&preserveEntireEnv, "preserve-entire-environment", false, "Pass the entire host environment to tools run on the host")
 
+	registerHostResourceFlags(rootCmd)
+
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
 	rootCmd.AddCommand(dagCmd())
@@ -107,6 +123,18 @@ Examples:
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// registerHostResourceFlags adds the worker-parity bind and env flags: same
+// names and parsing as gowe-worker. Containers run with --containall
+// --cleanenv, so these are the only way host databases/weights and settings
+// reach a container.
+func registerHostResourceFlags(rootCmd *cobra.Command) {
+	rootCmd.PersistentFlags().StringVar(&preStageDir, "pre-stage-dir", "", "Directory with pre-staged datasets: bind-mounted (read-write, same path) into every container; no-op for host-mode tools")
+	rootCmd.PersistentFlags().Var(&hostres.StringMapFlag{Values: &datasetAliases}, "dataset", "Dataset 'id=path' bind-mounted into every container at the same path (repeatable, also comma-separated; no-op for host-mode tools). Unlike the worker there is no scheduler here, so the id is informational")
+	rootCmd.PersistentFlags().Var(&hostres.StringSliceFlag{Values: &extraBindPaths}, "extra-bind", "Extra host path bind-mounted (read-write, same path) into every container (repeatable, also comma-separated; no-op for host-mode tools)")
+	rootCmd.PersistentFlags().Var(&hostres.StringMapFlag{Values: &envVars}, "env", "Environment variable 'NAME=value' injected into every tool, in containers and on the host (repeatable). Unlike --preserve-environment, which copies a host variable to host-mode tools only, this sets a value for all tools")
+	rootCmd.PersistentFlags().StringVar(&envFile, "env-file", "", "File with environment variables injected into every tool (NAME=value per line, # comments); --env overrides file entries")
 }
 
 func newLogger() *slog.Logger {
@@ -170,9 +198,58 @@ func newRunner(logger *slog.Logger) *cwlrunner.Runner {
 	return r
 }
 
+// coveredByBind reports whether path is a bind's host path or lies under it.
+func coveredByBind(binds []toolexec.ExtraBind, path string) bool {
+	for _, b := range binds {
+		if path == b.HostPath || strings.HasPrefix(path, strings.TrimSuffix(b.HostPath, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// applyHostResources resolves the worker-parity bind and env flags onto the
+// runner.
+func applyHostResources(r *cwlrunner.Runner, logger *slog.Logger) error {
+	datasets, binds, err := hostres.ResolveBinds(logger, preStageDir, datasetAliases, extraBindPaths)
+	if err != nil {
+		return err
+	}
+	// The worker registers --dataset aliases for scheduler affinity only;
+	// a standalone run has no scheduler, so an alias is useful only as a
+	// bind. Mount each --dataset path (unless an existing bind covers it).
+	ids := make([]string, 0, len(datasetAliases))
+	for id := range datasetAliases {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if p := datasets[id]; !coveredByBind(binds, p) {
+			binds = append(binds, toolexec.ExtraBind{HostPath: p, ContainerPath: p})
+		}
+	}
+	r.ExtraBinds = binds
+	env, err := hostres.MergeEnv(envFile, envVars, reservedEnvNames...)
+	if err != nil {
+		return err
+	}
+	r.EnvVars = env
+	if len(env) > 0 {
+		names := make([]string, 0, len(env))
+		for k := range env {
+			names = append(names, k)
+		}
+		logger.Debug("loaded env vars", "names", names) // names only: values may be sensitive
+	}
+	return nil
+}
+
 func runExecute(cmd *cobra.Command, args []string) error {
 	logger := newLogger()
 	runner := newRunner(logger)
+	if err := applyHostResources(runner, logger); err != nil {
+		return err
+	}
 
 	cwlPath := args[0]
 	jobPath := ""

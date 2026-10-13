@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/me/gowe/internal/hostres"
 	"log/slog"
 	"net/http"
 	"os"
@@ -307,53 +308,9 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	}
 
 	// Build datasets map and extra binds from PreStageDir, Datasets, and ExtraBinds.
-	datasets := make(map[string]string)
-	var extraBinds []toolexec.ExtraBind
-
-	// Auto-discover datasets from PreStageDir.
-	if cfg.PreStageDir != "" {
-		absPreStage, err := filepath.Abs(cfg.PreStageDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve pre-stage-dir: %w", err)
-		}
-		entries, err := os.ReadDir(absPreStage)
-		if err != nil {
-			return nil, fmt.Errorf("scan pre-stage-dir %s: %w", absPreStage, err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				datasets[entry.Name()] = filepath.Join(absPreStage, entry.Name())
-			}
-		}
-		// Bind-mount the entire PreStageDir at the same path.
-		extraBinds = append(extraBinds, toolexec.ExtraBind{
-			HostPath:      absPreStage,
-			ContainerPath: absPreStage,
-		})
-		logger.Info("pre-stage-dir scanned", "path", absPreStage, "datasets", len(datasets))
-	}
-
-	// Merge explicit dataset aliases (additive).
-	for id, path := range cfg.Datasets {
-		absPath, err := filepath.Abs(path)
-		if err != nil {
-			logger.Warn("resolve dataset path", "id", id, "path", path, "error", err)
-			absPath = path
-		}
-		datasets[id] = absPath
-	}
-
-	// Build extra binds from ExtraBinds config (generic pass-through).
-	for _, p := range cfg.ExtraBinds {
-		absP, err := filepath.Abs(p)
-		if err != nil {
-			logger.Warn("resolve extra-bind path", "path", p, "error", err)
-			absP = p
-		}
-		extraBinds = append(extraBinds, toolexec.ExtraBind{
-			HostPath:      absP,
-			ContainerPath: absP,
-		})
+	datasets, extraBinds, err := hostres.ResolveBinds(logger, cfg.PreStageDir, cfg.Datasets, cfg.ExtraBinds)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(datasets) > 0 {
