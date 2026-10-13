@@ -141,6 +141,21 @@ type Options struct {
 	// never for container delivery. Falls back to SecretEnvVars when unset
 	// so callers that only ever set SecretEnvVars keep working.
 	MaskSecrets map[string]string
+
+	// InheritHostEnv restores the pre-hardening behavior for ModeLocal: the
+	// tool process inherits the full host environment instead of the
+	// allow-list built by baseToolEnv. Degraded mode (worker
+	// --inherit-host-env).
+	InheritHostEnv bool
+
+	// PreserveEnv names host variables that ModeLocal tools may inherit in
+	// addition to the allow-list (cwl-runner --preserve-environment).
+	PreserveEnv []string
+
+	// ApptainerNoContainall drops --containall (but keeps --cleanenv) from
+	// the apptainer command line, for hosts without PID/mount namespace
+	// support. Degraded mode (worker --apptainer-no-containall).
+	ApptainerNoContainall bool
 }
 
 // Executor executes CWL CommandLineTools.

@@ -14,7 +14,6 @@ server_url: "http://localhost:8080"
 # Worker identity
 name: ""           # Auto-detect hostname if empty
 group: "default"   # Worker group for task scheduling
-worker_key: ""     # Shared secret for authentication
 
 # Container runtime: docker, apptainer, none (bare/host tools)
 runtime: "docker"

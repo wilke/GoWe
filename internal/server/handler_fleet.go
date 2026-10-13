@@ -23,6 +23,25 @@ type FleetMember struct {
 	GPUEnabled  bool              `json:"gpu_enabled"`
 	LastSeen    time.Time         `json:"last_seen"`
 	CurrentTask string            `json:"current_task,omitempty"`
+	// Labels carries only the degraded-mode registration labels
+	// (inherit_host_env, apptainer_containall) so the fleet view can flag
+	// workers running with reduced tool isolation.
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// fleetDegradedLabels filters a worker's labels down to the degraded-mode
+// flags exposed in the fleet roster.
+func fleetDegradedLabels(labels map[string]string) map[string]string {
+	var out map[string]string
+	for _, k := range []string{"inherit_host_env", "apptainer_containall"} {
+		if v, ok := labels[k]; ok {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // FleetSummary is a small aggregate over the roster: total worker count and a
@@ -70,6 +89,7 @@ func (s *Server) handleFleetRoster(w http.ResponseWriter, r *http.Request) {
 			GPUEnabled:  wk.GPUEnabled,
 			LastSeen:    wk.LastSeen,
 			CurrentTask: wk.CurrentTask,
+			Labels:      fleetDegradedLabels(wk.Labels),
 		})
 		byState[string(wk.State)]++
 	}

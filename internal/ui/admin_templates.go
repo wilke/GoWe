@@ -64,7 +64,8 @@ const adminFleetTemplate = `{{define "content"}}
                             <span class="text-sm text-gray-700">{{.State}}</span>
                         </span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" title="{{.ID}}">{{.Name}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" title="{{.ID}}">{{.Name}}{{if or (eq (index .Labels "inherit_host_env") "true") (eq (index .Labels "apptainer_containall") "false")}}
+                        <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800" title="Reduced tool isolation:{{if eq (index .Labels "inherit_host_env") "true"}} inherit_host_env{{end}}{{if eq (index .Labels "apptainer_containall") "false"}} no-containall{{end}}">degraded</span>{{end}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Group}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Runtime}}</td>
                     <td class="px-6 py-4 whitespace-nowrap">

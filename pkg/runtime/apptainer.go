@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
 )
 
 // Apptainer executes commands inside Apptainer (Singularity) containers.
@@ -29,7 +30,11 @@ func (r *Apptainer) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("apptainer runtime: empty command")
 	}
 
-	args := []string{"exec"}
+	// Isolation: private PID namespace/tmp and no host environment.
+	args := []string{"exec", "--containall", "--cleanenv"}
+	if spec.ApptainerNoContainall {
+		args = []string{"exec", "--cleanenv"}
+	}
 
 	// Network configuration.
 	if spec.Network.Disabled {
@@ -50,8 +55,13 @@ func (r *Apptainer) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		args = append(args, "--env", k+"="+v)
 	}
 
-	// Bind mounts.
-	args = append(args, "--bind", spec.WorkDir+":/work", "--pwd", "/work")
+	// Bind mounts. /tmp gets a per-task directory: under --containall it
+	// would otherwise be a small session tmpfs.
+	tmpDir := spec.WorkDir + "_tmp"
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return RunResult{}, fmt.Errorf("apptainer runtime: create tmp dir: %w", err)
+	}
+	args = append(args, "--bind", spec.WorkDir+":/work", "--bind", tmpDir+":/tmp", "--pwd", "/work")
 	for hostPath, containerPath := range spec.Volumes {
 		args = append(args, "--bind", hostPath+":"+containerPath)
 	}

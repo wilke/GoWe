@@ -49,6 +49,8 @@ type Worker struct {
 	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
 	active            *activeTaskSet           // In-flight tasks → per-task cancel funcs
 	keepTaskDirs      bool                     // Retain task working dirs after successful completion
+	inheritHostEnv    bool                     // Degraded: local/bare tools inherit the full worker env
+	noContainall      bool                     // Degraded: apptainer runs without --containall
 	logger            *slog.Logger
 }
 
@@ -113,6 +115,16 @@ type Config struct {
 	// completion instead of deleting them (debugging aid). Directories of
 	// FAILED tasks are always kept regardless of this setting.
 	KeepTaskDirs bool
+
+	// InheritHostEnv makes tools that run directly on the host (local and the
+	// legacy bare runtime) inherit the worker's full environment instead of
+	// the allow-list. Degraded mode; reported in the registration labels.
+	InheritHostEnv bool
+
+	// ApptainerNoContainall drops --containall (keeping --cleanenv) from
+	// apptainer invocations. Degraded mode; reported in the registration
+	// labels.
+	ApptainerNoContainall bool
 
 	// WorkspaceStager enables the ws:// workspace stager for BV-BRC.
 	WorkspaceStager bool
@@ -370,9 +382,27 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		secrets:           cfg.Secrets,
 		envVars:           cfg.EnvVars,
 		keepTaskDirs:      cfg.KeepTaskDirs,
+		inheritHostEnv:    cfg.InheritHostEnv,
+		noContainall:      cfg.ApptainerNoContainall,
 		active:            newActiveTaskSet(),
 		logger:            logger.With("component", "worker"),
 	}, nil
+}
+
+// degradedLabels returns the registration labels that flag a worker running
+// with reduced isolation, so the fleet roster/UI can flag it (see server handler_fleet.go). Nil when fully isolated.
+func degradedLabels(cfg Config) map[string]string {
+	var labels map[string]string
+	if cfg.InheritHostEnv {
+		labels = map[string]string{"inherit_host_env": "true"}
+	}
+	if cfg.ApptainerNoContainall {
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels["apptainer_containall"] = "false"
+	}
+	return labels
 }
 
 // Run starts the main work loop. It registers with the server, then
@@ -388,6 +418,7 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		GPUDevice:  w.gpu.DeviceID,
 		Version:    cfg.Version,
 		Datasets:   w.datasets,
+		Labels:     degradedLabels(cfg),
 	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
@@ -817,6 +848,8 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		ExtraBinds:            w.extraBinds,
 		SecretEnvVars:         w.secrets,
 		EnvVars:               w.envVars,
+		InheritHostEnv:        w.inheritHostEnv,
+		ApptainerNoContainall: w.noContainall,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
@@ -971,6 +1004,18 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 			Enabled:  w.gpu.Enabled,
 			DeviceID: w.gpu.DeviceID,
 		},
+		InheritHostEnv:        w.inheritHostEnv,
+		ApptainerNoContainall: w.noContainall,
+	}
+
+	// Bare (host) execution: parity with executeLocal -- HOME is the task dir
+	// and TMPDIR a private sibling, since the allow-listed env has neither.
+	if _, bare := w.runtime.(*BareRuntime); bare {
+		tmpDir := taskDir + "_tmp"
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			return w.reportFailure(ctx, task, fmt.Errorf("create tmp dir: %w", err))
+		}
+		spec.Env = map[string]string{"HOME": taskDir, "TMPDIR": tmpDir}
 	}
 
 	w.logger.Debug("executing task (legacy)",

@@ -43,6 +43,8 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 		Mode:            toolexec.ModeLocal,
 		Namespaces:      r.namespaces,
 		JobRequirements: r.jobRequirements,
+		PreserveEnv:     r.PreserveEnv,
+		InheritHostEnv:  r.PreserveEntireEnv,
 	})
 	if err != nil {
 		return nil, err

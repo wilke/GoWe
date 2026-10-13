@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,7 +30,9 @@ func main() {
 	flag.StringVar(&cfg.ServerURL, "server", "http://localhost:8080", "GoWe server URL")
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
-	flag.StringVar(&cfg.WorkerKey, "worker-key", "", "Worker authentication key sent as X-Worker-Key (a per-worker key issued by an admin, or a shared static key)")
+	var workerKeyArgv, workerKeyFile string
+	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file or "+workerKeyEnv)
+	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read); alternatively set "+workerKeyEnv)
 	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime(s), comma-separated (docker, apptainer, none)")
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
@@ -51,6 +54,10 @@ func main() {
 	// Input path mapping - translates host paths in task inputs to local container paths.
 	var inputPathMapStr string
 	flag.StringVar(&inputPathMapStr, "input-path-map", "", "Input path mapping: 'hostpath1=localpath1:hostpath2=localpath2' (or INPUT_PATH_MAP env)")
+
+	// Degraded-mode flags (reduced tool isolation).
+	flag.BoolVar(&cfg.InheritHostEnv, "inherit-host-env", false, "DEGRADED: let tools run directly on the host (--runtime none) inherit the worker's full environment instead of an allow-list")
+	flag.BoolVar(&cfg.ApptainerNoContainall, "apptainer-no-containall", false, "DEGRADED: run Apptainer without --containall (--cleanenv is kept), for hosts without namespace support")
 
 	// GPU flags.
 	flag.BoolVar(&cfg.GPU.Enabled, "gpu", false, "Enable GPU support (passes --nv to Apptainer, --gpus to Docker)")
@@ -158,6 +165,27 @@ func main() {
 
 	logger := logging.NewLogger(logging.ParseLevel(*logLevel), *logFormat)
 
+	// Resolve the worker key (file or env only; argv is refused).
+	workerKeyOnArgv := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "worker-key" {
+			workerKeyOnArgv = true
+		}
+	})
+	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv, os.Unsetenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	cfg.WorkerKey = workerKey
+
+	if cfg.InheritHostEnv {
+		logger.Warn("--inherit-host-env is set: tools running directly on the host inherit the worker's full environment, including any provider tokens or secrets in it")
+	}
+	if cfg.ApptainerNoContainall {
+		logger.Warn("--apptainer-no-containall is set: Apptainer containers share the host PID namespace and /tmp; only --cleanenv remains")
+	}
+
 	// Validate runtime flag.
 	if err := model.ValidateRuntimes(cfg.Runtime); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -195,6 +223,23 @@ func main() {
 	cfg.PreStageDir = preStageDir
 	cfg.ExtraBinds = extraBindPaths
 	cfg.Datasets = datasetAliases
+
+	// The key file must not be readable by tools: they run as the worker uid.
+	if workerKeyFile != "" {
+		workDir := cfg.WorkDir
+		if workDir == "" {
+			workDir = filepath.Join(os.TempDir(), "gowe-worker")
+		}
+		bound := []string{cfg.PreStageDir, cfg.ImageDir, workDir}
+		bound = append(bound, cfg.ExtraBinds...)
+		for _, p := range cfg.Datasets {
+			bound = append(bound, p)
+		}
+		if err := checkKeyFileNotBound(workerKeyFile, bound); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// Wire build version.
 	cfg.Version = Version
@@ -239,9 +284,18 @@ func main() {
 	for k, v := range envVars {
 		envMap[k] = v
 	}
+	if _, ok := envMap[workerKeyEnv]; ok {
+		fmt.Fprintf(os.Stderr, "%s must not be set via --env/--env-file: it would be injected into every tool\n", workerKeyEnv)
+		os.Exit(1)
+	}
 	if len(envMap) > 0 {
 		cfg.EnvVars = envMap
-		logger.Info("loaded env vars", "vars", envMap)
+		// Names only: values may still be sensitive.
+		names := make([]string, 0, len(envMap))
+		for k := range envMap {
+			names = append(names, k)
+		}
+		logger.Info("loaded env vars", "names", names)
 	}
 
 	// Default worker name to hostname.

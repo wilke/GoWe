@@ -81,6 +81,9 @@ type Config struct {
 	ExtraBinds            []toolexec.ExtraBind // Extra bind mounts for containers (pre-staged datasets, admin paths)
 	SecretEnvVars         map[string]string    // Secret env vars injected into containers (never logged, delivered via cmd.Env not argv)
 	EnvVars               map[string]string    // Non-secret env vars injected into containers
+	PreserveEnv           []string             // Host env var names local tools may inherit besides the allow-list
+	InheritHostEnv        bool                 // Local tools inherit the full host env (degraded; default is an allow-list)
+	ApptainerNoContainall bool                 // Drop --containall from apptainer (degraded; --cleanenv is kept)
 	// SecretValues is the full set of secret name->value pairs in play for
 	// this execution (env-exposed SecretEnvVars entries plus any job-only
 	// values re-injected by ApplySecrets, e.g. a cwltool:Secrets input
@@ -386,6 +389,8 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			SecretEnvVars:   cfg.SecretEnvVars,
 			EnvVars:         cfg.EnvVars,
 			MaskSecrets:     cfg.SecretValues,
+
+			ApptainerNoContainall: cfg.ApptainerNoContainall,
 		})
 
 	default:
@@ -416,6 +421,9 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			SecretEnvVars:   cfg.SecretEnvVars,
 			EnvVars:         cfg.EnvVars,
 			MaskSecrets:     cfg.SecretValues,
+
+			InheritHostEnv: cfg.InheritHostEnv,
+			PreserveEnv:    cfg.PreserveEnv,
 		})
 	}
 
