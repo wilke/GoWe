@@ -3,7 +3,9 @@ package worker
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"github.com/me/gowe/internal/validate"
 	"io"
 	"log/slog"
 	"os"
@@ -315,5 +317,11 @@ func newRedactedError(err error, mask map[string]string) error {
 	if msg == err.Error() {
 		return err
 	}
-	return &redactedError{msg: msg, wrapped: err}
+	// Wrap only the sentinel (like cwltool.maskedError), never the original
+	// error: Unwrap must not expose the pre-redaction text.
+	var wrapped error
+	if errors.Is(err, validate.ErrInputValidation) {
+		wrapped = validate.ErrInputValidation
+	}
+	return &redactedError{msg: msg, wrapped: wrapped}
 }

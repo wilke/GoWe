@@ -444,6 +444,9 @@ func TestRedactedErrorPreservesSentinel(t *testing.T) {
 	if !errors.Is(err, validate.ErrInputValidation) {
 		t.Error("sentinel lost")
 	}
+	if u := errors.Unwrap(err); u != nil && strings.Contains(u.Error(), testToken) {
+		t.Errorf("Unwrap exposes pre-redaction text: %v", u)
+	}
 	if got := newRedactedError(errors.New("clean"), map[string]string{"t": testToken}); got.Error() != "clean" {
 		t.Errorf("clean error altered: %v", got)
 	}
