@@ -78,7 +78,8 @@ type UI struct {
 	// inputValidation is the server's --input-validation mode (#273),
 	// copied from Config.InputValidation. Read through Effective() (never
 	// the zero value directly) so an unset mode means warn.
-	inputValidation validate.Mode
+	inputValidation  validate.Mode
+	tokenBlessingDev bool // --token-blessing=dev banner
 }
 
 // Config holds UI configuration.
@@ -106,6 +107,10 @@ type Config struct {
 	// GrafanaURL is an external link to a Grafana instance, rendered in the
 	// nav/header when non-empty (target _blank). Empty hides the link.
 	GrafanaURL string
+	// TokenBlessingDev shows a loud banner on every page: the server runs with
+	// --token-blessing=dev, so tools that request the user's token get it
+	// without an administrator blessing.
+	TokenBlessingDev bool
 	// BasePath mounts the UI under this path prefix behind a reverse proxy.
 	// Empty (the default) is root-mounted, byte-identical to pre-#250
 	// behavior. Must already be normalized — see cmd/server's
@@ -138,6 +143,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		grafanaURL:          cfg.GrafanaURL,
 		basePath:            cfg.BasePath,
 		inputValidation:     cfg.InputValidation,
+		tokenBlessingDev:    cfg.TokenBlessingDev,
 	}
 }
 
@@ -2080,6 +2086,7 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 	if _, ok := data["BasePath"]; !ok {
 		data["BasePath"] = ui.basePath
 	}
+	data["TokenBlessingDev"] = ui.tokenBlessingDev
 
 	var buf bytes.Buffer
 	if err := renderTemplate(&buf, template, data); err != nil {

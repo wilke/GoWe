@@ -1,6 +1,6 @@
 # 0010. Scope automatic delegated-token injection to trusted worker groups
 
-- **Status**: Accepted
+- **Status**: Superseded by the admin-blessed token policy (SPECIFICATION.md §13.5, docs/security/tool-blessing.md). `--token-inject-groups` is now staging-only and deprecated; it no longer injects the token into any tool environment.
 - **Date**: 2026-07-07
 - **Deciders**: GoWe core
 - **Related**: ADR-0009 (delegated identity), ADR-0007 (BV-BRC executor); [`SPECIFICATION.md`](../../SPECIFICATION.md) §13.1, §13.5; PR #132, issue #133

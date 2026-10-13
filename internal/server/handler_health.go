@@ -27,6 +27,9 @@ type healthResponse struct {
 	Store     string            `json:"store"`
 	Executors map[string]string `json:"executors"`
 	Workers   *workerSummary    `json:"workers,omitempty"`
+	// TokenBlessing is the provider-token policy mode: "enforce" or the loud
+	// "dev" (unblessed tools that request the token are granted it).
+	TokenBlessing string `json:"token_blessing"`
 }
 
 func (s *Server) executorStatus() map[string]string {
@@ -107,13 +110,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		version = "dev"
 	}
 	respondOK(w, reqID, healthResponse{
-		Status:    "healthy",
-		Version:   version,
-		GoVersion: runtime.Version(),
-		Uptime:    time.Since(s.startTime).Round(time.Second).String(),
-		Scheduler: s.schedulerStatus(),
-		Store:     "skeleton",
-		Executors: s.executorStatus(),
-		Workers:   s.workerSummary(r.Context()),
+		Status:        "healthy",
+		Version:       version,
+		GoVersion:     runtime.Version(),
+		Uptime:        time.Since(s.startTime).Round(time.Second).String(),
+		Scheduler:     s.schedulerStatus(),
+		Store:         "skeleton",
+		Executors:     s.executorStatus(),
+		Workers:       s.workerSummary(r.Context()),
+		TokenBlessing: s.tokenBlessingMode(),
 	})
 }

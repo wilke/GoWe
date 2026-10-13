@@ -54,6 +54,7 @@ type Server struct {
 	basePath              string                       // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
 	secretsRetention      model.SecretsRetentionPolicy // default secrets_retention applied to a submission that doesn't specify one (see WithSecretsRetention); zero value is SecretsRetentionKeep
 	inputValidation       validate.Mode                // --input-validation mode (#273); empty means warn (see validate.Mode.Effective)
+	tokenBlessing         string                       // --token-blessing mode: "enforce" (default) or "dev" (see WithTokenBlessingMode)
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -271,6 +272,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		UploadMaxSize:       s.uiUploadMaxSize,
 		GrafanaURL:          cfg.GrafanaURL,
 		BasePath:            s.basePath,
+		TokenBlessingDev:    s.tokenBlessingMode() == tokenBlessingDev,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)

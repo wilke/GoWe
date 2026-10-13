@@ -374,3 +374,28 @@ func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, t
 
 	return subs, tasks, nil
 }
+
+// ScrubTerminalTaskCredentialsRaw clears the delegated credential and the
+// delivered secrets from every terminal task row's runtime_hints, working on
+// the raw stored JSON with json_remove and no decryption (F11). Rows whose
+// ciphertext was written under a previous key, or that cannot be decrypted at
+// all, are cleared identically because the ciphertext is just a JSON string
+// here. Rows whose runtime_hints is not valid JSON are skipped (json_remove
+// would error on them). It is idempotent and returns the number of rows
+// changed; callers log the error and carry on (it must never block startup).
+func (s *SQLiteStore) ScrubTerminalTaskCredentialsRaw(ctx context.Context) (int, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks
+SET runtime_hints = json_remove(runtime_hints, '$.stager_overrides.http_credential', '$.secrets')
+WHERE state IN ('SUCCESS','FAILED','SKIPPED')
+  AND json_valid(runtime_hints)
+  AND (json_type(runtime_hints, '$.stager_overrides.http_credential') IS NOT NULL
+       OR json_type(runtime_hints, '$.secrets') IS NOT NULL)`)
+	if err != nil {
+		return 0, fmt.Errorf("scrub terminal task credentials: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("scrub terminal task credentials: rows affected: %w", err)
+	}
+	return int(n), nil
+}
