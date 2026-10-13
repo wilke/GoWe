@@ -84,6 +84,8 @@ Pluggable backends implementing `Submit()`, `Status()`, `Cancel()`, `Logs()`. Se
 
 Workers poll the server for tasks (no push). The checkout process matches on: container runtime capability, worker group, and dataset affinity (prestage=require, cache=prefer). Workers execute via `toolexec/`, stage outputs, and report results.
 
+**Token handling:** a worker holds the submitter's token only to stage data in/out and drops it when the task ends. It injects the token into a tool's environment only when the scheduler marked the task blessed (`TokenBlessingID`) AND the resolved image's sha256 is in `ImageSHA256s`; otherwise a blessed-less request is refused with a WARN and a digest mismatch fails the task pre-launch. See `internal/worker/tokenpolicy.go` and `docs/security/authentication.md` §6.
+
 ### CWL Hint Extensions
 
 ```yaml

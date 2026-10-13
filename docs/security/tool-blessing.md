@@ -59,9 +59,20 @@ gowe admin blessings add-image <id> --image-file /other/host/python.sif
 ```
 
 `docker://` references used by a blessed tool must be `@sha256:`-pinned.
-`worker_groups` is an optional extra restriction on where the tool may run. The
-worker-side digest check (verify the resolved image file before injecting) is
-part of the later enforcement change.
+`worker_groups` is an optional extra restriction on where the tool may run.
+
+## Worker side
+
+The scheduler stamps a blessed task with `TokenBlessingID`, `TokenEnvNames` and
+the blessing's `ImageSHA256s`. The worker injects the token only when the
+blessing id is present, a credential exists, and the image it is about to run
+matches one of those digests: it resolves the image as execution will
+(`.sif` through `--image-dir` and symlinks), hashes the file, and launches the
+same resolved path. Registry refs must be `@sha256:`-pinned and listed. A
+mismatch fails the task before launch (error names the path, the digest and the
+expected list). Without a blessing id the worker logs a WARN and runs the task
+without the token. After the task the worker drops the token. Code:
+`internal/worker/tokenpolicy.go`.
 
 ## Lifecycle
 

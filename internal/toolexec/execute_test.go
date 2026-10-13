@@ -68,9 +68,9 @@ func TestResolveApptainerImage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveApptainerImage(tt.image, tt.imageDir)
+			got := ResolveApptainerImage(tt.image, tt.imageDir)
 			if got != tt.want {
-				t.Errorf("resolveApptainerImage(%q, %q) = %q, want %q", tt.image, tt.imageDir, got, tt.want)
+				t.Errorf("ResolveApptainerImage(%q, %q) = %q, want %q", tt.image, tt.imageDir, got, tt.want)
 			}
 		})
 	}

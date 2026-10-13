@@ -16,14 +16,14 @@ import (
 	"github.com/me/gowe/pkg/staging"
 )
 
-// resolveApptainerImage resolves a DockerRequirement image name for Apptainer.
+// ResolveApptainerImage resolves a DockerRequirement image name for Apptainer.
 // If the image ends with ".sif", it is treated as a local SIF file:
 //   - Absolute paths are used as-is.
 //   - Relative paths are resolved against imageDir (from --image-dir flag).
 //   - If imageDir is empty, the relative path is passed through for Apptainer to resolve.
 //
 // Non-.sif images are prefixed with "docker://" for registry pulls.
-func resolveApptainerImage(dockerImage, imageDir string) string {
+func ResolveApptainerImage(dockerImage, imageDir string) string {
 	if strings.HasSuffix(dockerImage, ".sif") {
 		if filepath.IsAbs(dockerImage) {
 			return dockerImage
@@ -791,7 +791,13 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	// Resolve image: local .sif files are used directly, others get docker:// prefix.
-	resolvedImage := resolveApptainerImage(dockerImage, opts.ImageDir)
+	// When the caller verified an image (token-bearing tasks: the worker hashed
+	// opts.ResolvedImage against the blessed digests), launch exactly that
+	// path rather than re-resolving, so the verified file is the one run.
+	resolvedImage := opts.ResolvedImage
+	if resolvedImage == "" {
+		resolvedImage = ResolveApptainerImage(dockerImage, opts.ImageDir)
+	}
 	e.logger.Debug("resolved apptainer image", "original", dockerImage, "resolved", resolvedImage)
 	apptainerArgs = append(apptainerArgs, resolvedImage)
 

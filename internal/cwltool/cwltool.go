@@ -68,6 +68,7 @@ type Config struct {
 	ContainerRuntime      string               // "docker", "apptainer", or "" (auto-detect)
 	NoContainer           bool                 // Force local execution even with DockerRequirement
 	ImageDir              string               // Base directory for resolving relative .sif image paths
+	ResolvedImage         string               // Apptainer: exact verified image path to launch (skips re-resolution)
 	GPU                   toolexec.GPUConfig   // GPU configuration
 	MaxCPUs               int                  // Worker max CPUs (0 = no limit)
 	MaxMemMB              int64                // Worker max memory in MiB (0 = no limit)
@@ -379,6 +380,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			Mode:            toolexec.ModeApptainer,
 			DockerImage:     dockerImage,
 			ImageDir:        cfg.ImageDir,
+			ResolvedImage:   cfg.ResolvedImage,
 			ContainerMounts: containerMounts,
 			DockerOutputDir: dockerOutputDir,
 			Namespaces:      cfg.Namespaces,
