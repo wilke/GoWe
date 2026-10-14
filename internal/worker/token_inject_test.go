@@ -25,7 +25,7 @@ func TestInjectBVBRCTokenEnv(t *testing.T) {
 		{
 			name:  "hint set and token present: both vars injected",
 			base:  nil,
-			hints: &model.RuntimeHints{InjectBVBRCToken: true, StagerOverrides: &model.StagerOverrides{HTTPCredential: cred}},
+			hints: &model.RuntimeHints{InjectBVBRCToken: true, TokenBlessingID: "tb_1", StagerOverrides: &model.StagerOverrides{HTTPCredential: cred}},
 			want:  map[string]string{"BVBRC_TOKEN": "secret-token-value", "KB_AUTH_TOKEN": "secret-token-value"},
 		},
 		{
@@ -37,7 +37,7 @@ func TestInjectBVBRCTokenEnv(t *testing.T) {
 		{
 			name:  "hint set but no token: neither var injected",
 			base:  nil,
-			hints: &model.RuntimeHints{InjectBVBRCToken: true, StagerOverrides: &model.StagerOverrides{HTTPCredential: &model.HTTPCredential{Token: ""}}},
+			hints: &model.RuntimeHints{InjectBVBRCToken: true, TokenBlessingID: "tb_1", StagerOverrides: &model.StagerOverrides{HTTPCredential: &model.HTTPCredential{Token: ""}}},
 			want:  nil,
 		},
 		{
@@ -45,6 +45,18 @@ func TestInjectBVBRCTokenEnv(t *testing.T) {
 			base:  nil,
 			hints: &model.RuntimeHints{InjectBVBRCToken: true},
 			want:  nil,
+		},
+		{
+			name:  "hint set, token present, but no blessing id: not injected",
+			base:  nil,
+			hints: &model.RuntimeHints{InjectBVBRCToken: true, StagerOverrides: &model.StagerOverrides{HTTPCredential: cred}},
+			want:  nil,
+		},
+		{
+			name:  "custom TokenEnvNames replace the defaults",
+			base:  nil,
+			hints: &model.RuntimeHints{InjectBVBRCToken: true, TokenBlessingID: "tb_1", TokenEnvNames: []string{"MY_TOKEN"}, StagerOverrides: &model.StagerOverrides{HTTPCredential: cred}},
+			want:  map[string]string{"MY_TOKEN": "secret-token-value"},
 		},
 		{
 			name:  "nil hints: passthrough",
@@ -55,7 +67,7 @@ func TestInjectBVBRCTokenEnv(t *testing.T) {
 		{
 			name:  "hint set with token: existing base vars preserved",
 			base:  map[string]string{"FOO": "bar"},
-			hints: &model.RuntimeHints{InjectBVBRCToken: true, StagerOverrides: &model.StagerOverrides{HTTPCredential: cred}},
+			hints: &model.RuntimeHints{InjectBVBRCToken: true, TokenBlessingID: "tb_1", StagerOverrides: &model.StagerOverrides{HTTPCredential: cred}},
 			want:  map[string]string{"FOO": "bar", "BVBRC_TOKEN": "secret-token-value", "KB_AUTH_TOKEN": "secret-token-value"},
 		},
 	}
@@ -81,8 +93,8 @@ func TestInjectBVBRCTokenEnv(t *testing.T) {
 func TestInjectBVBRCTokenEnv_DoesNotMutateSharedMap(t *testing.T) {
 	shared := map[string]string{"HF_TOKEN": "hf_abc"}
 	hints := &model.RuntimeHints{
-		InjectBVBRCToken: true,
-		StagerOverrides:  &model.StagerOverrides{HTTPCredential: &model.HTTPCredential{Token: "secret-token-value"}},
+		InjectBVBRCToken: true, TokenBlessingID: "tb_1",
+		StagerOverrides: &model.StagerOverrides{HTTPCredential: &model.HTTPCredential{Token: "secret-token-value"}},
 	}
 
 	got := injectBVBRCTokenEnv(shared, hints)

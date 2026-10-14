@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.23.0](https://github.com/wilke/GoWe/compare/v0.22.0...v0.23.0) (2026-10-14)
+
+
+### Features
+
+* **cwl-runner:** accept the worker's bind and env flags ([#306](https://github.com/wilke/GoWe/issues/306)) ([1cd16e1](https://github.com/wilke/GoWe/commit/1cd16e13aabf58dba938963a8c8806bb182ae77c))
+
+
+### Bug Fixes
+
+* **worker:** gate Apptainer --cpus/--memory on delegated cgroups ([#301](https://github.com/wilke/GoWe/issues/301)) ([e38f863](https://github.com/wilke/GoWe/commit/e38f86326906f26db701635d2492f988ca981324))
+
+## [0.22.0](https://github.com/wilke/GoWe/compare/v0.21.0...v0.22.0) (2026-10-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* tools that use gowe:Execution.inject_bvbrc_token no longer receive the user's token unless an administrator has blessed the tool with `gowe admin bless` (pinned image); unblessed submissions are refused at submit time with TOOL_NOT_BLESSED. gowe:Execution under `requirements` is rejected at registration. --token-inject-groups is now staging-only and deprecated. Bless the three bvbrc-* helper tools before submitting genome-analysis-pipeline; see docs/upgrading.md.
+
+### Security
+
+* add tool-blessing infrastructure (inert) ([#290](https://github.com/wilke/GoWe/issues/290)) ([2a3e96f](https://github.com/wilke/GoWe/commit/2a3e96f1bd4c7b4014689a8edf1af14334a0d651))
+* bind worker keys to the workers they register ([#288](https://github.com/wilke/GoWe/issues/288)) ([6632b86](https://github.com/wilke/GoWe/commit/6632b866bb6f1d73939eb8beeffae168cb12929b))
+* isolate tool environments and keep the worker key off argv ([#291](https://github.com/wilke/GoWe/issues/291)) ([3176b81](https://github.com/wilke/GoWe/commit/3176b816a8d0ca4922aad9012ab034e308e5e5ae))
+* provider token reaches a tool only when the tool requests it and an admin blessed it ([#293](https://github.com/wilke/GoWe/issues/293)) ([cfeb0eb](https://github.com/wilke/GoWe/commit/cfeb0eb03bd0b42641acd49b55d67a435fcd046c))
+* **worker:** inject the provider token only for blessed tasks with a verified image; drop it after the task ([#292](https://github.com/wilke/GoWe/issues/292)) ([70ede04](https://github.com/wilke/GoWe/commit/70ede0468c46f96927e872f726e3434675bb5ac0))
+* **worker:** refuse GOWE_WORKER_KEY; fix 0.22 upgrade order ([#300](https://github.com/wilke/GoWe/issues/300)) ([83c58df](https://github.com/wilke/GoWe/commit/83c58dfdef4ed821d85e3240349433bee829b3fd))
+
 ## [0.21.0](https://github.com/wilke/GoWe/compare/v0.20.1...v0.21.0) (2026-09-24)
 
 

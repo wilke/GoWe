@@ -116,7 +116,7 @@ alias is accepted for backward compatibility; new documents SHOULD use `gowe:Exe
 | `bvbrc_app_id` | string | BV-BRC application id; implies `executor: bvbrc`. |
 | `docker_image` | string | Container image override. Takes priority over `DockerRequirement.dockerPull`. Feeds both Docker and Apptainer (§8.3). |
 | `gpu` | boolean | Request GPU passthrough. |
-| `inject_bvbrc_token` | boolean | Inject the caller's BV-BRC token (`BVBRC_TOKEN`/`KB_AUTH_TOKEN`) into the task environment. Also injected automatically for operator-trusted worker groups (§13.5). |
+| `inject_bvbrc_token` | boolean | Request that the caller's BV-BRC token (`BVBRC_TOKEN`/`KB_AUTH_TOKEN`) be injected into the tool's environment. Honoured **only** when declared in the **tool document's `hints`** (a step cannot request it; under `requirements` it is a registration error), **and** an administrator has blessed that exact tool content (§13.5, `docs/security/tool-blessing.md`), **and** the task runs on the worker executor. |
 
 ### 5.2 `gowe:ResourceData`
 
@@ -604,7 +604,7 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 | **User / API token** | client → server | `Authorization` (BV-BRC) or `X-MG-RAST-Token` (MG-RAST) header | Verified per request (§13.3). |
 | **Worker key** | worker → server | `X-Worker-Key` header | Authenticates and scopes a worker to groups (§13.3). |
 | **Worker secrets** | worker-local | `--secret`, `--secret-file` | Injected into the container env on the worker only; MUST NOT reach the server (§13.5). |
-| **Delegated BV-BRC token** | server → container | task `RuntimeHints` → `BVBRC_TOKEN`/`KB_AUTH_TOKEN` env | The submitter's own token, injected only on opt-in or an operator-trusted worker group; redacted from captured logs (§13.5). |
+| **Delegated BV-BRC token** | server → container | task `RuntimeHints` → `BVBRC_TOKEN`/`KB_AUTH_TOKEN` env | The submitter's own token, injected into a tool environment only when the tool requests it AND an administrator blessed its exact content (worker executor, pinned image); otherwise only a need-based staging credential; redacted from captured logs (§13.5). |
 
 ### 13.2 Trust boundary invariant
 
@@ -636,6 +636,20 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
 - A worker key MUST be rejected (`401`) if it is disabled/revoked or past its `expires_at`.
   Per-worker keys are independently issuable and revocable, so revoking one MUST NOT affect any
   other key.
+- **Key-to-worker binding.** A worker is bound to the key that registered it (`workers.key_id`,
+  the key's stable id). Every `/workers/{id}/*` route (heartbeat, work checkout, task status,
+  task complete, deregister) MUST return `403` unless the calling key's id equals the worker's
+  `key_id`; `GET /workers` with a worker key MUST return only the workers bound to that key.
+  Workers that predate the binding (`key_id = ''`) are adopted by the first caller whose key
+  may join the worker's group (compare-and-set, logged at INFO); a key that may not join the
+  group MUST be refused. Checkout MUST additionally re-check that the key may still join the
+  worker's group, so narrowing a key's groups stops task delivery. Binding is per *key*: workers
+  sharing one key (e.g. a static fleet key) share one identity and can still act on each
+  other's worker ids until the shared key is replaced by per-group keys. When no keys are
+  configured (open access) no binding is enforced. A key's id is its configured `id`, else a
+  hash prefix of the secret, so static keys SHOULD set `id`; changing a key's id (rotating an
+  id-less key's secret, or adding an `id`) orphans its workers until they re-register. Static
+  key ids MUST be unique and MUST NOT be `none`.
 - Worker-key enforcement is **optional**: if no keys are configured at all — neither static nor
   per-worker — worker endpoints are open. Operators SHOULD configure keys in any multi-tenant
   or networked deployment. If a store error prevents determining whether keys exist, the server
@@ -666,18 +680,40 @@ external providers — GoWe stores no user passwords. Rationale for the auth mod
   issuance and is not retrievable thereafter. A non-secret key prefix and a stable key ID MAY
   be stored and logged for attribution. Static keys MAY likewise be provided pre-hashed
   (`sha256:<hex>`) so the raw secret need not reside in config.
-- The submitter's BV-BRC token MAY be injected into a task's container as `BVBRC_TOKEN` (and its
-  alias `KB_AUTH_TOKEN`, which BV-BRC Perl tooling reads) so the job runs under the user's
-  identity. Injection happens when **any** of the following holds, and MUST NOT happen otherwise:
-    1. the step opts in with `gowe:Execution.inject_bvbrc_token`;
-    2. the task targets the BV-BRC executor;
-    3. a workspace stager requires the token to move `ws://` data; or
-    4. the task's worker group is one the operator designated as trusted via
-       `--token-inject-groups` (e.g. curated BV-BRC tool workers).
-  This is the least-privilege boundary: a token MUST NOT be exposed to a tool that did not
-  request it and is not running on an operator-trusted group. The default group and any group
-  not listed in `--token-inject-groups` remain opt-in (case 1). The rationale and trade-off of
-  the group-scoped default are recorded in [ADR-0010](docs/adr/0010-scoped-worker-token-injection.md).
+- The submitter's BV-BRC token reaches a tool's environment (`BVBRC_TOKEN` and its alias
+  `KB_AUTH_TOKEN`, or the names in the blessing) **only** when the tool itself requests it
+  (`gowe:Execution.inject_bvbrc_token` under the tool document's `hints`) **and** an
+  administrator has blessed that exact tool content (post-merge tool digest + pinned image
+  digests, `gowe admin bless`), **and** the task runs on the worker executor in a worker group
+  the blessing allows. The scheduler (`internal/scheduler/credentials.go`, `attachCredentials`)
+  is the only component that sets `RuntimeHints.InjectBVBRCToken`, always together with the
+  blessing id (`TokenBlessingID`), the allowed env names and the allowed image digests; the
+  store refuses to persist a live task with the flag and no blessing id. A denial fails the task
+  before dispatch with a message naming the tool and its hash. Submissions are checked up front
+  (`400 TOOL_NOT_BLESSED`; `400 TOKEN_TOOL_OVERRIDE_REFUSED` for job `cwl:requirements` or
+  step-level image settings on a token-requesting step). Retries re-run the whole policy.
+  Otherwise the token is **never** placed in a tool environment. The server option
+  `--token-blessing=dev` (default `enforce`) additionally grants the token to an *unblessed*
+  requesting tool, pinning the image digest server-side from `--dev-image-dir`; it is announced
+  loudly (WARN on every grant, `token_blessing: "dev"` in `/api/v1/health`, a UI banner, a
+  warning on the submission response) and relaxes nothing else.
+- Staging credential. Separately from injection, a worker task carries the submitter's token as
+  an HTTP credential **only so the worker can stage data**, and only when needed, in both
+  workspace-staging modes:
+
+  | Task | Credential on the task row |
+  |---|---|
+  | BV-BRC executor | yes (used as a request header, unchanged) |
+  | worker executor, blessed grant | yes (also injected into the tool env) |
+  | worker executor with `ws://` or `shock://` inputs, or a submission `output_destination` | yes, staging only |
+  | worker executor in a `--token-inject-groups` group (deprecated) | yes, staging only |
+  | anything else (including local/docker executors and plain worker tasks) | no |
+
+  Who uploads what: the worker uploads its own outputs to the `output_destination` when it
+  holds the credential (passthrough and server-staging mode alike). In server-staging mode the
+  server pre-stages `ws://` inputs before dispatch and its post-stage uploads only the remaining
+  `file://` outputs (server-side executor steps, or a worker with nothing to upload) and writes
+  `_gowe_outputs.json`; no file is uploaded twice.
 - A token injected into a task's environment MUST NOT leak back to the server (§13.2). Because
   the worker captures tool stdout/stderr for log reporting, it MUST redact every injected secret
   value from the captured buffers before transmitting them; a tool that echoes its environment

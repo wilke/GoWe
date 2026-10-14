@@ -23,6 +23,13 @@ type RunSpec struct {
 	Env     map[string]string // Environment variables
 	GPU     GPUConfig         // GPU configuration
 	Network NetworkConfig     // Network configuration
+
+	// InheritHostEnv makes the bare runtime pass the full host environment to
+	// the process (degraded; default is the BaseHostEnv allow-list).
+	InheritHostEnv bool
+	// ApptainerNoContainall drops --containall from the apptainer command
+	// (--cleanenv is kept).
+	ApptainerNoContainall bool
 }
 
 // GPUConfig specifies GPU requirements for container execution.

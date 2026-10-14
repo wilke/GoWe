@@ -4,10 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/me/gowe/internal/hostres"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,7 +31,9 @@ func main() {
 	flag.StringVar(&cfg.ServerURL, "server", "http://localhost:8080", "GoWe server URL")
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
-	flag.StringVar(&cfg.WorkerKey, "worker-key", "", "Worker authentication key sent as X-Worker-Key (a per-worker key issued by an admin, or a shared static key)")
+	var workerKeyArgv, workerKeyFile string
+	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file")
+	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read). Key file only: --worker-key (argv) and "+workerKeyEnv+" (environment) are refused because both are readable by same-uid host processes (/proc/<pid>/cmdline, /proc/<pid>/environ), and tools without DockerRequirement run on the host on every worker")
 	flag.StringVar(&cfg.Runtime, "runtime", "none", "Container runtime(s), comma-separated (docker, apptainer, none)")
 	flag.StringVar(&cfg.WorkDir, "workdir", "", "Local working directory (default: $TMPDIR/gowe-worker)")
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
@@ -52,6 +56,10 @@ func main() {
 	var inputPathMapStr string
 	flag.StringVar(&inputPathMapStr, "input-path-map", "", "Input path mapping: 'hostpath1=localpath1:hostpath2=localpath2' (or INPUT_PATH_MAP env)")
 
+	// Degraded-mode flags (reduced tool isolation).
+	flag.BoolVar(&cfg.InheritHostEnv, "inherit-host-env", false, "DEGRADED: let tools run directly on the host (--runtime none) inherit the worker's full environment instead of an allow-list")
+	flag.BoolVar(&cfg.ApptainerNoContainall, "apptainer-no-containall", false, "DEGRADED: run Apptainer without --containall (--cleanenv is kept), for hosts without namespace support")
+
 	// GPU flags.
 	flag.BoolVar(&cfg.GPU.Enabled, "gpu", false, "Enable GPU support (passes --nv to Apptainer, --gpus to Docker)")
 	flag.StringVar(&cfg.GPU.DeviceID, "gpu-id", "", "Specific GPU device ID (e.g., '0', '1', '0,1') - empty means all/auto")
@@ -59,6 +67,7 @@ func main() {
 	// Resource limit flags.
 	flag.Int64Var(&cfg.Resources.MaxMemMB, "max-mem", 0, "Maximum memory in MiB for containers (0 = auto-detect from system)")
 	flag.IntVar(&cfg.Resources.MaxCPUs, "max-cpus", 0, "Maximum CPUs for containers (0 = auto-detect from system)")
+	flag.StringVar(&cfg.Resources.ApptainerCgroupsMode, "apptainer-cgroups", "auto", "Apptainer --cpus/--memory limits: auto (only for cgroup controllers delegated to the user's systemd service, or all when root), on (always), off (never)")
 
 	// Image directory for local SIF files.
 	flag.StringVar(&cfg.ImageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
@@ -68,19 +77,19 @@ func main() {
 	var extraBindPaths []string
 	var datasetAliases map[string]string
 	flag.StringVar(&preStageDir, "pre-stage-dir", "", "Directory with pre-staged datasets (auto-scanned, bind-mounted into containers)")
-	flag.Var(&stringSliceFlag{&extraBindPaths}, "extra-bind", "Extra bind mount path (repeatable, also comma-separated)")
-	flag.Var(&stringMapFlag{&datasetAliases}, "dataset", "Dataset alias 'id=path' (repeatable, also comma-separated)")
+	flag.Var(&hostres.StringSliceFlag{Values: &extraBindPaths}, "extra-bind", "Extra bind mount path (repeatable, also comma-separated)")
+	flag.Var(&hostres.StringMapFlag{Values: &datasetAliases}, "dataset", "Dataset alias 'id=path' (repeatable, also comma-separated)")
 
 	// Secret environment variables for containers.
 	var secretVars map[string]string
 	var secretFile string
-	flag.Var(&stringMapFlag{&secretVars}, "secret", "Secret env var 'NAME=value' injected into containers (repeatable, never sent to server)")
+	flag.Var(&hostres.StringMapFlag{Values: &secretVars}, "secret", "Secret env var 'NAME=value' injected into containers (repeatable, never sent to server)")
 	flag.StringVar(&secretFile, "secret-file", "", "File with secret env vars (NAME=value per line, # comments)")
 
 	// Non-secret environment variables for containers.
 	var envVars map[string]string
 	var envFile string
-	flag.Var(&stringMapFlag{&envVars}, "env", "Environment var 'NAME=value' injected into containers (repeatable)")
+	flag.Var(&hostres.StringMapFlag{Values: &envVars}, "env", "Environment var 'NAME=value' injected into containers (repeatable)")
 	flag.StringVar(&envFile, "env-file", "", "File with environment vars (NAME=value per line, # comments)")
 
 	// TLS flags (applies to server API + HTTPS staging).
@@ -158,6 +167,27 @@ func main() {
 
 	logger := logging.NewLogger(logging.ParseLevel(*logLevel), *logFormat)
 
+	// Resolve the worker key (file or env only; argv is refused).
+	workerKeyOnArgv := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "worker-key" {
+			workerKeyOnArgv = true
+		}
+	})
+	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	cfg.WorkerKey = workerKey
+
+	if cfg.InheritHostEnv {
+		logger.Warn("--inherit-host-env is set: tools running directly on the host inherit the worker's full environment, including any provider tokens or secrets in it")
+	}
+	if cfg.ApptainerNoContainall {
+		logger.Warn("--apptainer-no-containall is set: Apptainer containers share the host PID namespace and /tmp; only --cleanenv remains")
+	}
+
 	// Validate runtime flag.
 	if err := model.ValidateRuntimes(cfg.Runtime); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -196,13 +226,30 @@ func main() {
 	cfg.ExtraBinds = extraBindPaths
 	cfg.Datasets = datasetAliases
 
+	// The key file must not be readable by tools: they run as the worker uid.
+	if workerKeyFile != "" {
+		workDir := cfg.WorkDir
+		if workDir == "" {
+			workDir = filepath.Join(os.TempDir(), "gowe-worker")
+		}
+		bound := []string{cfg.PreStageDir, cfg.ImageDir, workDir}
+		bound = append(bound, cfg.ExtraBinds...)
+		for _, p := range cfg.Datasets {
+			bound = append(bound, p)
+		}
+		if err := checkKeyFileNotBound(workerKeyFile, bound); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Wire build version.
 	cfg.Version = Version
 
 	// Wire secrets: merge --secret flags with --secret-file.
 	secrets := make(map[string]string)
 	if secretFile != "" {
-		loaded, err := parseSecretFile(secretFile)
+		loaded, err := hostres.ParseEnvFile(secretFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "load secret file: %v\n", err)
 			os.Exit(1)
@@ -227,7 +274,7 @@ func main() {
 	// Wire env vars: merge --env flags with --env-file.
 	envMap := make(map[string]string)
 	if envFile != "" {
-		loaded, err := parseSecretFile(envFile) // same format: NAME=value
+		loaded, err := hostres.ParseEnvFile(envFile) // same format: NAME=value
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "load env file: %v\n", err)
 			os.Exit(1)
@@ -239,9 +286,18 @@ func main() {
 	for k, v := range envVars {
 		envMap[k] = v
 	}
+	if _, ok := envMap[workerKeyEnv]; ok {
+		fmt.Fprintf(os.Stderr, "%s must not be set via --env/--env-file: it would be injected into every tool\n", workerKeyEnv)
+		os.Exit(1)
+	}
 	if len(envMap) > 0 {
 		cfg.EnvVars = envMap
-		logger.Info("loaded env vars", "vars", envMap)
+		// Names only: values may still be sensitive.
+		names := make([]string, 0, len(envMap))
+		for k := range envMap {
+			names = append(names, k)
+		}
+		logger.Info("loaded env vars", "names", names)
 	}
 
 	// Default worker name to hostname.
@@ -356,95 +412,6 @@ func parsePathMap(s string) map[string]string {
 		}
 	}
 	return result
-}
-
-// stringSliceFlag implements flag.Value to allow repeated flags like --extra-bind /a --extra-bind /b.
-// Each value is also split on commas, so --extra-bind /a,/b works too.
-type stringSliceFlag struct {
-	values *[]string
-}
-
-func (f *stringSliceFlag) String() string {
-	if f.values == nil {
-		return ""
-	}
-	return strings.Join(*f.values, ",")
-}
-
-func (f *stringSliceFlag) Set(val string) error {
-	for _, p := range strings.Split(val, ",") {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			*f.values = append(*f.values, p)
-		}
-	}
-	return nil
-}
-
-// stringMapFlag implements flag.Value to allow repeated flags like --dataset id1=path1 --dataset id2=path2.
-// Each value is also split on commas, so --dataset id1=path1,id2=path2 works too.
-type stringMapFlag struct {
-	values *map[string]string
-}
-
-func (f *stringMapFlag) String() string {
-	if f.values == nil {
-		return ""
-	}
-	var parts []string
-	for k, v := range *f.values {
-		parts = append(parts, k+"="+v)
-	}
-	return strings.Join(parts, ",")
-}
-
-func (f *stringMapFlag) Set(val string) error {
-	if *f.values == nil {
-		*f.values = make(map[string]string)
-	}
-	for _, rawPair := range strings.Split(val, ",") {
-		pair := strings.TrimSpace(rawPair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid dataset %q, expected id=path", pair)
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key == "" || value == "" {
-			return fmt.Errorf("invalid dataset %q, id and path must be non-empty", pair)
-		}
-		(*f.values)[key] = value
-	}
-	return nil
-}
-
-// parseSecretFile reads a secrets file with NAME=value lines.
-// Lines starting with # and blank lines are skipped.
-func parseSecretFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	secrets := make(map[string]string)
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key != "" {
-			secrets[key] = value
-		}
-	}
-	return secrets, nil
 }
 
 // validateInstalledRuntimes checks that each declared runtime binary actually

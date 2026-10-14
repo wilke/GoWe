@@ -68,10 +68,13 @@ type Config struct {
 	ContainerRuntime      string               // "docker", "apptainer", or "" (auto-detect)
 	NoContainer           bool                 // Force local execution even with DockerRequirement
 	ImageDir              string               // Base directory for resolving relative .sif image paths
+	ResolvedImage         string               // Apptainer: exact verified image path to launch (skips re-resolution)
 	GPU                   toolexec.GPUConfig   // GPU configuration
 	MaxCPUs               int                  // Worker max CPUs (0 = no limit)
 	MaxMemMB              int64                // Worker max memory in MiB (0 = no limit)
 	ApptainerCgroups      bool                 // System supports cgroups v2 unified
+	CgroupCPU             bool                 // cpu controller usable (Apptainer --cpus)
+	CgroupMemory          bool                 // memory controller usable (Apptainer --memory)
 	DockerHostPathMap     map[string]string    // Container path -> host path for DinD
 	DockerVolume          string               // Named Docker volume shared with tool containers
 	ResolveSecondary      bool                 // Resolve secondary files from tool definitions
@@ -81,6 +84,9 @@ type Config struct {
 	ExtraBinds            []toolexec.ExtraBind // Extra bind mounts for containers (pre-staged datasets, admin paths)
 	SecretEnvVars         map[string]string    // Secret env vars injected into containers (never logged, delivered via cmd.Env not argv)
 	EnvVars               map[string]string    // Non-secret env vars injected into containers
+	PreserveEnv           []string             // Host env var names local tools may inherit besides the allow-list
+	InheritHostEnv        bool                 // Local tools inherit the full host env (degraded; default is an allow-list)
+	ApptainerNoContainall bool                 // Drop --containall from apptainer (degraded; --cleanenv is kept)
 	// SecretValues is the full set of secret name->value pairs in play for
 	// this execution (env-exposed SecretEnvVars entries plus any job-only
 	// values re-injected by ApplySecrets, e.g. a cwltool:Secrets input
@@ -151,6 +157,8 @@ func resolveResources(runtime *cwlexpr.RuntimeContext, cfg Config, tool *cwl.Com
 	// else: no limit, keep runtime default for expressions
 
 	res.ApptainerCgroups = cfg.ApptainerCgroups
+	res.CgroupCPU = cfg.CgroupCPU
+	res.CgroupMemory = cfg.CgroupMemory
 	return res, nil
 }
 
@@ -376,6 +384,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			Mode:            toolexec.ModeApptainer,
 			DockerImage:     dockerImage,
 			ImageDir:        cfg.ImageDir,
+			ResolvedImage:   cfg.ResolvedImage,
 			ContainerMounts: containerMounts,
 			DockerOutputDir: dockerOutputDir,
 			Namespaces:      cfg.Namespaces,
@@ -386,6 +395,8 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			SecretEnvVars:   cfg.SecretEnvVars,
 			EnvVars:         cfg.EnvVars,
 			MaskSecrets:     cfg.SecretValues,
+
+			ApptainerNoContainall: cfg.ApptainerNoContainall,
 		})
 
 	default:
@@ -416,6 +427,9 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			SecretEnvVars:   cfg.SecretEnvVars,
 			EnvVars:         cfg.EnvVars,
 			MaskSecrets:     cfg.SecretValues,
+
+			InheritHostEnv: cfg.InheritHostEnv,
+			PreserveEnv:    cfg.PreserveEnv,
 		})
 	}
 

@@ -4,6 +4,35 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.21.x → 0.22.0
+
+Provider-token containment (`security!:`). Do these in order:
+
+1. **Back up** `gowe.db` and the token key. Old backups still hold key-protected credentials on terminal task rows.
+2. **Worker start scripts**: switch to `--worker-key-file` (0600 file). The 0.22 worker refuses the key on argv
+   (`--worker-key`) and in the environment (`GOWE_WORKER_KEY`): both are readable by same-uid host processes. Production start
+   scripts that still pass `--worker-key "$KEY"` on argv (or export `GOWE_WORKER_KEY`) must switch before rolling, otherwise
+   the 0.22 worker exits at startup.
+3. **Upgrade the server.** At startup it clears stale credentials from terminal task rows (raw sweep, logged) and strips the
+   unblessed token request from queued pre-upgrade tasks (WARN with count; they run without the token in their
+   environment — the staging credential stays on the row for data staging, only the injection request is removed). The server
+   now refuses unblessed token requests (`400 TOOL_NOT_BLESSED`), so `genome-analysis-pipeline` fails until step 5. Do NOT bless yet.
+4. **Roll EVERY worker** in the groups the blessing will allow to 0.22 (the worker verifies the blessed image digest before injecting).
+5. **Then bless** the three helper tools: `gowe admin blessings --pending`, then
+   `gowe admin bless <workflow>/<tool> --image-file /scout/containers/python.sif` for `bvbrc-get-genome-id`,
+   `bvbrc-wait-for-pgfams`, `bvbrc-create-genome-group` (or restrict the blessing's `worker_groups` to groups already rolled).
+   Why this order: a 0.21 worker that checks out a blessed task injects the token on the old gate (no image digest check, no
+   `--containall --cleanenv`, no env allow-list, no post-task scrub).
+6. **Verify**: `/api/v1/health` shows `token_blessing: "enforce"`; submit the pipeline; `gowe_token_grants_total{outcome="granted"}`
+   increments; `denied_*` stays at zero for expected workloads.
+
+What changes for users: a tool gets the token only if its own document requests it (hints) AND it is blessed; a step cannot
+request it; job `cwl:requirements` and step-level image settings are refused on token-requesting steps; `--token-inject-groups`
+is staging-only and deprecated; worker tasks get a staging credential only when they have `ws://`/`shock://` inputs or an
+output destination (passthrough mode no longer puts the token in every task); `gowe:Execution` under `requirements` is
+rejected at registration. `--token-blessing=dev` (with `--dev-image-dir`) exists for development only and is announced loudly.
+Requeue with the retry API, not SQL.
+
 ## 0.19.x → next
 
 Server-side workspace pre-staging (`--workspace-staging server`) behavior change (#267): a

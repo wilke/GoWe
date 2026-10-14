@@ -638,6 +638,11 @@ var templates = map[string]string{
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
+    {{if .TokenBlessingDev}}
+    <div class="bg-red-600 text-white text-center text-sm font-semibold px-4 py-2" role="alert">
+        DEV MODE (--token-blessing=dev): tools that request your provider token receive it WITHOUT an administrator blessing. Do not run production workloads on this server.
+    </div>
+    {{end}}
     {{if .Session}}
     <nav class="bg-white shadow-sm border-b">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -2381,6 +2386,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
@@ -2549,6 +2555,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
@@ -2886,6 +2893,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
@@ -2994,6 +3002,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Tasks</a>

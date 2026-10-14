@@ -140,6 +140,28 @@ var schema = []string{
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_keys_hash ON worker_keys(key_hash)`,
 
+	// Tool blessings: administrator decisions that a tool (by content hash)
+	// may receive the user's token. Rows are never deleted; revocation sets
+	// revoked_at. At most one active blessing per tool hash.
+	`CREATE TABLE IF NOT EXISTS blessed_tools (
+		id             TEXT PRIMARY KEY,
+		tool_hash      TEXT NOT NULL,
+		tool_name      TEXT NOT NULL DEFAULT '',
+		env_names      TEXT NOT NULL DEFAULT '[]',
+		worker_groups  TEXT NOT NULL DEFAULT '[]',
+		image_ref      TEXT NOT NULL DEFAULT '',
+		image_sha256s  TEXT NOT NULL DEFAULT '[]',
+		blessed_by     TEXT NOT NULL DEFAULT '',
+		blessed_at     TEXT NOT NULL,
+		note           TEXT NOT NULL DEFAULT '',
+		summary        TEXT NOT NULL DEFAULT '{}',
+		revoked_at     TEXT,
+		revoked_by     TEXT NOT NULL DEFAULT '',
+		revoke_reason  TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_blessed_tools_active ON blessed_tools(tool_hash) WHERE revoked_at IS NULL`,
+	`CREATE INDEX IF NOT EXISTS idx_blessed_tools_hash ON blessed_tools(tool_hash)`,
+
 	// Linked providers for multi-provider authentication
 	`CREATE TABLE IF NOT EXISTS linked_providers (
 		user_id   TEXT NOT NULL,
@@ -283,6 +305,13 @@ var alterStatements = []struct {
 		table:    "workers",
 		column:   "version",
 		alterSQL: "ALTER TABLE workers ADD COLUMN version TEXT NOT NULL DEFAULT ''",
+	},
+	// Worker key binding: id of the worker key that registered the worker
+	// ('' = legacy row, adopted on first authorized touch).
+	{
+		table:    "workers",
+		column:   "key_id",
+		alterSQL: "ALTER TABLE workers ADD COLUMN key_id TEXT NOT NULL DEFAULT ''",
 	},
 	// Output destination for workspace result uploads
 	{

@@ -51,6 +51,8 @@ type ResourceConfig struct {
 	Cores            int   // Effective CPU cores for this task
 	RamMB            int64 // Effective memory in MiB for this task
 	ApptainerCgroups bool  // System supports cgroups v2 unified (Apptainer --memory/--cpus)
+	CgroupCPU        bool  // cpu controller usable: gate for Apptainer --cpus
+	CgroupMemory     bool  // memory controller usable: gate for Apptainer --memory
 }
 
 // ExtraBind represents an additional bind mount for container execution.
@@ -108,6 +110,12 @@ type Options struct {
 	// it is resolved relative to this directory.
 	ImageDir string
 
+	// ResolvedImage, when non-empty, is the exact image reference passed to
+	// Apptainer instead of ResolveApptainerImage(DockerImage, ImageDir). The
+	// worker sets it to the symlink-resolved path whose sha256 it verified
+	// against the blessed digests, so verification and launch use the same file.
+	ResolvedImage string
+
 	// GPU configuration for container execution.
 	GPU GPUConfig
 
@@ -141,6 +149,21 @@ type Options struct {
 	// never for container delivery. Falls back to SecretEnvVars when unset
 	// so callers that only ever set SecretEnvVars keep working.
 	MaskSecrets map[string]string
+
+	// InheritHostEnv restores the pre-hardening behavior for ModeLocal: the
+	// tool process inherits the full host environment instead of the
+	// allow-list built by baseToolEnv. Degraded mode (worker
+	// --inherit-host-env).
+	InheritHostEnv bool
+
+	// PreserveEnv names host variables that ModeLocal tools may inherit in
+	// addition to the allow-list (cwl-runner --preserve-environment).
+	PreserveEnv []string
+
+	// ApptainerNoContainall drops --containall (but keeps --cleanenv) from
+	// the apptainer command line, for hosts without PID/mount namespace
+	// support. Degraded mode (worker --apptainer-no-containall).
+	ApptainerNoContainall bool
 }
 
 // Executor executes CWL CommandLineTools.

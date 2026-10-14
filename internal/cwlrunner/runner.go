@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/me/gowe/internal/toolexec"
 	"io"
 	"log/slog"
 	"math"
@@ -42,6 +43,24 @@ type Runner struct {
 	ImageDir         string // Base directory for resolving relative .sif image paths
 	OutputFormat     string // "json" or "yaml"
 	ProcessID        string // specific process ID to run from $graph document
+
+	// PreserveEnv lists host environment variable names that tools run
+	// directly on the host may inherit in addition to the allow-list;
+	// PreserveEntireEnv passes the whole host environment (cwltool parity).
+	PreserveEnv       []string
+	PreserveEntireEnv bool
+
+	// ExtraBinds are host paths bind-mounted read-write into every container
+	// at the same path (--pre-stage-dir, --dataset, --extra-bind; resolved by
+	// internal/hostres, same as the worker). No-op for host-mode tools.
+	ExtraBinds []toolexec.ExtraBind
+
+	// EnvVars are non-secret variables injected into every tool's
+	// environment, container and host mode alike (--env, --env-file). Same
+	// precedence as the worker: they are applied after EnvVarRequirement, so
+	// they override a same-named requirement entry; HOME and TMPDIR are
+	// rejected by the CLI because the CWL spec fixes them.
+	EnvVars map[string]string
 
 	// Parallel execution configuration.
 	Parallel ParallelConfig
@@ -410,6 +429,10 @@ func (r *Runner) executeToolWithStepID(ctx context.Context, graph *cwl.GraphDocu
 		JobRequirements:  r.jobRequirements,
 		OutDir:           r.OutDir,
 		InputValidation:  r.InputValidation,
+		PreserveEnv:      r.PreserveEnv,
+		InheritHostEnv:   r.PreserveEntireEnv,
+		ExtraBinds:       r.ExtraBinds,
+		EnvVars:          r.EnvVars,
 	}
 
 	result, execErr := cwltool.ExecuteTool(ctx, cfg, tool, inputs, workDir)

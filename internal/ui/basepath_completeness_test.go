@@ -214,6 +214,7 @@ func TestBasePathCompleteness(t *testing.T) {
 		"admin/fleet":            "/admin/fleet",
 		"admin/keys":             "/admin/worker-keys",
 		"admin/outputs":          "/admin/outputs",
+		"admin/blessings":        "/admin/tool-blessings",
 		"error (workflow 404)":   "/workflows/does-not-exist",
 		"error (submission 404)": "/submissions/does-not-exist",
 	}

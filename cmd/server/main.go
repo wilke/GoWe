@@ -63,7 +63,9 @@ func main() {
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
-	tokenInjectGroups := flag.String("token-inject-groups", "", "Comma-separated worker groups whose tasks auto-receive the submitter's provider token without the per-tool inject_bvbrc_token opt-in (e.g. bvbrc,esmfold). Empty = opt-in only")
+	tokenInjectGroups := flag.String("token-inject-groups", "", "DEPRECATED, staging-only: comma-separated worker groups whose tasks receive the submitter's provider token as a staging credential. It no longer injects the token into any tool environment (that needs the tool to request it AND an administrator blessing); worker tasks now get the staging credential by need, so this flag is unnecessary")
+	tokenBlessing := flag.String("token-blessing", "enforce", "Provider-token policy: 'enforce' (default) injects the token into a tool's environment only if the tool requests it AND an administrator blessed its exact content (gowe admin bless); 'dev' ALSO grants it to unblessed tools (loud: WARN on every grant, banner in the UI, warning on submissions, token_blessing=dev in /api/v1/health) so development workflows run end to end")
+	devImageDir := flag.String("dev-image-dir", "", "Dev mode only: directory relative .sif images of unblessed token-requesting tools are resolved against to pin the image digest the worker verifies. Without it (or for non-.sif images) an unblessed grant is denied")
 
 	// Metrics options
 	metricsAddr := flag.String("metrics-addr", "", "Listen address for a second, unauthenticated HTTP server exposing only /metrics (Prometheus); empty disables metrics entirely. Bind to localhost or a private interface — this endpoint has no auth")
@@ -233,6 +235,22 @@ func main() {
 		// Fail closed: no key, no explicit opt-in.
 		st.ConfigureTokenEncryption(nil, true)
 		logger.Warn("no token-encryption key configured; delegated submissions carrying a provider token will be refused — set GOWE_TOKEN_KEY (or pass --allow-plaintext-tokens to allow plaintext)")
+	}
+
+	// F11 sweep: clear delegated credentials and delivered secrets left on
+	// terminal task rows by earlier versions. Runs on the raw stored JSON (no
+	// decryption, so rows encrypted under an old key are cleared too), after
+	// the plaintext re-encryption pass above; idempotent, log-and-continue.
+	if n, serr := st.ScrubTerminalTaskCredentialsRaw(context.Background()); serr != nil {
+		logger.Error("scrubbing credentials from terminal task rows failed (continuing)", "error", serr)
+	} else if n > 0 {
+		logger.Info("cleared stale credentials from terminal task rows", "rows", n)
+	}
+
+	if n, serr := st.ClearUnblessedInjectRaw(context.Background()); serr != nil {
+		logger.Error("clearing unblessed token requests from queued tasks failed (continuing)", "error", serr)
+	} else if n > 0 {
+		logger.Warn("pre-upgrade tasks had their unblessed token request cleared; they run without the token", "tasks", n)
 	}
 
 	// Create executor registry and register executors.
@@ -493,7 +511,24 @@ func main() {
 		}
 	}
 	if len(schedCfg.TokenInjectGroups) > 0 {
-		logger.Info("token auto-injection enabled for worker groups", "groups", schedCfg.TokenInjectGroups)
+		logger.Warn("--token-inject-groups is DEPRECATED and staging-only: it no longer injects the token into tool environments (requires the tool to request it and an administrator blessing); worker tasks receive the staging credential by need. Remove the flag.",
+			"groups", schedCfg.TokenInjectGroups)
+	}
+	switch *tokenBlessing {
+	case scheduler.TokenBlessingEnforce, scheduler.TokenBlessingDev:
+		schedCfg.TokenBlessing = *tokenBlessing
+	default:
+		fmt.Fprintf(os.Stderr, "invalid --token-blessing %q: want enforce or dev\n", *tokenBlessing)
+		os.Exit(2)
+	}
+	schedCfg.DevImageDir = *devImageDir
+	serverOpts = append(serverOpts, server.WithTokenBlessingMode(schedCfg.TokenBlessing))
+	if schedCfg.TokenBlessing == scheduler.TokenBlessingDev {
+		logger.Warn("DEV MODE: --token-blessing=dev: tools that request the user's provider token are granted it WITHOUT an administrator blessing. Never use this on a production server.",
+			"dev_image_dir", *devImageDir)
+	} else if *devImageDir != "" {
+		fmt.Fprintln(os.Stderr, "--dev-image-dir requires --token-blessing=dev")
+		os.Exit(2)
 	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 	sched.SetMetrics(metricsReg)

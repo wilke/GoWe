@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -31,11 +32,16 @@ func (r *Bare) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	cmd := exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
 	cmd.Dir = spec.WorkDir
 
-	// Set environment variables.
-	if len(spec.Env) > 0 {
-		for k, v := range spec.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	// Set environment variables. A nil cmd.Env would inherit the whole host
+	// environment (worker secrets included), so always start from the
+	// allow-listed base unless the degraded InheritHostEnv mode is on.
+	if spec.InheritHostEnv {
+		cmd.Env = os.Environ()
+	} else {
+		cmd.Env = BaseHostEnv(spec.GPU.Enabled)
+	}
+	for k, v := range spec.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer

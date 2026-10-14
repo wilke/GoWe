@@ -137,9 +137,9 @@ End-to-end CGA → CodonTree + cgMLST + WG-SNP pipeline. Verified working on H37
 
 ### Scheduler/Executor Fixes (June 2026 work)
 
-- **Token propagation (`f6deb8b`)**: `addUserToken` skipped embedding `sub.UserToken` whenever `--workspace-staging server` was on, unless the task had `inject_bvbrc_token`. BV-BRC executor tasks fell through and used the server's default token, making jobs run under the wrong identity. Fix: also embed when `task.ExecutorType == ExecutorTypeBVBRC`.
+- **Token propagation (`f6deb8b`, superseded)**: BV-BRC executor tasks carry the submitter's token (header only). Since 0.22 the rule for worker tasks is need-based staging credential + admin-blessed injection; see SPECIFICATION.md §13.5.
 - **Scatter task inputs (`baa9903`)**: scatter dispatch only set `task.Job = combo`, leaving `task.Inputs` empty. BV-BRC executor reads from `Inputs`. Fix: set both in scatter and when-skipped paths.
-- **`inject_bvbrc_token` hint**: new `gowe:Execution.inject_bvbrc_token: true` makes the worker inject `BVBRC_TOKEN` env var for worker-executed tools that call BV-BRC APIs (used by the 3 utility tools above).
+- **`inject_bvbrc_token` hint**: `gowe:Execution.inject_bvbrc_token: true` in a tool's `hints` asks for `BVBRC_TOKEN`/`KB_AUTH_TOKEN` in the tool environment. Since 0.22 it is honoured only for an admin-blessed tool (exact content + pinned image) on the worker executor; a step cannot request it. Used by the 3 utility tools above, which must be blessed (`gowe admin bless`).
 - **Workflow naming (`baa9903`)**: packed `$graph` workflows got synthetic `id: "main"`. Fix: prefer `label:` field, then slugified `doc:` first line; always pass explicit `name` in registration JSON.
 
 ### Homology / blast-protein-search Fixes (June 2026 work)
@@ -205,7 +205,7 @@ End-to-end CGA → CodonTree + cgMLST + WG-SNP pipeline. Verified working on H37
 - `CoreGenomeMLST`, `WholeGenomeSNPAnalysis`
 - `Homology` (BLAST; `output_path: string`)
 
-### Worker Utility Tools (with `inject_bvbrc_token: true`)
+### Worker Utility Tools (request `inject_bvbrc_token`; must be blessed)
 - `bvbrc-get-genome-id` — extract genome_id from workspace autometadata
 - `bvbrc-wait-for-pgfams` — poll until PGFam features indexed in solr
 - `bvbrc-create-genome-group` — programmatically create genome groups

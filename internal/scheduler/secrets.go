@@ -192,6 +192,7 @@ func (l *Loop) failTaskPreDispatch(ctx context.Context, task *model.Task, si *mo
 	task.Stderr = reason
 	task.CompletedAt = &now
 	task.MaxRetries = task.RetryCount
+	task.RuntimeHints.ScrubSecrets() // never persist a half-attached credential
 	if err := l.store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}

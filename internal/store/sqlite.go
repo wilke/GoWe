@@ -1606,6 +1606,17 @@ const taskColumns = `id, submission_id, step_id, step_instance_id, state, execut
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
 	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms`
 
+// checkInjectBlessed refuses to persist a non-terminal task that asks for the
+// user's token to be injected into the tool environment without naming the
+// blessing that authorised it (model.ErrUnblessedInject). Terminal tasks are
+// exempt so a failed/cancelled row can always be written.
+func checkInjectBlessed(task *model.Task) error {
+	if h := task.RuntimeHints; h != nil && h.InjectBVBRCToken && h.TokenBlessingID == "" && !task.State.IsTerminal() {
+		return fmt.Errorf("task %s: %w", task.ID, model.ErrUnblessedInject)
+	}
+	return nil
+}
+
 // insertTask marshals the task (including runtime-hint encryption) and runs
 // the shared INSERT on the given execer. It is the single insert path behind
 // CreateTask and CreateTasksAndDispatchStep so both persist the same field
@@ -1630,6 +1641,9 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 	jobJSON, err := json.Marshal(task.Job)
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
+	}
+	if err := checkInjectBlessed(task); err != nil {
+		return err
 	}
 	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
@@ -1795,6 +1809,9 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 	jobJSON, err := json.Marshal(task.Job)
 	if err != nil {
 		return 0, fmt.Errorf("marshal job: %w", err)
+	}
+	if err := checkInjectBlessed(task); err != nil {
+		return 0, err
 	}
 	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
@@ -2451,12 +2468,12 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
-		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version,
+		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version, w.KeyID,
 	)
 	return err
 }
@@ -2469,10 +2486,10 @@ func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, 
 	var gpuEnabled int
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
 		 FROM workers WHERE id = ?`, id,
 	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version)
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2549,12 +2566,35 @@ func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
 	return nil
 }
 
+// AdoptWorkerKey binds a legacy worker row (key_id = ”) to keyID. It is a
+// compare-and-set: it reports true only when this call performed the binding,
+// so two concurrent adopters cannot both win.
+func (s *SQLiteStore) AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error) {
+	s.logger.Debug("sql", "op", "update", "table", "workers", "id", id, "col", "key_id")
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET key_id = ? WHERE id = ? AND key_id = ''`, keyID, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ListWorkersByKey returns the workers bound to the given worker key id.
+func (s *SQLiteStore) ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "WHERE key_id = ?", keyID)
+}
+
 func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "")
+}
+
+func (s *SQLiteStore) listWorkers(ctx context.Context, where string, args ...any) ([]*model.Worker, error) {
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
-		 FROM workers ORDER BY registered_at`)
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
+		 FROM workers `+where+` ORDER BY registered_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2567,7 +2607,7 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 		var gpuEnabled int
 
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID); err != nil {
 			return nil, err
 		}
 
@@ -2642,6 +2682,9 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	rows, err := tx.QueryContext(ctx,
 		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
+		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
+		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)
 		 ORDER BY priority DESC, created_at LIMIT 10`)
 	if err != nil {
 		return nil, err
@@ -2882,7 +2925,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	// Find stale workers first.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
+		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
 		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
 	if err != nil {
 		return nil, err
@@ -2895,7 +2938,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 		var gpuEnabled int
 		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
+			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID); err != nil {
 			return nil, err
 		}
 		w.State = model.WorkerState(state)

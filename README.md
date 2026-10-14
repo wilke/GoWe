@@ -344,6 +344,10 @@ cwl-runner workflow.cwl job.json
 gowe run --server http://localhost:8080 workflow.cwl job.json
 ```
 
+Tools that `cwl-runner` runs directly on the host no longer inherit the host environment (PYTHONPATH, conda,
+proxies, ...): they get `PATH`, `LANG`, `LC_*`, `TZ`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `HOME` and `TMPDIR`. Pass
+more with `--preserve-environment NAME` (repeatable), `--preserve-entire-environment`, or an `EnvVarRequirement`.
+
 Flags: `--outdir`, `--no-upload`, `--timeout` (default 5m), `-q/--quiet`.
 
 ### Submit and admin flags
@@ -448,7 +452,9 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `--server` | `http://localhost:8080` | Server URL |
 | `--name` | hostname | Worker name |
 | `--group` | `default` | Worker group for task routing |
-| `--worker-key` | `""` | Shared secret for server authentication |
+| `--worker-key-file` | `""` | File (mode 0600) holding the worker key; required (key file only). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused: both are readable by same-uid host processes |
+| `--inherit-host-env` | `false` | Degraded: host-run tools inherit the worker's full environment |
+| `--apptainer-no-containall` | `false` | Degraded: run Apptainer without `--containall` (`--cleanenv` is kept) |
 | `--runtime` | `none` | `docker`, `apptainer`, `none` |
 | `--workdir` | `$TMPDIR/gowe-worker` | Working directory |
 | `--stage-out` | `local` | Output staging: `local`, `file://`, `s3://`, `shock://` |
@@ -520,7 +526,7 @@ hints:
 Workers can be organized into groups for targeted scheduling:
 
 ```bash
-gowe-worker --server http://localhost:8080 --group gpu-workers --worker-key $SECRET
+gowe-worker --server http://localhost:8080 --group gpu-workers --worker-key-file /etc/gowe/worker.key
 ```
 
 Configure allowed groups per key:

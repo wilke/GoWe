@@ -23,6 +23,7 @@ const adminFleetTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
@@ -63,7 +64,8 @@ const adminFleetTemplate = `{{define "content"}}
                             <span class="text-sm text-gray-700">{{.State}}</span>
                         </span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" title="{{.ID}}">{{.Name}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" title="{{.ID}}">{{.Name}}{{if or (eq (index .Labels "inherit_host_env") "true") (eq (index .Labels "apptainer_containall") "false")}}
+                        <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800" title="Reduced tool isolation:{{if eq (index .Labels "inherit_host_env") "true"}} inherit_host_env{{end}}{{if eq (index .Labels "apptainer_containall") "false"}} no-containall{{end}}">degraded</span>{{end}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Group}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Runtime}}</td>
                     <td class="px-6 py-4 whitespace-nowrap">
@@ -106,6 +108,7 @@ const adminKeysTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
@@ -218,6 +221,7 @@ const adminOutputsTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
         <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>

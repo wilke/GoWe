@@ -24,6 +24,8 @@ import (
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/toolhash"
+	"github.com/me/gowe/internal/toolmerge"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -54,12 +56,23 @@ type Config struct {
 	ForceExecutor    string // Force all tasks to this executor, ignoring CWL hints. Empty = respect hints.
 	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 
-	// TokenInjectGroups lists worker groups whose tasks automatically receive the
-	// submitter's provider token, without the per-tool gowe:Execution.inject_bvbrc_token
-	// opt-in. This scopes the auto-injection to operator-trusted groups (e.g. curated
-	// BV-BRC tool workers) while default/untrusted groups stay opt-in (least privilege,
-	// SPECIFICATION.md §13.5, ADR-0010). Empty = no group auto-injection.
+	// TokenInjectGroups lists worker groups whose tasks receive the submitter's
+	// provider token as a STAGING credential (so the worker can fetch ws:// /
+	// shock:// inputs and upload outputs). DEPRECATED and staging-only: it can
+	// no longer cause the token to be injected into a tool's environment —
+	// that requires the tool to request it and an administrator blessing
+	// (credentials.go, SPECIFICATION.md §13.5). Need-based delivery makes the
+	// flag unnecessary. Empty = none.
 	TokenInjectGroups []string
+
+	// TokenBlessing is the --token-blessing mode: TokenBlessingEnforce
+	// (default when empty) or TokenBlessingDev.
+	TokenBlessing string
+
+	// DevImageDir is --dev-image-dir: the directory relative .sif image refs
+	// are resolved against to pin the image digest of an unblessed tool's
+	// grant in dev mode. Ignored in enforce mode.
+	DevImageDir string
 
 	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
 	// when no online worker can satisfy its requirements. After this many ticks,
@@ -962,11 +975,10 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		return l.updateStepInstance(ctx, si)
 	}
 
-	// Add user token.
-	l.addUserToken(task, sub)
-
-	// Attach opted-in submission secrets / re-inject cwltool:Secrets inputs.
-	if err := l.addSecrets(task, sub, step.Hints, wf); err != nil {
+	// Credential policy: token grant (blessing check), user token for
+	// staging, opted-in submission secrets. A denial fails the task
+	// pre-dispatch — a task that expected the token never runs without it.
+	if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
 		return l.failTaskPreDispatch(ctx, task, si, err.Error())
 	}
 
@@ -1164,10 +1176,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task.Job = combo
 		task.Inputs = combo
 
-		l.addUserToken(task, sub)
-
-		// Attach opted-in submission secrets / re-inject cwltool:Secrets inputs.
-		if err := l.addSecrets(task, sub, step.Hints, wf); err != nil {
+		if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
 			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
 		}
 
@@ -1639,13 +1648,9 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 			}
 			task.RuntimeHints.RequiresGPU = true
 		}
-		// Propagate BV-BRC token injection hint.
-		if step.Hints.InjectBVBRCToken {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			task.RuntimeHints.InjectBVBRCToken = true
-		}
+		// The token request is NOT propagated from step hints: only
+		// attachCredentials (credentials.go) may set InjectBVBRCToken, and only
+		// for a blessed tool that itself requests it.
 		// Propagate dataset requirements from step hints to task runtime hints.
 		if len(step.Hints.RequiredDatasets) > 0 {
 			if task.RuntimeHints == nil {
@@ -1848,72 +1853,6 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 // hasOnlineWorkers checks if any workers are currently online.
 func (l *Loop) hasOnlineWorkers() bool {
 	return l.workerCapabilities().OnlineCount > 0
-}
-
-// addUserToken adds user authentication token to task runtime hints.
-// BV-BRC executor tasks always receive the submitter's token so that tools
-// can make authenticated downstream calls (workspace, AppService). For other
-// executor types (including worker), the token is only embedded when
-// server-side workspace staging is disabled (wsStager == nil), the step has
-// the InjectBVBRCToken hint, or the task's worker group is opted into
-// automatic injection via --token-inject-groups (SPECIFICATION.md §13.5,
-// #133). The worker itself only ever injects BVBRC_TOKEN/KB_AUTH_TOKEN into a
-// tool's environment when RuntimeHints.InjectBVBRCToken is set, so a
-// group-policy grant is mirrored onto that hint here — otherwise the token
-// would be embedded in the task row but never reach the tool's environment.
-// groupAutoInjectsToken reports whether a worker task's target group is one the
-// operator has opted into automatic token injection via --token-inject-groups.
-// Tasks in other groups (including the default group) get the token only when
-// they explicitly opt in (gowe:Execution.inject_bvbrc_token) — preserving the
-// least-privilege boundary in SPECIFICATION.md §13.5 for untrusted tools.
-func (l *Loop) groupAutoInjectsToken(task *model.Task) bool {
-	if len(l.config.TokenInjectGroups) == 0 {
-		return false
-	}
-	group := "default"
-	if task.RuntimeHints != nil && task.RuntimeHints.WorkerGroup != "" {
-		group = task.RuntimeHints.WorkerGroup
-	}
-	for _, g := range l.config.TokenInjectGroups {
-		if g == group {
-			return true
-		}
-	}
-	return false
-}
-
-func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
-	groupOptIn := task.ExecutorType == model.ExecutorTypeWorker && l.groupAutoInjectsToken(task)
-	needsToken := l.wsStager == nil ||
-		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
-		task.ExecutorType == model.ExecutorTypeBVBRC ||
-		groupOptIn
-	if sub.UserToken != "" && needsToken {
-		if task.RuntimeHints == nil {
-			task.RuntimeHints = &model.RuntimeHints{}
-		}
-		if task.RuntimeHints.StagerOverrides == nil {
-			task.RuntimeHints.StagerOverrides = &model.StagerOverrides{}
-		}
-		task.RuntimeHints.StagerOverrides.HTTPCredential = &model.HTTPCredential{
-			Type:  "bearer",
-			Token: sub.UserToken,
-		}
-		// A group-policy grant must also flip the hint the worker enforces
-		// (internal/worker/worker.go), otherwise the token lands in the task
-		// row but the worker never injects it into the tool's environment.
-		if groupOptIn {
-			task.RuntimeHints.InjectBVBRCToken = true
-		}
-	}
-
-	// Propagate output destination so workers can stage outputs to the right place.
-	if sub.OutputDestination != "" {
-		if task.RuntimeHints == nil {
-			task.RuntimeHints = &model.RuntimeHints{}
-		}
-		task.RuntimeHints.OutputDestination = sub.OutputDestination
-	}
 }
 
 // scrubTaskToken removes the user authentication token and any delivered
@@ -2228,19 +2167,13 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.StageInMs = nil
 		task.StageOutMs = nil
 
-		// Re-attach secrets scrubbed off this task at its prior terminal
-		// (FAILED) state: scrubTaskToken/ScrubSecrets clears
-		// RuntimeHints.Secrets but keeps the SecretInputs/SecretEnvNames
-		// metadata, so a task that expected secrets is easy to detect here.
-		// Without this, a retried task resubmits with no secret values at
-		// all — reproducing exactly the silent-failure/hard-failure classes
-		// #260 exists to prevent, just on the second attempt instead of the
-		// first.
-		if task.RuntimeHints != nil && (len(task.RuntimeHints.SecretEnvNames) > 0 || len(task.RuntimeHints.SecretInputs) > 0) {
-			if failed := l.reattachSecretsForRetry(ctx, task); failed {
-				affected[task.SubmissionID] = true
-				continue
-			}
+		// Re-run the whole credential policy for the retry: the previous
+		// attempt's terminal scrub cleared the delivered token and secrets,
+		// and the blessing must be re-checked (it may have been revoked
+		// since). See reattachCredentialsForRetry.
+		if failed := l.reattachCredentialsForRetry(ctx, task); failed {
+			affected[task.SubmissionID] = true
+			continue
 		}
 
 		l.logger.Info("retrying task", "task_id", task.ID, "attempt", task.RetryCount)
@@ -2251,42 +2184,54 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 	return nil
 }
 
-// reattachSecretsForRetry re-runs addSecrets on a task being resubmitted out
-// of RETRYING, using the same sub/step/wf lookups the original dispatch used.
-// It resets the task's SecretInputs/SecretEnvNames metadata first so a
-// second (or third...) retry does not accumulate duplicate entries from the
-// still-present pre-scrub metadata. Returns true when the task could not be
-// re-attached (submission/workflow/step unavailable, or the secret itself is
-// missing) — in that case the task has already been persisted FAILED
+// reattachCredentialsForRetry re-runs attachCredentials on a task being
+// resubmitted out of RETRYING, using the same sub/step/wf lookups the original
+// dispatch used. It resets the task's SecretInputs/SecretEnvNames metadata
+// first so a second (or third...) retry does not accumulate duplicate entries
+// from the still-present pre-scrub metadata; the token grant is recomputed
+// from scratch (a revoked blessing now fails the retry). Returns true when the
+// task could not be re-attached (submission/workflow unavailable, a denial, or
+// a missing secret) — in that case the task has already been persisted FAILED
 // (mirroring failTaskPreDispatch) and the caller must not call
 // submitAndUpdateTask.
-func (l *Loop) reattachSecretsForRetry(ctx context.Context, task *model.Task) bool {
+//
+// Tasks that carry no credentials and cannot need any (no secrets metadata, no
+// grant, not BV-BRC/worker) are left untouched so a retry never depends on the
+// submission still being loadable for them.
+func (l *Loop) reattachCredentialsForRetry(ctx context.Context, task *model.Task) bool {
+	expects := task.ExecutorType == model.ExecutorTypeBVBRC || task.ExecutorType == model.ExecutorTypeWorker
+	if h := task.RuntimeHints; h != nil &&
+		(len(h.SecretEnvNames) > 0 || len(h.SecretInputs) > 0 || h.InjectBVBRCToken || h.TokenBlessingID != "") {
+		expects = true
+	}
+	if !expects {
+		return false
+	}
 	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
 	if err != nil || sub == nil {
-		l.logger.Error("retry: load submission to re-attach secrets", "task_id", task.ID, "error", err)
-		return l.failRetryingTaskNow(ctx, task, "retry: submission unavailable to re-attach secrets")
+		l.logger.Error("retry: load submission to re-attach credentials", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, "retry: submission unavailable to re-attach credentials")
 	}
 	wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
 	if err != nil || wf == nil {
-		l.logger.Error("retry: load workflow to re-attach secrets", "task_id", task.ID, "error", err)
-		return l.failRetryingTaskNow(ctx, task, "retry: workflow unavailable to re-attach secrets")
+		l.logger.Error("retry: load workflow to re-attach credentials", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, "retry: workflow unavailable to re-attach credentials")
 	}
-	var hints *model.StepHints
-	if step := findStep(wf, task.StepID); step != nil {
-		hints = step.Hints
-	}
+	step := findStep(wf, task.StepID)
 
-	task.RuntimeHints.SecretInputs = nil
-	task.RuntimeHints.SecretEnvNames = nil
-	if err := l.addSecrets(task, sub, hints, wf); err != nil {
-		l.logger.Error("retry: re-attach secrets failed", "task_id", task.ID, "error", err)
+	if task.RuntimeHints != nil {
+		task.RuntimeHints.SecretInputs = nil
+		task.RuntimeHints.SecretEnvNames = nil
+	}
+	if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
+		l.logger.Error("retry: re-attach credentials failed", "task_id", task.ID, "error", err)
 		return l.failRetryingTaskNow(ctx, task, err.Error())
 	}
 	return false
 }
 
 // failRetryingTaskNow terminalizes a SCHEDULED (claimed-for-retry) task as
-// FAILED with no further retries, for use when reattachSecretsForRetry
+// FAILED with no further retries, for use when reattachCredentialsForRetry
 // cannot proceed. Mirrors failTaskPreDispatch's task-side effects; unlike
 // that helper it has no step instance in hand, so it persists through
 // persistSubmitOutcome (TerminalizeTask), same as submitAndUpdateTask's own
@@ -2297,6 +2242,7 @@ func (l *Loop) failRetryingTaskNow(ctx context.Context, task *model.Task, reason
 	task.Stderr = reason
 	task.CompletedAt = &now
 	task.MaxRetries = task.RetryCount
+	task.RuntimeHints.ScrubSecrets() // never persist a half-attached credential
 	l.persistSubmitOutcome(ctx, task)
 	return true
 }
@@ -3244,12 +3190,10 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		normalizedID := strings.TrimPrefix(id, "#")
 		if normalizedID == toolID || id == toolID {
 			// Convert cwl.CommandLineTool to map[string]any via JSON.
-			data, err := json.Marshal(clt)
+			var err error
+			tool, err = toolmerge.StructToToolMap(clt)
 			if err != nil {
-				return fmt.Errorf("marshal tool: %w", err)
-			}
-			if err := json.Unmarshal(data, &tool); err != nil {
-				return fmt.Errorf("unmarshal tool: %w", err)
+				return err
 			}
 			runtimeHints = extractRuntimeHintsFromCWLTool(clt)
 			break
@@ -3327,11 +3271,11 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 
 	// Merge workflow-level and step-level requirements into the tool.
 	// CWL spec priority: job requirements > tool requirements > step requirements > workflow requirements.
-	mergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
+	toolmerge.MergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
 
 	// Merge cwl:requirements from the job input document (highest priority).
 	if jobReqs, ok := submissionInputs["cwl:requirements"].([]any); ok {
-		mergeJobRequirementsIntoTool(tool, jobReqs)
+		toolmerge.MergeJobRequirementsIntoTool(tool, jobReqs)
 	}
 
 	task.Tool = tool
@@ -3373,6 +3317,13 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		task.RuntimeHints = &model.RuntimeHints{}
 	}
 	task.RuntimeHints.InputValidation = string(l.inputValidation)
+
+	// Stamp the content digest of the FINAL post-merge tool (the map the worker
+	// parses, so it is authoritative). applyTokenGrant re-derives it at
+	// attach time; this makes it visible on every task with a tool.
+	if h, herr := toolhash.Digest(tool); herr == nil {
+		task.RuntimeHints.ToolHash = h
+	}
 
 	return nil
 }
@@ -3692,106 +3643,4 @@ func extractExpressionLibFromTool(tool map[string]any) []string {
 		}
 	}
 	return result
-}
-
-// mergeRequirementsIntoTool merges workflow-level and step-level requirements
-// into a tool map. CWL spec priority:
-//
-//	tool requirements > step requirements > workflow requirements > tool hints > step hints > workflow hints
-func mergeRequirementsIntoTool(tool map[string]any, wf *cwl.Workflow, stepID string) {
-	if wf == nil || tool == nil {
-		return
-	}
-
-	// Get or create tool requirements map.
-	toolReqs, _ := tool["requirements"].(map[string]any)
-	if toolReqs == nil {
-		toolReqs = make(map[string]any)
-	}
-
-	toolHints, _ := tool["hints"].(map[string]any)
-	if toolHints == nil {
-		toolHints = make(map[string]any)
-	}
-
-	// Look up the cwl.Step for step-level requirements.
-	var cwlStep *cwl.Step
-	if s, ok := wf.Steps[stepID]; ok {
-		cwlStep = &s
-	}
-
-	// Merge step requirements (higher priority than workflow, lower than tool).
-	if cwlStep != nil && cwlStep.Requirements != nil {
-		for key, val := range cwlStep.Requirements {
-			if _, exists := toolReqs[key]; !exists {
-				toolReqs[key] = val
-			}
-		}
-	}
-
-	// Merge workflow requirements (lowest priority among requirements).
-	if wf.Requirements != nil {
-		for key, val := range wf.Requirements {
-			if _, exists := toolReqs[key]; !exists {
-				toolReqs[key] = val
-			}
-		}
-	}
-
-	// Merge step hints.
-	if cwlStep != nil && cwlStep.Hints != nil {
-		for key, val := range cwlStep.Hints {
-			if _, exists := toolReqs[key]; !exists {
-				if _, exists := toolHints[key]; !exists {
-					toolHints[key] = val
-				}
-			}
-		}
-	}
-
-	// Merge workflow hints.
-	if wf.Hints != nil {
-		for key, val := range wf.Hints {
-			if _, exists := toolReqs[key]; !exists {
-				if _, exists := toolHints[key]; !exists {
-					toolHints[key] = val
-				}
-			}
-		}
-	}
-
-	if len(toolReqs) > 0 {
-		tool["requirements"] = toolReqs
-	}
-	if len(toolHints) > 0 {
-		tool["hints"] = toolHints
-	}
-}
-
-// mergeJobRequirementsIntoTool merges cwl:requirements from the job input document
-// into a tool map. Job requirements have the highest priority, overriding all other requirements.
-func mergeJobRequirementsIntoTool(tool map[string]any, jobReqs []any) {
-	if tool == nil || len(jobReqs) == 0 {
-		return
-	}
-
-	toolReqs, _ := tool["requirements"].(map[string]any)
-	if toolReqs == nil {
-		toolReqs = make(map[string]any)
-	}
-
-	for _, req := range jobReqs {
-		reqMap, ok := req.(map[string]any)
-		if !ok {
-			continue
-		}
-		class, _ := reqMap["class"].(string)
-		if class == "" {
-			continue
-		}
-		// Job requirements override — use class name as key.
-		toolReqs[class] = reqMap
-	}
-
-	tool["requirements"] = toolReqs
 }

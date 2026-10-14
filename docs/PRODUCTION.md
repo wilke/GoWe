@@ -103,6 +103,25 @@ NUM_WORKERS=4 LOG_LEVEL=debug ./scripts/start-server.sh
 5. Writes PIDs to `$BASE_DIR/gowe/pids/`
 6. Logs to `$BASE_DIR/gowe/logs/`
 
+### Apptainer resource limits (`--apptainer-cgroups`)
+
+A task's `runtime.cores` / `runtime.ram` become Apptainer `--cpus` / `--memory` limits when the
+host can enforce them. With the default `--apptainer-cgroups=auto` the worker checks which cgroup v2
+controllers Apptainer can use: all controllers at the cgroup root when running as root, otherwise
+those delegated to the user's systemd manager, `user@<uid>.service/cgroup.controllers`. Rootless
+Apptainer creates its scopes under that service even when the worker itself runs in an ssh
+`session-N.scope`. Check a host with
+`cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`.
+A missing controller skips only its flag and logs one WARN at startup, e.g.
+`cpu limit not enforced: cpu controller not delegated to …`; tools still receive the core count
+through `runtime.cores` (for example `--cpu $(runtime.cores)`).
+
+Many distros delegate only `memory pids` to user services. To enforce CPU limits for rootless
+workers, an admin adds `Delegate=cpu cpuset io memory pids` to a `user@.service` drop-in. Use
+`--apptainer-cgroups=on` to force both flags, or `off` to never pass them. Hosts without a unified
+cgroup v2 hierarchy (v1 or hybrid) get no limits. With `systemd cgroups = no` in `apptainer.conf`,
+rootless limits fail regardless of delegation.
+
 ## Server-side Workspace Pre-staging (`--workspace-staging server`)
 
 With `--workspace-staging server` (the production default via `start-server.sh`), the
@@ -627,11 +646,69 @@ state. Production deployments should configure it:
 # server: a JSON file of static keys (0600). Keys can also be minted per worker via the admin API.
 gowe-server ... --worker-keys /path/worker-keys.json
 #   {"keys": {"<raw-key>": {"id": "prod-shared", "groups": [], "description": "..."}}}
-# every worker:
-gowe-worker ... --worker-key "$(cat /path/worker-key.raw)"     # see #257 for a file/env option
+# every worker: the key is read from a 0600 file (preferred), NEVER from argv
+gowe-worker ... --worker-key-file /path/worker-key.raw
 ```
 
-Once keys are on, `GET /api/v1/workers` requires a worker key too. **UIs that show fleet status must use
+Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by
+same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the
+host on every worker.
+
+`--worker-key-file` must name a regular file with mode 0600 or stricter, located outside `--workdir`, `--image-dir`,
+`--pre-stage-dir` and every `--extra-bind`/`--dataset` path (tools run as the worker uid and could read it); the
+worker refuses to start otherwise.
+A non-empty `--worker-key` on the command line is **refused with no override**: argv is readable by every local
+process through `/proc/<pid>/cmdline`, including tool containers and `--runtime none` tools. Check a host with
+`ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
+`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (the key file is the only accepted source; omit it only for a keyless dev server).
+
+### Provider-token policy flags (server)
+
+| Flag | Meaning |
+|---|---|
+| `--token-blessing enforce\|dev` | Default `enforce`: a tool gets the user's token in its environment only if it requests it AND an administrator blessed its exact content (`gowe admin bless`). `dev` also grants unblessed requesting tools; loud (WARN per grant, `token_blessing:"dev"` in `/api/v1/health`, UI banner, warning on submissions). Never use in production. |
+| `--dev-image-dir DIR` | Dev mode only: resolves relative `.sif` image refs to compute the image digest the worker verifies; without it an unblessed grant is denied. |
+| `--token-inject-groups` | Deprecated, staging-only (WARN at start): no longer injects; worker tasks get a staging credential by need. Remove it. |
+
+Upgrade notes: unblessed token requests are refused (`400 TOOL_NOT_BLESSED`), so bless the `bvbrc-*` helper
+tools before submitting `genome-analysis-pipeline`, but only AFTER every worker in the groups the blessing allows is
+running 0.22 (a 0.21 worker would inject the token on the old gate: no image digest check, no `--containall --cleanenv`,
+no env allow-list, no post-task scrub); otherwise restrict the blessing's `worker_groups` to groups already rolled.
+At startup the server (1) clears stale credentials from terminal
+task rows (raw JSON sweep, logged count) and (2) removes the token request (`inject_bvbrc_token`) from NON-terminal
+rows that have no blessing id (queued by a pre-policy server), logging a WARN with the count: those tasks run
+**without** the token rather than being injected unblessed. As a second layer, `CheckoutTask` never hands such a row to a
+worker, and the store refuses to write one. Requeue via the retry API, not SQL (SQL bypasses credential attachment).
+`--dev-image-dir` without `--token-blessing=dev` is a startup error (exit 2).
+
+### Tool isolation defaults and their opt-outs (v0.21.x → next release)
+
+- **Apptainer** tools run with `--containall --cleanenv`: private PID namespace (`cat /proc/1/cmdline` inside a task
+  shows `appinit`, the worker command line is unreadable), private `/tmp` and `/var/tmp`, no implicit `$HOME`/cwd
+  mounts, and no host environment. Everything a tool needs is still bound explicitly (`--home`, `--pwd`, `/tmp`,
+  inputs, `--pre-stage-dir`/`--extra-bind`, `--nv`), and secrets keep arriving via `APPTAINERENV_*`.
+  Hosts without PID/mount namespace support (some non-setuid HPC installs) can opt out of `--containall` only with
+  `--apptainer-no-containall` (`--cleanenv` is kept). The worker logs a WARN and registers the label
+  `apptainer_containall=false`. Run a `--nv` job after rolling a GPU worker.
+- **Local / `--runtime none` tools** (and the legacy `_base_command` bare runtime) get an allow-listed environment:
+  `PATH`, `LANG`, `LC_*`, `TZ`, `USER`, `LOGNAME`, `SHELL`, `TERM` (plus `NVIDIA_*`, `CUDA_*`, `LD_LIBRARY_PATH` with
+  `--gpu`), then `HOME`/`TMPDIR`, `EnvVarRequirement`, `--env` and `--secret` values. A tool that relied on other
+  worker environment variables must get them through `--env`/`--env-file` (or `--secret`/`--secret-file`).
+  `--inherit-host-env` restores the old behavior; the worker logs a WARN and registers the label
+  `inherit_host_env=true`.
+- Under `--containall` the container's `/tmp` is the per-task `<taskdir>_tmp` bind, but `/var/tmp` (and `/run`, `/dev/shm`)
+  are small in-memory session tmpfs mounts (about 64 MiB by default): tools that write large scratch files to
+  `/var/tmp` must use `$TMPDIR`/`/tmp` instead.
+- Both degraded flags show up as labels on the worker (`GET /api/v1/workers`) and as a "degraded" badge in the
+  admin fleet table (`GET /api/v1/fleet` carries the same labels).
+- `cwl-runner` (standalone) follows the same rule for tools run on the host: they no longer inherit the host
+  environment (PYTHONPATH, conda, proxies, ...). Pass variables with `--preserve-environment NAME` (repeatable),
+  `--preserve-entire-environment`, or an `EnvVarRequirement`.
+- The legacy `_base_command` bare runtime sets `HOME` to the task directory and `TMPDIR` to `<taskdir>_tmp`.
+
+- Key ids: workers are bound to the id of the key that registered them. Static keys SHOULD set `id`; otherwise the id is a 16-hex sha256 prefix of the secret, so rotating the secret of an id-less key (or adding an `id` to it) changes the key id and orphans its workers (403 on every route; workers do not re-register on 4xx) until they are restarted. `id` must be unique and not `none` (the server refuses to start otherwise).
+
+Once keys are on, `GET /api/v1/workers` requires a worker key too and lists only that key's workers. **UIs that show fleet status must use
 `GET /api/v1/fleet`** instead: user-authenticated (the normal provider token), read-only, a slim projection
 (`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no hostnames.
 Migrate UIs before or with enabling keys — otherwise their browser sessions receive 401 from `/workers`.

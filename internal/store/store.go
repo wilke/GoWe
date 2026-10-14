@@ -165,6 +165,9 @@ type Store interface {
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	ListWorkerGroups(ctx context.Context) ([]string, error)
+	// AdoptWorkerKey binds a legacy worker (key_id='') to keyID; CAS, true if bound by this call.
+	AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error)
+	ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error)
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
 	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
 	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
@@ -180,6 +183,14 @@ type Store interface {
 	DeleteWorkerKey(ctx context.Context, id string) error
 	CountWorkerKeys(ctx context.Context) (int, error)
 	TouchWorkerKey(ctx context.Context, id string, when time.Time) error
+
+	// Tool blessing operations (admin-approved token injection; rows are never deleted)
+	CreateToolBlessing(ctx context.Context, b *model.ToolBlessing) error
+	GetToolBlessing(ctx context.Context, id string) (*model.ToolBlessing, error)
+	GetActiveToolBlessingByHash(ctx context.Context, toolHash string) (*model.ToolBlessing, error)
+	ListToolBlessings(ctx context.Context, includeRevoked bool) ([]*model.ToolBlessing, error)
+	RevokeToolBlessing(ctx context.Context, id, revokedBy, reason string) error
+	AddToolBlessingImageSHA256(ctx context.Context, id, sha256 string) error
 
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)

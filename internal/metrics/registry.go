@@ -74,6 +74,8 @@ type Registry struct {
 	taskFailures            *prometheus.CounterVec
 	tasksSkipped            prometheus.Counter
 	inputValidationFailures *prometheus.CounterVec
+	toolBlessingEvents      *prometheus.CounterVec
+	tokenGrants             *prometheus.CounterVec
 
 	tasksGauge       *prometheus.GaugeVec
 	submissionsGauge *prometheus.GaugeVec
@@ -152,6 +154,16 @@ func NewRegistry(cfg Config) *Registry {
 			Help: "Total number of submitted input values that failed #273 type-schema validation, by workflow, input, and mode.",
 		}, []string{"workflow", "input", "mode"}),
 
+		toolBlessingEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gowe_tool_blessing_events_total",
+			Help: "Total tool-blessing administration events by action (create, revoke, add_image).",
+		}, []string{"action"}),
+
+		tokenGrants: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gowe_token_grants_total",
+			Help: "Total token-injection decisions for tasks whose tool requests the user's token, by workflow and outcome (granted, granted_dev, denied_unblessed, denied_group, denied_executor, denied_invalid).",
+		}, []string{"workflow", "outcome"}),
+
 		tasksGauge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "gowe_tasks",
 			Help: "Current number of tasks by state.",
@@ -180,7 +192,7 @@ func NewRegistry(cfg Config) *Registry {
 	r.reg.MustRegister(
 		r.taskQueueSeconds, r.taskRunSeconds, r.taskStageSeconds,
 		r.submissionWallSeconds, r.stagingSeconds, r.tickSeconds,
-		r.taskRetries, r.taskFailures, r.tasksSkipped, r.inputValidationFailures,
+		r.taskRetries, r.taskFailures, r.tasksSkipped, r.inputValidationFailures, r.toolBlessingEvents, r.tokenGrants,
 		r.tasksGauge, r.submissionsGauge, r.workersGauge, r.queueDepthGauge,
 	)
 
@@ -321,6 +333,33 @@ func (r *Registry) AddTasksSkipped(n int) {
 		return
 	}
 	r.tasksSkipped.Add(float64(n))
+}
+
+// IncToolBlessingEvent increments gowe_tool_blessing_events_total for one
+// blessing administration action ("create", "revoke", "add_image"). The action
+// vocabulary is fixed, so the label is not capped.
+func (r *Registry) IncToolBlessingEvent(action string) {
+	if r == nil {
+		return
+	}
+	r.toolBlessingEvents.WithLabelValues(action).Inc()
+}
+
+// IncTokenGrant increments gowe_token_grants_total for one token-injection
+// decision. outcome is a fixed vocabulary (granted, granted_dev,
+// denied_unblessed, denied_group, denied_executor); workflow is bounded like
+// the task labels.
+func (r *Registry) IncTokenGrant(workflow, outcome string) {
+	if r == nil {
+		return
+	}
+	wf := workflow
+	if r.workflowLabelEnabled {
+		wf = r.boundedLabel(r.workflowSeen, workflow)
+	} else {
+		wf = allWorkflowsLabel
+	}
+	r.tokenGrants.WithLabelValues(wf, outcome).Inc()
 }
 
 // IncInputValidationFailure increments gowe_input_validation_failures_total

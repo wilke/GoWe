@@ -167,7 +167,14 @@ Argv is world-readable on Linux: any local process can read the secret from `ps 
 
 **Reuse what exists:** `redactSecrets()` (`internal/worker/worker.go:508`) already scrubs secret values from captured stdout/stderr — the same helper should cover these two log sites. Note it **skips values shorter than 6 bytes** by design, so short secrets are never redacted even from tool output; worth revisiting alongside this fix.
 
-### F4 — Apptainer inherits the host environment · **High**
+### F4 — Apptainer inherits the host environment · **High** · ✅ Fixed (PR-A, `security/worker-isolation`)
+
+> **Status: fixed.** `executeApptainer` now passes `--containall --cleanenv` immediately after the subcommand by
+> default (also in `internal/executor/apptainer.go` and `pkg/runtime/apptainer.go`). Verified on apptainer 1.5.3:
+> PID namespace (`/proc/1/cmdline` = `appinit`), `--home abs:/var/spool/cwl` and `--pwd` honored, explicit binds
+> unchanged, `APPTAINERENV_*` secret delivery intact, CWL conformance (server-worker, `-r none,apptainer`) unchanged.
+> Opt-out for hosts without namespace support: worker `--apptainer-no-containall` (drops `--containall` only; WARN at
+> start; registration label `apptainer_containall=false`).
 
 The Apptainer arg builder sets `--home`, `--pwd`, mounts and `--env` values, but never `--containall` or `--cleanenv`. Apptainer's default behaviour is to **pass the host environment through** and bind-mount host locations. The worker process's environment — which may hold tokens, `S3_SECRET_KEY`, `BVBRC_TOKEN`, and the very secrets from F3 — becomes readable inside the container. **No escape required.**
 
@@ -175,7 +182,13 @@ The Apptainer arg builder sets `--home`, `--pwd`, mounts and `--env` values, but
 
 **Fix:** add `--containall` (or at minimum `--cleanenv --no-home` alongside the explicit `--home`), and construct the container environment explicitly from `EnvVarRequirement` + worker config.
 
-### F5 — Local backend inherits the full worker environment · **High** (untrusted only)
+### F5 — Local backend inherits the full worker environment · **High** (untrusted only) · ✅ Fixed (PR-A, `security/worker-isolation`)
+
+> **Status: fixed.** `executeLocal` builds `cmd.Env` from an allow-list (`baseToolEnv`): `PATH`, `LANG`, `LC_*`, `TZ`,
+> `USER`, `LOGNAME`, `SHELL`, `TERM` (+ `NVIDIA_*`, `CUDA_*`, `LD_LIBRARY_PATH` with `--gpu`), then `HOME`/`TMPDIR`,
+> `EnvVarRequirement`, worker `--env` and `--secret`. The legacy bare runtime (`pkg/runtime.Bare`, previously
+> inheriting through a nil `cmd.Env`) uses the same allow-list. Opt-out: worker `--inherit-host-env` (WARN at start;
+> label `inherit_host_env=true`). The "local is untrusted-ineligible at checkout" part of the fix is not done here.
 
 ```go
 // internal/toolexec/execute.go:75
@@ -195,7 +208,7 @@ The `local` path executes the tool as a **direct child of the worker process** w
 - `--read-only` + tmpfs scratch
 - `--pids-limit` (fork-bomb guard)
 
-Apptainer's `--memory`/`--cpus` are additionally gated on `opts.Resources.ApptainerCgroups` and skipped silently on systems without cgroups v2 — i.e. **most HPC** (`execute.go:648-657`).
+Apptainer's `--memory`/`--cpus` are additionally gated per controller (`opts.Resources.CgroupMemory` / `CgroupCPU`): they are skipped on hosts without a unified cgroup v2 hierarchy (**most HPC**) and, for rootless workers, when the controller is not delegated to `user@<uid>.service`. The worker logs a startup WARN for each limit it cannot enforce (`internal/worker/cgroup_delegation.go`; flags applied in `internal/toolexec/execute.go`).
 
 ### F7 — Implicit image resolution, no provenance verification · **Medium**
 
@@ -265,6 +278,24 @@ Under this document's own threat model — untrusted tools, embargoed data — t
 Separately: `docker-compose.yml:123` mounts `/var/run/docker.sock` into the **worker** container. The socket is correctly kept out of *tool* containers, but the worker itself is therefore root-equivalent on the host. §8's "never the Docker socket" guidance is at odds with what the repo ships.
 
 **Fix:** default `ExtraBinds` and IWDR mounts to `ro` unless a task explicitly needs write; for untrusted tasks force `ro` unconditionally. Reconsider the socket mount in the worker service.
+
+### F12 — Worker key readable in `/proc/<pid>/cmdline` · **High** · ✅ Fixed (PR-A, `security/worker-isolation`)
+
+(Tracked as "F2" in the token-containment plan; numbered F12 here because F2 above is the root-user finding.)
+
+The worker authentication key was passed as `--worker-key <secret>` (`cmd/worker/main.go`,
+`deploy/apptainer/start-worker.sh`), so it sat in `/proc/<pid>/cmdline` and `ps` output, readable by every local
+process. Under Apptainer without `--containall` the host PID namespace was shared, so a **tool container could read
+the worker's command line and steal the key**; on `--runtime none` hosts every tool process could.
+
+> **Status: fixed in two layers.** (1) Key file only: `--worker-key-file <path>` (regular file, mode 0600 or
+> stricter) is the only way to supply the key. `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused at
+> startup because both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`;
+> `os.Unsetenv` edits only Go's private copy), and tools without a DockerRequirement run on the host on every worker.
+> The same environ residue applies to the server's `GOWE_TOKEN_KEY` / `GOWE_WORKER_KEYS` env forms; prefer files there
+> too (no server change in this fix). There is no override flag. (2) Apptainer `--containall` gives
+> tools a private PID namespace, so even a legacy cmdline is unreadable from inside a container. The shipped
+> `start-worker.sh` uses `GOWE_WORKER_KEY_FILE`. Existing keys are kept, not rotated.
 
 ---
 

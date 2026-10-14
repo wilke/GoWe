@@ -84,6 +84,8 @@ Pluggable backends implementing `Submit()`, `Status()`, `Cancel()`, `Logs()`. Se
 
 Workers poll the server for tasks (no push). The checkout process matches on: container runtime capability, worker group, and dataset affinity (prestage=require, cache=prefer). Workers execute via `toolexec/`, stage outputs, and report results.
 
+**Token handling:** a worker holds the submitter's token only to stage data in/out and drops it when the task ends. It injects the token into a tool's environment only when the scheduler marked the task blessed (`TokenBlessingID`) AND the resolved image's sha256 is in `ImageSHA256s`; otherwise a blessed-less request is refused with a WARN and a digest mismatch fails the task pre-launch. See `internal/worker/tokenpolicy.go` and `docs/security/authentication.md` §6.
+
 ### CWL Hint Extensions
 
 ```yaml
@@ -185,7 +187,12 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--secret-file` | Load secrets from file (`NAME=value` per line) |
 | `--image-dir` | Base directory for resolving relative `.sif` image paths |
 | `--gpu` / `--gpu-id` | GPU passthrough |
+| `--worker-key-file` | Worker auth key, key file only (regular file, mode 0600 or stricter). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are **refused**: both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
+| `--inherit-host-env` | Degraded: host-run tools (`--runtime none`) inherit the worker env instead of the allow-list (WARN; label `inherit_host_env=true`) |
+| `--apptainer-no-containall` | Degraded: Apptainer without `--containall`, `--cleanenv` kept (WARN; label `apptainer_containall=false`) |
 | `--keep-task-dirs` | Keep task dirs after success (failed tasks always kept; `gowe submit --debug` keeps a single job's) |
+
+`cwl-runner` accepts the same bind/env flags as the worker (`--pre-stage-dir`, `--dataset`, `--extra-bind`, `--env`, `--env-file`; shared parsing in `internal/hostres`; see `docs/tools/cwl-runner.md`) — under Apptainer `--containall` they are the only way host databases and env reach a container.
 
 ## Running the Server
 

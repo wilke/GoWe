@@ -57,6 +57,9 @@ func newAdminCmd() *cobra.Command {
 	cmd.AddCommand(
 		newAdminVerifyOutputsCmd(),
 		newAdminRedeliverCmd(),
+		newAdminBlessCmd(),
+		newAdminBlessingsCmd(),
+		newAdminUnblessCmd(),
 	)
 	return cmd
 }

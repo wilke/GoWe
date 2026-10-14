@@ -12,17 +12,18 @@ import (
 
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/pkg/model"
+	gort "github.com/me/gowe/pkg/runtime"
 	"github.com/me/gowe/pkg/staging"
 )
 
-// resolveApptainerImage resolves a DockerRequirement image name for Apptainer.
+// ResolveApptainerImage resolves a DockerRequirement image name for Apptainer.
 // If the image ends with ".sif", it is treated as a local SIF file:
 //   - Absolute paths are used as-is.
 //   - Relative paths are resolved against imageDir (from --image-dir flag).
 //   - If imageDir is empty, the relative path is passed through for Apptainer to resolve.
 //
 // Non-.sif images are prefixed with "docker://" for registry pulls.
-func resolveApptainerImage(dockerImage, imageDir string) string {
+func ResolveApptainerImage(dockerImage, imageDir string) string {
 	if strings.HasSuffix(dockerImage, ".sif") {
 		if filepath.IsAbs(dockerImage) {
 			return dockerImage
@@ -110,6 +111,35 @@ func secretEnvAssignments(secrets map[string]string, prefix string) []string {
 	return out
 }
 
+// baseToolEnv returns the base environment for a tool process that runs
+// directly on the host (no container boundary). Only an allow-list of host
+// variables is passed through (PATH, LANG, LC_*, TZ, USER, LOGNAME, SHELL,
+// TERM; plus NVIDIA_*, CUDA_* and LD_LIBRARY_PATH when GPU is enabled), so the
+// worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, ...)
+// never reach the tool. opts.InheritHostEnv restores the full os.Environ().
+func baseToolEnv(opts *Options) []string {
+	if opts.InheritHostEnv {
+		return os.Environ()
+	}
+	env := gort.BaseHostEnv(opts.GPU.Enabled)
+	for _, name := range opts.PreserveEnv {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
+
+// ApptainerIsolationArgs returns the isolation flags placed right after the
+// apptainer subcommand: "--containall --cleanenv" by default, or only
+// "--cleanenv" when noContainall is set (worker --apptainer-no-containall).
+func ApptainerIsolationArgs(noContainall bool) []string {
+	if noContainall {
+		return []string{"--cleanenv"}
+	}
+	return []string{"--containall", "--cleanenv"}
+}
+
 // executeLocal executes a tool locally without Docker in the specified work directory.
 func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
@@ -147,8 +177,10 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	cmd.Dir = workDir
 
 	// Set environment variables.
-	// Start with current environment, then override with CWL required vars.
-	cmd.Env = os.Environ()
+	// Start from an allow-listed base environment (never the full host
+	// environment, which can carry provider tokens and worker secrets), then
+	// add the CWL-required vars. --inherit-host-env restores the old behavior.
+	cmd.Env = baseToolEnv(opts)
 
 	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
 	tmpDir := workDir + "_tmp"
@@ -659,6 +691,12 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerSubcmd = "run"
 	}
 	apptainerArgs := []string{apptainerSubcmd}
+	// Isolation: --containall gives the container its own PID namespace, a
+	// private /tmp and /var/tmp and no implicit host mounts ($HOME, cwd);
+	// --cleanenv stops the host environment (worker secrets) leaking in.
+	// Everything the tool needs is bound explicitly below. Secrets are still
+	// delivered via APPTAINERENV_* in the process environment.
+	apptainerArgs = append(apptainerArgs, ApptainerIsolationArgs(opts.ApptainerNoContainall)...)
 
 	// Determine container working directory.
 	containerWorkDir := "/var/spool/cwl"
@@ -732,14 +770,16 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		}
 	}
 
-	// Resource limits for container execution.
-	// Apptainer --memory/--cpus require cgroups v2 unified mode.
-	// On systems without it (most HPC), skip these flags silently.
+	// Resource limits for container execution. Apptainer --memory/--cpus need
+	// cgroups v2 unified mode and, rootless, the matching controller delegated
+	// to the user's systemd manager. The worker detects both at startup
+	// (internal/worker/cgroup_delegation.go) and logs a WARN for each limit it
+	// cannot enforce; each flag is gated on its own controller.
 	if opts.Resources.ApptainerCgroups {
-		if opts.Resources.RamMB > 0 {
+		if opts.Resources.RamMB > 0 && opts.Resources.CgroupMemory {
 			apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
 		}
-		if opts.Resources.Cores > 0 {
+		if opts.Resources.Cores > 0 && opts.Resources.CgroupCPU {
 			apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
 		}
 	}
@@ -753,7 +793,13 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	// Resolve image: local .sif files are used directly, others get docker:// prefix.
-	resolvedImage := resolveApptainerImage(dockerImage, opts.ImageDir)
+	// When the caller verified an image (token-bearing tasks: the worker hashed
+	// opts.ResolvedImage against the blessed digests), launch exactly that
+	// path rather than re-resolving, so the verified file is the one run.
+	resolvedImage := opts.ResolvedImage
+	if resolvedImage == "" {
+		resolvedImage = ResolveApptainerImage(dockerImage, opts.ImageDir)
+	}
 	e.logger.Debug("resolved apptainer image", "original", dockerImage, "resolved", resolvedImage)
 	apptainerArgs = append(apptainerArgs, resolvedImage)
 
@@ -768,9 +814,11 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	e.logger.Debug("apptainer command", "args", MaskSecretValues(apptainerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
-	// cmd.Env must start from the current environment (matching executeLocal)
-	// so nothing else breaks, plus one APPTAINERENV_NAME=value assignment per
-	// secret — see the H5 note above the (removed) --env loop.
+	// The apptainer client process itself keeps the current environment (it
+	// needs HOME, PATH, APPTAINER_* settings); --cleanenv keeps all of it out of
+	// the container. One APPTAINERENV_NAME=value assignment per secret is the
+	// only way values enter the container — see the H5 note above the
+	// (removed) --env loop.
 	cmd.Env = append(os.Environ(), secretEnvAssignments(opts.SecretEnvVars, "APPTAINERENV_")...)
 
 	// Handle stdin.
