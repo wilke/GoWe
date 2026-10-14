@@ -215,3 +215,15 @@ outputs:
     label: Consensus sequences of detected viruses
     outputBinding:
       glob: $(inputs.sample)/$(inputs.sample)_final_consensus.fasta
+  fastp_json:
+    type: File?
+    label: fastp read QC report (JSON)
+    doc: Present only when quality_filter is on.
+    outputBinding:
+      glob: $(inputs.sample)/$(inputs.sample).fastp.json
+  fastp_html:
+    type: File?
+    label: fastp read QC report (HTML)
+    doc: Present only when quality_filter is on.
+    outputBinding:
+      glob: $(inputs.sample)/$(inputs.sample).fastp.html

@@ -102,7 +102,7 @@ steps:
       filter_dir: filter_dir
       threads: threads
       ram_mb: ram_mb
-    out: [output_dir, tax_profile, report_html]
+    out: [output_dir, tax_profile, report_html, fastp_json, fastp_html]
 
   summarize:
     run: esviritu-summarize.cwl
@@ -132,3 +132,11 @@ outputs:
   project_report:
     type: File?
     outputSource: summarize/report_html
+  fastp_json:
+    type: File?[]
+    label: Per-sample fastp QC reports (JSON); null where quality_filter is off
+    outputSource: profile/fastp_json
+  fastp_html:
+    type: File?[]
+    label: Per-sample fastp QC reports (HTML); null where quality_filter is off
+    outputSource: profile/fastp_html
