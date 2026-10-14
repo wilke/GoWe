@@ -45,6 +45,7 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 		JobRequirements: r.jobRequirements,
 		PreserveEnv:     r.PreserveEnv,
 		InheritHostEnv:  r.PreserveEntireEnv,
+		EnvVars:         r.EnvVars,
 	})
 	if err != nil {
 		return nil, err
@@ -75,6 +76,8 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 		Namespaces:      r.namespaces,
 		JobRequirements: r.jobRequirements,
 		Resources:       toolexec.ResourceConfig{Cores: cores},
+		ExtraBinds:      r.ExtraBinds,
+		EnvVars:         r.EnvVars,
 	})
 	if err != nil {
 		return nil, err
@@ -106,6 +109,8 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 		Namespaces:      r.namespaces,
 		JobRequirements: r.jobRequirements,
 		Resources:       toolexec.ResourceConfig{Cores: cores},
+		ExtraBinds:      r.ExtraBinds,
+		EnvVars:         r.EnvVars,
 	})
 	if err != nil {
 		return nil, err
