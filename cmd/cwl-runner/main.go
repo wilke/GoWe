@@ -114,6 +114,7 @@ Examples:
 	rootCmd.PersistentFlags().BoolVar(&preserveEntireEnv, "preserve-entire-environment", false, "Pass the entire host environment to tools run on the host")
 
 	registerHostResourceFlags(rootCmd)
+	silenceUsageOnRunErrors(rootCmd)
 
 	// Subcommands.
 	rootCmd.AddCommand(validateCmd())
@@ -122,6 +123,17 @@ Examples:
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+// silenceUsageOnRunErrors keeps the usage text for flag and argument errors
+// but not for failures while running (a failed tool, an invalid document):
+// there the usage text only pushed the actual error out of view. Cobra
+// validates flags and args before PersistentPreRun, so setting SilenceUsage
+// here affects only errors returned by RunE. Subcommands inherit the hook.
+func silenceUsageOnRunErrors(root *cobra.Command) {
+	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		cmd.SilenceUsage = true
 	}
 }
 
