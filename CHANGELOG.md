@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.0](https://github.com/wilke/GoWe/compare/v0.22.0...v0.23.0) (2026-10-14)
+
+
+### Features
+
+* **cwl-runner:** accept the worker's bind and env flags ([#306](https://github.com/wilke/GoWe/issues/306)) ([1cd16e1](https://github.com/wilke/GoWe/commit/1cd16e13aabf58dba938963a8c8806bb182ae77c))
+
+
+### Bug Fixes
+
+* **worker:** gate Apptainer --cpus/--memory on delegated cgroups ([#301](https://github.com/wilke/GoWe/issues/301)) ([e38f863](https://github.com/wilke/GoWe/commit/e38f86326906f26db701635d2492f988ca981324))
+
 ## [0.22.0](https://github.com/wilke/GoWe/compare/v0.21.0...v0.22.0) (2026-10-13)
 
 
