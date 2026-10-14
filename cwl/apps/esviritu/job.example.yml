@@ -1,0 +1,7 @@
+# Paired-end example. For one file, list a single entry (read_format is inferred).
+reads:
+  - class: File
+    location: /path/to/sample_R1.fastq.gz
+  - class: File
+    location: /path/to/sample_R2.fastq.gz
+sample: sample_ABC
