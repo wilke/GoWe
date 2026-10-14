@@ -45,7 +45,7 @@ arguments:
       if not os.path.isabs(run_path) or not run_path:
           sys.exit("run_path must be an absolute folder path, got %r" % sys.argv[1])
       if not os.path.isdir(run_path):
-          sys.exit("run folder not found on this worker: %s (is it under an --extra-bind path?)" % run_path)
+          sys.exit("run folder not found on this worker: %s (it must be under an --extra-bind path; give the real path, not a host symlink)" % run_path)
       rx = re.compile(r"^(.+?)(?:_S\d+)?(?:_L\d{3})?[._]R?([12])(?:_001)?\.(?:fastq|fq)(?:\.gz)?$", re.I)
       safe = lambda s: re.sub(r"[^A-Za-z0-9._-]", "_", s)
       def check_name(kind, s):
