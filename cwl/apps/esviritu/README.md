@@ -29,7 +29,8 @@ To rebuild, run this from a directory that holds the unpacked DB as `db/v3.2.4`:
 `run_path` is an **absolute path on the worker host**. Every step runs on a worker, including the pairing step.
 The reads are read in place and never copied, uploaded or seen by the server.
 So the folder only has to be visible to the workers that run the job:
-- it must be under one of their `--extra-bind` paths;
+- it must be under one of their `--extra-bind` paths, given as the real path. A host symlink into a bound folder is not
+  visible inside the container: if `/local/incoming` links to the bound `/nfs/seq-data`, use `/nfs/seq-data/...`;
 - pin the job to those workers with `--group`.
 
 Anyone who can submit to that group can profile any FASTQ folder under the workers' `--extra-bind` paths,

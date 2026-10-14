@@ -9,8 +9,9 @@ doc: |
   tables and an HTML report (summarize_esv_runs).
 
   run_path is an absolute path on the worker host and must be under one of
-  the worker's --extra-bind paths. Everything runs on workers, and the reads
-  are read in place, never copied or uploaded. Submit with --group <group>
+  the worker's --extra-bind paths (the real path, not a host symlink into
+  one). Everything runs on workers, and the reads are read in place, never
+  copied or uploaded. Submit with --group <group>
   to pin the run to the workers that sit next to the data
   (e.g. --group esviritu).
 
