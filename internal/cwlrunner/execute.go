@@ -61,8 +61,7 @@ func (r *Runner) executeLocalWithWorkDir(ctx context.Context, tool *cwl.CommandL
 // res: effective resources from cwltool.ResolveResources (same rules as plain steps, #316):
 // Cores/RamMB are set only when the tool declares coresMin/ramMin.
 func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string, res toolexec.ResourceConfig) (*ExecutionResult, error) {
-	executor := toolexec.NewExecutor(r.logger)
-	result, err := executor.Execute(ctx, r.containerOptions(toolexec.ModeDocker, tool, cmdResult, inputs, dockerImage, workDir, containerMounts, dockerOutputDir, res))
+	result, err := r.runContainer(ctx, r.containerOptions(toolexec.ModeDocker, tool, cmdResult, inputs, dockerImage, workDir, containerMounts, dockerOutputDir, res))
 	if err != nil {
 		return nil, err
 	}
@@ -78,8 +77,7 @@ func (r *Runner) executeInDockerWithWorkDir(ctx context.Context, tool *cwl.Comma
 // cwl-runner does not currently detect/set -- see ApptainerCgroups in internal/worker for the
 // equivalent worker-side detection; --cpus is a no-op here until that's wired up for cwl-runner too).
 func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.CommandLineTool, cmdResult *cmdline.BuildResult, inputs map[string]any, dockerImage string, workDir string, containerMounts []iwdr.ContainerMount, dockerOutputDir string, res toolexec.ResourceConfig) (*ExecutionResult, error) {
-	executor := toolexec.NewExecutor(r.logger)
-	result, err := executor.Execute(ctx, r.containerOptions(toolexec.ModeApptainer, tool, cmdResult, inputs, dockerImage, workDir, containerMounts, dockerOutputDir, res))
+	result, err := r.runContainer(ctx, r.containerOptions(toolexec.ModeApptainer, tool, cmdResult, inputs, dockerImage, workDir, containerMounts, dockerOutputDir, res))
 	if err != nil {
 		return nil, err
 	}
@@ -110,4 +108,13 @@ func (r *Runner) containerOptions(mode toolexec.ExecutionMode, tool *cwl.Command
 		opts.ImageDir = r.ImageDir // #312: scatter iterations resolve relative .sif paths here too
 	}
 	return opts
+}
+
+// runContainer dispatches opts to the configured executor (real toolexec
+// unless a test installed r.execute).
+func (r *Runner) runContainer(ctx context.Context, opts *toolexec.Options) (*toolexec.Result, error) {
+	if r.execute != nil {
+		return r.execute(ctx, opts)
+	}
+	return toolexec.NewExecutor(r.logger).Execute(ctx, opts)
 }

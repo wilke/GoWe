@@ -1,8 +1,12 @@
 package cwlrunner
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/me/gowe/internal/cmdline"
@@ -59,5 +63,80 @@ func TestContainerOptionsResources(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestScatterIterationsApplyResources runs a real 2-element scatter through
+// Runner.Execute (sequential and parallel) with a capturing fake executor and
+// asserts every iteration receives the tool's declared resources (#316).
+func TestScatterIterationsApplyResources(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		name := "sequential"
+		if parallel {
+			name = "parallel"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			write := func(n, c string) {
+				if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("tool.cwl", `cwlVersion: v1.2
+class: CommandLineTool
+requirements:
+  DockerRequirement:
+    dockerPull: img.sif
+  ResourceRequirement:
+    ramMin: 2048
+    coresMin: 2
+baseCommand: echo
+inputs:
+  msg:
+    type: string
+    inputBinding: {position: 1}
+outputs: {}
+`)
+			write("main.cwl", `cwlVersion: v1.2
+class: Workflow
+requirements:
+  ScatterFeatureRequirement: {}
+inputs:
+  msgs: string[]
+outputs: {}
+steps:
+  s:
+    run: tool.cwl
+    scatter: msg
+    in: {msg: msgs}
+    out: []
+`)
+			write("job.yml", "msgs: [a, b]\n")
+
+			var mu sync.Mutex
+			var got []toolexec.ResourceConfig
+			r := NewRunner(slog.New(slog.NewTextHandler(io.Discard, nil)))
+			r.ContainerRuntime = "apptainer"
+			r.OutDir = filepath.Join(dir, "out")
+			r.Parallel.Enabled = parallel
+			r.Parallel.MaxWorkers = 2
+			r.execute = func(_ context.Context, opts *toolexec.Options) (*toolexec.Result, error) {
+				mu.Lock()
+				got = append(got, opts.Resources)
+				mu.Unlock()
+				return &toolexec.Result{Outputs: map[string]any{}}, nil
+			}
+			if err := r.Execute(context.Background(), filepath.Join(dir, "main.cwl"), filepath.Join(dir, "job.yml"), io.Discard); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(got) != 2 {
+				t.Fatalf("captured %d executions, want 2", len(got))
+			}
+			for i, res := range got {
+				if res.RamMB != 2048 || res.Cores != 2 {
+					t.Errorf("iteration %d: Resources = %+v, want RamMB=2048 Cores=2", i, res)
+				}
+			}
+		})
 	}
 }

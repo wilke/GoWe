@@ -80,6 +80,10 @@ type Runner struct {
 	// sets this to off.
 	InputValidation validate.Mode
 
+	// execute runs a prepared container execution. Nil means the real
+	// toolexec executor; tests substitute a capturing fake.
+	execute func(ctx context.Context, opts *toolexec.Options) (*toolexec.Result, error)
+
 	// Internal state.
 	cwlDir          string            // directory of CWL file, for resolving relative paths in defaults
 	stepCount       int               // counter for unique step directories
@@ -769,13 +773,13 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		}
 		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
-		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-		if err != nil {
-			return nil, fmt.Errorf("build command: %w", err)
-		}
 		res, err := cwltool.ResolveResources(runtime, cwltool.Config{}, tool)
 		if err != nil {
 			return nil, err
+		}
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
 		}
 		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res)
 	case "apptainer":
@@ -791,13 +795,13 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		}
 		runtime := buildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
-		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
-		if err != nil {
-			return nil, fmt.Errorf("build command: %w", err)
-		}
 		res, err := cwltool.ResolveResources(runtime, cwltool.Config{}, tool)
 		if err != nil {
 			return nil, err
+		}
+		cmdResult, err := builder.Build(tool, mergedInputs, runtime)
+		if err != nil {
+			return nil, fmt.Errorf("build command: %w", err)
 		}
 		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res)
 	default:
@@ -2494,9 +2498,9 @@ func cloneToolForExecution(tool *cwl.CommandLineTool) *cwl.CommandLineTool {
 // resourceCoresWeight evaluates a tool's ResourceRequirement.coresMin
 // (falling back to .cores), defaulting to 1 when neither is specified. This
 // is the single source of truth used both to populate runtime.cores (see
-// buildRuntimeContextWithInputs, for CWL expression evaluation and for the
-// container --cpus limit threaded through toolexec.Options.Resources.Cores)
-// and to size a leaf tool execution's --cores weighted-semaphore acquisition
+// buildRuntimeContextWithInputs, for CWL expression evaluation; the container
+// --cpus limit comes from cwltool.ResolveResources, which applies it only when
+// the tool declares coresMin/cores) and to size a leaf tool execution's --cores weighted-semaphore acquisition
 // (see acquireExecutionSlot). evaluator may be nil (no expression support,
 // e.g. resource values that are plain ints).
 func resourceCoresWeight(tool *cwl.CommandLineTool, inputs map[string]any, evaluator *cwlexpr.Evaluator) int {
