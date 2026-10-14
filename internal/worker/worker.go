@@ -850,6 +850,11 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	if err != nil {
 		return w.reportFailure(ctx, task, fmt.Errorf("apply secrets: %w", err))
 	}
+	// The delegated token also joins the in-execution mask set (redaction
+	// only; SecretValues is never delivered to the tool), so it is masked
+	// before toolexec cuts the stderr tail for an output-collection error.
+	// Redacting only afterwards would miss a token straddling that cut.
+	cfg.SecretValues = mergeSecretsForRedaction(cfg.SecretValues, tokenMask)
 
 	// Remap input paths if configured (host->container translation).
 	if len(w.inputPathMap) > 0 {
