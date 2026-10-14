@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.24.0](https://github.com/wilke/GoWe/compare/v0.23.0...v0.24.0) (2026-10-14)
+
+
+### Features
+
+* **cwl:** add EsViritu tool and run-folder workflow ([#278](https://github.com/wilke/GoWe/issues/278)) ([fcbeb32](https://github.com/wilke/GoWe/commit/fcbeb32a9ebbc7673b0cb5f14666a19c3a0c6d76))
+
+
+### Bug Fixes
+
+* **cwl-runner:** apply ResourceRequirement to scatter iterations ([#319](https://github.com/wilke/GoWe/issues/319)) ([ac7b0c9](https://github.com/wilke/GoWe/commit/ac7b0c93bc37ad550fa99482c19246ac815cf96b))
+* **cwl-runner:** print usage only for flag and argument errors ([#311](https://github.com/wilke/GoWe/issues/311)) ([0e56228](https://github.com/wilke/GoWe/commit/0e5622899c2e832d1925b6217c7290fa28312268))
+* **cwl-runner:** resolve --image-dir for scattered steps ([#314](https://github.com/wilke/GoWe/issues/314)) ([511fd92](https://github.com/wilke/GoWe/commit/511fd9201a5f736e4a11d913e16c346413f99f7b))
+* **cwltool:** validate tool outputs against declared types ([#315](https://github.com/wilke/GoWe/issues/315)) ([dc78fe4](https://github.com/wilke/GoWe/commit/dc78fe46b13f221a2d38edfe28baf8f77038d008))
+* **toolexec:** mask stderr before cutting its tail, on a rune boundary ([#318](https://github.com/wilke/GoWe/issues/318)) ([7c36e79](https://github.com/wilke/GoWe/commit/7c36e792c43c9bbb7d211b333d9bb9ebc5bc6e4f))
+
 ## [0.23.0](https://github.com/wilke/GoWe/compare/v0.22.0...v0.23.0) (2026-10-14)
 
 
