@@ -151,7 +151,11 @@ func isDirectoryType(outputType any) bool {
 		return t == "Directory" || t == "Directory?" || t == "Directory[]"
 	case map[string]any:
 		if typeName, ok := t["type"].(string); ok {
-			return typeName == "Directory" || typeName == "array"
+			if typeName == "array" {
+				items, _ := t["items"].(string)
+				return items == "Directory"
+			}
+			return typeName == "Directory"
 		}
 		if items, ok := t["items"].(string); ok {
 			return items == "Directory"
@@ -188,6 +192,22 @@ func isOptionalType(outputType any) bool {
 	case []any:
 		for _, item := range t {
 			if s, ok := item.(string); ok && s == "null" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unionHasArray reports whether outputType is an optional/union type with an
+// array member ("File[]?" or ["null", {type: array, ...}]).
+func unionHasArray(outputType any) bool {
+	switch t := outputType.(type) {
+	case string:
+		return strings.HasSuffix(t, "[]?")
+	case []any:
+		for _, m := range t {
+			if isArrayOutputType(m) {
 				return true
 			}
 		}

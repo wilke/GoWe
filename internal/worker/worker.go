@@ -1186,7 +1186,7 @@ func (w *Worker) reportFailure(ctx context.Context, task *model.Task, execErr er
 		State:     model.TaskStateFailed,
 		ExitCode:  &exitCode,
 		Stderr:    execErr.Error(),
-		Permanent: errors.Is(execErr, validate.ErrInputValidation),
+		Permanent: validate.IsPermanent(execErr),
 	})
 	if reportErr != nil {
 		return fmt.Errorf("report failure: %w (original: %v)", reportErr, execErr)

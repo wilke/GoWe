@@ -1158,9 +1158,9 @@ func (p *Parser) parseTool(raw map[string]any, defs *schemaDefs, fromTaskMap boo
 		switch val := v.(type) {
 		case string:
 			// Shorthand format: output_id: type_name (e.g., "stdout_file: stdout")
-			tool.Outputs[id] = cwl.ToolOutputParam{Type: val}
+			tool.Outputs[id] = cwl.ToolOutputParam{Type: val, TypeSchema: normalizeType(val, localDefs, nil)}
 		case map[string]any:
-			tool.Outputs[id] = parseToolOutput(val)
+			tool.Outputs[id] = parseToolOutput(val, localDefs, fromTaskMap)
 		}
 	}
 
@@ -1377,13 +1377,24 @@ func extractArrayItemTypes(items any) []string {
 }
 
 // parseToolOutput parses a single tool output parameter from a raw map.
-func parseToolOutput(m map[string]any) cwl.ToolOutputParam {
+// defs inlines named SchemaDefRequirement types when computing TypeSchema;
+// fromTaskMap reads the already-computed "typeSchema" key back verbatim
+// instead (a re-parse of a JSON-serialized task.Tool), as for inputs.
+func parseToolOutput(m map[string]any, defs *schemaDefs, fromTaskMap bool) cwl.ToolOutputParam {
 	out := cwl.ToolOutputParam{
 		Type:       stringField(m, "type"),
 		Doc:        stringField(m, "doc"),
 		Label:      stringField(m, "label"),
 		Format:     m["format"],
 		Streamable: boolField(m, "streamable"),
+	}
+
+	if fromTaskMap {
+		if ts, ok := m["typeSchema"]; ok {
+			out.TypeSchema = ts
+		}
+	} else {
+		out.TypeSchema = normalizeType(m["type"], defs, nil)
 	}
 
 	// Parse outputBinding.

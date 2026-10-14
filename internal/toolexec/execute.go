@@ -312,7 +312,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := e.CollectOutputs(tool, workDir, inputs, exitCode, opts.OutDir, opts.Namespaces)
 	if err != nil {
-		return nil, fmt.Errorf("collect outputs: %w", err)
+		return nil, collectOutputsError(err, stderrBuf.String(), combinedMaskSecrets(opts))
 	}
 
 	return &Result{
@@ -638,7 +638,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := e.CollectOutputs(tool, workDir, inputs, exitCode, opts.OutDir, opts.Namespaces)
 	if err != nil {
-		return nil, fmt.Errorf("collect outputs: %w", err)
+		return nil, collectOutputsError(err, stderrBuf.String(), combinedMaskSecrets(opts))
 	}
 
 	return &Result{
@@ -913,7 +913,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := e.CollectOutputs(tool, workDir, inputs, exitCode, opts.OutDir, opts.Namespaces)
 	if err != nil {
-		return nil, fmt.Errorf("collect outputs: %w", err)
+		return nil, collectOutputsError(err, stderrBuf.String(), combinedMaskSecrets(opts))
 	}
 
 	return &Result{

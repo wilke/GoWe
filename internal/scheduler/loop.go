@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1926,7 +1925,7 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		// type (enforce mode) — retrying would fail identically every time,
 		// so make this FAILED terminal rather than consume the task's
 		// retry budget.
-		if errors.Is(submitErr, validate.ErrInputValidation) {
+		if validate.IsPermanent(submitErr) {
 			task.MaxRetries = task.RetryCount
 		}
 		// H2: this is a THIRD terminal-marking branch (beyond the

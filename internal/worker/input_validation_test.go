@@ -33,6 +33,11 @@ func TestReportFailure_Permanent(t *testing.T) {
 			wantPermanent: true,
 		},
 		{
+			name:          "error wraps ErrOutputValidation (not retried)",
+			execErr:       fmt.Errorf("execute: collect outputs: %w: output %q: required output missing", validate.ErrOutputValidation, "must"),
+			wantPermanent: true,
+		},
+		{
 			name:          "ordinary execution error",
 			execErr:       fmt.Errorf("execute: exit status 1"),
 			wantPermanent: false,

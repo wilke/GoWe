@@ -322,6 +322,8 @@ func newRedactedError(err error, mask map[string]string) error {
 	var wrapped error
 	if errors.Is(err, validate.ErrInputValidation) {
 		wrapped = validate.ErrInputValidation
+	} else if errors.Is(err, validate.ErrOutputValidation) {
+		wrapped = validate.ErrOutputValidation
 	}
 	return &redactedError{msg: msg, wrapped: wrapped}
 }

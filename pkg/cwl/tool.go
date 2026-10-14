@@ -106,6 +106,12 @@ type ToolOutputParam struct {
 
 	// Streamable indicates if the file can be streamed.
 	Streamable bool `json:"streamable,omitempty"`
+
+	// TypeSchema is the canonical, JSON-safe normalized form of this
+	// output's raw CWL type (same format as ToolInputParam.TypeSchema).
+	// Populated by the parser; nil means "do not validate this output"
+	// (see validate.ToolOutputs, #279/#310).
+	TypeSchema any `json:"typeSchema,omitempty"`
 }
 
 // ExpressionTool is a typed representation of a CWL ExpressionTool.
