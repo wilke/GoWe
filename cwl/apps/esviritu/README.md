@@ -32,6 +32,9 @@ So the folder only has to be visible to the workers that run the job:
 - it must be under one of their `--extra-bind` paths;
 - pin the job to those workers with `--group`.
 
+Anyone who can submit to that group can profile any FASTQ folder under the workers' `--extra-bind` paths,
+so bind only the sequencing data the group's users may read.
+
     # run.yml
     run_path: /nfs/seq-data/RUN_241012_NB551234
 
@@ -39,8 +42,10 @@ So the folder only has to be visible to the workers that run the job:
 
 Steps:
 1. **pair:** finds `<sample>_S<n>_R1_001.fastq.gz` / `_R2_` pairs (also `<sample>_R1.fastq.gz` and `<sample>_1.fq.gz`).
-   - It skips `Undetermined_*` and anything that is not FASTQ.
-   - It fails if a sample lacks its mate or still has lane-split files (merge lanes first).
+   - It skips hidden files, anything that is not FASTQ, and `Undetermined_*` (set `include_undetermined: true` to profile them).
+   - Sample and project names keep only `A-Z a-z 0-9 . _ -`; other characters become `_`.
+   - It fails if a sample lacks its mate, still has lane-split files (merge lanes first), two names collide after
+     that cleanup, or a name starts with `-`.
 2. **profile:** runs EsViritu once per sample, in parallel. Defaults suit NextSeq paired-end data: fastp filtering is on, which also trims poly-G tails.
 3. **summarize:** builds the project-level detection, assembly, taxonomy, coverage and read-stats tables plus one HTML report.
 

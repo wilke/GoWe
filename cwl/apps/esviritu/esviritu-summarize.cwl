@@ -28,6 +28,9 @@ arguments:
     valueFrom: |-
       set -euo pipefail
       project="$1"; shift
+      case "$project" in
+        ''|.|..|summary|-*|*/*) echo "invalid project name: '$project'" >&2; exit 1;;
+      esac
       mkdir -p "$project" summary
       for d in "$@"; do
         for f in "$d"/*.tsv "$d"/*_esviritu.params.yaml "$d"/*_esviritu.readstats.yaml; do

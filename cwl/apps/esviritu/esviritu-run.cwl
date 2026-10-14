@@ -72,7 +72,7 @@ steps:
       run_path: run_path
       project_name: project_name
       include_undetermined: include_undetermined
-    out: [samples, r1, r2, run_path, project]
+    out: [samples, r1, r2, run_dir, project]
 
   profile:
     run: esviritu.cwl
@@ -82,7 +82,7 @@ steps:
       sample: pair/samples
       r1: pair/r1
       r2: pair/r2
-      run_path: pair/run_path
+      run_path: pair/run_dir
       reads:
         valueFrom: |-
           ${
@@ -133,10 +133,14 @@ outputs:
     type: File?
     outputSource: summarize/report_html
   fastp_json:
-    type: File?[]
+    type:
+      type: array
+      items: ["null", File]
     label: Per-sample fastp QC reports (JSON); null where quality_filter is off
     outputSource: profile/fastp_json
   fastp_html:
-    type: File?[]
+    type:
+      type: array
+      items: ["null", File]
     label: Per-sample fastp QC reports (HTML); null where quality_filter is off
     outputSource: profile/fastp_html

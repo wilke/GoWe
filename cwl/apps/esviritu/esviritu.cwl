@@ -43,6 +43,9 @@ baseCommand:
   - bash
   - -c
   - |-
+    case "$ESV_SAMPLE" in
+      ''|.|..|-*|*/*) echo "invalid sample name: '$ESV_SAMPLE'" >&2; exit 1;;
+    esac
     EsViritu "$@"
     rc=$?
     o="$ESV_SAMPLE"

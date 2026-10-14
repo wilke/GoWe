@@ -12,7 +12,9 @@ doc: |
     <sample>_S<n>_R1_001.fastq.gz    (bcl2fastq / BCL Convert, no lane splitting)
     <sample>_S<n>_L001_R1_001.fastq.gz
     <sample>_R1.fastq.gz, <sample>.R1.fq.gz, <sample>_1.fastq.gz
-  Other files (Undetermined_*, reports, sample sheets) are ignored.
+  Other files (Undetermined_*, hidden files, reports, sample sheets) are ignored.
+  Sample and project names keep only A-Z a-z 0-9 . _ - (other characters
+  become _).
   Fails if a sample lacks its mate or has more than one R1 or R2
   (e.g. lane-split output: merge lanes first).
 
@@ -40,19 +42,30 @@ arguments:
       run_path, project, undet = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
       project = "" if project == "-" else project
       run_path = run_path.rstrip("/")
+      if not os.path.isabs(run_path) or not run_path:
+          sys.exit("run_path must be an absolute folder path, got %r" % sys.argv[1])
       if not os.path.isdir(run_path):
           sys.exit("run folder not found on this worker: %s (is it under an --extra-bind path?)" % run_path)
       rx = re.compile(r"^(.+?)(?:_S\d+)?(?:_L\d{3})?[._]R?([12])(?:_001)?\.(?:fastq|fq)(?:\.gz)?$", re.I)
-      by = {}
+      safe = lambda s: re.sub(r"[^A-Za-z0-9._-]", "_", s)
+      def check_name(kind, s):
+          if s in ("", ".", "..", "summary") or s.startswith("-"):
+              sys.exit("invalid %s name %r: must not be empty, '.', '..', 'summary' or start with '-'" % (kind, s))
+          return s
+      by, raw = {}, {}
       for fn in sorted(os.listdir(run_path)):
-          if not os.path.isfile(os.path.join(run_path, fn)):
+          if fn.startswith(".") or not os.path.isfile(os.path.join(run_path, fn)):
               continue
           m = rx.match(fn)
           if not m:
               continue
-          name = re.sub(r"[^A-Za-z0-9._-]", "_", m.group(1))
+          name = safe(m.group(1))
           if not undet and name.lower() == "undetermined":
               continue
+          check_name("sample", name)
+          if raw.setdefault(name, m.group(1)) != m.group(1):
+              sys.exit("samples %r and %r both map to the name %s; rename one of them"
+                       % (raw[name], m.group(1), name))
           mate = by.setdefault(name, {})
           if m.group(2) in mate:
               sys.exit("sample %s has more than one R%s file (%s, %s); merge lanes first"
@@ -60,8 +73,8 @@ arguments:
           mate[m.group(2)] = fn
       if not by:
           sys.exit("no paired FASTQ files found in %s" % run_path)
-      out = {"samples": [], "r1": [], "r2": [], "run_path": run_path,
-             "project": project or re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(run_path))}
+      out = {"samples": [], "r1": [], "r2": [], "run_dir": run_path,
+             "project": check_name("project", safe(project or os.path.basename(run_path)))}
       for name in sorted(by):
           mate = by[name]
           if "1" not in mate or "2" not in mate:
@@ -95,7 +108,7 @@ outputs:
     type: string[]
   r2:
     type: string[]
-  run_path:
+  run_dir:
     type: string
   project:
     type: string
