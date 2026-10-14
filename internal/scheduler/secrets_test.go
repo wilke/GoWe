@@ -856,7 +856,9 @@ $graph:
     inputs: []
     outputs:
       out:
-        type: string
+        # Optional: the tool has no outputBinding, so its output is always
+        # null; a required output would (correctly) fail output validation.
+        type: string?
 `
 
 func TestResubmitRetrying_ReattachesSecrets(t *testing.T) {
