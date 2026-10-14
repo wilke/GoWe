@@ -104,6 +104,7 @@ func (r *Runner) executeInApptainerWithWorkDir(ctx context.Context, tool *cwl.Co
 		OutDir:          r.OutDir,
 		Mode:            toolexec.ModeApptainer,
 		DockerImage:     dockerImage,
+		ImageDir:        r.ImageDir, // #312: scatter iterations resolve relative .sif paths here too
 		ContainerMounts: containerMounts,
 		DockerOutputDir: dockerOutputDir,
 		Namespaces:      r.namespaces,
