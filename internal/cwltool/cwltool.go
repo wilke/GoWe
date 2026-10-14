@@ -43,6 +43,9 @@ func maskSecretsInError(err error, secrets map[string]string) error {
 	if errors.Is(err, validate.ErrInputValidation) {
 		return &maskedError{msg: masked, wrapped: validate.ErrInputValidation}
 	}
+	if errors.Is(err, validate.ErrOutputValidation) {
+		return &maskedError{msg: masked, wrapped: validate.ErrOutputValidation}
+	}
 	return errors.New(masked)
 }
 

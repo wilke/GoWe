@@ -150,7 +150,14 @@ func (e *Executor) collectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 			continue
 		}
 
-		collected, err := e.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool, exitCode, outDir)
+		// Long-form types (list unions, {type: array, ...} maps) leave Type
+		// empty; fall back to the normalized TypeSchema so the optional /
+		// array decisions see them. Shorthand types keep using Type.
+		var outType any = output.Type
+		if output.Type == "" && output.TypeSchema != nil {
+			outType = output.TypeSchema
+		}
+		collected, err := e.collectOutputBinding(output.OutputBinding, outType, workDir, inputs, tool, exitCode, outDir)
 		if err != nil {
 			return nil, fmt.Errorf("output %s: %w", outputID, err)
 		}
@@ -553,11 +560,19 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 
 	// Return single file or array based on type.
 	if isArrayType {
-		// Always return array for array types.
+		// Always return array for array types (empty, never nil).
+		if collected == nil {
+			collected = []map[string]any{}
+		}
 		return collected, nil
 	}
 	if len(collected) == 0 && isOptionalType(outputType) {
 		return nil, nil
+	}
+	if len(collected) > 0 && unionHasArray(outputType) {
+		// Optional array ("File[]?", ["null", array]): a single match is
+		// still a one-element array.
+		return collected, nil
 	}
 	if len(collected) == 1 {
 		return collected[0], nil

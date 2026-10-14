@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -100,11 +99,6 @@ func jsonView(v any) any {
 	case nil, string, bool, float64:
 		return v
 	}
-	// A typed nil slice (e.g. []map[string]any(nil) from a glob that matched
-	// nothing for an array output) is an empty array, not null.
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice && rv.IsNil() {
-		return []any{}
-	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return v
@@ -168,4 +162,11 @@ func summarizeOutputErrors(errs []model.FieldError) string {
 		msg += ")"
 	}
 	return msg
+}
+
+// IsPermanent reports whether err is an input- or output-validation failure:
+// one that would fail identically on every retry, so callers should make it
+// terminal rather than consume the retry budget.
+func IsPermanent(err error) bool {
+	return errors.Is(err, ErrInputValidation) || errors.Is(err, ErrOutputValidation)
 }
