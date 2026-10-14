@@ -116,14 +116,17 @@ type Result struct {
 	Stderr   string
 }
 
-// resolveResources validates CWL resource requirements against worker limits
+// ResolveResources validates CWL resource requirements against worker limits
 // and computes effective resource values. It returns a ResourceConfig for
 // container execution and updates the runtime context with effective values.
 //
 // Resource flags (--memory, --cpus) are only set when a CWL ResourceRequirement
 // or worker max limit is explicitly provided. When neither is set, zeros are
 // returned (meaning "no limit" for the container runtime).
-func resolveResources(runtime *cwlexpr.RuntimeContext, cfg Config, tool *cwl.CommandLineTool) (toolexec.ResourceConfig, error) {
+//
+// It is exported so cwl-runner's scatter path (which does not go through
+// ExecuteTool) applies the same rules as plain steps (#316).
+func ResolveResources(runtime *cwlexpr.RuntimeContext, cfg Config, tool *cwl.CommandLineTool) (toolexec.ResourceConfig, error) {
 	rr := getResourceRequirement(tool)
 	_, hasCWLCores := rr["coresMin"]
 	if !hasCWLCores {
@@ -324,7 +327,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = runtimeTmpDir
-		resources, err := resolveResources(runtime, cfg, tool)
+		resources, err := ResolveResources(runtime, cfg, tool)
 		if err != nil {
 			return nil, err
 		}
@@ -368,7 +371,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		}
 		runtime := BuildRuntimeContextWithInputs(tool, containerWorkDir, mergedInputs, expressionLib)
 		runtime.TmpDir = "/tmp"
-		resources, err := resolveResources(runtime, cfg, tool)
+		resources, err := ResolveResources(runtime, cfg, tool)
 		if err != nil {
 			return nil, err
 		}
@@ -405,7 +408,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	default:
 		// Local execution.
 		runtime := BuildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
-		resources, err := resolveResources(runtime, cfg, tool)
+		resources, err := ResolveResources(runtime, cfg, tool)
 		if err != nil {
 			return nil, err
 		}

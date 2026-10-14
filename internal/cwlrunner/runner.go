@@ -773,7 +773,11 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, runtime.Cores)
+		res, err := cwltool.ResolveResources(runtime, cwltool.Config{}, tool)
+		if err != nil {
+			return nil, err
+		}
+		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
@@ -791,7 +795,11 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, runtime.Cores)
+		res, err := cwltool.ResolveResources(runtime, cwltool.Config{}, tool)
+		if err != nil {
+			return nil, err
+		}
+		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res)
 	default:
 		// Build runtime context using actual work directory for local execution.
 		runtime := buildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
