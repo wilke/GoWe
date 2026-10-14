@@ -160,7 +160,7 @@ inputs:
     doc: Cores reserved for the task and passed to EsViritu as --cpu.
   ram_mb:
     type: int
-    default: 8000
+    default: 32000
     label: Memory (MB)
     doc: Memory reserved for the task. Lower minimap2_K if a sample runs out of memory.
   database:

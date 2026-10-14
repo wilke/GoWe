@@ -50,11 +50,13 @@ A sample with no detectable virus (for example a negative control) succeeds:
 
 Any other EsViritu failure fails the task and shows the tail of the EsViritu log. This includes a missing input or a missing DB, which EsViritu itself exits 0 on.
 
-Resources: each sample reserves `threads` cores (default 4, also EsViritu's `--cpu`) and `ram_mb` MB (default 8000).
-Both are inputs of `esviritu` and `esviritu-run`, so they can be set per submission:
+Resources: each sample reserves `threads` cores (default 4, also EsViritu's `--cpu`) and `ram_mb` MB (default 32000).
+The memory default comes from a NextSeq run where a 208M-read sample peaked at 23.6 GB in the
+single-threaded coverage-table step; smaller samples used 9-13 GB. Both are inputs of `esviritu` and
+`esviritu-run`, so they can be set per submission:
 
     threads: 16
-    ram_mb: 32000
+    ram_mb: 48000
 
 ## Single sample (`esviritu`)
 

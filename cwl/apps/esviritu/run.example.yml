@@ -7,4 +7,4 @@ run_path: /nfs/seq-data/RUN_241012_NB551234
 # dedup: true
 # min_align_length: 60           # only for 2x75 runs
 # threads: 8                     # cores per sample (default 4)
-# ram_mb: 16000                  # memory per sample in MB (default 8000)
+# ram_mb: 48000                  # memory per sample in MB (default 32000)

@@ -62,7 +62,7 @@ inputs:
     label: CPU threads per sample
   ram_mb:
     type: int
-    default: 8000
+    default: 32000
     label: Memory per sample (MB)
 
 steps:
