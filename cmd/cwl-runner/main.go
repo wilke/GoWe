@@ -129,8 +129,10 @@ Examples:
 // silenceUsageOnRunErrors keeps the usage text for flag and argument errors
 // but not for failures while running (a failed tool, an invalid document):
 // there the usage text only pushed the actual error out of view. Cobra
-// validates flags and args before PersistentPreRun, so setting SilenceUsage
-// here affects only errors returned by RunE. Subcommands inherit the hook.
+// parses flags and validates Args before PersistentPreRun, so those errors
+// keep the usage text. Flag groups and required flags are checked after the
+// hook and would lose it; cwl-runner uses neither. Subcommands inherit the
+// hook (none defines its own PreRun).
 func silenceUsageOnRunErrors(root *cobra.Command) {
 	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
 		cmd.SilenceUsage = true
