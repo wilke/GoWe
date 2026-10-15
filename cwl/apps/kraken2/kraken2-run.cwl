@@ -22,7 +22,8 @@ inputs:
     type: boolean
     default: false
   database:
-    type: Directory
+    type: string
+    doc: Absolute path of the Kraken2 database directory on the worker host (read in place).
   confidence:
     type: float
     default: 0.0

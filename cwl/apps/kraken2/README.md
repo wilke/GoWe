@@ -8,7 +8,7 @@ Typical use: find out what the reads are that a targeted profiler (EsViritu) lea
 ```yaml
 # job.yml
 run_path: /nfs/seq-data/nextseq2k_output/nextseq2k_runs/<run>/<fastq folder>   # real path, not a host symlink
-database: {class: Directory, path: /nfs/seq-data/experiments/data/databases/kraken2/k2_pluspf_16_GB_20260626}
+database: /nfs/seq-data/experiments/data/databases/kraken2/k2_pluspf_16_GB_20260626   # path on the worker, read in place
 threads: 8
 ```
 

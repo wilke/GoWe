@@ -4,7 +4,7 @@ id: kraken2
 label: Kraken2 - k-mer taxonomic classification of paired reads
 doc: |
   Classifies the reads of one paired-end sample with Kraken2 against a
-  pre-built database directory (e.g. a k2_pluspf_16_GB_* build from
+  pre-built database directory given as a path on the worker host (e.g. a k2_pluspf_16_GB_* build from
   https://benlangmead.github.io/aws-indexes/k2) that lives on the worker host.
   Writes <sample>.kraken2.report.txt (standard Kraken2 report with
   minimizer columns) and <sample>.kraken2.log. Per-read classifications are
@@ -52,8 +52,12 @@ inputs:
     inputBinding:
       position: 100
   database:
-    type: Directory
-    doc: Kraken2 database directory (hash.k2d, opts.k2d, taxo.k2d) on the worker host.
+    type: string
+    doc: |
+      Absolute path of the Kraken2 database directory (hash.k2d, opts.k2d,
+      taxo.k2d) on the worker host. A path string, not a Directory, so the
+      16 GB database is read in place under the worker's --extra-bind instead
+      of being uploaded or staged.
     inputBinding:
       prefix: --db
   confidence:
