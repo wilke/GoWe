@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/wilke/GoWe/compare/v0.24.0...v0.25.0) (2026-10-16)
+
+
+### Features
+
+* **cwl:** add Kraken2 tool and run-folder workflow ([#321](https://github.com/wilke/GoWe/issues/321)) ([ad9d5d9](https://github.com/wilke/GoWe/commit/ad9d5d9c78c678339ae033cba46a8cc93974e7c9))
+* **cwl:** rRNA content tools (SILVA mapping, SortMeRNA) and run-folder workflows ([#322](https://github.com/wilke/GoWe/issues/322)) ([1c0ad93](https://github.com/wilke/GoWe/commit/1c0ad93e5ffd58f2500d0f3621cc486d691a81b3))
+* **scheduler:** capacity-aware dispatch — evaluate resource expressions, gate checkout on worker caps ([#331](https://github.com/wilke/GoWe/issues/331)) ([e03a24e](https://github.com/wilke/GoWe/commit/e03a24e336269f283b05b24daaf9a2d13cee13a9))
+
+
+### Bug Fixes
+
+* **worker:** keep output directory layout on file:// stage-out; fail on collisions ([#333](https://github.com/wilke/GoWe/issues/333)) ([35f07c1](https://github.com/wilke/GoWe/commit/35f07c1e4ab2cf43fb6d7a5285c681514b4fb133))
+
 ## [0.24.0](https://github.com/wilke/GoWe/compare/v0.23.0...v0.24.0) (2026-10-14)
 
 
