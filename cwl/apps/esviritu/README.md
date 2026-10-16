@@ -72,4 +72,6 @@ Local test with the standalone runner:
 
     cwl-runner --runtime apptainer --image-dir /scout/containers esviritu.cwl job.example.yml
 
-`cwl-runner` currently ignores `--image-dir` for steps inside a workflow. To test `esviritu-run.cwl` locally, run it from the directory that holds the `.sif`.
+The same flags work for the whole workflow (cwl-runner 0.24.0 or later honours `--image-dir` inside workflows, including scatter steps):
+
+    cwl-runner --runtime apptainer --image-dir /scout/containers esviritu-run.cwl job.yml
