@@ -1,6 +1,7 @@
 package toolexec
 
 import (
+	"github.com/me/gowe/internal/cwlexpr"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,8 +231,8 @@ func isArrayOutputType(outputType any) bool {
 
 // extractEnvVars extracts environment variables from EnvVarRequirement.
 // Delegates to the shared requirements package.
-func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any) map[string]string {
-	return requirements.ExtractEnvVars(tool, inputs, jobRequirements)
+func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any, runtime *cwlexpr.RuntimeContext) map[string]string {
+	return requirements.ExtractEnvVars(tool, inputs, jobRequirements, runtime)
 }
 
 // scanSymlinks walks a directory and returns a set of absolute paths that are symlinks.

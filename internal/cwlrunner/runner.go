@@ -781,7 +781,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res)
+		return r.executeInDockerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res, runtime)
 	case "apptainer":
 		dockerImage := getDockerImage(tool, graph.Workflow)
 		if dockerImage == "" {
@@ -803,7 +803,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res)
+		return r.executeInApptainerWithWorkDir(ctx, tool, cmdResult, mergedInputs, dockerImage, workDir, containerMounts, dockerOutputDir, res, runtime)
 	default:
 		// Build runtime context using actual work directory for local execution.
 		runtime := buildRuntimeContextWithInputs(tool, workDir, mergedInputs, expressionLib)
@@ -811,7 +811,7 @@ func (r *Runner) executeToolInternal(ctx context.Context, graph *cwl.GraphDocume
 		if err != nil {
 			return nil, fmt.Errorf("build command: %w", err)
 		}
-		return r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir)
+		return r.executeLocalWithWorkDir(ctx, tool, cmdResult, mergedInputs, workDir, runtime)
 	}
 }
 
