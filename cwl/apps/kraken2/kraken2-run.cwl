@@ -16,23 +16,30 @@ requirements:
 inputs:
   run_path:
     type: string
+    label: Run folder, absolute path on the worker host (two FASTQ files per sample)
   project_name:
     type: string?
+    label: Project name (default is the run folder name)
   include_undetermined:
     type: boolean
     default: false
+    label: Also classify Undetermined reads
   database:
     type: string
+    label: Kraken2 database directory on the worker host
     doc: Absolute path of the Kraken2 database directory on the worker host (read in place).
   confidence:
     type: float
     default: 0.0
+    label: Kraken2 confidence threshold (0-1)
   threads:
     type: int
     default: 8
+    label: CPU threads per sample
   ram_mb:
     type: int
     default: 24000
+    label: Memory per sample (MB); must exceed the database size
 
 steps:
   pair:

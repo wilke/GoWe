@@ -4,8 +4,8 @@ id: kraken2
 label: Kraken2 - k-mer taxonomic classification of paired reads
 doc: |
   Classifies the reads of one paired-end sample with Kraken2 against a
-  pre-built database directory given as a path on the worker host (e.g. a k2_pluspf_16_GB_* build from
-  https://benlangmead.github.io/aws-indexes/k2) that lives on the worker host.
+  pre-built database directory given as a path on the worker host (e.g. a
+  k2_pluspf_16_GB_* build from https://benlangmead.github.io/aws-indexes/k2).
   Writes <sample>.kraken2.report.txt (standard Kraken2 report with
   minimizer columns) and <sample>.kraken2.log. Per-read classifications are
   discarded unless `per_read_output` is true (they are as large as the input).
@@ -13,7 +13,8 @@ doc: |
   --memory-mapping is used so concurrent tasks on one host share the
   database through the page cache instead of each loading 16 GB.
 
-  Image: kraken2_latest.sif (Kraken 2.1.2), resolved via the worker's --image-dir.
+  Image: kraken2_2.1.2-no-db.sif (docker://staphb/kraken2:2.1.2-no-db, Kraken 2.1.2;
+  --report-minimizer-data needs >= 2.1.0), resolved via the worker's --image-dir.
 
 $namespaces:
   gowe: https://github.com/wilke/GoWe#
@@ -21,7 +22,7 @@ $namespaces:
 requirements:
   InlineJavascriptRequirement: {}
   DockerRequirement:
-    dockerPull: kraken2_latest.sif
+    dockerPull: kraken2_2.1.2-no-db.sif
   ResourceRequirement:
     coresMin: $(inputs.threads)
     ramMin: $(inputs.ram_mb)
@@ -37,7 +38,18 @@ arguments:
   - --memory-mapping
   - --report-minimizer-data
   - prefix: --report
-    valueFrom: $(inputs.sample).kraken2.report.txt
+    valueFrom: |-
+      ${
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(inputs.sample)) {
+          throw "invalid sample name " + JSON.stringify(inputs.sample) + ": use A-Z a-z 0-9 . _ - only";
+        }
+        if (inputs.reads.length != 2) {
+          throw "reads: expected R1 and R2, got " + inputs.reads.length + " files";
+        }
+        return inputs.sample + ".kraken2.report.txt";
+      }
+  - prefix: --threads
+    valueFrom: $(runtime.cores)
   - prefix: --output
     valueFrom: |-
       ${ return inputs.per_read_output ? inputs.sample + ".kraken2.output.txt" : "/dev/null"; }
@@ -45,7 +57,7 @@ arguments:
 inputs:
   sample:
     type: string
-    doc: Sample name used for output file names.
+    doc: Sample name used for output file names (A-Z a-z 0-9 . _ - only).
   reads:
     type: File[]
     doc: R1 and R2 FASTQ files (gzip is detected automatically).
@@ -69,12 +81,15 @@ inputs:
   threads:
     type: int
     default: 8
-    inputBinding:
-      prefix: --threads
+    doc: Cores reserved for the task and passed to Kraken2 as --threads.
   ram_mb:
     type: int
     default: 24000
-    doc: Memory per task (MB); the 16 GB database is memory-mapped.
+    doc: |
+      Memory per task (MB). The database is memory-mapped and, under
+      Apptainer memory cgroups, its pages count against this limit, so it
+      must exceed the database size (24000 for the 16 GB build; about 80000
+      for full PlusPF).
   per_read_output:
     type: boolean
     default: false
