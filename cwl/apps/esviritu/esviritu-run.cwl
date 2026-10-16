@@ -103,14 +103,14 @@ steps:
       filter_dir: filter_dir
       threads: threads
       ram_mb: ram_mb
-    out: [output_dir, tax_profile, report_html, fastp_json, fastp_html]
+    out: [output_dir, tax_profile, report_html, fastp_json, fastp_html, virus_fragments]
 
   summarize:
     run: esviritu-summarize.cwl
     in:
       project: pair/project
       sample_dirs: profile/output_dir
-    out: [summary_dir, detected_virus_info, assembly_summary, tax_profile, readstats, report_html]
+    out: [summary_dir, detected_virus_info, assembly_summary, tax_profile, readstats, report_html, virus_fragments]
 
 outputs:
   samples:
@@ -133,6 +133,10 @@ outputs:
   project_report:
     type: File?
     outputSource: summarize/report_html
+  project_virus_fragments:
+    type: File?
+    label: Primary reads, duplicates and unique fragments per reference, all samples
+    outputSource: summarize/virus_fragments
   fastp_json:
     type:
       type: array

@@ -20,6 +20,16 @@ doc: |
   <sample>/<sample>.no_viruses_detected.txt. Any other run that produces no
   results fails, with the tail of the EsViritu log.
 
+  Duplicates: when viruses are detected, the primary alignments of
+  EsViritu's final BAM (third.filt.sorted.bam) are duplicate-marked with
+  samtools markdup (pairs by both mates' positions; optical duplicates within
+  `optical_distance` pixels, 2500 suits patterned flow cells such as NextSeq
+  2000 / NovaSeq). <sample>.virus_fragments.tsv lists per reference the
+  primary reads, duplicates, optical duplicates and unique fragments (distinct
+  read names among non-duplicate reads), so a detection supported by many
+  reads from few molecules can be told apart from one with many independent
+  fragments. EsViritu's own tables are unchanged.
+
 $namespaces:
   gowe: https://github.com/wilke/GoWe#
 
@@ -34,6 +44,10 @@ requirements:
     envDef:
       - envName: ESV_SAMPLE
         envValue: $(inputs.sample)
+      - envName: ESV_KEEP
+        envValue: '$(inputs.keep_intermediate ? "True" : "False")'
+      - envName: ESV_OPTDIST
+        envValue: $(inputs.optical_distance)
 
 hints:
   gowe:Execution:
@@ -43,22 +57,60 @@ baseCommand:
   - bash
   - -c
   - |-
+    set -o pipefail
     case "$ESV_SAMPLE" in
       ''|.|..|-*|*/*) echo "invalid sample name: '$ESV_SAMPLE'" >&2; exit 1;;
     esac
-    EsViritu "$@"
+    # temp dir and cores as passed to EsViritu (--temp, --cpu)
+    ESV_TEMP= ESV_CPU=1 prev=
+    for a in "$@"; do
+      case "$prev" in --temp) ESV_TEMP=$a;; --cpu) ESV_CPU=$a;; esac
+      prev=$a
+    done
+    cleanup() { if [ "$ESV_KEEP" != True ] && [ -n "$ESV_TEMP" ]; then rm -rf "$ESV_TEMP"; fi; }
+    # EsViritu always keeps its temp dir here, so the final BAM is still there
+    # for the duplicate counts; cleanup() removes it unless keep_intermediate.
+    EsViritu "$@" --keep True
     rc=$?
     o="$ESV_SAMPLE"
     log="$o/$ESV_SAMPLE"_esviritu.log
-    if [ -s "$o/$ESV_SAMPLE.detected_virus.info.tsv" ]; then exit $rc; fi
+    if [ -s "$o/$ESV_SAMPLE.detected_virus.info.tsv" ]; then
+      bam="$ESV_TEMP/$ESV_SAMPLE.third.filt.sorted.bam"
+      if [ "$rc" -eq 0 ] && [ -s "$bam" ]; then
+        frag="$o/$ESV_SAMPLE.virus_fragments.tsv"
+        t="$ESV_TEMP/markdup"; mkdir -p "$t"
+        if ! { samtools view -u -F 0x904 "$bam" \
+               | samtools collate -O -u - "$t/collate" \
+               | samtools fixmate -m -u - - \
+               | samtools sort -u -@ "$ESV_CPU" -T "$t/sort" - \
+               | samtools markdup -d "$ESV_OPTDIST" -t -@ "$ESV_CPU" -f "$o/$ESV_SAMPLE.markdup.stats.txt" - "$t/md.bam"; } \
+             || ! samtools view "$t/md.bam" | awk -F '\t' -v OFS='\t' -v S="$ESV_SAMPLE" \
+                  -v META=/opt/esviritu_db/v3.2.4/virus_pathogen_database.all_metadata.tsv '
+               BEGIN { while ((getline l < META) > 0) { split(l, m, "\t"); sub_[m[1]] = m[12] } }
+               { r = $3; tot[r]++
+                 if (and($2, 1024)) { d[r]++; if ($0 ~ /\tdt:Z:SQ/) opt[r]++ }
+                 else if (!seen[$1 "\t" r]++) uf[r]++ }
+               END {
+                 print "sample_ID", "Accession", "subspecies", "primary_reads", "duplicates",
+                       "optical_duplicates", "unique_fragments", "duplicate_pct"
+                 for (r in tot) printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\n", S, r, sub_[r], tot[r], d[r] + 0,
+                                       opt[r] + 0, uf[r] + 0, 100 * d[r] / tot[r]
+               }' > "$frag.tmp"; then
+          echo "duplicate marking failed for $ESV_SAMPLE" >&2; cleanup; exit 1
+        fi
+        { head -n 1 "$frag.tmp"; tail -n +2 "$frag.tmp" | sort -t "$(printf '\t')" -k4,4nr; } > "$frag"
+        rm -f "$frag.tmp"
+      fi
+      cleanup; exit $rc
+    fi
     if [ -f "$log" ] && grep -qE "No reads aligned after|CoverM-like table is empty" "$log"; then
       echo "no viruses detected" > "$o/$ESV_SAMPLE.no_viruses_detected.txt"
       echo "EsViritu: no viruses detected in $ESV_SAMPLE" >&2
-      exit 0
+      cleanup; exit 0
     fi
     echo "EsViritu produced no results for $ESV_SAMPLE (exit $rc)" >&2
     if [ -f "$log" ]; then tail -n 20 "$log" >&2; fi
-    exit 1
+    cleanup; exit 1
   - esviritu
 
 arguments:
@@ -84,8 +136,6 @@ arguments:
     valueFrom: '$(inputs.quality_filter ? "True" : "False")'
   - prefix: --dedup
     valueFrom: '$(inputs.dedup ? "True" : "False")'
-  - prefix: --keep
-    valueFrom: '$(inputs.keep_intermediate ? "True" : "False")'
   - prefix: --filter_seqs
     valueFrom: '$(inputs.filter_dir ? "True" : "False")'
 
@@ -156,6 +206,12 @@ inputs:
     type: boolean
     default: false
     label: Keep intermediate files (BAMs etc.)
+    doc: Kept in the task's tmp dir (EsViritu --temp); otherwise removed when the task ends.
+  optical_distance:
+    type: int
+    default: 2500
+    label: Optical duplicate distance (pixels) for samtools markdup
+    doc: 2500 for patterned flow cells (NextSeq 2000, NovaSeq), 100 for older non-patterned ones.
   threads:
     type: int
     default: 4
@@ -218,6 +274,11 @@ outputs:
     label: Consensus sequences of detected viruses
     outputBinding:
       glob: $(inputs.sample)/$(inputs.sample)_final_consensus.fasta
+  virus_fragments:
+    type: File?
+    label: Primary reads, duplicates and unique fragments per reference
+    outputBinding:
+      glob: $(inputs.sample)/$(inputs.sample).virus_fragments.tsv
   fastp_json:
     type: File?
     label: fastp read QC report (JSON)

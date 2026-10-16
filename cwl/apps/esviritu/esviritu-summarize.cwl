@@ -5,7 +5,8 @@ label: Combine EsViritu results of several samples (summarize_esv_runs)
 doc: |
   Collects the per-sample EsViritu tables and run YAMLs into one project
   directory and runs summarize_esv_runs. It writes the project-level detection,
-  assembly, taxonomy, coverage and read-stats tables plus an HTML report.
+  assembly, taxonomy, coverage and read-stats tables plus an HTML report, and
+  merges the per-sample virus_fragments tables (duplicates / unique fragments).
 
 $namespaces:
   gowe: https://github.com/wilke/GoWe#
@@ -38,6 +39,11 @@ arguments:
         done
       done
       summarize_esv_runs "$project" --outdir summary
+      frag="summary/$project.virus_fragments.tsv"
+      for f in "$project"/*.virus_fragments.tsv; do
+        [ -e "$f" ] || continue
+        if [ -e "$frag" ]; then tail -n +2 "$f" >> "$frag"; else cat "$f" > "$frag"; fi
+      done
       rm -rf "$project"
   - position: 1
     valueFrom: summarize
@@ -76,6 +82,11 @@ outputs:
     type: File?
     outputBinding:
       glob: summary/$(inputs.project).readstats.tsv
+  virus_fragments:
+    type: File?
+    label: Unique fragments per reference for all samples
+    outputBinding:
+      glob: summary/$(inputs.project).virus_fragments.tsv
   report_html:
     type: File?
     outputBinding:

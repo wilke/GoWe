@@ -64,6 +64,24 @@ single-threaded coverage-table step; smaller samples used 9-13 GB. Both are inpu
     threads: 16
     ram_mb: 48000
 
+## Duplicates and unique fragments
+
+When viruses are detected, `esviritu.cwl` duplicate-marks the primary alignments of EsViritu's final BAM
+(`samtools markdup`, mates' positions; optical duplicates within `optical_distance` pixels, default 2500 for patterned
+flow cells such as NextSeq 2000 / NovaSeq) and writes `<sample>/<sample>.virus_fragments.tsv`:
+
+| column | meaning |
+|---|---|
+| `primary_reads` | primary alignments on the reference (the basis of EsViritu's `read_count`) |
+| `duplicates`, `optical_duplicates` | reads marked as PCR or optical duplicates |
+| `unique_fragments` | distinct read names among non-duplicate reads: independent molecules |
+| `duplicate_pct` | duplicates / primary_reads |
+
+`esviritu-run` merges these into `summary/<project>.virus_fragments.tsv`. Use `unique_fragments` to judge how well a
+detection is supported: in hybrid-capture wastewater libraries we have seen 650 reads of a virus from a single molecule.
+EsViritu's own tables are unchanged. To do this, the tool always runs EsViritu with `--keep True` and removes the temp
+directory itself afterwards (unless `keep_intermediate: true`).
+
 ## Single sample (`esviritu`)
 
     gowe submit --workflow esviritu -i job.example.yml
