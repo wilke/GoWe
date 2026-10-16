@@ -166,12 +166,17 @@ func (s *HTTPStager) StageOut(ctx context.Context, srcPath string, taskID string
 	}
 
 	// Expand URL template.
+	relpath, err := staging.StageOutRelSlash(srcPath, opts.RelPath)
+	if err != nil {
+		return "", fmt.Errorf("http stager: %w", err)
+	}
 	filename := filepath.Base(srcPath)
 	basename := strings.TrimSuffix(filename, filepath.Ext(filename))
 
 	uploadURL := strings.ReplaceAll(uploadPath, "{taskID}", taskID)
 	uploadURL = strings.ReplaceAll(uploadURL, "{filename}", filename)
 	uploadURL = strings.ReplaceAll(uploadURL, "{basename}", basename)
+	uploadURL = strings.ReplaceAll(uploadURL, "{relpath}", relpath)
 
 	// Upload with retries.
 	var lastErr error

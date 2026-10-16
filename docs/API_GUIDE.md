@@ -928,7 +928,8 @@ Runs the verification above, then for every file that does **not** verify:
 
 1. locates the local original by **checksum + size** among the output `File`
    objects recorded on the submission's tasks (and its children's tasks) —
-   `file://<stage-out-dir>/<task-id>/<name>`; basenames are not used because
+   `file://<stage-out-dir>/<task-id>/<path-below-the-task-output-dir>` (the
+   output directory layout is preserved, e.g. `.../<task-id>/plots/a/f.js`); basenames are not used because
    scatter shards share them;
 2. admits the candidate only if it resolves (symlinks followed) under one of
    the server's `--redeliver-source-dirs`, is a regular file, and has the

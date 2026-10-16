@@ -2,6 +2,7 @@ package staging
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -426,5 +427,47 @@ func TestSharedFileStager_OptsOverrideMode(t *testing.T) {
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Error("expected symlink (opts override), got regular file")
+	}
+}
+
+func TestSharedFileStager_StageOutRelPathAndDir(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	s := NewSharedFileStager(SharedFileStagerConfig{StageOutDir: base})
+
+	src := filepath.Join(t.TempDir(), "f.txt")
+	writeFile(t, src, "content")
+	loc, err := s.StageOut(ctx, src, "t1", StageOptions{RelPath: "a/b/f.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(base, "t1", "a", "b", "f.txt")
+	if loc != "file://"+dest {
+		t.Fatalf("loc = %s", loc)
+	}
+	if b, _ := os.ReadFile(dest); string(b) != "content" {
+		t.Fatalf("content = %q", b)
+	}
+	if _, err := s.StageOut(ctx, src, "t1", StageOptions{RelPath: "../x"}); !errors.Is(err, ErrUnsafeRelPath) {
+		t.Fatalf("err = %v", err)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "x", "y"), "Y")
+	loc, err = s.StageOutDir(ctx, dir, "t1", StageOptions{RelPath: "d", CopyTree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc != "file://"+filepath.Join(base, "t1", "d") {
+		t.Fatalf("loc = %s", loc)
+	}
+	if b, _ := os.ReadFile(filepath.Join(base, "t1", "d", "x", "y")); string(b) != "Y" {
+		t.Fatalf("content = %q", b)
+	}
+
+	local := NewSharedFileStager(SharedFileStagerConfig{})
+	loc, err = local.StageOutDir(ctx, dir, "t1", StageOptions{RelPath: "d"})
+	if err != nil || loc != "file://"+dir {
+		t.Fatalf("local loc=%s err=%v", loc, err)
 	}
 }

@@ -263,6 +263,13 @@ func (s *ShockStager) upload(ctx context.Context, host string, srcPath string, t
 			attrs[k] = v
 		}
 	}
+	if opts.RelPath != "" {
+		rel, err := StageOutRelSlash(srcPath, opts.RelPath)
+		if err != nil {
+			return nil, fmt.Errorf("shock stager: %w", err)
+		}
+		attrs["relpath"] = rel
+	}
 	attrsJSON, _ := json.Marshal(attrs)
 	if err := writer.WriteField("attributes_str", string(attrsJSON)); err != nil {
 		return nil, fmt.Errorf("write attributes: %w", err)

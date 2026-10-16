@@ -109,7 +109,7 @@ func main() {
 	flag.IntVar(&httpRetries, "http-retries", 3, "HTTP retry attempts")
 	flag.DurationVar(&httpRetryDelay, "http-retry-delay", 1*time.Second, "Initial HTTP retry delay")
 	flag.StringVar(&httpCredentials, "http-credentials", "", "Path to credentials JSON file")
-	flag.StringVar(&httpUploadURL, "http-upload-url", "", "URL template for StageOut uploads (e.g., https://data.example.com/outputs/{taskID}/{filename})")
+	flag.StringVar(&httpUploadURL, "http-upload-url", "", "URL template for StageOut uploads (e.g., https://data.example.com/outputs/{taskID}/{filename}; {relpath} expands to the output path below the task root)")
 	flag.StringVar(&httpUploadMethod, "http-upload-method", "PUT", "HTTP method for uploads (PUT or POST)")
 
 	// S3 stager flags.
