@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -2468,53 +2469,94 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (`+workerColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
 		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version, w.KeyID,
+		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
 	)
 	return err
+}
+
+// workerColumns is the single column list for workers reads/inserts; its order
+// must match scanWorker and the CreateWorker argument list.
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb"
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// corruptWorkerRowError marks a row that scanned but whose JSON/time columns
+// do not decode; list callers skip such rows, GetWorker returns the error.
+type corruptWorkerRowError struct {
+	id  string
+	err error
+}
+
+func (e *corruptWorkerRowError) Error() string { return e.err.Error() }
+func (e *corruptWorkerRowError) Unwrap() error { return e.err }
+
+// scanWorker scans one workerColumns row. A raw sql error (including
+// sql.ErrNoRows) is returned as-is; a decode failure is a *corruptWorkerRowError.
+func scanWorker(sc rowScanner) (*model.Worker, error) {
+	var w model.Worker
+	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
+	var gpuEnabled int
+	var maxCPUs, maxMem sql.NullInt64
+	if err := sc.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
+		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem); err != nil {
+		return nil, err
+	}
+	w.State = model.WorkerState(state)
+	w.Runtime = model.ContainerRuntime(runtime)
+	w.GPUEnabled = gpuEnabled != 0
+	if maxCPUs.Valid {
+		v := int(maxCPUs.Int64)
+		w.MaxCPUs = &v
+	}
+	if maxMem.Valid {
+		v := maxMem.Int64
+		w.MaxMemMB = &v
+	}
+	var err error
+	if err = unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	if err = unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	if w.RegisteredAt, err = parseTimeOrZero(registeredAt); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	return &w, nil
+}
+
+// nullableInt maps a nil capacity pointer to SQL NULL.
+func nullableInt[T int | int64](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return int64(*p)
 }
 
 func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, error) {
 	s.logger.Debug("sql", "op", "select", "table", "workers", "id", id)
 
-	var w model.Worker
-	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-	var gpuEnabled int
-
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
-		 FROM workers WHERE id = ?`, id,
-	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID)
-
+	w, err := scanWorker(s.db.QueryRowContext(ctx,
+		`SELECT `+workerColumns+` FROM workers WHERE id = ?`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	w.State = model.WorkerState(state)
-	w.Runtime = model.ContainerRuntime(runtime)
-	w.GPUEnabled = gpuEnabled != 0
-	if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
-		return nil, err
-	}
-	if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
-		return nil, err
-	}
-	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
-		return nil, err
-	}
-	if w.RegisteredAt, err = parseTimeOrZero(registeredAt); err != nil {
-		return nil, err
-	}
-
-	return &w, nil
+	return w, nil
 }
 
 func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
@@ -2537,10 +2579,11 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
-		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=? WHERE id=?`,
+		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=?, max_cpus=?, max_mem_mb=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
-		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON), w.ID,
+		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON),
+		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB), w.ID,
 	)
 	if err != nil {
 		return err
@@ -2593,8 +2636,7 @@ func (s *SQLiteStore) listWorkers(ctx context.Context, where string, args ...any
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
-		 FROM workers `+where+` ORDER BY registered_at`, args...)
+		`SELECT `+workerColumns+` FROM workers `+where+` ORDER BY registered_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2602,40 +2644,16 @@ func (s *SQLiteStore) listWorkers(ctx context.Context, where string, args ...any
 
 	var workers []*model.Worker
 	for rows.Next() {
-		var w model.Worker
-		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-		var gpuEnabled int
-
-		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID); err != nil {
+		w, err := scanWorker(rows)
+		if err != nil {
+			var corrupt *corruptWorkerRowError
+			if errors.As(err, &corrupt) {
+				slog.Error("skipping corrupt worker row", "id", corrupt.id, "error", corrupt.err)
+				continue
+			}
 			return nil, err
 		}
-
-		w.State = model.WorkerState(state)
-		w.Runtime = model.ContainerRuntime(runtime)
-		w.GPUEnabled = gpuEnabled != 0
-		if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if t, err := parseTimeOrZero(lastSeen); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.LastSeen = t
-		}
-		if t, err := parseTimeOrZero(registeredAt); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.RegisteredAt = t
-		}
-
-		workers = append(workers, &w)
+		workers = append(workers, w)
 	}
 	return workers, rows.Err()
 }
@@ -2678,6 +2696,34 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	}
 	defer tx.Rollback()
 
+	// Look up the worker's datasets, GPU and capacity BEFORE the candidate
+	// query: the capacity bounds are part of that query so a run of unfit
+	// tasks at the head of the queue cannot fill the LIMIT window and starve
+	// fitting tasks behind it (#324).
+	var workerDatasetsJSON string
+	var workerDatasets map[string]string
+	var workerGPUEnabled bool
+	var workerMaxCPUs, workerMaxMem sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled, max_cpus, max_mem_mb FROM workers WHERE id = ?`, workerID).
+		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem); err != nil {
+		if err != sql.ErrNoRows {
+			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
+		}
+		workerDatasets = map[string]string{}
+	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
+		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
+		workerDatasets = map[string]string{}
+	}
+	// A NULL capacity (legacy worker, or no such row) disables the fit check
+	// for that dimension; the SQL binds below are NULL in that case.
+	var capCPUs, capMem any
+	if workerMaxCPUs.Valid {
+		capCPUs = workerMaxCPUs.Int64
+	}
+	if workerMaxMem.Valid {
+		capMem = workerMaxMem.Int64
+	}
+
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
 		`SELECT `+taskColumns+`
@@ -2685,7 +2731,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
 		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
 		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)
-		 ORDER BY priority DESC, created_at LIMIT 10`)
+		   AND (? IS NULL OR COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN json_extract(runtime_hints,'$.cores') END, 0) <= ?)
+		   AND (? IS NULL OR COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN json_extract(runtime_hints,'$.ram_mb') END, 0) <= ?)
+		 ORDER BY priority DESC, created_at LIMIT 10`, capCPUs, capCPUs, capMem, capMem)
 	if err != nil {
 		return nil, err
 	}
@@ -2780,20 +2830,6 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		return nil, err
 	}
 
-	// Look up the worker's datasets and GPU capability for affinity matching.
-	var workerDatasetsJSON string
-	var workerDatasets map[string]string
-	var workerGPUEnabled bool
-	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON, &workerGPUEnabled); err != nil {
-		if err != sql.ErrNoRows {
-			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
-		}
-		workerDatasets = map[string]string{}
-	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
-		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
-		workerDatasets = map[string]string{}
-	}
-
 	// Filter by runtime capability, worker group, and dataset affinity.
 	canRunContainers := model.HasContainerRuntime(runtime)
 
@@ -2806,6 +2842,21 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	var eligible []scored
 
 	for _, task := range candidates {
+		// Check worker capacity (defence in depth: the candidate query
+		// already applies the same bounds).
+		if task.RuntimeHints != nil {
+			if workerMaxCPUs.Valid && int64(task.RuntimeHints.Cores) > workerMaxCPUs.Int64 {
+				s.logger.Debug("checkout skip: task exceeds worker cores", "task_id", task.ID, "worker_id", workerID,
+					"want", task.RuntimeHints.Cores, "max", workerMaxCPUs.Int64)
+				continue
+			}
+			if workerMaxMem.Valid && task.RuntimeHints.RamMB > workerMaxMem.Int64 {
+				s.logger.Debug("checkout skip: task exceeds worker memory", "task_id", task.ID, "worker_id", workerID,
+					"want_mb", task.RuntimeHints.RamMB, "max_mb", workerMaxMem.Int64)
+				continue
+			}
+		}
+
 		// Check container runtime capability.
 		taskNeedsContainer := false
 		if task.RuntimeHints != nil && task.RuntimeHints.DockerImage != "" {
@@ -2925,8 +2976,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	// Find stale workers first.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id
-		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
+		`SELECT `+workerColumns+` FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -2934,37 +2984,16 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	var stale []*model.Worker
 	for rows.Next() {
-		var w model.Worker
-		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-		var gpuEnabled int
-		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version, &w.KeyID); err != nil {
+		w, err := scanWorker(rows)
+		if err != nil {
+			var corrupt *corruptWorkerRowError
+			if errors.As(err, &corrupt) {
+				slog.Error("skipping corrupt worker row", "id", corrupt.id, "error", corrupt.err)
+				continue
+			}
 			return nil, err
 		}
-		w.State = model.WorkerState(state)
-		w.Runtime = model.ContainerRuntime(runtime)
-		w.GPUEnabled = gpuEnabled != 0
-		if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if t, err := parseTimeOrZero(lastSeen); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.LastSeen = t
-		}
-		if t, err := parseTimeOrZero(registeredAt); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.RegisteredAt = t
-		}
-		stale = append(stale, &w)
+		stale = append(stale, w)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -528,3 +528,83 @@ func TestListWorkers(t *testing.T) {
 		t.Errorf("expected 1 worker, got %d", len(workers))
 	}
 }
+
+func TestRegisterWorker_Capacity(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantCPUs *float64
+		wantMem  *float64
+	}{
+		{"with caps", `{"name":"w","runtime":"none","max_cpus":16,"max_mem_mb":32000}`, f64(16), f64(32000)},
+		{"legacy body", `{"name":"w","runtime":"none"}`, nil, nil},
+		{"zero", `{"name":"w","runtime":"none","max_cpus":0,"max_mem_mb":0}`, nil, nil},
+		{"negative", `{"name":"w","runtime":"none","max_cpus":-4,"max_mem_mb":-1}`, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, st := testServerWithStore()
+			w, env := doPost(t, srv, "/api/v1/workers/", tt.body)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+			}
+			var data map[string]any
+			json.Unmarshal(env.Data, &data)
+			check := func(key string, want *float64) {
+				got, present := data[key]
+				if want == nil && present {
+					t.Errorf("response %s = %v, want absent", key, got)
+				}
+				if want != nil && got != *want {
+					t.Errorf("response %s = %v, want %v", key, got, *want)
+				}
+			}
+			check("max_cpus", tt.wantCPUs)
+			check("max_mem_mb", tt.wantMem)
+
+			stored, err := st.GetWorker(context.Background(), data["id"].(string))
+			if err != nil || stored == nil {
+				t.Fatalf("GetWorker: %v %v", stored, err)
+			}
+			if (stored.MaxCPUs != nil) != (tt.wantCPUs != nil) || (stored.MaxMemMB != nil) != (tt.wantMem != nil) {
+				t.Errorf("stored caps = %v/%v", stored.MaxCPUs, stored.MaxMemMB)
+			}
+		})
+	}
+}
+
+func f64(v float64) *float64 { return &v }
+
+func TestWorkerCheckout_RespectsCapacity(t *testing.T) {
+	srv := testServer()
+	_, subID := createTestSubmission(t, srv)
+
+	w, env := doPost(t, srv, "/api/v1/workers/", `{"name":"small","runtime":"none","max_cpus":4,"max_mem_mb":8000}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("register: %d %s", w.Code, w.Body.String())
+	}
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	workerID := data["id"].(string)
+
+	seedQueuedWorkerTask(t, srv, subID, "task_big")
+	big, _ := srv.store.GetTask(context.Background(), "task_big")
+	big.RuntimeHints = &model.RuntimeHints{Cores: 16}
+	if err := srv.store.UpdateTask(context.Background(), big); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/workers/"+workerID+"/work", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (task needs 16 cores, worker has 4), body=%s", rec.Code, rec.Body.String())
+	}
+
+	// A fitting task is still handed out.
+	seedQueuedWorkerTask(t, srv, subID, "task_ok")
+	got := checkoutTask(t, srv, workerID)
+	if got.ID != "task_ok" {
+		t.Errorf("checked out %s, want task_ok", got.ID)
+	}
+}

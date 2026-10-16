@@ -313,6 +313,17 @@ var alterStatements = []struct {
 		column:   "key_id",
 		alterSQL: "ALTER TABLE workers ADD COLUMN key_id TEXT NOT NULL DEFAULT ''",
 	},
+	// Worker-reported capacity (#324). NULL = legacy/undetected: no fit check.
+	{
+		table:    "workers",
+		column:   "max_cpus",
+		alterSQL: "ALTER TABLE workers ADD COLUMN max_cpus INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "max_mem_mb",
+		alterSQL: "ALTER TABLE workers ADD COLUMN max_mem_mb INTEGER",
+	},
 	// Output destination for workspace result uploads
 	{
 		table:    "submissions",

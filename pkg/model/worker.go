@@ -22,6 +22,12 @@ type Worker struct {
 	LastSeen     time.Time         `json:"last_seen"`
 	CurrentTask  string            `json:"current_task,omitempty"`
 	RegisteredAt time.Time         `json:"registered_at"`
+	// MaxCPUs and MaxMemMB are the worker's self-reported capacity (its
+	// effective --max-cpus / --max-mem). nil means a legacy worker or an
+	// undetected value: CheckoutTask and the preflight apply no fit check
+	// for that dimension (#324).
+	MaxCPUs  *int   `json:"max_cpus,omitempty"`
+	MaxMemMB *int64 `json:"max_mem_mb,omitempty"`
 	// KeyID is the id of the worker key that registered this worker. All
 	// /workers/{id}/* routes require the caller's key id to match. Empty on
 	// legacy rows (adopted on first authorized touch) and when worker auth is

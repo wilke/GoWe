@@ -38,6 +38,8 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		GPUEnabled bool              `json:"gpu_enabled"`
 		GPUDevice  string            `json:"gpu_device"`
 		Datasets   map[string]string `json:"datasets"`
+		MaxCPUs    *int              `json:"max_cpus"`
+		MaxMemMB   *int64            `json:"max_mem_mb"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -97,6 +99,13 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		LastSeen:     now,
 		RegisteredAt: now,
 	}
+	// Self-reported capacity; non-positive means "not reported" (legacy).
+	if req.MaxCPUs != nil && *req.MaxCPUs > 0 {
+		worker.MaxCPUs = req.MaxCPUs
+	}
+	if req.MaxMemMB != nil && *req.MaxMemMB > 0 {
+		worker.MaxMemMB = req.MaxMemMB
+	}
 	// Bind the worker to the registering key. "none" is the anonymous context
 	// used when worker auth is disabled; leave those rows unbound ('') so they
 	// are adopted if auth is enabled later.
@@ -116,7 +125,8 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets))
+	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets),
+		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB))
 	respondCreated(w, reqID, worker)
 }
 
@@ -606,4 +616,12 @@ func (s *Server) authorizeWorker(w http.ResponseWriter, r *http.Request, id stri
 		Message: "worker key is not authorized for worker " + id,
 	})
 	return nil, false
+}
+
+// capLog renders an optional capacity for logging ("unreported" when nil).
+func capLog[T int | int64](p *T) any {
+	if p == nil {
+		return "unreported"
+	}
+	return *p
 }
