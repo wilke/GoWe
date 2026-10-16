@@ -60,27 +60,51 @@ func toolDeclaresResourceRequirement(tool map[string]any) bool {
 	return false
 }
 
-// apply evaluates the resource request against task.Job and stores it in a
-// private copy of task.RuntimeHints (scatter tasks share the template's
-// pointer). It never fails: an evaluation failure leaves that dimension 0
-// (no constraint) and logs one WARN per step instance.
-func (h *resourceHinter) apply(task *model.Task) { h.applyTo(task, true) }
-
-// applyTemplate is apply for the step's template task, whose scatter inputs
-// are still whole arrays: failures are expected there and not logged.
-func (h *resourceHinter) applyTemplate(task *model.Task) { h.applyTo(task, false) }
-
-func (h *resourceHinter) applyTo(task *model.Task, warn bool) {
-	if h == nil || task == nil {
-		return
+// evaluate returns the resource request for one job. It never fails: a
+// dimension that cannot be evaluated is 0 (no constraint) and the first
+// failure per step instance is logged at WARN. A nil hinter returns zero.
+func (h *resourceHinter) evaluate(job map[string]any) cwltool.ResourceRequest {
+	if h == nil {
+		return cwltool.ResourceRequest{}
 	}
-	req, err := cwltool.EvaluateResourceRequest(h.tool, task.Job, h.lib)
-	if err != nil && warn && !h.warned {
+	req, err := cwltool.EvaluateResourceRequest(h.tool, job, h.lib)
+	if err != nil && !h.warned {
 		h.warned = true
 		h.logger.Warn("resource requirement not evaluable at dispatch; capacity gating skipped for it",
-			"si_id", h.siID, "step_id", task.StepID, "error", err)
+			"si_id", h.siID, "error", err)
+	}
+	return req
+}
+
+// evaluateAll evaluates one request per scatter combination, in order, so the
+// JS evaluation happens once per iteration and the same values feed both the
+// preflight and the tasks (applyRequest).
+func (h *resourceHinter) evaluateAll(jobs []map[string]any) []cwltool.ResourceRequest {
+	reqs := make([]cwltool.ResourceRequest, len(jobs))
+	if h == nil {
+		return reqs
+	}
+	for i, job := range jobs {
+		reqs[i] = h.evaluate(job)
+	}
+	return reqs
+}
+
+// applyRequest stores req in a private copy of task.RuntimeHints (scatter
+// tasks share the template's pointer). A nil hinter leaves the task untouched.
+func (h *resourceHinter) applyRequest(task *model.Task, req cwltool.ResourceRequest) {
+	if h == nil || task == nil {
+		return
 	}
 	task.RuntimeHints = cloneRuntimeHints(task.RuntimeHints)
 	task.RuntimeHints.Cores = req.Cores
 	task.RuntimeHints.RamMB = req.RamMB
+}
+
+// apply evaluates the resource request against task.Job and stores it.
+func (h *resourceHinter) apply(task *model.Task) {
+	if h == nil || task == nil {
+		return
+	}
+	h.applyRequest(task, h.evaluate(task.Job))
 }

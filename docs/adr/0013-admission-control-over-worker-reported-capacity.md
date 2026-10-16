@@ -46,8 +46,12 @@ Admit a task to a worker only if it fits the capacity that worker reported.
 - Capacity is self-reported and trusted, the same trust class as `--max-cpus` today.
 - Requirement keys for stuck detection now include cores/RAM, so tasks differing only in
   those values are tracked separately.
-- Preflight sees the template task, which carries no worker group; an untagged check uses
-  the default group.
+- The dispatch preflight resolves the task's effective worker group (tool hint, step hint,
+  `--group` label) itself, because the template task it checks carries none. Capacity is
+  judged against that group only while it has online workers; an offline group keeps the
+  pre-existing preflight semantics (dispatch, queue, stuck-task detector) since fit cannot be
+  judged without its workers. Scatter steps are checked per iteration before any task is
+  created. Untagged tasks are judged against the default group, the only one that serves them.
 
 **Neutral**
 - Shared-host budgeting (several workers on one machine) is out of scope here and is

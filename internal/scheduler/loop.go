@@ -884,10 +884,10 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 
 	// Evaluate ResourceRequirement (including expressions) into the hints so
 	// the preflight and CheckoutTask see what the worker will enforce (#324).
+	// Scatter steps are evaluated per iteration in dispatchScatterStep: the
+	// template job still holds whole arrays for the scattered inputs.
 	hinter := l.newResourceHinter(si, tmpTask)
-	if len(step.Scatter) > 0 {
-		hinter.applyTemplate(tmpTask) // per-iteration values are set at scatter time
-	} else {
+	if len(step.Scatter) == 0 {
 		hinter.apply(tmpTask)
 	}
 
@@ -897,30 +897,13 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Pre-flight check: if executor is "worker", verify a capable worker exists.
 	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
 		caps := l.workerCapabilities()
-		canMatch, reason := canMatchTask(caps, tmpTask.RuntimeHints)
+		var req cwltool.ResourceRequest
+		if len(step.Scatter) == 0 && tmpTask.RuntimeHints != nil {
+			req = cwltool.ResourceRequest{Cores: tmpTask.RuntimeHints.Cores, RamMB: tmpTask.RuntimeHints.RamMB}
+		}
+		canMatch, reason := canMatchTask(caps, l.preflightHints(tmpTask, step, sub, caps, req))
 		if !canMatch {
-			l.deferredSteps[si.ID]++
-			count := l.deferredSteps[si.ID]
-			if count >= l.config.PreflightDeferralTicks {
-				delete(l.deferredSteps, si.ID)
-				now := time.Now().UTC()
-				si.State = model.StepStateFailed
-				si.Error = fmt.Sprintf("no capable worker: %s (deferred %d ticks)", reason, count)
-				si.CompletedAt = &now
-				l.logger.Error("step failed: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
-					"deferred_ticks", count)
-				return l.updateStepInstance(ctx, si)
-			}
-			if count == 1 {
-				l.logger.Warn("deferring step dispatch: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason)
-			} else {
-				l.logger.Debug("deferring step dispatch: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
-					"deferred_ticks", count)
-			}
-			return nil // Leave step in READY for next tick.
+			return l.deferOrFailPreflight(ctx, si, reason)
 		}
 		// Worker can match — clear any prior deferral.
 		delete(l.deferredSteps, si.ID)
@@ -1022,6 +1005,80 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	return l.updateStepInstance(ctx, si)
 }
 
+// resolveWorkerGroup resolves the worker group a task created from step
+// will carry, with the precedence createTaskFromStep applies: the tool's own
+// hints, then the step's gowe:Execution.worker_group, then the submission
+// label (`gowe submit --group`). Empty means the default group.
+func resolveWorkerGroup(hints *model.RuntimeHints, step *model.Step, sub *model.Submission) string {
+	if hints != nil && hints.WorkerGroup != "" {
+		return hints.WorkerGroup
+	}
+	if step != nil && step.Hints != nil && step.Hints.WorkerGroup != "" {
+		return step.Hints.WorkerGroup
+	}
+	if sub != nil && sub.Labels != nil {
+		return sub.Labels["worker_group"]
+	}
+	return ""
+}
+
+// preflightHints builds the hints the dispatch preflight checks for a step.
+// The template task carries no worker group (createTaskFromStep adds it from
+// the step hints or the submission label), so the preflight resolves the
+// effective group here and checks capacity against that group's workers,
+// not against "default" or every online worker (#324).
+//
+// Capacity (req) is only checked when the effective group has online
+// workers: with none online nothing can be said about fit, so the preflight
+// keeps its pre-#324 group-less semantics and the stuck-task detector owns
+// the "group offline" case. With the group online the step is checked as
+// CheckoutTask will see it (group, capacity, prestage, GPU) so a task no
+// worker in its group can ever take fails here with the reason, instead of
+// sitting QUEUED forever.
+func (l *Loop) preflightHints(tmpTask *model.Task, step *model.Step, sub *model.Submission,
+	caps *WorkerCapabilities, req cwltool.ResourceRequest) *model.RuntimeHints {
+	hints := cloneRuntimeHints(tmpTask.RuntimeHints)
+	hints.Cores, hints.RamMB = 0, 0
+	group := resolveWorkerGroup(tmpTask.RuntimeHints, step, sub)
+	if group == "" {
+		group = defaultWorkerGroupKey
+	}
+	if caps.Groups[group] == 0 {
+		return hints
+	}
+	hints.WorkerGroup = group
+	hints.Cores, hints.RamMB = req.Cores, req.RamMB
+	return hints
+}
+
+// deferOrFailPreflight records one more preflight deferral for si. Below
+// PreflightDeferralTicks the step stays READY for the next tick; at the
+// bound it is FAILED with the reason.
+func (l *Loop) deferOrFailPreflight(ctx context.Context, si *model.StepInstance, reason string) error {
+	l.deferredSteps[si.ID]++
+	count := l.deferredSteps[si.ID]
+	if count >= l.config.PreflightDeferralTicks {
+		delete(l.deferredSteps, si.ID)
+		now := time.Now().UTC()
+		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("no capable worker: %s (deferred %d ticks)", reason, count)
+		si.CompletedAt = &now
+		l.logger.Error("step failed: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+			"deferred_ticks", count)
+		return l.updateStepInstance(ctx, si)
+	}
+	if count == 1 {
+		l.logger.Warn("deferring step dispatch: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason)
+	} else {
+		l.logger.Debug("deferring step dispatch: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+			"deferred_ticks", count)
+	}
+	return nil // Leave step in READY for next tick.
+}
+
 // dispatchScatterStep handles scatter dispatch for CommandLineTools and ExpressionTools.
 // Creates N Tasks (one per scatter combination) and executes them.
 func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
@@ -1097,8 +1154,38 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		}
 	}
 
-	si.ScatterCount = len(combinations)
 	isExprTool := isExpressionTool(tmpTask.Tool)
+
+	// Per-iteration ResourceRequirement (#324): evaluated once here, used by
+	// the preflight below and stored on each task further down. An iteration
+	// that no online worker in the step's group can fit makes the whole step
+	// unfinishable, so it is deferred/failed like a non-scatter step rather
+	// than left QUEUED forever.
+	var reqs []cwltool.ResourceRequest
+	if !isExprTool {
+		reqs = hinter.evaluateAll(combinations)
+		if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
+			caps := l.workerCapabilities()
+			for i, req := range reqs {
+				if req.Cores == 0 && req.RamMB == 0 {
+					continue
+				}
+				if step.When != "" {
+					// An iteration `when` skips needs no worker; an evaluation
+					// error is reported by the dispatch loop below.
+					if run, err := l.evaluateWhenForScatterIterationFromSteps(step, combinations[i], mergedInputs, stepOutputs); err != nil || !run {
+						continue
+					}
+				}
+				if ok, reason := canMatchTask(caps, l.preflightHints(tmpTask, step, sub, caps, req)); !ok {
+					return l.deferOrFailPreflight(ctx, si, fmt.Sprintf("scatter iteration %d: %s", i, reason))
+				}
+			}
+			delete(l.deferredSteps, si.ID)
+		}
+	}
+
+	si.ScatterCount = len(combinations)
 
 	// For ExpressionTools, execute inline and collect results.
 	if isExprTool {
@@ -1193,7 +1280,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
 		task.Job = combo
 		task.Inputs = combo
-		hinter.apply(task)
+		hinter.applyRequest(task, reqs[i])
 
 		if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
 			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
@@ -1640,25 +1727,21 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		ScatterIndex:   scatterIndex,
 		Tool:           tmpTask.Tool,
 		Job:            tmpTask.Job,
-		RuntimeHints:   tmpTask.RuntimeHints,
 		Inputs:         map[string]any{},
 		Outputs:        map[string]any{},
 		MaxRetries:     l.config.MaxRetries,
 		CreatedAt:      now,
 	}
+	// Private copy: the group/GPU/dataset propagation below must not leak
+	// into the template's hints, which the preflight and the other scatter
+	// iterations read. nil stays nil.
+	if tmpTask.RuntimeHints != nil {
+		task.RuntimeHints = cloneRuntimeHints(tmpTask.RuntimeHints)
+	}
 
 	if step.Hints != nil {
 		if step.Hints.BVBRCAppID != "" {
 			task.BVBRCAppID = step.Hints.BVBRCAppID
-		}
-		// Propagate worker group from step hints to task runtime hints.
-		if step.Hints.WorkerGroup != "" {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			if task.RuntimeHints.WorkerGroup == "" {
-				task.RuntimeHints.WorkerGroup = step.Hints.WorkerGroup
-			}
 		}
 		// Propagate GPU requirement from step hints.
 		if step.Hints.RequiresGPU {
@@ -1681,16 +1764,16 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		}
 	}
 
-	// Submission-level worker group (from labels) as fallback.
-	if sub.Labels != nil {
-		if wg := sub.Labels["worker_group"]; wg != "" {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			if task.RuntimeHints.WorkerGroup == "" {
-				task.RuntimeHints.WorkerGroup = wg
-			}
+	// Worker group: tool hints, then step hints, then the submission label
+	// (same resolution the dispatch preflight uses, see resolveWorkerGroup).
+	if wg := resolveWorkerGroup(task.RuntimeHints, step, sub); wg != "" {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
 		}
+		task.RuntimeHints.WorkerGroup = wg
+	}
+
+	if sub.Labels != nil {
 		// Debug submissions: workers keep all task working data for inspection.
 		if sub.Labels["debug"] == "true" {
 			if task.RuntimeHints == nil {
@@ -2755,7 +2838,14 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 // for use with canMatchTask.
 func hintsFromRequirementKey(key taskRequirementKey) *model.RuntimeHints {
 	hints := &model.RuntimeHints{}
+	// An untagged task is only ever checked out by default-group workers
+	// (CheckoutTask), so judge it against that group rather than against
+	// every online worker: a large task that only a non-default worker could
+	// fit would otherwise read as matchable and never be reported (#324).
 	hints.WorkerGroup = key.WorkerGroup
+	if hints.WorkerGroup == "" {
+		hints.WorkerGroup = defaultWorkerGroupKey
+	}
 	hints.Cores = key.Cores
 	hints.RamMB = key.RamMB
 	if key.PrestageIDs != "" {

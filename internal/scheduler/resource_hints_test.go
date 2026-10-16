@@ -96,9 +96,11 @@ func TestResourceHinter_ScatterCombosGetDistinctHints(t *testing.T) {
 	shared := &model.RuntimeHints{WorkerGroup: "g"}
 	tmpl := &model.Task{Tool: tool, Job: map[string]any{"threads": []any{4, 16}}, RuntimeHints: shared}
 	h := sched.newResourceHinter(&model.StepInstance{ID: "si"}, tmpl)
-	h.applyTemplate(tmpl)
-	if tmpl.RuntimeHints.Cores != 0 {
-		t.Errorf("template with array input should be 0, got %d", tmpl.RuntimeHints.Cores)
+	if r := h.evaluate(tmpl.Job); r.Cores != 0 {
+		t.Errorf("template with array input should be 0, got %d", r.Cores)
+	}
+	if reqs := h.evaluateAll([]map[string]any{{"threads": 4}, {"threads": 16}}); len(reqs) != 2 || reqs[0].Cores != 4 || reqs[1].Cores != 16 {
+		t.Errorf("evaluateAll = %+v, want cores 4,16", reqs)
 	}
 	a := &model.Task{Tool: tool, Job: map[string]any{"threads": 4}, RuntimeHints: tmpl.RuntimeHints}
 	b := &model.Task{Tool: tool, Job: map[string]any{"threads": 16}, RuntimeHints: tmpl.RuntimeHints}

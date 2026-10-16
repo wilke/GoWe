@@ -14,9 +14,11 @@ Capacity-aware checkout (#324). No manual steps; the schema gains nullable `work
 - The scheduler now evaluates `ResourceRequirement` (including `$(inputs...)` expressions and step-level
   requirements) into the task's `cores` / `ram_mb` at dispatch.
 - **Behaviour change**: a task that asks for more cores or memory than every capacity-reporting worker in its group is
-  no longer checked out and failed by the worker after three attempts. It stays QUEUED; the preflight and, with
-  `--stuck-task-action=fail`, the stuck-task detector fail it with a capacity reason such as
-  `no online worker in group "esviritu" has >= 64000 MiB (largest 32000 MiB)`.
+  no longer checked out and failed by the worker after three attempts. While the group has online workers, the dispatch
+  preflight fails the step (after `--preflight-deferral` ticks) with a capacity reason such as
+  `no online worker in group "esviritu" has >= 64000 MiB (largest 32000 MiB)`; scatter steps are checked per iteration
+  before any task is created. If the group has no online worker the step dispatches and queues as before, and the
+  stuck-task detector reports (or, with `--stuck-task-action=fail`, fails) it with the same reason once workers return.
 - Requirements that cannot be evaluated server-side (for example depending on `File.size`) are not gated; the worker
   still enforces them.
 

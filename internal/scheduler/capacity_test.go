@@ -215,8 +215,8 @@ func TestDispatchStep_PreflightCapacity_SetsStepInstanceError(t *testing.T) {
 	sched.config.PreflightDeferralTicks = 1
 	sched.config.MaxRetries = 0
 	now := time.Now().UTC()
-	// The preflight sees the template task's hints, which carry no worker
-	// group, so an untagged tool is checked against the default group.
+	// An untagged step is checked against the default group (the only one
+	// whose workers can check it out).
 	if err := st.CreateWorker(ctx, &model.Worker{ID: "w1", Name: "w1", Group: "default", State: model.WorkerStateOnline,
 		Runtime: model.RuntimeNone, Labels: map[string]string{}, LastSeen: now, RegisteredAt: now,
 		MaxCPUs: ip(16), MaxMemMB: i64(32000)}); err != nil {
