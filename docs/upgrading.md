@@ -4,6 +4,24 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.24.x → next
+
+Capacity-aware checkout (#324). No manual steps; the schema gains nullable `workers.max_cpus` / `max_mem_mb`.
+
+- Workers now report their effective `--max-cpus` / `--max-mem` at registration. A worker that does not report them
+  (older binaries, or undetected memory) has NULL capacity and is **not** fit-checked, exactly as before. Roll workers
+  to get gating.
+- The scheduler now evaluates `ResourceRequirement` (including `$(inputs...)` expressions and step-level
+  requirements) into the task's `cores` / `ram_mb` at dispatch.
+- **Behaviour change**: a task that asks for more cores or memory than every capacity-reporting worker in its group is
+  no longer checked out and failed by the worker after three attempts. While the group has online workers, the dispatch
+  preflight fails the step (after `--preflight-deferral` ticks) with a capacity reason such as
+  `no online worker in group "esviritu" has >= 64000 MiB (largest 32000 MiB)`; scatter steps are checked per iteration
+  before any task is created. If the group has no online worker the step dispatches and queues as before, and the
+  stuck-task detector reports (or, with `--stuck-task-action=fail`, fails) it with the same reason once workers return.
+- Requirements that cannot be evaluated server-side (for example depending on `File.size`) are not gated; the worker
+  still enforces them.
+
 ## 0.21.x → 0.22.0
 
 Provider-token containment (`security!:`). Do these in order:

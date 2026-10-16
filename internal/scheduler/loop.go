@@ -105,6 +105,13 @@ type WorkerCapabilities struct {
 	Groups       map[string]int  // group → count of online workers
 	Datasets     map[string]int  // dataset ID → count of online workers
 	Workers      []*model.Worker // full list of online workers
+
+	// Largest self-reported capacity among online workers, per group (#324).
+	// Workers that did not report a dimension (legacy) are counted in
+	// UncappedByGroup instead and never block a task on that dimension.
+	MaxCoresByGroup map[string]int
+	MaxMemMBByGroup map[string]int64
+	UncappedByGroup map[string]int // group → online workers with any unreported capacity
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -211,6 +218,8 @@ func (l *Loop) workflowNameForTask(ctx context.Context, task *model.Task) string
 type taskRequirementKey struct {
 	WorkerGroup string
 	PrestageIDs string // sorted, comma-joined
+	Cores       int    // RuntimeHints.Cores (0 = none)
+	RamMB       int64  // RuntimeHints.RamMB (0 = none)
 }
 
 // stuckTracker tracks per-requirement-key progress of QUEUED tasks.
@@ -873,36 +882,28 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			"si_id", si.ID, "error", err)
 	}
 
+	// Evaluate ResourceRequirement (including expressions) into the hints so
+	// the preflight and CheckoutTask see what the worker will enforce (#324).
+	// Scatter steps are evaluated per iteration in dispatchScatterStep: the
+	// template job still holds whole arrays for the scattered inputs.
+	hinter := l.newResourceHinter(si, tmpTask)
+	if len(step.Scatter) == 0 {
+		hinter.apply(tmpTask)
+	}
+
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
 
 	// Pre-flight check: if executor is "worker", verify a capable worker exists.
 	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
 		caps := l.workerCapabilities()
-		canMatch, reason := canMatchTask(caps, tmpTask.RuntimeHints)
+		var req cwltool.ResourceRequest
+		if len(step.Scatter) == 0 && tmpTask.RuntimeHints != nil {
+			req = cwltool.ResourceRequest{Cores: tmpTask.RuntimeHints.Cores, RamMB: tmpTask.RuntimeHints.RamMB}
+		}
+		canMatch, reason := canMatchTask(caps, l.preflightHints(tmpTask, step, sub, caps, req))
 		if !canMatch {
-			l.deferredSteps[si.ID]++
-			count := l.deferredSteps[si.ID]
-			if count >= l.config.PreflightDeferralTicks {
-				delete(l.deferredSteps, si.ID)
-				now := time.Now().UTC()
-				si.State = model.StepStateFailed
-				si.Error = fmt.Sprintf("no capable worker: %s (deferred %d ticks)", reason, count)
-				si.CompletedAt = &now
-				l.logger.Error("step failed: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
-					"deferred_ticks", count)
-				return l.updateStepInstance(ctx, si)
-			}
-			if count == 1 {
-				l.logger.Warn("deferring step dispatch: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason)
-			} else {
-				l.logger.Debug("deferring step dispatch: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
-					"deferred_ticks", count)
-			}
-			return nil // Leave step in READY for next tick.
+			return l.deferOrFailPreflight(ctx, si, reason)
 		}
 		// Worker can match — clear any prior deferral.
 		delete(l.deferredSteps, si.ID)
@@ -932,7 +933,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 
 	// Scatter dispatch.
 	if len(step.Scatter) > 0 {
-		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType, populateErr)
+		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType, populateErr, hinter)
 	}
 
 	// ExpressionTool dispatch.
@@ -1004,12 +1005,87 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	return l.updateStepInstance(ctx, si)
 }
 
+// resolveWorkerGroup resolves the worker group a task created from step
+// will carry, with the precedence createTaskFromStep applies: the tool's own
+// hints, then the step's gowe:Execution.worker_group, then the submission
+// label (`gowe submit --group`). Empty means the default group.
+func resolveWorkerGroup(hints *model.RuntimeHints, step *model.Step, sub *model.Submission) string {
+	if hints != nil && hints.WorkerGroup != "" {
+		return hints.WorkerGroup
+	}
+	if step != nil && step.Hints != nil && step.Hints.WorkerGroup != "" {
+		return step.Hints.WorkerGroup
+	}
+	if sub != nil && sub.Labels != nil {
+		return sub.Labels["worker_group"]
+	}
+	return ""
+}
+
+// preflightHints builds the hints the dispatch preflight checks for a step.
+// The template task carries no worker group (createTaskFromStep adds it from
+// the step hints or the submission label), so the preflight resolves the
+// effective group here and checks capacity against that group's workers,
+// not against "default" or every online worker (#324).
+//
+// Capacity (req) is only checked when the effective group has online
+// workers: with none online nothing can be said about fit, so the preflight
+// keeps its pre-#324 group-less semantics and the stuck-task detector owns
+// the "group offline" case. With the group online the step is checked as
+// CheckoutTask will see it (group, capacity, prestage, GPU) so a task no
+// worker in its group can ever take fails here with the reason, instead of
+// sitting QUEUED forever.
+func (l *Loop) preflightHints(tmpTask *model.Task, step *model.Step, sub *model.Submission,
+	caps *WorkerCapabilities, req cwltool.ResourceRequest) *model.RuntimeHints {
+	hints := cloneRuntimeHints(tmpTask.RuntimeHints)
+	hints.Cores, hints.RamMB = 0, 0
+	group := resolveWorkerGroup(tmpTask.RuntimeHints, step, sub)
+	if group == "" {
+		group = defaultWorkerGroupKey
+	}
+	if caps.Groups[group] == 0 {
+		return hints
+	}
+	hints.WorkerGroup = group
+	hints.Cores, hints.RamMB = req.Cores, req.RamMB
+	return hints
+}
+
+// deferOrFailPreflight records one more preflight deferral for si. Below
+// PreflightDeferralTicks the step stays READY for the next tick; at the
+// bound it is FAILED with the reason.
+func (l *Loop) deferOrFailPreflight(ctx context.Context, si *model.StepInstance, reason string) error {
+	l.deferredSteps[si.ID]++
+	count := l.deferredSteps[si.ID]
+	if count >= l.config.PreflightDeferralTicks {
+		delete(l.deferredSteps, si.ID)
+		now := time.Now().UTC()
+		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("no capable worker: %s (deferred %d ticks)", reason, count)
+		si.CompletedAt = &now
+		l.logger.Error("step failed: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+			"deferred_ticks", count)
+		return l.updateStepInstance(ctx, si)
+	}
+	if count == 1 {
+		l.logger.Warn("deferring step dispatch: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason)
+	} else {
+		l.logger.Debug("deferring step dispatch: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+			"deferred_ticks", count)
+	}
+	return nil // Leave step in READY for next tick.
+}
+
 // dispatchScatterStep handles scatter dispatch for CommandLineTools and ExpressionTools.
 // Creates N Tasks (one per scatter combination) and executes them.
 func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
 	step *model.Step, wf *model.Workflow, sub *model.Submission,
 	mergedInputs map[string]any, tasksByStep map[string]*model.Task,
-	stepOutputs map[string]map[string]any, execType model.ExecutorType, populateErr error) error {
+	stepOutputs map[string]map[string]any, execType model.ExecutorType, populateErr error,
+	hinter *resourceHinter) error {
 
 	l.logger.Info("dispatching scatter step",
 		"si_id", si.ID, "step_id", si.StepID,
@@ -1078,8 +1154,38 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		}
 	}
 
-	si.ScatterCount = len(combinations)
 	isExprTool := isExpressionTool(tmpTask.Tool)
+
+	// Per-iteration ResourceRequirement (#324): evaluated once here, used by
+	// the preflight below and stored on each task further down. An iteration
+	// that no online worker in the step's group can fit makes the whole step
+	// unfinishable, so it is deferred/failed like a non-scatter step rather
+	// than left QUEUED forever.
+	var reqs []cwltool.ResourceRequest
+	if !isExprTool {
+		reqs = hinter.evaluateAll(combinations)
+		if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
+			caps := l.workerCapabilities()
+			for i, req := range reqs {
+				if req.Cores == 0 && req.RamMB == 0 {
+					continue
+				}
+				if step.When != "" {
+					// An iteration `when` skips needs no worker; an evaluation
+					// error is reported by the dispatch loop below.
+					if run, err := l.evaluateWhenForScatterIterationFromSteps(step, combinations[i], mergedInputs, stepOutputs); err != nil || !run {
+						continue
+					}
+				}
+				if ok, reason := canMatchTask(caps, l.preflightHints(tmpTask, step, sub, caps, req)); !ok {
+					return l.deferOrFailPreflight(ctx, si, fmt.Sprintf("scatter iteration %d: %s", i, reason))
+				}
+			}
+			delete(l.deferredSteps, si.ID)
+		}
+	}
+
+	si.ScatterCount = len(combinations)
 
 	// For ExpressionTools, execute inline and collect results.
 	if isExprTool {
@@ -1174,6 +1280,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
 		task.Job = combo
 		task.Inputs = combo
+		hinter.applyRequest(task, reqs[i])
 
 		if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
 			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
@@ -1620,25 +1727,21 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		ScatterIndex:   scatterIndex,
 		Tool:           tmpTask.Tool,
 		Job:            tmpTask.Job,
-		RuntimeHints:   tmpTask.RuntimeHints,
 		Inputs:         map[string]any{},
 		Outputs:        map[string]any{},
 		MaxRetries:     l.config.MaxRetries,
 		CreatedAt:      now,
 	}
+	// Private copy: the group/GPU/dataset propagation below must not leak
+	// into the template's hints, which the preflight and the other scatter
+	// iterations read. nil stays nil.
+	if tmpTask.RuntimeHints != nil {
+		task.RuntimeHints = cloneRuntimeHints(tmpTask.RuntimeHints)
+	}
 
 	if step.Hints != nil {
 		if step.Hints.BVBRCAppID != "" {
 			task.BVBRCAppID = step.Hints.BVBRCAppID
-		}
-		// Propagate worker group from step hints to task runtime hints.
-		if step.Hints.WorkerGroup != "" {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			if task.RuntimeHints.WorkerGroup == "" {
-				task.RuntimeHints.WorkerGroup = step.Hints.WorkerGroup
-			}
 		}
 		// Propagate GPU requirement from step hints.
 		if step.Hints.RequiresGPU {
@@ -1661,16 +1764,16 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		}
 	}
 
-	// Submission-level worker group (from labels) as fallback.
-	if sub.Labels != nil {
-		if wg := sub.Labels["worker_group"]; wg != "" {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			if task.RuntimeHints.WorkerGroup == "" {
-				task.RuntimeHints.WorkerGroup = wg
-			}
+	// Worker group: tool hints, then step hints, then the submission label
+	// (same resolution the dispatch preflight uses, see resolveWorkerGroup).
+	if wg := resolveWorkerGroup(task.RuntimeHints, step, sub); wg != "" {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
 		}
+		task.RuntimeHints.WorkerGroup = wg
+	}
+
+	if sub.Labels != nil {
 		// Debug submissions: workers keep all task working data for inspection.
 		if sub.Labels["debug"] == "true" {
 			if task.RuntimeHints == nil {
@@ -1722,8 +1825,11 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 		return l.cachedWorkerCaps
 	}
 	caps := &WorkerCapabilities{
-		Groups:   make(map[string]int),
-		Datasets: make(map[string]int),
+		Groups:          make(map[string]int),
+		Datasets:        make(map[string]int),
+		MaxCoresByGroup: make(map[string]int),
+		MaxMemMBByGroup: make(map[string]int64),
+		UncappedByGroup: make(map[string]int),
 	}
 	workers, err := l.store.ListWorkers(context.Background())
 	if err != nil {
@@ -1744,6 +1850,19 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 			group = "default"
 		}
 		caps.Groups[group]++
+		if w.MaxCPUs != nil {
+			if *w.MaxCPUs > caps.MaxCoresByGroup[group] {
+				caps.MaxCoresByGroup[group] = *w.MaxCPUs
+			}
+		}
+		if w.MaxMemMB != nil {
+			if *w.MaxMemMB > caps.MaxMemMBByGroup[group] {
+				caps.MaxMemMBByGroup[group] = *w.MaxMemMB
+			}
+		}
+		if w.MaxCPUs == nil || w.MaxMemMB == nil {
+			caps.UncappedByGroup[group]++
+		}
 		for dsID := range w.Datasets {
 			caps.Datasets[dsID]++
 		}
@@ -1759,6 +1878,8 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 // Only GoWe-specific hard constraints are checked:
 //   - Worker group (gowe:Execution.worker_group)
 //   - Prestage datasets (gowe:ResourceData with mode=prestage)
+//   - Capacity: RuntimeHints.Cores / RamMB against each worker's self-reported
+//     max CPUs / memory (a worker that did not report a dimension fits, #324)
 //
 // DockerRequirement (DockerImage) is NOT checked here because CWL treats it as
 // a hint — workers without container runtimes can still execute tools bare.
@@ -1782,9 +1903,13 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	}
 
 	wantGPU := hints != nil && hints.RequiresGPU
+	wantCores, wantRam := 0, int64(0)
+	if hints != nil {
+		wantCores, wantRam = hints.Cores, hints.RamMB
+	}
 
 	// Fast path: no constraints beyond "any worker".
-	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU {
+	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU && wantCores == 0 && wantRam == 0 {
 		return true, ""
 	}
 
@@ -1802,6 +1927,13 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 			if wGroup != wantGroup {
 				continue
 			}
+		}
+		// Check capacity; an unreported (nil) dimension fits.
+		if wantCores > 0 && w.MaxCPUs != nil && *w.MaxCPUs < wantCores {
+			continue
+		}
+		if wantRam > 0 && w.MaxMemMB != nil && *w.MaxMemMB < wantRam {
+			continue
 		}
 		// Check prestage datasets — worker must have ALL of them.
 		if len(prestageIDs) > 0 {
@@ -1829,6 +1961,20 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	for _, dsID := range prestageIDs {
 		if caps.Datasets[dsID] == 0 {
 			reasons = append(reasons, fmt.Sprintf("no workers with prestage dataset %q", dsID))
+		}
+	}
+	capGroup := wantGroup
+	if capGroup == "" {
+		capGroup = "default"
+	}
+	if caps.Groups[capGroup] > 0 {
+		if wantCores > 0 && caps.UncappedByGroup[capGroup] == 0 && caps.MaxCoresByGroup[capGroup] < wantCores {
+			reasons = append(reasons, fmt.Sprintf("no online worker in group %q has >= %d cores (largest %d)",
+				capGroup, wantCores, caps.MaxCoresByGroup[capGroup]))
+		}
+		if wantRam > 0 && caps.UncappedByGroup[capGroup] == 0 && caps.MaxMemMBByGroup[capGroup] < wantRam {
+			reasons = append(reasons, fmt.Sprintf("no online worker in group %q has >= %d MiB (largest %d MiB)",
+				capGroup, wantRam, caps.MaxMemMBByGroup[capGroup]))
 		}
 	}
 	if wantGPU {
@@ -2579,6 +2725,7 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 				"count", count, "reason", reason,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key],
 				"threshold", l.config.StuckTaskThreshold)
 		}
@@ -2592,12 +2739,14 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 				"count", count, "reason", reason,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key])
 		} else {
 			l.logger.Warn("stuck tasks: queued but not being picked up",
 				"count", count,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key])
 		}
 
@@ -2669,6 +2818,8 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 	key := taskRequirementKey{}
 	if task.RuntimeHints != nil {
 		key.WorkerGroup = task.RuntimeHints.WorkerGroup
+		key.Cores = task.RuntimeHints.Cores
+		key.RamMB = task.RuntimeHints.RamMB
 		var prestageIDs []string
 		for _, ds := range task.RuntimeHints.RequiredDatasets {
 			if ds.Mode == "prestage" {
@@ -2687,7 +2838,16 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 // for use with canMatchTask.
 func hintsFromRequirementKey(key taskRequirementKey) *model.RuntimeHints {
 	hints := &model.RuntimeHints{}
+	// An untagged task is only ever checked out by default-group workers
+	// (CheckoutTask), so judge it against that group rather than against
+	// every online worker: a large task that only a non-default worker could
+	// fit would otherwise read as matchable and never be reported (#324).
 	hints.WorkerGroup = key.WorkerGroup
+	if hints.WorkerGroup == "" {
+		hints.WorkerGroup = defaultWorkerGroupKey
+	}
+	hints.Cores = key.Cores
+	hints.RamMB = key.RamMB
 	if key.PrestageIDs != "" {
 		for _, id := range strings.Split(key.PrestageIDs, ",") {
 			hints.RequiredDatasets = append(hints.RequiredDatasets, model.DatasetRequirement{
@@ -2712,7 +2872,10 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 	if key.PrestageIDs != "" {
 		fmt.Fprintf(&b, " prestage=[%s]", key.PrestageIDs)
 	}
-	if key.WorkerGroup == "" && key.PrestageIDs == "" {
+	if key.Cores > 0 || key.RamMB > 0 {
+		fmt.Fprintf(&b, " cores>=%d ram_mb>=%d", key.Cores, key.RamMB)
+	}
+	if key.WorkerGroup == "" && key.PrestageIDs == "" && key.Cores == 0 && key.RamMB == 0 {
 		b.WriteString(" (no specific constraints)")
 	}
 	b.WriteString("\n")
@@ -2744,6 +2907,17 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 			fmt.Fprintf(&b, ", datasets: [%s]", strings.Join(datasets, ", "))
 		}
 		b.WriteString(")\n")
+		if key.Cores > 0 || key.RamMB > 0 {
+			var parts []string
+			for _, g := range groups {
+				if caps.UncappedByGroup[g] > 0 {
+					parts = append(parts, fmt.Sprintf("%s: (some workers unreported)", g))
+					continue
+				}
+				parts = append(parts, fmt.Sprintf("%s: %d cores, %d MiB", g, caps.MaxCoresByGroup[g], caps.MaxMemMBByGroup[g]))
+			}
+			fmt.Fprintf(&b, "Largest capacity per group: %s\n", strings.Join(parts, "; "))
+		}
 	}
 
 	fmt.Fprintf(&b, "Reason: %s\n", reason)
@@ -3350,31 +3524,6 @@ func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
 			}
 		}
 
-		// Extract ResourceRequirement.
-		if resReq, ok := reqs["ResourceRequirement"].(map[string]any); ok {
-			if cores, ok := resReq["coresMin"]; ok {
-				switch v := cores.(type) {
-				case int:
-					hints.Cores = v
-				case float64:
-					hints.Cores = int(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-			if ram, ok := resReq["ramMin"]; ok {
-				switch v := ram.(type) {
-				case int:
-					hints.RamMB = int64(v)
-				case int64:
-					hints.RamMB = v
-				case float64:
-					hints.RamMB = int64(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-		}
 	}
 
 	// Also check hints section.
@@ -3454,29 +3603,6 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 			}
 		}
 
-		// ResourceRequirement
-		if resReq, ok := tool.Requirements["ResourceRequirement"].(map[string]any); ok {
-			if cores, ok := resReq["coresMin"]; ok {
-				switch v := cores.(type) {
-				case int:
-					hints.Cores = v
-				case float64:
-					hints.Cores = int(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-			if ram, ok := resReq["ramMin"]; ok {
-				switch v := ram.(type) {
-				case int:
-					hints.RamMB = int64(v)
-				case float64:
-					hints.RamMB = int64(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-		}
 	}
 
 	// Check hints map.

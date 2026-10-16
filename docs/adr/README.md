@@ -31,6 +31,8 @@ recorded before or as they are made.
 | [0009](0009-delegated-identity-and-optional-worker-keys.md) | Delegate identity to external providers; gate workers with optional shared keys | Accepted |
 | [0010](0010-scoped-worker-token-injection.md) | Scope automatic delegated-token injection to operator-trusted worker groups | Accepted |
 | [0011](0011-scatter-subworkflow-proxy-tasks.md) | Run sub-workflow steps through proxy tasks paired with child submissions | Accepted |
+| [0012](0012-admin-blessed-token-injection.md) | Admin-blessed token injection (supersedes ADR-0010) | Accepted |
+| [0013](0013-admission-control-over-worker-reported-capacity.md) | Admit tasks against worker-reported capacity | Accepted |
 
 ## Writing a new ADR
 

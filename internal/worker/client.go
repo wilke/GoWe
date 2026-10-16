@@ -57,6 +57,8 @@ type RegisterOptions struct {
 	Version    string            // Build version (git commit hash)
 	Datasets   map[string]string // Dataset ID → host path
 	Labels     map[string]string // Registration labels (e.g. degraded-mode flags)
+	MaxCPUs    int               // Effective CPU capacity; 0 = not reported (#324)
+	MaxMemMB   int64             // Effective memory capacity in MiB; 0 = not reported
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -80,6 +82,12 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		}
 		if len(opts[0].Labels) > 0 {
 			reg["labels"] = opts[0].Labels
+		}
+		if opts[0].MaxCPUs > 0 {
+			reg["max_cpus"] = opts[0].MaxCPUs
+		}
+		if opts[0].MaxMemMB > 0 {
+			reg["max_mem_mb"] = opts[0].MaxMemMB
 		}
 	}
 	body, err := json.Marshal(reg)

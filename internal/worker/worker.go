@@ -395,6 +395,8 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		Version:    cfg.Version,
 		Datasets:   w.datasets,
 		Labels:     degradedLabels(cfg),
+		MaxCPUs:    w.resources.MaxCPUs,
+		MaxMemMB:   w.resources.MaxMemMB,
 	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
@@ -407,6 +409,8 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		"runtime", worker.Runtime,
 		"gpu", worker.GPUEnabled,
 		"gpu_device", worker.GPUDevice,
+		"max_cpus", w.resources.MaxCPUs,
+		"max_mem_mb", w.resources.MaxMemMB,
 	)
 
 	// Start heartbeat in a separate goroutine so it continues during task execution.

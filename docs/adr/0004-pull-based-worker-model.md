@@ -37,6 +37,7 @@ and return them for re-dispatch.
 - Workers behind NAT/firewalls need only outbound HTTPS; no inbound reachability required.
 - Horizontal scaling is trivial — start more workers; they self-select matching work.
 - Capability/dataset matching happens at claim time against ground truth the worker reports.
+- Checkout also gates on worker-reported CPU/memory capacity against the task's evaluated `ResourceRequirement` (ADR-0013).
 
 **Negative**
 - Polling adds latency (a task waits up to one poll interval, ~5 s) and steady request load.
