@@ -79,8 +79,10 @@ func GetRequirement(tool *cwl.CommandLineTool, name string) map[string]any {
 
 // ExtractEnvVars extracts environment variables from EnvVarRequirement.
 // It processes hints, then requirements, then job requirements (highest precedence).
-// CWL expressions in envValue are evaluated using the provided inputs.
-func ExtractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any) map[string]string {
+// CWL expressions in envValue are evaluated using the provided inputs and
+// runtime context (runtime.outdir/tmpdir/cores/ram). A nil runtime falls back to
+// cwlexpr.DefaultRuntimeContext.
+func ExtractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any, runtime *cwlexpr.RuntimeContext) map[string]string {
 	envVars := make(map[string]string)
 
 	// Get expression library from InlineJavascriptRequirement if present.
@@ -88,6 +90,9 @@ func ExtractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequire
 
 	evaluator := cwlexpr.NewEvaluator(expressionLib)
 	ctx := cwlexpr.NewContext(inputs)
+	if runtime != nil {
+		ctx = ctx.WithRuntime(runtime)
+	}
 
 	// Check hints first (lowest precedence)
 	if envReq := getEnvVarRequirement(tool.Hints); envReq != nil {

@@ -4,6 +4,7 @@ package toolexec
 
 import (
 	"context"
+	"github.com/me/gowe/internal/cwlexpr"
 	"log/slog"
 	"time"
 
@@ -125,6 +126,11 @@ type Options struct {
 	// JobRequirements are cwl:requirements from the job file.
 	// These can add or override tool requirements.
 	JobRequirements []any
+
+	// Runtime is the runtime context used for building the command line. It is
+	// also used to evaluate EnvVarRequirement expressions so $(runtime.*) agrees
+	// with arguments. nil falls back to cwlexpr.DefaultRuntimeContext.
+	Runtime *cwlexpr.RuntimeContext
 
 	// ExtraBinds are additional bind mounts injected into containers.
 	// Used for pre-staged reference datasets and admin-specified paths.

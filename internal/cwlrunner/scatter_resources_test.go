@@ -54,7 +54,7 @@ func TestContainerOptionsResources(t *testing.T) {
 				if err != nil {
 					t.Fatalf("ResolveResources: %v", err)
 				}
-				opts := r.containerOptions(mode, tool, &cmdline.BuildResult{}, nil, "img", "/w", nil, "", res)
+				opts := r.containerOptions(mode, tool, &cmdline.BuildResult{}, nil, "img", "/w", nil, "", res, nil)
 				if opts.Resources.Cores != tt.wantCores {
 					t.Errorf("Cores = %d, want %d", opts.Resources.Cores, tt.wantCores)
 				}

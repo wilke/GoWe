@@ -191,7 +191,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	cmd.Env = append(cmd.Env, "TMPDIR="+tmpDir)
 
 	// Add environment variables from EnvVarRequirement.
-	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
+	envVars := extractEnvVars(tool, inputs, opts.JobRequirements, opts.Runtime)
 	for name, value := range envVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
 	}
@@ -508,7 +508,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	}
 
 	// Set environment variables from EnvVarRequirement.
-	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
+	envVars := extractEnvVars(tool, inputs, opts.JobRequirements, opts.Runtime)
 	for name, value := range envVars {
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
@@ -747,7 +747,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	apptainerArgs = append(apptainerArgs, "--env", "TMPDIR=/tmp")
 
 	// Set environment variables from EnvVarRequirement.
-	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
+	envVars := extractEnvVars(tool, inputs, opts.JobRequirements, opts.Runtime)
 	for name, value := range envVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
