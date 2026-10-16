@@ -24,7 +24,7 @@ doc: |
   `max_pairs` > 0 analyses only the first N pairs of the files (from the
   first tiles of the flow cell), which is enough for a fraction estimate.
 
-  Image: minimap2_latest.sif (minimap2 2.29), resolved via the worker's --image-dir.
+  Image: minimap2-2.29.sif (minimap2 2.29-r1283, staphb/minimap2), resolved via the worker's --image-dir.
 
 $namespaces:
   gowe: https://github.com/wilke/GoWe#
@@ -32,7 +32,7 @@ $namespaces:
 requirements:
   InlineJavascriptRequirement: {}
   DockerRequirement:
-    dockerPull: minimap2_latest.sif
+    dockerPull: minimap2-2.29.sif
   ResourceRequirement:
     coresMin: $(inputs.threads)
     ramMin: $(inputs.ram_mb)
@@ -48,7 +48,7 @@ baseCommand:
     set -euo pipefail
     sample=$1 index=$2 tax=$3 threads=$4 maxp=$5 minlen=$6 minid=$7 tmp=$8 r1=$9 r2=${10}
     case "$sample" in
-      ''|.|..|-*|*/*) echo "invalid sample name: '$sample'" >&2; exit 1;;
+      ''|.|..|-*|*/*|*[!A-Za-z0-9._-]*) echo "invalid sample name: '$sample' (use A-Z a-z 0-9 . _ - only)" >&2; exit 1;;
     esac
     for f in "$index" "$tax" "$r1" "$r2"; do
       [ -r "$f" ] || { echo "not readable on this worker: $f" >&2; exit 1; }
@@ -57,19 +57,23 @@ baseCommand:
       mkdir -p "$tmp"
       { zcat -f "$r1" || true; } | head -n $((maxp * 4)) > "$tmp/sub_R1.fq"
       { zcat -f "$r2" || true; } | head -n $((maxp * 4)) > "$tmp/sub_R2.fq"
+      n1=$(wc -l < "$tmp/sub_R1.fq") n2=$(wc -l < "$tmp/sub_R2.fq")
+      if [ "$n1" -ne "$n2" ] || [ $((n1 % 4)) -ne 0 ]; then
+        echo "subsampled R1/R2 differ ($n1 vs $n2 lines): truncated or corrupt input?" >&2; exit 1
+      fi
       r1=$tmp/sub_R1.fq r2=$tmp/sub_R2.fq
     fi
     log=$sample.silva.minimap2.log
     minimap2 -c -x sr -t "$threads" --secondary=no "$index" "$r1" "$r2" 2> "$log" \
     | awk -F'\t' -v OFS='\t' -v L="$minlen" -v I="$minid" -v TAX="$tax" \
-          -v CAT="$tmp.cat" -v TX="$sample.silva.taxa.tsv" '
+          -v CAT="$tmp.cat" -v TX="$tmp.taxa" '
       BEGIN {
         while ((getline line < TAX) > 0) { split(line, a, "\t"); tx[a[1]] = a[3] }
         close(TAX)
       }
       { q = $1; sub(/\/[12]$/, "", q) }
       q == last { next }
-      $11 < L || $10 / $11 < I { next }
+      $11 == 0 || $11 < L || $10 / $11 < I { next }
       {
         last = q
         gene = substr($6, 1, 3); t = tx[$6]
@@ -82,11 +86,10 @@ baseCommand:
       END {
         for (k in cat) print k, cat[k] > CAT
         close(CAT)
-        print "pairs", "gene", "lineage" > TX
-        close(TX)
-        for (k in taxa) print taxa[k], k | "sort -t \"\t\" -k1,1nr >> " TX
+        for (k in taxa) print taxa[k], k > TX
       }'
-    touch "$tmp.cat"
+    touch "$tmp.cat" "$tmp.taxa"
+    { printf 'pairs\tgene\tlineage\n'; sort -t "$(printf '\t')" -k1,1nr "$tmp.taxa"; } > "$sample.silva.taxa.tsv"
     pairs=$(awk '/mapped [0-9]+ sequences/ { for (i = 1; i <= NF; i++) if ($i == "mapped") s += $(i + 1) }
                  END { printf "%d", s / 2 }' "$log")
     awk -F'\t' -v OFS='\t' -v S="$sample" -v P="$pairs" -v M="$maxp" -v DB="$index" '
@@ -97,7 +100,7 @@ baseCommand:
         for (i = 1; i <= 8; i++) { h = h "\t" k[i]; v = v "\t" (c[k[i]] + 0) }
         print h, "max_pairs", "database"; print v, M, DB
       }' "$tmp.cat" > "$sample.silva.summary.tsv"
-    rm -f "$tmp.cat" "$tmp/sub_R1.fq" "$tmp/sub_R2.fq"
+    rm -f "$tmp.cat" "$tmp.taxa" "$tmp/sub_R1.fq" "$tmp/sub_R2.fq"
     cat "$sample.silva.summary.tsv"
   - silva-rrna
 

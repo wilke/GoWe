@@ -38,6 +38,8 @@ requirements:
   ResourceRequirement:
     coresMin: $(inputs.threads)
     ramMin: $(inputs.ram_mb)
+    tmpdirMin: |-
+      ${ return inputs.max_pairs > 0 ? Math.ceil(inputs.max_pairs / 1000) + 2000 : 100000; }
 
 hints:
   gowe:Execution:
@@ -50,19 +52,26 @@ baseCommand:
     set -euo pipefail
     sample=$1 ref=$2 idx=$3 threads=$4 maxp=$5 tmp=$6 r1=$7 r2=$8
     case "$sample" in
-      ''|.|..|-*|*/*) echo "invalid sample name: '$sample'" >&2; exit 1;;
+      ''|.|..|-*|*/*|*[!A-Za-z0-9._-]*) echo "invalid sample name: '$sample' (use A-Z a-z 0-9 . _ - only)" >&2; exit 1;;
     esac
     for f in "$ref" "$idx" "$r1" "$r2"; do
       [ -r "$f" ] || { echo "not readable on this worker: $f" >&2; exit 1; }
     done
+    # never let tasks build the index: concurrent tasks would race to rebuild it in the shared dir
+    ls "$idx"/*.stats > /dev/null 2>&1 || {
+      echo "no SortMeRNA index in $idx: build it once with sortmerna --index 1 (see README.md)" >&2; exit 1; }
     rm -rf "$tmp"; mkdir -p "$tmp"
     if [ "$maxp" -gt 0 ]; then
       { zcat -f "$r1" || true; } | head -n $((maxp * 4)) > "$tmp/sub_R1.fq"
       { zcat -f "$r2" || true; } | head -n $((maxp * 4)) > "$tmp/sub_R2.fq"
+      n1=$(wc -l < "$tmp/sub_R1.fq") n2=$(wc -l < "$tmp/sub_R2.fq")
+      if [ "$n1" -ne "$n2" ] || [ $((n1 % 4)) -ne 0 ]; then
+        echo "subsampled R1/R2 differ ($n1 vs $n2 lines): truncated or corrupt input?" >&2; exit 1
+      fi
       r1=$tmp/sub_R1.fq r2=$tmp/sub_R2.fq
     fi
     sortmerna --ref "$ref" --idx-dir "$idx" --reads "$r1" --reads "$r2" \
-      --paired_in --threads "$threads" --workdir "$tmp/smr" \
+      --paired_in --index 0 --threads "$threads" --workdir "$tmp/smr" \
       --blast 1 --num_alignments 1 > "$sample.sortmerna.log" 2>&1 \
       || { tail -n 20 "$sample.sortmerna.log" >&2; exit 1; }
     touch "$tmp/smr/out/aligned.blast"   # absent when no read aligns
@@ -76,13 +85,15 @@ baseCommand:
         }
         next
       }
-      $1 == last { next }
+      { q = $1; sub(/\/[12]$/, "", q) }
+      q == last { next }
       {
-        last = $1; tot++
+        last = q; tot++
         g = ($2 ~ /SSURef/ ? "SSU" : $2 ~ /LSURef/ ? "LSU" : $2 ~ /5\.8S/ ? "5.8S" : $2 ~ /5S/ ? "5S" : "other")
         c[g "_" dom[$2]]++
       }
       END {
+        if (tot > P) { print "rRNA pairs (" tot ") > pairs analysed (" P "): mates not grouped as expected" > "/dev/stderr"; exit 1 }
         split("SSU_Bacteria SSU_Archaea SSU_Eukaryota LSU_Bacteria LSU_Archaea LSU_Eukaryota 5S_all 5.8S_all", k, " ")
         h = "sample\tpairs_analysed\trrna_pairs\trrna_pct"; v = S "\t" P "\t" (tot + 0) "\t" (P ? sprintf("%.2f", 100 * tot / P) : "NA")
         for (i = 1; i <= 8; i++) { h = h "\t" k[i]; v = v "\t" (c[k[i]] + 0) }

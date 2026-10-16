@@ -12,11 +12,11 @@ A pair counts as rRNA when at least one mate has an alignment of at least `min_a
 run_path: /nfs/seq-data/nextseq2k_output/nextseq2k_runs/<run>/<fastq folder>   # real path, not a host symlink
 index: /nfs/seq-data/experiments/data/databases/silva/138.2/silva_138.2_nr99_ssu_lsu.sr.mmi
 taxonomy: /nfs/seq-data/experiments/data/databases/silva/138.2/silva_138.2_nr99_ssu_lsu.taxonomy.tsv
-threads: 16
+threads: 8            # threads x workers on one host should not exceed its cores
 ```
 
 ```bash
-gowe submit --workflow <silva-rrna-run id> --group esviritu -i job.yml        # on GoWe workers
+gowe submit --workflow silva-rrna-run --group esviritu -i job.yml        # on GoWe workers
 cwl-runner --runtime apptainer --image-dir /nfs/seq-data/images --extra-bind /nfs/seq-data \
   --parallel -j 4 silva-rrna-run.cwl job.yml                                    # or locally
 ```
@@ -41,7 +41,8 @@ IDs get an `SSU|`/`LSU|` prefix because some accessions occur in both files. SIL
 (https://www.arb-silva.de/silva-license-information/).
 
 Notes
-- Image `minimap2_latest.sif` (minimap2 2.29) is resolved through `--image-dir`.
+- Image `minimap2-2.29.sif` (minimap2 2.29-r1283, built from `docker://staphb/minimap2`, sha256
+  763106bba5f426d269eed9944791d8df7b1dd9aa0bbbab36ece5f222dfc81e13) is resolved through `--image-dir`.
 - Speed: about 16,000 pairs/s with 16 threads (50M pairs in about 50 min). `max_pairs` (default 0 = all) limits the
   run to the first N pairs.
 - On a 200,000-pair sample of wastewater RNA (118660) the thresholds give 82% rRNA pairs; any alignment of 30 nt or

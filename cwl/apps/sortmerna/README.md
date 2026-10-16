@@ -10,11 +10,11 @@ run_path: /nfs/seq-data/nextseq2k_output/nextseq2k_runs/<run>/<fastq folder>   #
 reference: /nfs/seq-data/experiments/data/databases/sortmerna/4.3.4/smr_v4.3_default_db.fasta
 index_dir: /nfs/seq-data/experiments/data/databases/sortmerna/4.3.4/idx_default
 max_pairs: 2000000     # default; 0 = all pairs
-threads: 16
+threads: 8            # threads x workers on one host should not exceed its cores
 ```
 
 ```bash
-gowe submit --workflow <sortmerna-run id> --group esviritu -i job.yml        # on GoWe workers
+gowe submit --workflow sortmerna-run --group esviritu -i job.yml        # on GoWe workers
 cwl-runner --runtime apptainer --image-dir /nfs/seq-data/images --extra-bind /nfs/seq-data \
   --parallel -j 4 sortmerna-run.cwl job.yml                                   # or locally
 ```
@@ -33,8 +33,11 @@ sortmerna --ref $PWD/smr_v4.3_default_db.fasta --index 1 --idx-dir $PWD/idx_defa
 1.4 GB.)
 
 Notes
-- Image `sortmerna-4.3.6.sif` (`quay.io/biocontainers/sortmerna:4.3.6--h9ee0642_0`). Do not use the 4.3.7 build: it
+- Image `sortmerna-4.3.6.sif` (`quay.io/biocontainers/sortmerna:4.3.6--h9ee0642_0`, sha256
+  425109dd985094068f75d87d3d4d72bc84ea2a77bea2b38ea4bae2517e8e5779). Do not use the 4.3.7 build: it
   needs AVX-512 and dies with SIGILL (exit 132) on CPUs without it, such as AMD EPYC 7713.
 - SortMeRNA is slow: about 2,300 pairs/s with 16 threads on rRNA-rich data, so 50M pairs would take about 6 h. The
   default `max_pairs: 2000000` (the first 2M pairs, about 15 min) is plenty for a percentage.
+- Tasks never build the index (`--index 0`); they fail at once if `index_dir` has none, so concurrent tasks cannot
+  race to rebuild it in the shared directory.
 - Temporary files (read copies, key-value store, aligned reads) go to the task's tmp dir and are removed at the end.
