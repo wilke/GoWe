@@ -51,7 +51,7 @@ func (s *FileStager) StageIn(_ context.Context, location string, destPath string
 // StageOut returns a file:// URI for the given source path.
 // In "local" mode, returns a URI pointing directly to srcPath.
 // In file:// mode, copies to the shared directory.
-func (s *FileStager) StageOut(_ context.Context, srcPath string, taskID string, _ StageOptions) (string, error) {
+func (s *FileStager) StageOut(_ context.Context, srcPath string, taskID string, opts StageOptions) (string, error) {
 	if s.mode == "local" {
 		absPath, err := filepath.Abs(srcPath)
 		if err != nil {
@@ -66,17 +66,37 @@ func (s *FileStager) StageOut(_ context.Context, srcPath string, taskID string, 
 		return "", fmt.Errorf("file stager: unsupported stage-out scheme %q", scheme)
 	}
 
-	destDir := filepath.Join(basePath, taskID)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return "", fmt.Errorf("file stager: mkdir %s: %w", destDir, err)
+	rel, err := stageOutRelPath(srcPath, opts.RelPath)
+	if err != nil {
+		return "", fmt.Errorf("file stager: %w", err)
 	}
-
-	destPath := filepath.Join(destDir, filepath.Base(srcPath))
+	destPath := filepath.Join(basePath, taskID, rel)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return "", fmt.Errorf("file stager: mkdir %s: %w", filepath.Dir(destPath), err)
+	}
 	if err := CopyFile(srcPath, destPath); err != nil {
 		return "", fmt.Errorf("file stager: copy to shared: %w", err)
 	}
 
 	return BuildLocation("file", destPath), nil
+}
+
+// StageOutDir stages a directory. In "local" mode the directory stays in place.
+// Otherwise the destination <base>/<taskID>/<RelPath> is created, and with
+// opts.CopyTree the whole tree is copied (following symlinks).
+func (s *FileStager) StageOutDir(_ context.Context, srcDir string, taskID string, opts StageOptions) (string, error) {
+	if s.mode == "local" {
+		absPath, err := filepath.Abs(srcDir)
+		if err != nil {
+			return "", fmt.Errorf("file stager: abs path: %w", err)
+		}
+		return BuildLocation("file", absPath), nil
+	}
+	scheme, basePath := ParseLocationScheme(s.mode)
+	if scheme != "file" {
+		return "", fmt.Errorf("file stager: unsupported stage-out scheme %q", scheme)
+	}
+	return stageOutDirTo("file stager", basePath, srcDir, taskID, opts)
 }
 
 // Supports returns true for file and empty schemes.
@@ -85,4 +105,7 @@ func (s *FileStager) Supports(scheme string) bool {
 }
 
 // Verify interface compliance.
-var _ Stager = (*FileStager)(nil)
+var (
+	_ Stager          = (*FileStager)(nil)
+	_ DirectoryStager = (*FileStager)(nil)
+)

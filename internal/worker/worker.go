@@ -935,11 +935,29 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 	stageOutStart := time.Now()
 	stagedOutputs := make(map[string]any)
+	walker := w.newOutputStager(ctx, task, outStager, taskDir)
 	for outputID, output := range result.Outputs {
 		w.logger.Debug("staging output", "task_id", task.ID, "output_id", outputID)
-		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task, outStager, "")
+		stagedOutputs[outputID] = walker.stage(output, "")
 	}
 	stageOutMs := time.Since(stageOutStart).Milliseconds()
+
+	// Two distinct sources mapping to one destination would silently
+	// overwrite each other; fail the task instead. The task dir is kept.
+	// The collision is a property of the tool's output layout, so a retry
+	// would fail identically: report it as permanent.
+	if stageErr := walker.err(); stageErr != nil {
+		return w.reportComplete(ctx, task.ID, TaskResult{
+			State:      model.TaskStateFailed,
+			ExitCode:   &result.ExitCode,
+			Stdout:     result.Stdout,
+			Stderr:     result.Stderr + "\n" + stageErr.Error(),
+			Outputs:    w.redactOutputsForReport(task.ID, stagedOutputs, stageToken),
+			StageInMs:  &stageInMs,
+			StageOutMs: &stageOutMs,
+			Permanent:  true,
+		})
+	}
 
 	if err := w.reportComplete(ctx, task.ID, TaskResult{
 		State:      model.TaskStateSuccess,
@@ -1051,6 +1069,11 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 				m = abs
 			}
 			opts := execution.StageOptions{}
+			if absTaskDir, err := filepath.Abs(taskDir); err == nil {
+				if rel, err := filepath.Rel(absTaskDir, m); err == nil && rel != "." && filepath.IsLocal(rel) {
+					opts.RelPath = filepath.ToSlash(rel)
+				}
+			}
 			loc, err := w.stager.StageOut(ctx, m, task.ID, opts)
 			if err != nil {
 				// Report the local location instead of dropping the output:
@@ -1088,96 +1111,6 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 		w.cleanupTaskDir(task, outputs)
 	}
 	return nil
-}
-
-// stageOutputValue recursively stages File objects in output values.
-// The stager parameter allows per-task overrides (e.g., user token for ws:// uploads).
-// destSubPath tracks the relative directory path within a Directory output tree,
-// so that staged files preserve the original directory hierarchy.
-func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, stager execution.Stager, destSubPath string) any {
-	switch val := v.(type) {
-	case map[string]any:
-		class, _ := val["class"].(string)
-		if class == "File" {
-			// Stage the file and update location.
-			if path, ok := val["path"].(string); ok {
-				opts := execution.StageOptions{}
-				if task.RuntimeHints != nil && task.RuntimeHints.OutputDestination != "" {
-					dest := task.RuntimeHints.OutputDestination
-					if destSubPath != "" {
-						dest = strings.TrimRight(dest, "/") + "/" + destSubPath
-					}
-					opts.Metadata = map[string]string{"destination": dest}
-					w.logger.Debug("staging file to ws", "file", filepath.Base(path), "dest", dest)
-				}
-				loc, err := stager.StageOut(ctx, path, task.ID, opts)
-				if err == nil {
-					w.logger.Debug("staged file", "file", filepath.Base(path), "location", loc)
-					val["location"] = loc
-					// If the output actually moved (not an in-place file://
-					// URI), drop the stale local path/dirname so server-side
-					// consumers (loadContents, local-executor steps) resolve
-					// via the staged location instead of a path inside a task
-					// dir that cleanupTaskDir may delete.
-					if loc != cwl.BuildLocation(cwl.SchemeFile, path) {
-						delete(val, "path")
-						delete(val, "dirname")
-					}
-				} else {
-					w.logger.Warn("stage-out failed", "path", path, "error", err)
-				}
-			}
-			// Also stage secondary files.
-			if secFiles, ok := val["secondaryFiles"].([]any); ok {
-				for i, sf := range secFiles {
-					secFiles[i] = w.stageOutputValue(ctx, sf, task, stager, destSubPath)
-				}
-			}
-			return val
-		}
-		if class == "Directory" {
-			// Recurse into listing, appending this directory's basename to the subpath.
-			childSubPath := destSubPath
-			if basename, ok := val["basename"].(string); ok && basename != "" {
-				if childSubPath != "" {
-					childSubPath = childSubPath + "/" + basename
-				} else {
-					childSubPath = basename
-				}
-			}
-			switch listing := val["listing"].(type) {
-			case []any:
-				for i, item := range listing {
-					listing[i] = w.stageOutputValue(ctx, item, task, stager, childSubPath)
-				}
-			case []map[string]any:
-				converted := make([]any, len(listing))
-				for i, item := range listing {
-					converted[i] = w.stageOutputValue(ctx, item, task, stager, childSubPath)
-				}
-				val["listing"] = converted
-			}
-			return val
-		}
-		// Recurse into other maps.
-		for k, v := range val {
-			val[k] = w.stageOutputValue(ctx, v, task, stager, destSubPath)
-		}
-		return val
-	case []any:
-		for i, item := range val {
-			val[i] = w.stageOutputValue(ctx, item, task, stager, destSubPath)
-		}
-		return val
-	case []map[string]any:
-		result := make([]any, len(val))
-		for i, item := range val {
-			result[i] = w.stageOutputValue(ctx, item, task, stager, destSubPath)
-		}
-		return result
-	default:
-		return v
-	}
 }
 
 // reportFailure sends a FAILED completion with the given error as stderr.

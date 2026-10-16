@@ -457,3 +457,57 @@ func TestHTTPStager_URLTemplateExpansion(t *testing.T) {
 		t.Errorf("path = %s, want %s", receivedPath, expected)
 	}
 }
+
+func TestHTTPStager_RelPathToken(t *testing.T) {
+	var gotPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	stager := NewHTTPStager(HTTPStagerConfig{
+		Timeout:      10 * time.Second,
+		MaxRetries:   1,
+		UploadMethod: "PUT",
+		UploadPath:   server.URL + "/o/{taskID}/{relpath}",
+	}, nil)
+
+	src := filepath.Join(t.TempDir(), "f.js")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		rel     string
+		want    string
+		wantErr bool
+	}{
+		{"empty is basename", "", "/o/t1/f.js", false},
+		{"nested", "a/b/f.js", "/o/t1/a/b/f.js", false},
+		{"escape rejected", "../x", "", true},
+		{"absolute rejected", "/etc/x", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPaths = nil
+			_, err := stager.StageOut(context.Background(), src, "t1", staging.StageOptions{RelPath: tc.rel})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if len(gotPaths) != 0 {
+					t.Fatalf("request sent despite unsafe relpath: %v", gotPaths)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gotPaths) != 1 || gotPaths[0] != tc.want {
+				t.Fatalf("paths = %v, want %s", gotPaths, tc.want)
+			}
+		})
+	}
+}
