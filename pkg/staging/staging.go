@@ -5,6 +5,7 @@ package staging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -66,6 +67,84 @@ type StageOptions struct {
 
 	// Mode determines how files are staged (copy, symlink, reference).
 	Mode StageMode
+
+	// RelPath is the slash-separated destination path of the staged object
+	// below the per-task root (<root>/<taskID>/<RelPath>). Empty means the
+	// legacy layout (just the source basename). It must be local: not
+	// absolute, no ".." escape, not ".". Stagers reject unsafe values with
+	// ErrUnsafeRelPath.
+	RelPath string
+
+	// CopyTree is honoured only by DirectoryStager.StageOutDir: when set,
+	// the whole directory tree is copied; when unset, only the destination
+	// directory is created (its listing entries are staged individually).
+	CopyTree bool
+}
+
+// ErrUnsafeRelPath is returned when StageOptions.RelPath is absolute, escapes
+// the per-task root, or is otherwise not a clean local relative path.
+var ErrUnsafeRelPath = errors.New("unsafe stage-out relative path")
+
+// ErrDirectoryStagingUnsupported is returned by a stager (or router) that
+// cannot stage directories.
+var ErrDirectoryStagingUnsupported = errors.New("directory stage-out not supported")
+
+// DirectoryStager is an optional Stager extension that stages a directory.
+type DirectoryStager interface {
+	// StageOutDir stages srcDir under the per-task root at opts.RelPath
+	// (empty: basename of srcDir) and returns the new directory location.
+	// With opts.CopyTree the whole tree is copied; otherwise only the
+	// destination directory is created.
+	StageOutDir(ctx context.Context, srcDir string, taskID string, opts StageOptions) (location string, err error)
+}
+
+// validateRelPath checks that rel is a clean, local, slash-separated path and
+// returns it in OS form (cleaned).
+func validateRelPath(rel string) (string, error) {
+	if rel == "" {
+		return "", fmt.Errorf("%w: empty", ErrUnsafeRelPath)
+	}
+	native := filepath.FromSlash(rel)
+	if filepath.IsAbs(native) || strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("%w: %q is absolute", ErrUnsafeRelPath, rel)
+	}
+	if !filepath.IsLocal(native) {
+		return "", fmt.Errorf("%w: %q escapes the task root", ErrUnsafeRelPath, rel)
+	}
+	cleaned := filepath.Clean(native)
+	if cleaned == "." {
+		return "", fmt.Errorf("%w: %q", ErrUnsafeRelPath, rel)
+	}
+	return cleaned, nil
+}
+
+// ValidateRelPath reports whether rel is a safe StageOptions.RelPath value.
+// The empty string is valid (legacy basename layout).
+func ValidateRelPath(rel string) error {
+	if rel == "" {
+		return nil
+	}
+	_, err := validateRelPath(rel)
+	return err
+}
+
+// stageOutRelPath returns the destination path below the per-task root for
+// srcPath: relPath when set (validated), else the basename of srcPath.
+func stageOutRelPath(srcPath, relPath string) (string, error) {
+	if relPath == "" {
+		return filepath.Base(srcPath), nil
+	}
+	return validateRelPath(relPath)
+}
+
+// StageOutRelSlash is like stageOutRelPath but returns a slash-separated path
+// for URL/key based stagers.
+func StageOutRelSlash(srcPath, relPath string) (string, error) {
+	rel, err := stageOutRelPath(srcPath, relPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 // Stager handles staging files in and out of task working directories.
@@ -167,6 +246,64 @@ func verifyCopySize(src, dst string, written int64) error {
 	}
 
 	return nil
+}
+
+// CopyTreeFollowingSymlinks recursively copies src to dst, following symlinks
+// (to files and directories) so the copy holds the content they point at.
+// Symlink cycles are broken: a directory whose real path is already on the
+// current descent stack is skipped.
+func CopyTreeFollowingSymlinks(src, dst string) error {
+	return copyTreeFollowing(src, dst, map[string]bool{})
+}
+
+func copyTreeFollowing(src, dst string, active map[string]bool) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return CopyFile(src, dst)
+	}
+	real, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	if active[real] {
+		return nil // symlink cycle
+	}
+	active[real] = true
+	defer delete(active, real)
+
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := copyTreeFollowing(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), active); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stageOutDirTo implements DirectoryStager for the directory-backed stagers.
+func stageOutDirTo(who, base, srcDir, taskID string, opts StageOptions) (string, error) {
+	rel, err := stageOutRelPath(srcDir, opts.RelPath)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", who, err)
+	}
+	dest := filepath.Join(base, taskID, rel)
+	if opts.CopyTree {
+		if err := CopyTreeFollowingSymlinks(srcDir, dest); err != nil {
+			return "", fmt.Errorf("%s: copy dir: %w", who, err)
+		}
+	} else if err := os.MkdirAll(dest, 0o755); err != nil {
+		return "", fmt.Errorf("%s: mkdir %s: %w", who, dest, err)
+	}
+	return BuildLocation("file", dest), nil
 }
 
 // CopyDirectory recursively copies a directory from src to dst.

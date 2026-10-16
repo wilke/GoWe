@@ -605,6 +605,7 @@ The `--http-upload-url` supports these placeholders:
 - `{taskID}` - The task ID
 - `{filename}` - Full filename with extension
 - `{basename}` - Filename without extension
+- `{relpath}` - Output path below the task root (e.g. `plots/a/f.js`); equals the filename for top-level outputs
 
 Example: `https://s3.example.com/bucket/{taskID}/{filename}`
 

@@ -51,6 +51,31 @@ func (s *CompositeStager) StageOut(ctx context.Context, srcPath string, taskID s
 	return "", fmt.Errorf("no fallback stager configured for stage-out")
 }
 
+// StageOutDir routes like StageOut. If the chosen handler cannot stage
+// directories, ErrDirectoryStagingUnsupported is returned.
+func (s *CompositeStager) StageOutDir(ctx context.Context, srcDir string, taskID string, opts StageOptions) (string, error) {
+	var chosen Stager
+	if dest := opts.Metadata["destination"]; dest != "" {
+		for scheme, handler := range s.handlers {
+			if scheme != "" && strings.HasPrefix(dest, scheme+"://") {
+				chosen = handler
+				break
+			}
+		}
+	}
+	if chosen == nil {
+		chosen = s.fallback
+	}
+	if chosen == nil {
+		return "", fmt.Errorf("no fallback stager configured for stage-out")
+	}
+	ds, ok := chosen.(DirectoryStager)
+	if !ok {
+		return "", ErrDirectoryStagingUnsupported
+	}
+	return ds.StageOutDir(ctx, srcDir, taskID, opts)
+}
+
 // Supports returns true if any registered handler supports the given scheme.
 func (s *CompositeStager) Supports(scheme string) bool {
 	if _, ok := s.handlers[scheme]; ok {
@@ -71,4 +96,7 @@ func (s *CompositeStager) RegisterHandler(scheme string, handler Stager) {
 }
 
 // Verify interface compliance.
-var _ Stager = (*CompositeStager)(nil)
+var (
+	_ Stager          = (*CompositeStager)(nil)
+	_ DirectoryStager = (*CompositeStager)(nil)
+)
