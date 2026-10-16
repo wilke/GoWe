@@ -2,7 +2,6 @@ package cwltool
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -734,22 +733,11 @@ func getResourceRequirement(tool *cwl.CommandLineTool) map[string]any {
 }
 
 func evalResourceInt(value any, evaluator *cwlexpr.Evaluator, ctx *cwlexpr.Context) int {
-	switch v := value.(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(math.Ceil(v))
-	case string:
-		if evaluator != nil && ctx != nil && (strings.HasPrefix(v, "$(") || strings.HasPrefix(v, "${")) {
-			result, err := evaluator.Evaluate(v, ctx)
-			if err == nil {
-				return evalResourceInt(result, nil, nil)
-			}
-		}
+	n, err := evalResourceIntRaw(value, evaluator, ctx)
+	if err != nil {
+		return 1
 	}
-	return 1
+	return n
 }
 
 func splitBasenameExt(basename string) (string, string) {

@@ -873,6 +873,15 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			"si_id", si.ID, "error", err)
 	}
 
+	// Evaluate ResourceRequirement (including expressions) into the hints so
+	// the preflight and CheckoutTask see what the worker will enforce (#324).
+	hinter := l.newResourceHinter(si, tmpTask)
+	if len(step.Scatter) > 0 {
+		hinter.applyTemplate(tmpTask) // per-iteration values are set at scatter time
+	} else {
+		hinter.apply(tmpTask)
+	}
+
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
 
@@ -932,7 +941,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 
 	// Scatter dispatch.
 	if len(step.Scatter) > 0 {
-		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType, populateErr)
+		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType, populateErr, hinter)
 	}
 
 	// ExpressionTool dispatch.
@@ -1009,7 +1018,8 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
 	step *model.Step, wf *model.Workflow, sub *model.Submission,
 	mergedInputs map[string]any, tasksByStep map[string]*model.Task,
-	stepOutputs map[string]map[string]any, execType model.ExecutorType, populateErr error) error {
+	stepOutputs map[string]map[string]any, execType model.ExecutorType, populateErr error,
+	hinter *resourceHinter) error {
 
 	l.logger.Info("dispatching scatter step",
 		"si_id", si.ID, "step_id", si.StepID,
@@ -1174,6 +1184,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
 		task.Job = combo
 		task.Inputs = combo
+		hinter.apply(task)
 
 		if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
 			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
@@ -3350,31 +3361,6 @@ func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
 			}
 		}
 
-		// Extract ResourceRequirement.
-		if resReq, ok := reqs["ResourceRequirement"].(map[string]any); ok {
-			if cores, ok := resReq["coresMin"]; ok {
-				switch v := cores.(type) {
-				case int:
-					hints.Cores = v
-				case float64:
-					hints.Cores = int(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-			if ram, ok := resReq["ramMin"]; ok {
-				switch v := ram.(type) {
-				case int:
-					hints.RamMB = int64(v)
-				case int64:
-					hints.RamMB = v
-				case float64:
-					hints.RamMB = int64(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-		}
 	}
 
 	// Also check hints section.
@@ -3454,29 +3440,6 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 			}
 		}
 
-		// ResourceRequirement
-		if resReq, ok := tool.Requirements["ResourceRequirement"].(map[string]any); ok {
-			if cores, ok := resReq["coresMin"]; ok {
-				switch v := cores.(type) {
-				case int:
-					hints.Cores = v
-				case float64:
-					hints.Cores = int(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-			if ram, ok := resReq["ramMin"]; ok {
-				switch v := ram.(type) {
-				case int:
-					hints.RamMB = int64(v)
-				case float64:
-					hints.RamMB = int64(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-		}
 	}
 
 	// Check hints map.
