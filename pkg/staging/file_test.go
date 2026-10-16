@@ -138,24 +138,33 @@ func TestFileStager_StageOutDir(t *testing.T) {
 		}
 	})
 
-	t.Run("symlinks followed", func(t *testing.T) {
+	t.Run("symlinks: files and in-tree dirs followed, escaping dirs recreated", func(t *testing.T) {
 		base := t.TempDir()
 		src := t.TempDir()
 		ext := t.TempDir()
 		writeFile(t, filepath.Join(ext, "real", "inner"), "I")
 		writeFile(t, filepath.Join(ext, "file"), "F")
-		if err := os.Symlink(filepath.Join(ext, "real"), filepath.Join(src, "dirlink")); err != nil {
+		writeFile(t, filepath.Join(src, "sub", "inner"), "S")
+		// File symlink to outside: content copied (parity with CopyFile).
+		if err := os.Symlink(filepath.Join(ext, "file"), filepath.Join(src, "filelink")); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(filepath.Join(ext, "file"), filepath.Join(src, "filelink")); err != nil {
+		// Directory symlink inside the tree: followed.
+		if err := os.Symlink(filepath.Join(src, "sub"), filepath.Join(src, "sublink")); err != nil {
+			t.Fatal(err)
+		}
+		// Directory symlink escaping the tree (bind-mounted dataset, input
+		// Directory on shared storage): recreated, never copied.
+		if err := os.Symlink(filepath.Join(ext, "real"), filepath.Join(src, "dirlink")); err != nil {
 			t.Fatal(err)
 		}
 		_, err := NewFileStager("file://"+base).StageOutDir(ctx, src, "t", StageOptions{RelPath: "o", CopyTree: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		for rel, want := range map[string]string{"dirlink/inner": "I", "filelink": "F"} {
-			p := filepath.Join(base, "t", "o", rel)
+		out := filepath.Join(base, "t", "o")
+		for rel, want := range map[string]string{"filelink": "F", "sublink/inner": "S", "sub/inner": "S"} {
+			p := filepath.Join(out, rel)
 			b, err := os.ReadFile(p)
 			if err != nil || string(b) != want {
 				t.Fatalf("%s = %q err=%v", rel, b, err)
@@ -163,6 +172,47 @@ func TestFileStager_StageOutDir(t *testing.T) {
 			if fi, _ := os.Lstat(p); fi.Mode()&os.ModeSymlink != 0 {
 				t.Fatalf("%s is a symlink in the copy", rel)
 			}
+		}
+		fi, err := os.Lstat(filepath.Join(out, "dirlink"))
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("dirlink should be recreated as a symlink: fi=%v err=%v", fi, err)
+		}
+		if target, _ := os.Readlink(filepath.Join(out, "dirlink")); target != filepath.Join(ext, "real") {
+			t.Fatalf("dirlink target = %q", target)
+		}
+	})
+
+	t.Run("dangling symlink is recreated, not fatal", func(t *testing.T) {
+		base := t.TempDir()
+		src := t.TempDir()
+		writeFile(t, filepath.Join(src, "f"), "x")
+		if err := os.Symlink(filepath.Join(src, "missing"), filepath.Join(src, "dangling")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewFileStager("file://"+base).StageOutDir(ctx, src, "t", StageOptions{RelPath: "o", CopyTree: true}); err != nil {
+			t.Fatal(err)
+		}
+		if fi, err := os.Lstat(filepath.Join(base, "t", "o", "dangling")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("dangling link not recreated: fi=%v err=%v", fi, err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(base, "t", "o", "f")); string(b) != "x" {
+			t.Fatal("sibling file not copied")
+		}
+	})
+
+	t.Run("copy tree root given via symlink", func(t *testing.T) {
+		base := t.TempDir()
+		real := t.TempDir()
+		writeFile(t, filepath.Join(real, "a", "f"), "A")
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewFileStager("file://"+base).StageOutDir(ctx, link, "t", StageOptions{RelPath: "o", CopyTree: true}); err != nil {
+			t.Fatal(err)
+		}
+		if b, err := os.ReadFile(filepath.Join(base, "t", "o", "a", "f")); err != nil || string(b) != "A" {
+			t.Fatalf("content = %q err=%v", b, err)
 		}
 	})
 

@@ -944,6 +944,8 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 
 	// Two distinct sources mapping to one destination would silently
 	// overwrite each other; fail the task instead. The task dir is kept.
+	// The collision is a property of the tool's output layout, so a retry
+	// would fail identically: report it as permanent.
 	if stageErr := walker.err(); stageErr != nil {
 		return w.reportComplete(ctx, task.ID, TaskResult{
 			State:      model.TaskStateFailed,
@@ -953,6 +955,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 			Outputs:    w.redactOutputsForReport(task.ID, stagedOutputs, stageToken),
 			StageInMs:  &stageInMs,
 			StageOutMs: &stageOutMs,
+			Permanent:  true,
 		})
 	}
 

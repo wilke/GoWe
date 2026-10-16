@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -305,6 +306,163 @@ func (p plainWS) StageOut(_ context.Context, _ string, _ string, o staging.Stage
 }
 func (p plainWS) Supports(string) bool { return true }
 
+// An input Directory echoed as an output (outputEval / cwl.output.json
+// passthrough) lives outside the task output dir: it must never be copied and
+// its location must stay untouched, with or without a listing.
+func TestOutputStager_OutsideDirectoryUntouched(t *testing.T) {
+	t.Run("without listing", func(t *testing.T) {
+		w := quietWorker(t)
+		task := &model.Task{ID: "t1"}
+		taskDir := filepath.Join(w.workDir, task.ID)
+		ext := filepath.Join(t.TempDir(), "run")
+		writeOut(t, filepath.Join(ext, "s1_R1.fastq.gz"), "many GB")
+		stage := t.TempDir()
+		rec := &recordingStager{inner: staging.NewFileStager("file://" + stage)}
+		dir := map[string]any{"class": "Directory", "path": ext, "location": "file://" + ext, "basename": "run"}
+		out := w.newOutputStager(context.Background(), task, rec, taskDir).stage(dir, "").(map[string]any)
+		if out["location"] != "file://"+ext || out["path"] != ext {
+			t.Fatalf("outside directory rewritten: %v", out)
+		}
+		if len(rec.dirs) != 0 || len(rec.files) != 0 {
+			t.Fatalf("stager called for an outside directory: dirs=%d files=%d", len(rec.dirs), len(rec.files))
+		}
+		if entries, _ := os.ReadDir(stage); len(entries) != 0 {
+			t.Fatalf("stage-out dir not empty: %v", entries)
+		}
+	})
+
+	t.Run("with listing stages files only", func(t *testing.T) {
+		w := quietWorker(t)
+		task := &model.Task{ID: "t1"}
+		taskDir := filepath.Join(w.workDir, task.ID)
+		ext := filepath.Join(t.TempDir(), "run")
+		f := filepath.Join(ext, "sub", "r.txt")
+		writeOut(t, f, "R")
+		stage := t.TempDir()
+		rec := &recordingStager{inner: staging.NewFileStager("file://" + stage)}
+		dir := map[string]any{
+			"class": "Directory", "path": ext, "location": "file://" + ext, "basename": "run",
+			"listing": []any{map[string]any{"class": "Directory", "path": filepath.Join(ext, "sub"), "basename": "sub",
+				"listing": []any{fileObj(f)}}},
+		}
+		out := w.newOutputStager(context.Background(), task, rec, taskDir).stage(dir, "").(map[string]any)
+		if out["location"] != "file://"+ext {
+			t.Fatalf("outside directory location rewritten: %v", out["location"])
+		}
+		sub := out["listing"].([]any)[0].(map[string]any)
+		if sub["location"] != nil {
+			t.Fatalf("outside subdirectory location rewritten: %v", sub["location"])
+		}
+		if len(rec.dirs) != 0 {
+			t.Fatalf("StageOutDir called %d times for outside directories", len(rec.dirs))
+		}
+		fo := sub["listing"].([]any)[0].(map[string]any)
+		want := "file://" + filepath.Join(stage, "t1", "run", "sub", "r.txt")
+		if fo["location"] != want {
+			t.Fatalf("file location = %v, want %v", fo["location"], want)
+		}
+	})
+}
+
+// An IWDR-staged input Directory is a symlink inside the output dir pointing
+// at shared storage: lexically inside, but it must not be copied either.
+func TestOutputStager_SymlinkedDirectoryInsideOutDir(t *testing.T) {
+	t.Run("pointing outside is untouched", func(t *testing.T) {
+		w := quietWorker(t)
+		task := &model.Task{ID: "t1"}
+		taskDir := filepath.Join(w.workDir, task.ID)
+		ext := filepath.Join(t.TempDir(), "db")
+		writeOut(t, filepath.Join(ext, "big"), "B")
+		link := filepath.Join(taskDir, "db")
+		if err := os.MkdirAll(taskDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(ext, link); err != nil {
+			t.Fatal(err)
+		}
+		stage := t.TempDir()
+		rec := &recordingStager{inner: staging.NewFileStager("file://" + stage)}
+		dir := map[string]any{"class": "Directory", "path": link, "location": "file://" + link, "basename": "db"}
+		out := w.newOutputStager(context.Background(), task, rec, taskDir).stage(dir, "").(map[string]any)
+		if out["location"] != "file://"+link {
+			t.Fatalf("location rewritten: %v", out["location"])
+		}
+		if len(rec.dirs) != 0 {
+			t.Fatal("StageOutDir called for a symlink to outside")
+		}
+		if entries, _ := os.ReadDir(stage); len(entries) != 0 {
+			t.Fatalf("data copied: %v", entries)
+		}
+		if !outputsReferenceDir(out, taskDir) {
+			t.Error("task dir must stay pinned")
+		}
+	})
+
+	t.Run("pointing inside is copied", func(t *testing.T) {
+		w := quietWorker(t)
+		task := &model.Task{ID: "t1"}
+		taskDir := filepath.Join(w.workDir, task.ID)
+		writeOut(t, filepath.Join(taskDir, "real", "f"), "F")
+		link := filepath.Join(taskDir, "link")
+		if err := os.Symlink(filepath.Join(taskDir, "real"), link); err != nil {
+			t.Fatal(err)
+		}
+		stage := t.TempDir()
+		st := staging.NewFileStager("file://" + stage)
+		dir := map[string]any{"class": "Directory", "path": link, "location": "file://" + link, "basename": "link"}
+		out := w.newOutputStager(context.Background(), task, st, taskDir).stage(dir, "").(map[string]any)
+		if out["location"] != "file://"+filepath.Join(stage, "t1", "link") {
+			t.Fatalf("location = %v", out["location"])
+		}
+		if readStaged(t, out["location"].(string)+"/f") != "F" {
+			t.Fatal("content not copied")
+		}
+	})
+}
+
+// failOnStager fails StageOut for one source path.
+type failOnStager struct {
+	*staging.FileStager
+	failPath string
+}
+
+func (f failOnStager) StageOut(ctx context.Context, src, id string, o staging.StageOptions) (string, error) {
+	if src == f.failPath {
+		return "", errors.New("boom")
+	}
+	return f.FileStager.StageOut(ctx, src, id, o)
+}
+
+// A Directory whose listing entry failed to stage must keep its local
+// location (an incomplete staged copy must not be advertised) and keep the
+// task dir pinned.
+func TestOutputStager_ChildFailureLeavesDirectoryLocal(t *testing.T) {
+	w := quietWorker(t)
+	task := &model.Task{ID: "t1"}
+	taskDir := filepath.Join(w.workDir, task.ID)
+	ok, bad := filepath.Join(taskDir, "d", "ok"), filepath.Join(taskDir, "d", "bad")
+	writeOut(t, ok, "1")
+	writeOut(t, bad, "2")
+	stage := t.TempDir()
+	st := failOnStager{FileStager: staging.NewFileStager("file://" + stage), failPath: bad}
+	dir := map[string]any{
+		"class": "Directory", "path": filepath.Join(taskDir, "d"), "basename": "d",
+		"location": "file://" + filepath.Join(taskDir, "d"),
+		"listing":  []any{fileObj(ok), fileObj(bad)},
+	}
+	s := w.newOutputStager(context.Background(), task, st, taskDir)
+	out := s.stage(dir, "").(map[string]any)
+	if out["location"] != "file://"+filepath.Join(taskDir, "d") {
+		t.Fatalf("directory location rewritten despite child failure: %v", out["location"])
+	}
+	if !outputsReferenceDir(out, taskDir) {
+		t.Error("task dir must stay pinned")
+	}
+	if s.err() != nil {
+		t.Errorf("a stage-out failure is not a collision: %v", s.err())
+	}
+}
+
 func TestOutputStager_DotDotRelPathRejectedByStager(t *testing.T) {
 	w := quietWorker(t)
 	task := &model.Task{ID: "t1"}
@@ -393,9 +551,37 @@ func TestExecuteWithCWLTool_StageOutLayoutAndCollision(t *testing.T) {
 		if !strings.Contains(res.Stderr, "stage-out: destination r.txt claimed by both") {
 			t.Errorf("stderr = %q", res.Stderr)
 		}
+		if !res.Permanent {
+			t.Error("a layout collision is deterministic and must be reported as permanent")
+		}
 		if _, err := os.Stat(filepath.Join(w.workDir, "task_col")); err != nil {
 			t.Error("task dir must be kept on failure")
 		}
 		_ = stage
+	})
+
+	t.Run("passthrough input directory is not copied", func(t *testing.T) {
+		w, stage := setup(t)
+		ext := t.TempDir()
+		run := filepath.Join(ext, "run")
+		writeOut(t, filepath.Join(run, "s1_R1.fastq.gz"), "many GB")
+		js := `{"run_dir":{"class":"Directory","location":"file://` + run + `","path":"` + run + `","basename":"run"}}`
+		task := &model.Task{ID: "task_pt", Job: map[string]any{}, Tool: treeTool(
+			"printf '%s' '"+js+"' > cwl.output.json",
+			map[string]any{"run_dir": map[string]any{"type": "Directory"}})}
+		res := runCWLTask(t, w, task)
+		if res.State != model.TaskStateSuccess {
+			t.Fatalf("state=%q stderr=%q", res.State, res.Stderr)
+		}
+		dir := res.Outputs["run_dir"].(map[string]any)
+		if dir["location"] != "file://"+run {
+			t.Errorf("passthrough directory location rewritten: %v", dir["location"])
+		}
+		if _, err := os.Stat(filepath.Join(stage, "task_pt", "run")); !os.IsNotExist(err) {
+			t.Error("passthrough directory was copied into the stage-out dir")
+		}
+		if _, err := os.Stat(filepath.Join(w.workDir, "task_pt")); !os.IsNotExist(err) {
+			t.Error("task dir not removed: nothing in it is referenced")
+		}
 	})
 }

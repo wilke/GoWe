@@ -28,16 +28,25 @@ Stage-out keeps the output directory layout (#332). No manual steps; roll worker
   `<stage-out>/<task-id>/<basename>`. Two outputs sharing a basename in different subdirectories (for example
   `d/a/f` and `d/b/f`) no longer overwrite each other. Top-level outputs keep the old location. Outputs outside the output
   directory stage as `<task-id>/<basename>`.
-- A `Directory` output's `location` now points at the staged directory under the stage-out root. Directories without a
-  `listing` (`loadListing: no_listing`, shallow-listing subdirectories, `cwl.output.json` directories) are copied whole.
+- A `Directory` output produced inside the task output directory now has its `location` rewritten to the staged
+  directory under the stage-out root. Such directories without a `listing` (`loadListing: no_listing`, shallow-listing
+  subdirectories, `cwl.output.json` directories) are copied whole; inside the copy, symlinks to files are followed while
+  symlinks to directories outside the tree (bind-mounted datasets, input directories) are recreated as symlinks, not
+  copied.
+- `Directory` outputs that live outside the task output directory — an input `Directory` echoed back through
+  `outputEval` or `cwl.output.json`, or an `InitialWorkDirRequirement` symlink to one — are never copied; their
+  `location` is left untouched and only their `listing` entries (if any) are staged, exactly as before.
 - Because `Directory` outputs no longer reference the worker task directory, that directory is now removed after a
-  SUCCESS report (it was previously kept forever whenever a `Directory` output existed). Failed tasks still keep theirs.
-  Directory stage-out is skipped for `ws://` destinations (unchanged behaviour: the task directory is kept).
+  SUCCESS report (it was previously kept forever whenever a `Directory` output existed). Failed tasks still keep theirs,
+  and so does any task whose stage-out partially failed (a `Directory` with an unstaged listing entry keeps its local
+  location rather than pointing at an incomplete copy). Directory stage-out is skipped for `ws://` destinations
+  (unchanged behaviour: the task directory is kept).
 - `--http-upload-url` accepts a new `{relpath}` token (output path below the task root). `{filename}` / `{basename}` are
   unchanged. The Shock stager records it as the `relpath` node attribute and the S3 stager appends it to the key prefix.
 - **Behaviour change**: if two distinct source files map to the same destination path, the task now fails with
-  `stage-out: destination <path> claimed by both <a> and <b>` instead of silently overwriting one with the other. The task
-  directory is kept for inspection.
+  `stage-out: destination <path> claimed by both <a> and <b>` instead of silently overwriting one with the other. The
+  failure is reported as permanent (no retries — the layout is a property of the tool) and the task directory is kept
+  for inspection.
 
 ## 0.21.x → 0.22.0
 

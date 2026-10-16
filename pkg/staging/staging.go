@@ -248,15 +248,47 @@ func verifyCopySize(src, dst string, written int64) error {
 	return nil
 }
 
-// CopyTreeFollowingSymlinks recursively copies src to dst, following symlinks
-// (to files and directories) so the copy holds the content they point at.
-// Symlink cycles are broken: a directory whose real path is already on the
-// current descent stack is skipped.
+// CopyTreeFollowingSymlinks recursively copies src to dst. Symlinks to files
+// are followed (the copy holds the content, as CopyFile does for a single
+// staged file). Symlinks to directories are followed only while the target
+// resolves inside the tree rooted at src; a directory symlink that escapes
+// the tree (a bind-mounted dataset, an input Directory on shared storage) is
+// recreated as a symlink instead, so staging never duplicates data the tool
+// did not produce. Symlink cycles are broken: a directory whose real path is
+// already on the current descent stack is skipped.
 func CopyTreeFollowingSymlinks(src, dst string) error {
-	return copyTreeFollowing(src, dst, map[string]bool{})
+	root, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	return copyTreeFollowing(src, dst, root, map[string]bool{})
 }
 
-func copyTreeFollowing(src, dst string, active map[string]bool) error {
+func copyTreeFollowing(src, dst, root string, active map[string]bool) error {
+	linfo, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		recreate := func() error {
+			target, err := os.Readlink(src)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(target, dst)
+		}
+		real, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return recreate() // dangling: keep the link rather than fail the tree
+		}
+		rinfo, err := os.Stat(real)
+		if err != nil {
+			return recreate()
+		}
+		if rinfo.IsDir() && !underDir(root, real) {
+			return recreate()
+		}
+	}
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -282,11 +314,18 @@ func copyTreeFollowing(src, dst string, active map[string]bool) error {
 		return err
 	}
 	for _, e := range entries {
-		if err := copyTreeFollowing(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), active); err != nil {
+		if err := copyTreeFollowing(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), root, active); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// underDir reports whether p is dir itself or lies below it (both cleaned
+// absolute paths, no symlink resolution).
+func underDir(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && (rel == "." || filepath.IsLocal(rel))
 }
 
 // stageOutDirTo implements DirectoryStager for the directory-backed stagers.

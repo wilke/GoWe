@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,7 @@ type outputStager struct {
 	staged   map[string]string // source path -> staged location
 	dests    map[string]string // destination RelPath -> source path
 	collided []string
+	failed   int // File/Directory objects left local because their stage-out failed
 }
 
 func (w *Worker) newOutputStager(ctx context.Context, task *model.Task, stager execution.Stager, taskDir string) *outputStager {
@@ -153,12 +155,42 @@ func (s *outputStager) stageFilePath(val map[string]any, p, destSubPath string) 
 	loc, err := s.stager.StageOut(s.ctx, p, s.task.ID, opts)
 	if err != nil {
 		w.logger.Warn("stage-out failed", "path", p, "error", err)
+		s.failed++
 		return
 	}
 	w.logger.Debug("staged file", "file", filepath.Base(p), "location", loc)
 	s.dests[rel] = src
 	s.staged[src] = loc
 	markStaged(val, p, loc)
+}
+
+// insideOutDir reports whether the directory at p is part of the task output
+// directory: lexically below outDir and, when p itself is a symlink, resolving
+// below it as well. An input Directory echoed as an output (outputEval /
+// cwl.output.json passthrough of a path on shared storage) or an IWDR symlink
+// to one is not: copying it would duplicate arbitrary external data.
+func (s *outputStager) insideOutDir(p string) bool {
+	rel, err := filepath.Rel(s.outDir, p)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return false
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		return true
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return false
+	}
+	realOut, err := filepath.EvalSymlinks(s.outDir)
+	if err != nil {
+		return false
+	}
+	rel, err = filepath.Rel(realOut, real)
+	return err == nil && rel != "." && filepath.IsLocal(rel)
 }
 
 func (s *outputStager) stageDirectory(val map[string]any, destSubPath string) {
@@ -169,6 +201,7 @@ func (s *outputStager) stageDirectory(val map[string]any, destSubPath string) {
 	if basename != "" {
 		childSubPath = path.Join(destSubPath, basename)
 	}
+	failedBefore := s.failed
 	hasListing := false
 	switch listing := val["listing"].(type) {
 	case []any:
@@ -189,11 +222,27 @@ func (s *outputStager) stageDirectory(val map[string]any, destSubPath string) {
 	if !ok || p == "" {
 		return
 	}
+	p = filepath.Clean(p)
+	// Only directories produced inside the task output directory are staged
+	// as directories. Anything else (passthrough inputs, IWDR symlinks to
+	// shared storage) keeps its original location; its listing entries, if
+	// any, were staged individually above exactly as before.
+	if !s.insideOutDir(p) {
+		s.w.logger.Debug("directory outside the task output dir, leaving location untouched", "path", p)
+		return
+	}
+	// A descendant that failed to stage keeps its local path; pointing the
+	// directory at an incomplete staged copy would hide that, so leave the
+	// directory local too (which also keeps the task dir pinned).
+	if s.failed != failedBefore {
+		s.w.logger.Warn("directory left local: a listing entry failed to stage", "path", p)
+		return
+	}
 	ds, ok := s.stager.(staging.DirectoryStager)
 	if !ok {
 		return
 	}
-	rel := s.relPath(filepath.Clean(p), destSubPath, basename)
+	rel := s.relPath(p, destSubPath, basename)
 	opts := execution.StageOptions{RelPath: rel, CopyTree: !hasListing}
 	if s.task.RuntimeHints != nil && s.task.RuntimeHints.OutputDestination != "" {
 		dest := strings.TrimRight(s.task.RuntimeHints.OutputDestination, "/") + "/" + rel
@@ -207,7 +256,9 @@ func (s *outputStager) stageDirectory(val map[string]any, destSubPath string) {
 		s.w.logger.Debug("directory stage-out unsupported, leaving directory local", "path", p)
 	default:
 		// Leave the object untouched: the local location keeps the task
-		// dir pinned so the data is not deleted.
+		// dir pinned so the data is not deleted. A partially copied tree
+		// may remain under the stage-out root; nothing references it.
+		s.failed++
 		s.w.logger.Warn("directory stage-out failed", "path", p, "error", err)
 	}
 }
