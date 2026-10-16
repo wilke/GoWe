@@ -78,6 +78,13 @@ A workflow or tool definition MUST be a CWL v1.2 YAML or JSON document. GoWe sup
   `InlineJavascriptRequirement`, `InitialWorkDirRequirement`, `EnvVarRequirement`,
   `SecondaryFiles`, and `loadContents`.
 
+`ResourceRequirement` (`coresMin`/`cores`, `ramMin`, literal or expression) is evaluated by the
+scheduler at dispatch against the task's job, using the same rules as the worker, and recorded in the
+task's runtime hints (`cores`, `ram_mb`). Workers report their effective CPU and memory capacity at
+registration, and checkout never hands a task to a worker whose reported capacity is smaller; a worker
+that reported nothing is not fit-checked. A task no online worker in its group can fit stays `QUEUED`
+and is failed by preflight or stuck-task detection with a capacity reason (ADR-0013).
+
 ### 4.2 Portability requirement
 
 A conforming workflow MUST remain valid CWL that other engines can parse. All GoWe-specific

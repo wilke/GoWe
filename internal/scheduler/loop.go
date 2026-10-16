@@ -105,6 +105,13 @@ type WorkerCapabilities struct {
 	Groups       map[string]int  // group → count of online workers
 	Datasets     map[string]int  // dataset ID → count of online workers
 	Workers      []*model.Worker // full list of online workers
+
+	// Largest self-reported capacity among online workers, per group (#324).
+	// Workers that did not report a dimension (legacy) are counted in
+	// UncappedByGroup instead and never block a task on that dimension.
+	MaxCoresByGroup map[string]int
+	MaxMemMBByGroup map[string]int64
+	UncappedByGroup map[string]int // group → online workers with any unreported capacity
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -211,6 +218,8 @@ func (l *Loop) workflowNameForTask(ctx context.Context, task *model.Task) string
 type taskRequirementKey struct {
 	WorkerGroup string
 	PrestageIDs string // sorted, comma-joined
+	Cores       int    // RuntimeHints.Cores (0 = none)
+	RamMB       int64  // RuntimeHints.RamMB (0 = none)
 }
 
 // stuckTracker tracks per-requirement-key progress of QUEUED tasks.
@@ -1733,8 +1742,11 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 		return l.cachedWorkerCaps
 	}
 	caps := &WorkerCapabilities{
-		Groups:   make(map[string]int),
-		Datasets: make(map[string]int),
+		Groups:          make(map[string]int),
+		Datasets:        make(map[string]int),
+		MaxCoresByGroup: make(map[string]int),
+		MaxMemMBByGroup: make(map[string]int64),
+		UncappedByGroup: make(map[string]int),
 	}
 	workers, err := l.store.ListWorkers(context.Background())
 	if err != nil {
@@ -1755,6 +1767,19 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 			group = "default"
 		}
 		caps.Groups[group]++
+		if w.MaxCPUs != nil {
+			if *w.MaxCPUs > caps.MaxCoresByGroup[group] {
+				caps.MaxCoresByGroup[group] = *w.MaxCPUs
+			}
+		}
+		if w.MaxMemMB != nil {
+			if *w.MaxMemMB > caps.MaxMemMBByGroup[group] {
+				caps.MaxMemMBByGroup[group] = *w.MaxMemMB
+			}
+		}
+		if w.MaxCPUs == nil || w.MaxMemMB == nil {
+			caps.UncappedByGroup[group]++
+		}
 		for dsID := range w.Datasets {
 			caps.Datasets[dsID]++
 		}
@@ -1770,6 +1795,8 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 // Only GoWe-specific hard constraints are checked:
 //   - Worker group (gowe:Execution.worker_group)
 //   - Prestage datasets (gowe:ResourceData with mode=prestage)
+//   - Capacity: RuntimeHints.Cores / RamMB against each worker's self-reported
+//     max CPUs / memory (a worker that did not report a dimension fits, #324)
 //
 // DockerRequirement (DockerImage) is NOT checked here because CWL treats it as
 // a hint — workers without container runtimes can still execute tools bare.
@@ -1793,9 +1820,13 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	}
 
 	wantGPU := hints != nil && hints.RequiresGPU
+	wantCores, wantRam := 0, int64(0)
+	if hints != nil {
+		wantCores, wantRam = hints.Cores, hints.RamMB
+	}
 
 	// Fast path: no constraints beyond "any worker".
-	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU {
+	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU && wantCores == 0 && wantRam == 0 {
 		return true, ""
 	}
 
@@ -1813,6 +1844,13 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 			if wGroup != wantGroup {
 				continue
 			}
+		}
+		// Check capacity; an unreported (nil) dimension fits.
+		if wantCores > 0 && w.MaxCPUs != nil && *w.MaxCPUs < wantCores {
+			continue
+		}
+		if wantRam > 0 && w.MaxMemMB != nil && *w.MaxMemMB < wantRam {
+			continue
 		}
 		// Check prestage datasets — worker must have ALL of them.
 		if len(prestageIDs) > 0 {
@@ -1840,6 +1878,20 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	for _, dsID := range prestageIDs {
 		if caps.Datasets[dsID] == 0 {
 			reasons = append(reasons, fmt.Sprintf("no workers with prestage dataset %q", dsID))
+		}
+	}
+	capGroup := wantGroup
+	if capGroup == "" {
+		capGroup = "default"
+	}
+	if caps.Groups[capGroup] > 0 {
+		if wantCores > 0 && caps.UncappedByGroup[capGroup] == 0 && caps.MaxCoresByGroup[capGroup] < wantCores {
+			reasons = append(reasons, fmt.Sprintf("no online worker in group %q has >= %d cores (largest %d)",
+				capGroup, wantCores, caps.MaxCoresByGroup[capGroup]))
+		}
+		if wantRam > 0 && caps.UncappedByGroup[capGroup] == 0 && caps.MaxMemMBByGroup[capGroup] < wantRam {
+			reasons = append(reasons, fmt.Sprintf("no online worker in group %q has >= %d MiB (largest %d MiB)",
+				capGroup, wantRam, caps.MaxMemMBByGroup[capGroup]))
 		}
 	}
 	if wantGPU {
@@ -2590,6 +2642,7 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 				"count", count, "reason", reason,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key],
 				"threshold", l.config.StuckTaskThreshold)
 		}
@@ -2603,12 +2656,14 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 				"count", count, "reason", reason,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key])
 		} else {
 			l.logger.Warn("stuck tasks: queued but not being picked up",
 				"count", count,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key])
 		}
 
@@ -2680,6 +2735,8 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 	key := taskRequirementKey{}
 	if task.RuntimeHints != nil {
 		key.WorkerGroup = task.RuntimeHints.WorkerGroup
+		key.Cores = task.RuntimeHints.Cores
+		key.RamMB = task.RuntimeHints.RamMB
 		var prestageIDs []string
 		for _, ds := range task.RuntimeHints.RequiredDatasets {
 			if ds.Mode == "prestage" {
@@ -2699,6 +2756,8 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 func hintsFromRequirementKey(key taskRequirementKey) *model.RuntimeHints {
 	hints := &model.RuntimeHints{}
 	hints.WorkerGroup = key.WorkerGroup
+	hints.Cores = key.Cores
+	hints.RamMB = key.RamMB
 	if key.PrestageIDs != "" {
 		for _, id := range strings.Split(key.PrestageIDs, ",") {
 			hints.RequiredDatasets = append(hints.RequiredDatasets, model.DatasetRequirement{
@@ -2723,7 +2782,10 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 	if key.PrestageIDs != "" {
 		fmt.Fprintf(&b, " prestage=[%s]", key.PrestageIDs)
 	}
-	if key.WorkerGroup == "" && key.PrestageIDs == "" {
+	if key.Cores > 0 || key.RamMB > 0 {
+		fmt.Fprintf(&b, " cores>=%d ram_mb>=%d", key.Cores, key.RamMB)
+	}
+	if key.WorkerGroup == "" && key.PrestageIDs == "" && key.Cores == 0 && key.RamMB == 0 {
 		b.WriteString(" (no specific constraints)")
 	}
 	b.WriteString("\n")
@@ -2755,6 +2817,17 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 			fmt.Fprintf(&b, ", datasets: [%s]", strings.Join(datasets, ", "))
 		}
 		b.WriteString(")\n")
+		if key.Cores > 0 || key.RamMB > 0 {
+			var parts []string
+			for _, g := range groups {
+				if caps.UncappedByGroup[g] > 0 {
+					parts = append(parts, fmt.Sprintf("%s: (some workers unreported)", g))
+					continue
+				}
+				parts = append(parts, fmt.Sprintf("%s: %d cores, %d MiB", g, caps.MaxCoresByGroup[g], caps.MaxMemMBByGroup[g]))
+			}
+			fmt.Fprintf(&b, "Largest capacity per group: %s\n", strings.Join(parts, "; "))
+		}
 	}
 
 	fmt.Fprintf(&b, "Reason: %s\n", reason)
