@@ -65,6 +65,10 @@ inputs:
     type: int
     default: 32000
     label: Memory per sample (MB)
+  optical_distance:
+    type: int
+    default: 2500
+    label: Optical duplicate distance (pixels); 2500 for NextSeq 1000/2000 and NovaSeq, about 100 for NextSeq 500/550
 
 steps:
   pair:
@@ -103,14 +107,15 @@ steps:
       filter_dir: filter_dir
       threads: threads
       ram_mb: ram_mb
-    out: [output_dir, tax_profile, report_html, fastp_json, fastp_html]
+      optical_distance: optical_distance
+    out: [output_dir, tax_profile, report_html, fastp_json, fastp_html, virus_fragments]
 
   summarize:
     run: esviritu-summarize.cwl
     in:
       project: pair/project
       sample_dirs: profile/output_dir
-    out: [summary_dir, detected_virus_info, assembly_summary, tax_profile, readstats, report_html]
+    out: [summary_dir, detected_virus_info, assembly_summary, tax_profile, readstats, report_html, virus_fragments]
 
 outputs:
   samples:
@@ -133,6 +138,10 @@ outputs:
   project_report:
     type: File?
     outputSource: summarize/report_html
+  project_virus_fragments:
+    type: File?
+    label: Primary reads, duplicates and unique fragments per reference, all samples
+    outputSource: summarize/virus_fragments
   fastp_json:
     type:
       type: array
