@@ -61,12 +61,13 @@ baseCommand:
     case "$ESV_SAMPLE" in
       ''|.|..|-*|*/*) echo "invalid sample name: '$ESV_SAMPLE'" >&2; exit 1;;
     esac
-    # temp dir and cores as passed to EsViritu (--temp, --cpu)
-    ESV_TEMP= ESV_CPU=1 prev=
+    # temp dir, cores and DB as passed to EsViritu (--temp, --cpu, --db)
+    ESV_TEMP= ESV_CPU=1 ESV_DB= prev=
     for a in "$@"; do
-      case "$prev" in --temp) ESV_TEMP=$a;; --cpu) ESV_CPU=$a;; esac
+      case "$prev" in --temp) ESV_TEMP=$a;; --cpu) ESV_CPU=$a;; --db) ESV_DB=$a;; esac
       prev=$a
     done
+    export ESV_META="$ESV_DB/virus_pathogen_database.all_metadata.tsv"
     cleanup() { if [ "$ESV_KEEP" != True ] && [ -n "$ESV_TEMP" ]; then rm -rf "$ESV_TEMP"; fi; }
     # EsViritu always keeps its temp dir here, so the final BAM is still there
     # for the duplicate counts; cleanup() removes it unless keep_intermediate.
@@ -76,31 +77,36 @@ baseCommand:
     log="$o/$ESV_SAMPLE"_esviritu.log
     if [ -s "$o/$ESV_SAMPLE.detected_virus.info.tsv" ]; then
       bam="$ESV_TEMP/$ESV_SAMPLE.third.filt.sorted.bam"
-      if [ "$rc" -eq 0 ] && [ -s "$bam" ]; then
-        frag="$o/$ESV_SAMPLE.virus_fragments.tsv"
-        t="$ESV_TEMP/markdup"; mkdir -p "$t"
-        if ! { samtools view -u -F 0x904 "$bam" \
-               | samtools collate -O -u - "$t/collate" \
-               | samtools fixmate -m -u - - \
-               | samtools sort -u -@ "$ESV_CPU" -T "$t/sort" - \
-               | samtools markdup -d "$ESV_OPTDIST" -t -@ "$ESV_CPU" -f "$o/$ESV_SAMPLE.markdup.stats.txt" - "$t/md.bam"; } \
-             || ! samtools view "$t/md.bam" | awk -F '\t' -v OFS='\t' -v S="$ESV_SAMPLE" \
-                  -v META=/opt/esviritu_db/v3.2.4/virus_pathogen_database.all_metadata.tsv '
-               BEGIN { while ((getline l < META) > 0) { split(l, m, "\t"); sub_[m[1]] = m[12] } }
-               { r = $3; tot[r]++
-                 if (and($2, 1024)) { d[r]++; if ($0 ~ /\tdt:Z:SQ/) opt[r]++ }
-                 else if (!seen[$1 "\t" r]++) uf[r]++ }
-               END {
-                 print "sample_ID", "Accession", "subspecies", "primary_reads", "duplicates",
-                       "optical_duplicates", "unique_fragments", "duplicate_pct"
-                 for (r in tot) printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\n", S, r, sub_[r], tot[r], d[r] + 0,
-                                       opt[r] + 0, uf[r] + 0, 100 * d[r] / tot[r]
-               }' > "$frag.tmp"; then
-          echo "duplicate marking failed for $ESV_SAMPLE" >&2; cleanup; exit 1
-        fi
-        { head -n 1 "$frag.tmp"; tail -n +2 "$frag.tmp" | sort -t "$(printf '\t')" -k4,4nr; } > "$frag"
-        rm -f "$frag.tmp"
+      if [ "$rc" -ne 0 ]; then
+        echo "EsViritu exited $rc for $ESV_SAMPLE" >&2; exit "$rc"
       fi
+      if [ ! -s "$bam" ]; then
+        echo "EsViritu detected viruses in $ESV_SAMPLE but its final BAM $bam is missing; cannot count duplicates" >&2
+        exit 1
+      fi
+      frag="$o/$ESV_SAMPLE.virus_fragments.tsv"
+      t="$ESV_TEMP/markdup"; mkdir -p "$t"
+      if ! { samtools view -u -F 0x904 "$bam" \
+             | samtools collate -O -u - "$t/collate" \
+             | samtools fixmate -m -u - - \
+             | samtools sort -u -m 1G -@ "$ESV_CPU" -T "$t/sort" - \
+             | samtools markdup -d "$ESV_OPTDIST" -@ "$ESV_CPU" -f "$o/$ESV_SAMPLE.markdup.stats.txt" - "$t/md.bam"; } \
+           || ! samtools view "$t/md.bam" | awk -F '\t' -v OFS='\t' '
+             BEGIN { S = ENVIRON["ESV_SAMPLE"]; META = ENVIRON["ESV_META"]
+                     while ((getline l < META) > 0) { split(l, m, "\t"); sub_[m[1]] = m[12] } }
+             { r = $3; tot[r]++
+               if (int($2 / 1024) % 2) { d[r]++; if ($0 ~ /\tdt:Z:SQ/) opt[r]++ }
+               else if (!seen[$1 "\t" r]++) uf[r]++ }
+             END {
+               print "sample_ID", "Accession", "subspecies", "primary_reads", "duplicates",
+                     "optical_duplicates", "unique_fragments", "duplicate_pct"
+               for (r in tot) printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\n", S, r, sub_[r], tot[r], d[r] + 0,
+                                     opt[r] + 0, uf[r] + 0, 100 * d[r] / tot[r]
+             }' > "$frag.tmp"; then
+        echo "duplicate marking failed for $ESV_SAMPLE (temp dir kept: $ESV_TEMP)" >&2; exit 1
+      fi
+      { head -n 1 "$frag.tmp"; tail -n +2 "$frag.tmp" | sort -t "$(printf '\t')" -k4,4nr; } > "$frag"
+      rm -f "$frag.tmp"
       cleanup; exit $rc
     fi
     if [ -f "$log" ] && grep -qE "No reads aligned after|CoverM-like table is empty" "$log"; then
@@ -108,9 +114,9 @@ baseCommand:
       echo "EsViritu: no viruses detected in $ESV_SAMPLE" >&2
       cleanup; exit 0
     fi
-    echo "EsViritu produced no results for $ESV_SAMPLE (exit $rc)" >&2
+    echo "EsViritu produced no results for $ESV_SAMPLE (exit $rc; temp dir kept: $ESV_TEMP)" >&2
     if [ -f "$log" ]; then tail -n 20 "$log" >&2; fi
-    cleanup; exit 1
+    exit 1
   - esviritu
 
 arguments:
@@ -211,7 +217,7 @@ inputs:
     type: int
     default: 2500
     label: Optical duplicate distance (pixels) for samtools markdup
-    doc: 2500 for patterned flow cells (NextSeq 2000, NovaSeq), 100 for older non-patterned ones.
+    doc: 2500 for patterned flow cells (NextSeq 1000/2000, NovaSeq); about 100 for non-patterned ones (NextSeq 500/550, HiSeq 2500, MiSeq).
   threads:
     type: int
     default: 4

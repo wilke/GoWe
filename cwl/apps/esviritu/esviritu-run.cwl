@@ -65,6 +65,10 @@ inputs:
     type: int
     default: 32000
     label: Memory per sample (MB)
+  optical_distance:
+    type: int
+    default: 2500
+    label: Optical duplicate distance (pixels); 2500 for NextSeq 1000/2000 and NovaSeq, about 100 for NextSeq 500/550
 
 steps:
   pair:
@@ -103,6 +107,7 @@ steps:
       filter_dir: filter_dir
       threads: threads
       ram_mb: ram_mb
+      optical_distance: optical_distance
     out: [output_dir, tax_profile, report_html, fastp_json, fastp_html, virus_fragments]
 
   summarize:
