@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.0](https://github.com/wilke/GoWe/compare/v0.25.0...v0.26.0) (2026-10-16)
+
+
+### Features
+
+* **cwl/esviritu:** unique fragments and duplicates per detected virus ([#335](https://github.com/wilke/GoWe/issues/335)) ([0cd0654](https://github.com/wilke/GoWe/commit/0cd0654e2d98b7d0be9add0521ab6c5b408bf7fd))
+
+
+### Bug Fixes
+
+* **toolexec:** evaluate EnvVarRequirement with the real runtime context ([#336](https://github.com/wilke/GoWe/issues/336)) ([299aacb](https://github.com/wilke/GoWe/commit/299aacb02f6be9664d9e7e94f903cf251b6d19a1))
+
 ## [0.25.0](https://github.com/wilke/GoWe/compare/v0.24.0...v0.25.0) (2026-10-16)
 
 
