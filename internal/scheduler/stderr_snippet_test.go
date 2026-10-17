@@ -60,13 +60,57 @@ func TestStderrSnippet(t *testing.T) {
 			if !utf8.ValidString(got) {
 				t.Fatalf("snippet is not valid UTF-8: %q", got)
 			}
-			if limit := tc.max + len(snippetMarker) + utf8.UTFMax; len(got) > limit {
+			i := strings.Index(got, snippetMarker)
+			if i < 0 || !strings.HasSuffix(tc.in, got[i+len(snippetMarker):]) {
+				t.Fatalf("snippet lacks the marker or does not end with the end of the input: %q", got)
+			}
+			if limit := tc.max + len(snippetMarker); len(got) > limit {
 				t.Fatalf("len %d > %d", len(got), limit)
 			}
 			for _, c := range tc.contains {
 				if !strings.Contains(got, c) {
 					t.Errorf("snippet lacks %q:\n%s", c, got)
 				}
+			}
+		})
+	}
+}
+
+func TestStderrSnippetExact(t *testing.T) {
+	tests := []struct {
+		name, in string
+		limit    int
+		want     string
+	}{
+		{
+			name:  "partial first tail line is dropped",
+			in:    "first\naaaa\nbbbb\ncccc\ndddd\n",
+			limit: 18,
+			want:  "first" + snippetMarker + "cccc\ndddd\n",
+		},
+		{
+			name:  "tail on a line boundary keeps that line",
+			in:    "first\naaaa\nbbbb\ncccc\ndddd\n",
+			limit: 20,
+			want:  "first" + snippetMarker + "bbbb\ncccc\ndddd\n",
+		},
+		{
+			name:  "CRLF first line loses its CR",
+			in:    "first\r\naaaa\r\nbbbb\r\ncccc\r\n",
+			limit: 17,
+			want:  "first" + snippetMarker + "bbbb\r\ncccc\r\n",
+		},
+		{
+			name:  "small limit caps the head at half",
+			in:    strings.Repeat("x", 53),
+			limit: 30,
+			want:  strings.Repeat("x", 15) + snippetMarker + strings.Repeat("x", 15),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stderrSnippet(tc.in, tc.limit); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

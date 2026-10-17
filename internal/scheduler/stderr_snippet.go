@@ -21,8 +21,8 @@ const snippetMarker = "\n...(truncated)...\n"
 // capped at maxSnippetHead bytes) and fills the rest of the budget from the
 // end of s, starting at a line boundary where one is close. Cuts never split
 // a UTF-8 sequence.
-func stderrSnippet(s string, max int) string {
-	if len(s) <= max {
+func stderrSnippet(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
 
@@ -30,22 +30,19 @@ func stderrSnippet(s string, max int) string {
 	if i := strings.IndexByte(head, '\n'); i >= 0 {
 		head = head[:i]
 	}
-	if len(head) > maxSnippetHead {
-		head = head[:runeStart(head, maxSnippetHead)]
+	head = strings.TrimRight(head, "\r")
+	if headMax := min(maxSnippetHead, limit/2); len(head) > headMax {
+		head = head[:runeStart(head, headMax)]
 	}
 
-	budget := max - len(head)
-	if budget <= 0 {
-		return head + snippetMarker
-	}
-	start := runeStart(s, len(s)-budget)
-	if start < len(head) {
-		start = len(head)
-	}
+	// len(s) > limit, so the tail starts after the head.
+	start := runeStart(s, len(s)-(limit-len(head)))
 	tail := s[start:]
 	// Start the tail on a whole line if a line break is near its start.
-	if i := strings.IndexByte(tail, '\n'); i >= 0 && i < maxSnippetHead && i+1 < len(tail) {
-		tail = tail[i+1:]
+	if s[start-1] != '\n' {
+		if i := strings.IndexByte(tail, '\n'); i >= 0 && i < maxSnippetHead && i+1 < len(tail) {
+			tail = tail[i+1:]
+		}
 	}
 	return head + snippetMarker + tail
 }
