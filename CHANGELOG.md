@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/wilke/GoWe/compare/v0.26.0...v0.26.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **scheduler:** keep the end of stderr in submission errors ([#338](https://github.com/wilke/GoWe/issues/338)) ([9759a32](https://github.com/wilke/GoWe/commit/9759a32846f54103179fd91534cad97c84bb0aa3))
+
 ## [0.26.0](https://github.com/wilke/GoWe/compare/v0.25.0...v0.26.0) (2026-10-16)
 
 
