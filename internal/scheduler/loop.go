@@ -3257,12 +3257,10 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 			subErr.Context.TaskID = task.ID
 			subErr.Context.ExitCode = task.ExitCode
 
-			// Include a stderr snippet (truncate to 1000 chars for storage).
-			stderr := task.Stderr
-			if len(stderr) > 1000 {
-				stderr = stderr[:1000] + "...(truncated)"
-			}
-			if stderr != "" {
+			// Include a stderr snippet for the submission error. Keep the
+			// first line (the executor's own message) and the end, where
+			// tracebacks put the actual error.
+			if stderr := stderrSnippet(task.Stderr, maxSubmissionStderr); stderr != "" {
 				subErr.Context.Stderr = stderr
 			}
 
