@@ -48,6 +48,8 @@ requirements:
         envValue: '$(inputs.keep_intermediate ? "True" : "False")'
       - envName: ESV_OPTDIST
         envValue: $(inputs.optical_distance)
+      - envName: ESV_MINFRAG
+        envValue: $(inputs.min_fragments)
 
 hints:
   gowe:Execution:
@@ -85,6 +87,9 @@ baseCommand:
         exit 1
       fi
       frag="$o/$ESV_SAMPLE.virus_fragments.tsv"
+      ESV_WEIGHTS="$ESV_TEMP/$ESV_SAMPLE.third.read_weights.tsv"
+      [ -s "$ESV_WEIGHTS" ] || ESV_WEIGHTS=
+      export ESV_WEIGHTS
       t="$ESV_TEMP/markdup"; mkdir -p "$t"
       if ! { samtools view -u -F 0x904 "$bam" \
              | samtools collate -O -u - "$t/collate" \
@@ -92,16 +97,22 @@ baseCommand:
              | samtools sort -u -m 1G -@ "$ESV_CPU" -T "$t/sort" - \
              | samtools markdup -d "$ESV_OPTDIST" -@ "$ESV_CPU" -f "$o/$ESV_SAMPLE.markdup.stats.txt" - "$t/md.bam"; } \
            || ! samtools view "$t/md.bam" | awk -F '\t' -v OFS='\t' '
-             BEGIN { S = ENVIRON["ESV_SAMPLE"]; META = ENVIRON["ESV_META"]
-                     while ((getline l < META) > 0) { split(l, m, "\t"); sub_[m[1]] = m[12] } }
-             { r = $3; tot[r]++
-               if (int($2 / 1024) % 2) { d[r]++; if ($0 ~ /\tdt:Z:SQ/) opt[r]++ }
-               else if (!seen[$1 "\t" r]++) uf[r]++ }
+             # With --collapse-duplicates each record stands for as many reads as its
+             # weight (third.read_weights.tsv); every copy beyond the non-duplicate
+             # records is a duplicate. optical_duplicates then only covers distinct reads.
+             BEGIN { S = ENVIRON["ESV_SAMPLE"]; META = ENVIRON["ESV_META"]; MINF = ENVIRON["ESV_MINFRAG"] + 0
+                     while ((getline l < META) > 0) { split(l, m, "\t"); sub_[m[1]] = m[12] }
+                     W = ENVIRON["ESV_WEIGHTS"]
+                     if (W != "") while ((getline l < W) > 0) { split(l, m, "\t"); w[m[1]] = m[2] } }
+             { r = $3; tot[r] += (W != "" ? w[$1] : 1)
+               if (int($2 / 1024) % 2) { if ($0 ~ /\tdt:Z:SQ/) opt[r]++ }
+               else { nd[r]++; if (!seen[$1 "\t" r]++) uf[r]++ } }
              END {
                print "sample_ID", "Accession", "subspecies", "primary_reads", "duplicates",
-                     "optical_duplicates", "unique_fragments", "duplicate_pct"
-               for (r in tot) printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\n", S, r, sub_[r], tot[r], d[r] + 0,
-                                     opt[r] + 0, uf[r] + 0, 100 * d[r] / tot[r]
+                     "optical_duplicates", "unique_fragments", "duplicate_pct", "low_support"
+               for (r in tot) { d = tot[r] - nd[r]
+                 printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\t%s\n", S, r, sub_[r], tot[r], d,
+                        opt[r] + 0, uf[r] + 0, 100 * d / tot[r], (uf[r] + 0 < MINF ? "true" : "false") }
              }' > "$frag.tmp"; then
         echo "duplicate marking failed for $ESV_SAMPLE (temp dir kept: $ESV_TEMP)" >&2; exit 1
       fi
@@ -142,6 +153,8 @@ arguments:
     valueFrom: '$(inputs.quality_filter ? "True" : "False")'
   - prefix: --dedup
     valueFrom: '$(inputs.dedup ? "True" : "False")'
+  # passed only when on, so images without the option (stock EsViritu 1.3.4) still work
+  - valueFrom: '$(inputs.collapse_duplicates ? ["--collapse-duplicates", "True"] : [])'
   - prefix: --filter_seqs
     valueFrom: '$(inputs.filter_dir ? "True" : "False")'
 
@@ -182,6 +195,16 @@ inputs:
     type: boolean
     default: false
     label: Remove PCR duplicates during fastp preprocessing
+  collapse_duplicates:
+    type: boolean
+    default: false
+    label: Process each distinct read pair once, with its copy number as weight
+    doc: >-
+      Needs an EsViritu image with --collapse-duplicates (wilke/EsViritu v1.3.4-anl.p3 or
+      later; not stock 1.3.4). Identical reads (pairs) are collapsed to one representative
+      that is mapped and processed once, like --dedup; read_count and RPKMF then count
+      distinct reads, and read_count_weighted / RPKMF_weighted count all reads.
+      virus_fragments.tsv uses the copy numbers for primary_reads and duplicates.
   species_threshold:
     type: float
     default: 0.90
@@ -213,6 +236,10 @@ inputs:
     default: false
     label: Keep intermediate files (BAMs etc.)
     doc: Kept in the task's tmp dir (EsViritu --temp); otherwise removed when the task ends.
+  min_fragments:
+    type: int
+    default: 50
+    label: Unique fragments below which a reference is flagged low_support in virus_fragments.tsv
   optical_distance:
     type: int
     default: 2500
@@ -280,6 +307,11 @@ outputs:
     label: Consensus sequences of detected viruses
     outputBinding:
       glob: $(inputs.sample)/$(inputs.sample)_final_consensus.fasta
+  exemplar_ties:
+    type: File?
+    label: Representative references chosen only by name order among tied references
+    outputBinding:
+      glob: $(inputs.sample)/$(inputs.sample).exemplar_ties.tsv
   virus_fragments:
     type: File?
     label: Primary reads, duplicates and unique fragments per reference
