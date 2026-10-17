@@ -76,6 +76,7 @@ flow cells such as NextSeq 2000 / NovaSeq) and writes `<sample>/<sample>.virus_f
 | `duplicates`, `optical_duplicates` | reads marked as PCR or optical duplicates |
 | `unique_fragments` | distinct read names among non-duplicate reads: independent molecules |
 | `duplicate_pct` | duplicates / primary_reads |
+| `low_support` | `true` when `unique_fragments` < `min_fragments` (default 50): treat lineage-level labels as unreliable |
 
 Notes:
 - `primary_reads` counts primary alignments only (secondary and supplementary records excluded), so it can differ
@@ -91,6 +92,27 @@ detection is supported: in hybrid-capture wastewater libraries we have seen 650 
 EsViritu's own tables are unchanged. To do this, the tool always runs EsViritu with `--keep True` and removes the temp
 directory itself after a successful run (unless `keep_intermediate: true`). If viruses are detected but the final BAM is
 missing, the task fails.
+
+## Weighted duplicate collapse (`collapse_duplicates`)
+
+`collapse_duplicates: true` needs an EsViritu image with `--collapse-duplicates` (wilke/EsViritu tag
+`v1.3.4-anl.p3` or later); stock EsViritu 1.3.4 does not have it, so the default is `false` and the option is only
+passed when on. Identical reads (read pairs) are collapsed to one representative, which is mapped and processed once
+through the whole pipeline, as with `dedup`, while its copy number is kept as a weight:
+
+- `read_count` and `RPKMF` count distinct reads (like `dedup`); the new `read_count_weighted` and `RPKMF_weighted`
+  count all reads, so they are the abundance columns to compare with runs without collapse.
+- `virus_fragments.tsv` uses the copy numbers: `primary_reads` and `duplicates` count all reads; `optical_duplicates`
+  only covers distinct reads.
+- `<sample>.exemplar_ties.tsv` (merged into `summary/<project>.exemplar_ties.tsv`) lists representative references
+  that EsViritu chose only by name order among references tied on read count and identity (written by the patched
+  image whether or not collapse is on).
+
+On a NextSeq 2000 hybrid-capture run (10 samples) it took about half the CPU time of a run without collapse, the same
+as `dedup`. Weighted read counts matched the run without collapse within 2% for all but one low-abundance taxon, and
+lineage labels matched the `dedup` run. Labels of lineages supported by few unique fragments depend on how ties
+between near-identical references are broken, so they can differ between modes; check `low_support` and
+`exemplar_ties.tsv` before reporting them.
 
 ## Single sample (`esviritu`)
 

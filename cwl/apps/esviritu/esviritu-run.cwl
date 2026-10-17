@@ -42,6 +42,14 @@ inputs:
     type: boolean
     default: false
     label: Remove PCR duplicates
+  collapse_duplicates:
+    type: boolean
+    default: false
+    label: Process each distinct read pair once, with its copy number as weight (needs a patched image, see README)
+  min_fragments:
+    type: int
+    default: 50
+    label: Unique fragments below which a reference is flagged low_support in virus_fragments.tsv
   min_align_length:
     type: int
     default: 100
@@ -101,6 +109,8 @@ steps:
         default: paired
       quality_filter: quality_filter
       dedup: dedup
+      collapse_duplicates: collapse_duplicates
+      min_fragments: min_fragments
       min_align_length: min_align_length
       species_threshold: species_threshold
       subspecies_threshold: subspecies_threshold

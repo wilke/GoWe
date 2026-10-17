@@ -44,6 +44,11 @@ arguments:
         [ -e "$f" ] || continue
         if [ -e "$frag" ]; then tail -n +2 "$f" >> "$frag"; else cat "$f" > "$frag"; fi
       done
+      ties="summary/$project.exemplar_ties.tsv"
+      for f in "$project"/*.exemplar_ties.tsv; do
+        [ -e "$f" ] || continue
+        if [ -e "$ties" ]; then tail -n +2 "$f" >> "$ties"; else cat "$f" > "$ties"; fi
+      done
       rm -rf "$project"
   - position: 1
     valueFrom: summarize
