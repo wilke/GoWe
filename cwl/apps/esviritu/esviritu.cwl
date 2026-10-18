@@ -104,7 +104,7 @@ baseCommand:
                      while ((getline l < META) > 0) { split(l, m, "\t"); sub_[m[1]] = m[12] }
                      W = ENVIRON["ESV_WEIGHTS"]
                      if (W != "") while ((getline l < W) > 0) { split(l, m, "\t"); w[m[1]] = m[2] } }
-             { r = $3; tot[r] += (W != "" ? w[$1] : 1)
+             { r = $3; tot[r] += (W != "" && ($1 in w) ? w[$1] : 1)
                if (int($2 / 1024) % 2) { if ($0 ~ /\tdt:Z:SQ/) opt[r]++ }
                else { nd[r]++; if (!seen[$1 "\t" r]++) uf[r]++ } }
              END {
