@@ -32,7 +32,7 @@ inputs:
 
   reference_genome_index:
     type: int?
-    doc: "Index of genome to be used as reference (1-based)"
+    doc: "Position of the reference, 1-based, counted over genome_ids first, then user_genomes, then user_feature_groups. A reference genome id goes first in genome_ids (index 1); a reference FASTA is len(genome_ids) + its position in user_genomes; a reference feature group is len(genome_ids) + len(user_genomes) + its position in user_feature_groups."
     default: 1
 
   min_seq_cov:

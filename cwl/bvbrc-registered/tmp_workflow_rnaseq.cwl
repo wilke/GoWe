@@ -33,11 +33,16 @@ inputs:
 
   experimental_conditions:
     type: string[]?
-    doc: "Experimental condition labels [bvbrc:array]"
+    doc: "Experimental condition labels, e.g. [\"<condition A>\", \"<condition B>\"]. Each library's condition is one of these labels. [bvbrc:array]"
 
   contrasts:
-    type: string?
-    doc: "Contrast list for differential expression"
+    type:
+      - "null"
+      - type: array
+        items:
+          type: array
+          items: string
+    doc: "Contrasts for differential expression: a list of pairs of condition labels, e.g. [[\"<condition A>\", \"<condition B>\"]]. Not a text string."
 
   strand_specific:
     type: boolean?
@@ -73,8 +78,8 @@ inputs:
               type: float?
               doc: "Average insert standard deviation"
             - name: condition
-              type: int?
-              doc: "Experimental condition index"
+              type: string?
+              doc: "Experimental condition of this library: one of the experimental_conditions labels (the label, not a number)"
     doc: "Paired end read libraries [bvbrc:group]"
 
   single_end_libs:
@@ -93,8 +98,8 @@ inputs:
               type: string
               doc: "Read file in FASTQ, FASTA, or BAM [bvbrc:wsid]"
             - name: condition
-              type: int?
-              doc: "Experimental condition index"
+              type: string?
+              doc: "Experimental condition of this library: one of the experimental_conditions labels (the label, not a number)"
     doc: "Single end read libraries [bvbrc:group]"
 
   srr_libs:
@@ -113,8 +118,8 @@ inputs:
               type: string
               doc: "SRA Run accession with SRR prefix"
             - name: condition
-              type: int?
-              doc: "Experimental condition index"
+              type: string?
+              doc: "Experimental condition of this library: one of the experimental_conditions labels (the label, not a number)"
     doc: "SRA read libraries [bvbrc:group]"
 
   host_ftp:

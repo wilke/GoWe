@@ -49,7 +49,7 @@ inputs:
   ref_type:
     type: string?
     default: "none"
-    doc: "Reference sequence selection [enum: none, first, string, feature_id, genome_id] [bvbrc:enum]. Keep none unless the user asks for a reference."
+    doc: "Reference sequence selection [enum: none, first, string, feature_id, genome_id] [bvbrc:enum]. Keep none unless the user asks for a reference. When the user names the reference, use feature_id, genome_id or string with ref_string; first means the first sequence of the merged input, whose order BV-BRC decides."
   ref_string:
     type: string?
     default: ""
