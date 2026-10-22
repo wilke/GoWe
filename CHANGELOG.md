@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.27.0](https://github.com/wilke/GoWe/compare/v0.26.1...v0.27.0) (2026-10-22)
+
+
+### Features
+
+* **cwl/esviritu:** weighted duplicate collapse, low_support flag, exemplar ties ([#340](https://github.com/wilke/GoWe/issues/340)) ([b24197b](https://github.com/wilke/GoWe/commit/b24197ba93829bfc673e1577103ab695ab5df396))
+
+
+### Bug Fixes
+
+* **cwl/esviritu:** count a read missing from the weights file once ([#342](https://github.com/wilke/GoWe/issues/342)) ([640f1dc](https://github.com/wilke/GoWe/commit/640f1dcb07913eb6c90044b948cc803aa2092b35))
+
 ## [0.26.1](https://github.com/wilke/GoWe/compare/v0.26.0...v0.26.1) (2026-10-17)
 
 
