@@ -4,6 +4,141 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.24.x → next
+
+Capacity-aware checkout (#324). No manual steps; the schema gains nullable `workers.max_cpus` / `max_mem_mb`.
+
+- Workers now report their effective `--max-cpus` / `--max-mem` at registration. A worker that does not report them
+  (older binaries, or undetected memory) has NULL capacity and is **not** fit-checked, exactly as before. Roll workers
+  to get gating.
+- The scheduler now evaluates `ResourceRequirement` (including `$(inputs...)` expressions and step-level
+  requirements) into the task's `cores` / `ram_mb` at dispatch.
+- **Behaviour change**: a task that asks for more cores or memory than every capacity-reporting worker in its group is
+  no longer checked out and failed by the worker after three attempts. While the group has online workers, the dispatch
+  preflight fails the step (after `--preflight-deferral` ticks) with a capacity reason such as
+  `no online worker in group "esviritu" has >= 64000 MiB (largest 32000 MiB)`; scatter steps are checked per iteration
+  before any task is created. If the group has no online worker the step dispatches and queues as before, and the
+  stuck-task detector reports (or, with `--stuck-task-action=fail`, fails) it with the same reason once workers return.
+- Requirements that cannot be evaluated server-side (for example depending on `File.size`) are not gated; the worker
+  still enforces them.
+
+Stage-out keeps the output directory layout (#332). No manual steps; roll workers to get it.
+
+- Files are now staged to `<stage-out>/<task-id>/<path relative to the task output directory>` instead of
+  `<stage-out>/<task-id>/<basename>`. Two outputs sharing a basename in different subdirectories (for example
+  `d/a/f` and `d/b/f`) no longer overwrite each other. Top-level outputs keep the old location. Outputs outside the output
+  directory stage as `<task-id>/<basename>`.
+- A `Directory` output produced inside the task output directory now has its `location` rewritten to the staged
+  directory under the stage-out root. Such directories without a `listing` (`loadListing: no_listing`, shallow-listing
+  subdirectories, `cwl.output.json` directories) are copied whole; inside the copy, symlinks to files are followed while
+  symlinks to directories outside the tree (bind-mounted datasets, input directories) are recreated as symlinks, not
+  copied.
+- `Directory` outputs that live outside the task output directory — an input `Directory` echoed back through
+  `outputEval` or `cwl.output.json`, or an `InitialWorkDirRequirement` symlink to one — are never copied; their
+  `location` is left untouched and only their `listing` entries (if any) are staged, exactly as before.
+- Because `Directory` outputs no longer reference the worker task directory, that directory is now removed after a
+  SUCCESS report (it was previously kept forever whenever a `Directory` output existed). Failed tasks still keep theirs,
+  and so does any task whose stage-out partially failed (a `Directory` with an unstaged listing entry keeps its local
+  location rather than pointing at an incomplete copy). Directory stage-out is skipped for `ws://` destinations
+  (unchanged behaviour: the task directory is kept).
+- `--http-upload-url` accepts a new `{relpath}` token (output path below the task root). `{filename}` / `{basename}` are
+  unchanged. The Shock stager records it as the `relpath` node attribute and the S3 stager appends it to the key prefix.
+- **Behaviour change**: if two distinct source files map to the same destination path, the task now fails with
+  `stage-out: destination <path> claimed by both <a> and <b>` instead of silently overwriting one with the other. The
+  failure is reported as permanent (no retries — the layout is a property of the tool) and the task directory is kept
+  for inspection.
+
+## 0.21.x → 0.22.0
+
+Provider-token containment (`security!:`). Do these in order:
+
+1. **Back up** `gowe.db` and the token key. Old backups still hold key-protected credentials on terminal task rows.
+2. **Worker start scripts**: switch to `--worker-key-file` (0600 file). The 0.22 worker refuses the key on argv
+   (`--worker-key`) and in the environment (`GOWE_WORKER_KEY`): both are readable by same-uid host processes. Production start
+   scripts that still pass `--worker-key "$KEY"` on argv (or export `GOWE_WORKER_KEY`) must switch before rolling, otherwise
+   the 0.22 worker exits at startup.
+3. **Upgrade the server.** At startup it clears stale credentials from terminal task rows (raw sweep, logged) and strips the
+   unblessed token request from queued pre-upgrade tasks (WARN with count; they run without the token in their
+   environment — the staging credential stays on the row for data staging, only the injection request is removed). The server
+   now refuses unblessed token requests (`400 TOOL_NOT_BLESSED`), so `genome-analysis-pipeline` fails until step 5. Do NOT bless yet.
+4. **Roll EVERY worker** in the groups the blessing will allow to 0.22 (the worker verifies the blessed image digest before injecting).
+5. **Then bless** the three helper tools: `gowe admin blessings --pending`, then
+   `gowe admin bless <workflow>/<tool> --image-file /scout/containers/python.sif` for `bvbrc-get-genome-id`,
+   `bvbrc-wait-for-pgfams`, `bvbrc-create-genome-group` (or restrict the blessing's `worker_groups` to groups already rolled).
+   Why this order: a 0.21 worker that checks out a blessed task injects the token on the old gate (no image digest check, no
+   `--containall --cleanenv`, no env allow-list, no post-task scrub).
+6. **Verify**: `/api/v1/health` shows `token_blessing: "enforce"`; submit the pipeline; `gowe_token_grants_total{outcome="granted"}`
+   increments; `denied_*` stays at zero for expected workloads.
+
+What changes for users: a tool gets the token only if its own document requests it (hints) AND it is blessed; a step cannot
+request it; job `cwl:requirements` and step-level image settings are refused on token-requesting steps; `--token-inject-groups`
+is staging-only and deprecated; worker tasks get a staging credential only when they have `ws://`/`shock://` inputs or an
+output destination (passthrough mode no longer puts the token in every task); `gowe:Execution` under `requirements` is
+rejected at registration. `--token-blessing=dev` (with `--dev-image-dir`) exists for development only and is announced loudly.
+Requeue with the retry API, not SQL.
+
+## 0.19.x → next
+
+Server-side workspace pre-staging (`--workspace-staging server`) behavior change (#267): a
+submission whose `ws://` input(s) cannot be staged after 10 consecutive scheduler-tick
+attempts now **fails outright** (`state: FAILED`, `error.code: "PRESTAGE_FAILED"`) instead
+of silently dispatching with the unstaged `ws://` location left in place — that fallback
+could never succeed anyway, since a dispatched task in this deployment mode never carries
+the submitter's credential to stage `ws://` itself. No script should have depended on the
+old fallback; if one polled for a task-side "unsupported scheme ws" failure as its signal
+that pre-staging failed, it will now see the submission itself FAIL faster and with the
+real cause. `PUT /submissions/{id}/retry` on a `PRESTAGE_FAILED` submission (or one whose
+inputs still carry an unstaged `ws://` location) now resets it to `PENDING` instead of
+`RUNNING` so pre-staging re-runs; an ordinary task-failure retry is unchanged. `POST
+/submissions` also now rejects (400 `VALIDATION_ERROR`) any `ws://` input or
+`output_destination` path containing a non-ASCII character, which the BV-BRC Workspace API
+cannot escape — see [`PRODUCTION.md`](PRODUCTION.md#server-side-workspace-pre-staging---workspace-staging-server)
+and [`API_GUIDE.md`](API_GUIDE.md) §6.
+
+## 0.15.x → next
+
+Dispatch/staging attribution (#184 PR2) adds `tasks.dispatched_at`, `tasks.stage_in_ms`,
+`tasks.stage_out_ms`, and four `submissions` staging timestamps
+(`prestage_started_at`/`prestage_completed_at`/`poststage_started_at`/`poststage_completed_at`).
+All eight columns are nullable and added via the normal idempotent `ALTER TABLE ADD COLUMN`
+migration path — no manual step is required. Two behavior changes an operator should know
+about:
+
+- **`started_at` is now `NULL` on `QUEUED` worker and bvbrc tasks in the API/UI.**
+  `submitAndUpdateTask` no longer stamps `started_at` for those two executors at dispatch
+  time (`CheckoutTask` and, for bvbrc, `MarkTaskRunning` on first observed platform
+  `RUNNING` are the sole writers now — see `internal/scheduler/loop.go`). Previously a
+  `QUEUED` worker/bvbrc task carried a stale dispatch-time `started_at` that looked like a
+  live duration but was not one; this is a deliberate fix, not a regression. Any script that
+  read `started_at` off a `QUEUED` task row will now see `null` instead of that stale
+  timestamp. The submission `/timing` endpoint's trust rules (added in the prior release)
+  already treated a `QUEUED` task's `started_at` as untrustworthy, so its output is
+  unaffected; the UI's "Duration" column on a `QUEUED` row now correctly shows `-` instead
+  of a ticking (and misleading) live value.
+- **Migration window:** a task that is `QUEUED` at the moment of the upgrade keeps whatever
+  `started_at` value the old server wrote until it next reaches `RUNNING` or a terminal
+  state — the migration only adds columns, it does not rewrite existing rows. The `/timing`
+  trust rule (never trust a `QUEUED` row's `started_at`) is exactly the guard that makes
+  this safe to ignore: both the pre-upgrade stale value and the post-upgrade `NULL` are
+  already excluded from every duration computed there.
+
+Worker/server version skew is safe in both directions: an old worker's `/complete` report
+carries no `stage_in_ms`/`stage_out_ms` fields, so a new server simply persists `NULL` for
+those columns (same as "staging did not occur"); a new worker talking to an old server has
+those fields silently ignored by the old handler's decode struct. No coordinated rollout is
+required — workers and servers can be upgraded independently and in either order.
+
+The `GET /api/v1/submissions/{id}/timing` response (and `gowe status --timing`) gains
+`dispatch_s`, `checkout_wait_s`, `stage_in_s`, `compute_s`, and `stage_out_s` per task, and
+`prestage_s`/`poststage_s` on the submission — see [`API_GUIDE.md`](API_GUIDE.md) §7. The
+CLI `--timing` table grows the corresponding columns; the web UI is unchanged aside from the
+`started_at`-nulling behavior above.
+
+Also new and entirely optional: Prometheus metrics on a second listener, off by default —
+`--metrics-addr`, `--metrics-workflow-label`, `--metrics-label-cap` (see
+[`docs/tools/server.md`](tools/server.md#metrics) and
+[`PRODUCTION.md`](PRODUCTION.md#metrics)).
+
 ## 0.14.x → 0.15.0
 
 0.15.0 ([CHANGELOG](../CHANGELOG.md)) changes four things an operator has to know about:

@@ -197,3 +197,85 @@ func TestLocalExecutor_Logs(t *testing.T) {
 		t.Errorf("Logs stderr = %q, want %q", stderr, "err\n")
 	}
 }
+
+// TestLocalExecutor_DeliversSecretEnv is the H4 regression test: before the
+// #260 fix round, submitWithCWLTool built a cwltool.Config with no secret
+// wiring at all, so a task dispatched to the local executor (the default
+// when no workers are online) silently ran without any secret_env-delivered
+// value. This drives the executor's real Submit()/HasTool() path (not
+// cwltool.ExecuteTool directly) with a task carrying
+// RuntimeHints.Secrets/SecretEnvNames and asserts the real value reached the
+// process environment.
+func TestLocalExecutor_DeliversSecretEnv(t *testing.T) {
+	e := NewLocalExecutor(t.TempDir(), newTestLogger())
+
+	const secretValue = "local-executor-secret-0123456789"
+	task := &model.Task{
+		ID: "task_secret_env",
+		Tool: map[string]any{
+			"class":       "CommandLineTool",
+			"baseCommand": []any{"sh", "-c", "echo \"got: $MY_TASK_SECRET\""},
+		},
+		Job: map[string]any{},
+		RuntimeHints: &model.RuntimeHints{
+			Secrets:        map[string]string{"MY_TASK_SECRET": secretValue},
+			SecretEnvNames: []string{"MY_TASK_SECRET"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	if _, err := e.Submit(context.Background(), task); err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if !strings.Contains(task.Stdout, secretValue) {
+		t.Errorf("Stdout = %q, want it to contain the delivered secret value", task.Stdout)
+	}
+}
+
+// TestLocalExecutor_ReinjectsCwltoolSecretsInput is the local-executor
+// counterpart of internal/cwltool's IWDR re-injection test: a
+// cwltool:Secrets-declared input consumed via
+// InitialWorkDirRequirement/$(inputs.pw) must see the real value, not the
+// literal model.SecretInputPlaceholder task.Job was persisted with.
+func TestLocalExecutor_ReinjectsCwltoolSecretsInput(t *testing.T) {
+	e := NewLocalExecutor(t.TempDir(), newTestLogger())
+
+	const realSecret = "local-executor-reinjected-secret"
+	task := &model.Task{
+		ID: "task_secret_input",
+		Tool: map[string]any{
+			"class":       "CommandLineTool",
+			"baseCommand": []any{"cat", "config.txt"},
+			"inputs": map[string]any{
+				"pw": map[string]any{"type": "string"},
+			},
+			"requirements": map[string]any{
+				"InitialWorkDirRequirement": map[string]any{
+					"listing": []any{
+						map[string]any{
+							"entryname": "config.txt",
+							"entry":     "$(inputs.pw)",
+						},
+					},
+				},
+			},
+		},
+		Job: map[string]any{"pw": model.SecretInputPlaceholder},
+		RuntimeHints: &model.RuntimeHints{
+			Secrets:      map[string]string{"INPUT_PW": realSecret},
+			SecretInputs: []string{"pw=INPUT_PW"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	if _, err := e.Submit(context.Background(), task); err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if !strings.Contains(task.Stdout, realSecret) {
+		t.Errorf("Stdout = %q, want it to contain the re-injected secret value", task.Stdout)
+	}
+	// task.Job (what would be persisted) must stay untouched.
+	if task.Job["pw"] != model.SecretInputPlaceholder {
+		t.Errorf("task.Job[\"pw\"] = %v, want it to remain the placeholder", task.Job["pw"])
+	}
+}

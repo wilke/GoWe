@@ -12,6 +12,15 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// roundDur renders a duration rounded to whole seconds, clamping negatives
+// (cross-process clock skew) to zero.
+func roundDur(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	return d.Round(time.Second).String()
+}
+
 // Template functions available in all templates.
 var templateFuncs = template.FuncMap{
 	"formatTime": func(t time.Time) string {
@@ -40,6 +49,56 @@ var templateFuncs = template.FuncMap{
 			return end[0].Sub(*start).Round(time.Second).String()
 		}
 		return time.Since(*start).Round(time.Second).String()
+	},
+	// taskQueueDisplay renders a task's queue time under the timing trust
+	// rules: StartedAt is trusted only in RUNNING/SUCCESS/FAILED — a QUEUED
+	// worker task's StartedAt is a stale dispatch stamp, so queued (and
+	// pending/retrying) tasks show "waiting" time from CreatedAt instead.
+	"taskQueueDisplay": func(t model.Task) string {
+		switch t.State {
+		case model.TaskStateRunning:
+			if t.StartedAt != nil {
+				return roundDur(t.StartedAt.Sub(t.CreatedAt))
+			}
+			return "waiting " + roundDur(time.Since(t.CreatedAt))
+		case model.TaskStateSuccess:
+			if t.StartedAt != nil {
+				return roundDur(t.StartedAt.Sub(t.CreatedAt))
+			}
+			return "—" // When-skip synthetic iteration: never dispatched.
+		case model.TaskStateFailed:
+			if t.StartedAt != nil {
+				return roundDur(t.StartedAt.Sub(t.CreatedAt))
+			}
+			if t.CompletedAt != nil {
+				// Failed before it started: whole window spent waiting.
+				return roundDur(t.CompletedAt.Sub(t.CreatedAt))
+			}
+			return "—"
+		case model.TaskStateSkipped:
+			if t.StartedAt == nil && t.CompletedAt != nil {
+				return roundDur(t.CompletedAt.Sub(t.CreatedAt))
+			}
+			return "—"
+		default: // PENDING, SCHEDULED, QUEUED, RETRYING: waiting so far.
+			return "waiting " + roundDur(time.Since(t.CreatedAt))
+		}
+	},
+	// taskRunDisplay renders a task's run duration only when the timestamps
+	// can be trusted: SUCCESS/FAILED with both stamps, or the last failed
+	// attempt's window on RETRYING/SCHEDULED rows.
+	"taskRunDisplay": func(t model.Task) string {
+		switch t.State {
+		case model.TaskStateSuccess, model.TaskStateFailed:
+			if t.StartedAt != nil && t.CompletedAt != nil {
+				return roundDur(t.CompletedAt.Sub(*t.StartedAt))
+			}
+		case model.TaskStateRetrying, model.TaskStateScheduled:
+			if t.StartedAt != nil && t.CompletedAt != nil {
+				return roundDur(t.CompletedAt.Sub(*t.StartedAt)) + " (retrying)"
+			}
+		}
+		return "—"
 	},
 	"stateColor": func(state string) string {
 		switch strings.ToUpper(state) {
@@ -161,20 +220,13 @@ var templateFuncs = template.FuncMap{
 		}
 		return result
 	},
-	"isFileType": func(t string) bool {
-		// Check if CWL type is a File type (including optional File?)
-		t = strings.TrimSuffix(t, "?")
-		return t == "File" || strings.HasPrefix(t, "File[")
-	},
-	"isDirectoryType": func(t string) bool {
-		t = strings.TrimSuffix(t, "?")
-		return t == "Directory"
-	},
-	"isArrayType": func(t string) bool {
-		// Check if CWL type is an array type
-		t = strings.TrimSuffix(t, "?")
-		return strings.HasSuffix(t, "[]") || strings.HasPrefix(t, "File[]")
-	},
+	// isFileType/isDirectoryType/isArrayType are shared with the submission
+	// form's value-building code (internal/ui/inputkind.go, #273) so the
+	// widget rendered here and the value built from its POSTed field always
+	// agree on the input's kind.
+	"isFileType":      isFileType,
+	"isDirectoryType": isDirectoryType,
+	"isArrayType":     isArrayType,
 	"hasOptionalInputs": func(inputs []model.WorkflowInput) bool {
 		for _, inp := range inputs {
 			if !inp.Required {
@@ -286,6 +338,36 @@ var templateFuncs = template.FuncMap{
 			return "bg-gray-100 text-gray-800"
 		}
 	},
+	"isExpandableSubworkflowProxy": isExpandableSubworkflowProxy,
+	"subworkflowDescendantTotal":   subworkflowDescendantTotal,
+	"buildTimingBars":              buildTimingBars,
+	// intOrZero and descendantCount tolerate a data map that never set the
+	// corresponding key (e.g. a template render in tests that only exercises
+	// the timing columns, predating #225/#226) — an absent map[string]any
+	// key comes back as an untyped nil, which gt/index would otherwise error
+	// on rather than treating as "no sub-workflow descendants".
+	"intOrZero": func(v any) int {
+		if n, ok := v.(int); ok {
+			return n
+		}
+		return 0
+	},
+	"descendantCount": func(m any, id string) int {
+		dm, ok := m.(map[string]int)
+		if !ok || dm == nil {
+			return 0
+		}
+		return dm[id]
+	},
+	// fmtSecs formats a *float64 seconds value ("12.3s"), or "—" for nil —
+	// used throughout the timing panel since Go templates cannot dereference
+	// pointers for numeric verbs directly.
+	"fmtSecs": func(v *float64) string {
+		if v == nil {
+			return "—"
+		}
+		return fmt.Sprintf("%.1fs", *v)
+	},
 	"labelBorderColor": func(color string) string {
 		switch color {
 		case "blue":
@@ -314,6 +396,22 @@ var templateFuncs = template.FuncMap{
 	},
 }
 
+// basePathFuncs returns a FuncMap overriding "base" with a closure bound to
+// this render's BasePath (data["BasePath"], set by ui.render/renderFragment;
+// "" when unmounted or absent). Templates call it as {{base}} immediately
+// before a root-absolute path, e.g. `href="{{base}}/workflows"`, so the
+// emitted URL, redirect target, or JS-built API call lands under the
+// configured prefix. Registering it per-render (rather than as a fixed
+// entry in the shared templateFuncs map) is what lets a func — not a field
+// reference like {{.BasePath}} — resolve correctly even inside nested
+// "components/" templates that re-root "." to something else entirely.
+func basePathFuncs(data map[string]any) template.FuncMap {
+	basePath, _ := data["BasePath"].(string)
+	return template.FuncMap{
+		"base": func() string { return basePath },
+	}
+}
+
 // renderTemplate renders a template with the given data.
 func renderTemplate(w io.Writer, name string, data map[string]any) error {
 	// Get the template content.
@@ -328,8 +426,13 @@ func renderTemplate(w io.Writer, name string, data map[string]any) error {
 		return fmt.Errorf("layout template not found")
 	}
 
-	// Parse templates.
-	tmpl, err := template.New("layout").Funcs(templateFuncs).Parse(layout)
+	// Parse templates. basePathFuncs overrides "base" with a closure bound to
+	// this render's BasePath — a template func rather than {{.BasePath}}
+	// because nested "components/" templates re-root "." to whatever data
+	// they're invoked with (e.g. {{template "pagination" .Pagination}}),
+	// so a func with no arguments is the only way every template constant
+	// can reach it regardless of the current dot.
+	tmpl, err := template.New("layout").Funcs(templateFuncs).Funcs(basePathFuncs(data)).Parse(layout)
 	if err != nil {
 		return fmt.Errorf("parse layout: %w", err)
 	}
@@ -350,6 +453,34 @@ func renderTemplate(w io.Writer, name string, data map[string]any) error {
 	}
 
 	return tmpl.Execute(w, data)
+}
+
+// renderFragment renders one named "components/" template standalone — no
+// layout/nav wrapper — for an HTMX partial-swap response (e.g. lazily
+// expanding a sub-workflow node, or the timing panel's include-children
+// toggle). Every shared component is registered first, same as
+// renderTemplate, so a fragment may reference another; the requested
+// fragment is then invoked by its {{define}} name, which by convention
+// equals its map key with the "components/" prefix stripped.
+func renderFragment(w io.Writer, name string, data map[string]any) error {
+	if _, ok := templates[name]; !ok {
+		return fmt.Errorf("fragment not found: %s", name)
+	}
+	defineName := strings.TrimPrefix(name, "components/")
+
+	tmpl := template.New("fragment-root").Funcs(templateFuncs).Funcs(basePathFuncs(data))
+	for compName, compContent := range templates {
+		if !strings.HasPrefix(compName, "components/") {
+			continue
+		}
+		var err error
+		tmpl, err = tmpl.New(filepath.Base(compName)).Parse(compContent)
+		if err != nil {
+			return fmt.Errorf("parse component %s: %w", compName, err)
+		}
+	}
+
+	return tmpl.ExecuteTemplate(w, defineName, data)
 }
 
 // templates holds all template content. In a production app, these would be
@@ -495,9 +626,10 @@ var templates = map[string]string{
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="/static/js/dag-editor.js"></script>
-    <script src="/static/js/app.js"></script>
-    <link rel="stylesheet" href="/static/css/app.css">
+    <script>window.GOWE_BASE_PATH = '{{base}}';</script>
+    <script src="{{base}}/static/js/dag-editor.js"></script>
+    <script src="{{base}}/static/js/app.js"></script>
+    <link rel="stylesheet" href="{{base}}/static/css/app.css">
     <style>
         [x-cloak] { display: none !important; }
         .htmx-indicator { display: none; }
@@ -506,33 +638,46 @@ var templates = map[string]string{
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
+    {{if .TokenBlessingDev}}
+    <div class="bg-red-600 text-white text-center text-sm font-semibold px-4 py-2" role="alert">
+        DEV MODE (--token-blessing=dev): tools that request your provider token receive it WITHOUT an administrator blessing. Do not run production workloads on this server.
+    </div>
+    {{end}}
     {{if .Session}}
     <nav class="bg-white shadow-sm border-b">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex">
-                    <a href="/" class="flex items-center px-2 py-2 text-xl font-bold text-indigo-600">
+                    <a href="{{base}}/" class="flex items-center px-2 py-2 text-xl font-bold text-indigo-600">
                         GoWe
                     </a>
                     <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                        <a href="/" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                        <a href="{{base}}/" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Dashboard
                         </a>
-                        <a href="/workflows" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                        <a href="{{base}}/workflows" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Workflows
                         </a>
-                        <a href="/submissions" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                        <a href="{{base}}/submissions" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Submissions
                         </a>
-                        <a href="/workspace" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                        <a href="{{base}}/workspace" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Workspace
                         </a>
-                        <a href="/workers" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                        <a href="{{base}}/workers" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Workers
                         </a>
                         {{if .Session.IsAdmin}}
-                        <a href="/admin" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                        <a href="{{base}}/admin" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Admin
+                        </a>
+                        {{end}}
+                        {{if .GrafanaURL}}
+                        <a href="{{.GrafanaURL}}" target="_blank" rel="noopener noreferrer" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Grafana
+                            <svg class="w-3.5 h-3.5 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
                         </a>
                         {{end}}
                     </div>
@@ -540,7 +685,7 @@ var templates = map[string]string{
                 <div class="flex items-center">
                     <span class="text-sm text-gray-500 mr-2">{{.Session.Username}}</span>
                     {{if .Session.IsAdmin}}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">admin</span>{{else}}<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">user</span>{{end}}
-                    <a href="/logout" class="ml-3 text-sm text-gray-500 hover:text-gray-700">Logout</a>
+                    <a href="{{base}}/logout" class="ml-3 text-sm text-gray-500 hover:text-gray-700">Logout</a>
                 </div>
             </div>
         </div>
@@ -550,12 +695,12 @@ var templates = map[string]string{
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between h-16">
                 <div class="flex">
-                    <a href="/login" class="flex items-center px-2 py-2 text-xl font-bold text-indigo-600">
+                    <a href="{{base}}/login" class="flex items-center px-2 py-2 text-xl font-bold text-indigo-600">
                         GoWe
                     </a>
                 </div>
                 <div class="flex items-center">
-                    <a href="/login" class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">Sign in</a>
+                    <a href="{{base}}/login" class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">Sign in</a>
                 </div>
             </div>
         </div>
@@ -567,6 +712,187 @@ var templates = map[string]string{
     </main>
 </body>
 </html>`,
+
+	// Sub-workflow expansion fragment (#225). Rendered both as an HTMX
+	// partial (HandleSubmissionTaskChildren, no layout wrapper — see
+	// renderFragment) and, recursively, when a nested proxy row is itself
+	// expanded. Data: {RootID string, Pending bool, Node *subworkflowNode}.
+	"components/subworkflow_children": `{{define "subworkflow_children"}}
+{{if .Pending}}
+<div class="text-xs text-gray-400 italic py-2 px-2">Child submission not created yet — refresh in a moment.</div>
+{{else}}
+{{$root := .RootID}}
+{{$descendants := .Node.Descendants}}
+<div class="py-2">
+    <div class="flex items-center justify-between mb-2 px-1">
+        <div>
+            <a href="{{base}}/submissions/{{.Node.Submission.ID}}" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">{{.Node.Submission.WorkflowName}}</a>
+            <span class="ml-2 text-xs text-gray-400 font-mono">{{.Node.Submission.ID}}</span>
+        </div>
+        <div class="flex items-center space-x-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium text-white"
+                  style="{{statePillGradient .Node.Submission.State.String}}">
+                {{.Node.Submission.State}}
+            </span>
+            <span class="text-xs text-gray-500">
+                {{.Node.TaskSummary.Success}}/{{.Node.TaskSummary.Total}} tasks{{$dtotal := subworkflowDescendantTotal $descendants}}{{if gt $dtotal 0}}
+                <span class="text-gray-400">(+{{$dtotal}} in sub-workflows)</span>{{end}}
+            </span>
+        </div>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-100">
+            <tr>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Step</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Executor</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run</th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-100">
+            {{range .Node.Tasks}}
+            {{$isSub := isExpandableSubworkflowProxy .}}
+            <tr class="hover:bg-gray-50{{if $isSub}} cursor-pointer{{end}}"
+                {{if $isSub}}
+                onclick="document.getElementById('sw-row-{{.ID}}').classList.toggle('hidden')"
+                hx-get="{{base}}/submissions/{{$root}}/tasks/{{.ID}}/children"
+                hx-trigger="click once"
+                hx-target="#sw-content-{{.ID}}"
+                hx-swap="innerHTML"
+                {{end}}>
+                <td class="px-3 py-2 whitespace-nowrap">
+                    <div class="flex items-center">
+                        <div class="w-2.5 h-2.5 rounded-full mr-2 {{stateDotColor .State.String}}"></div>
+                        <span class="font-medium text-gray-900">{{.StepID}}</span>
+                        {{if $isSub}}<span class="ml-1 text-xs text-indigo-500">(sub-workflow &#9656;)</span>{{end}}
+                    </div>
+                </td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{.State}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{.ExecutorType}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{taskQueueDisplay .}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">{{taskRunDisplay .}}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-gray-500">
+                    {{if $isSub}}{{$dn := index $descendants .ID}}{{if gt $dn 0}}<span class="text-gray-400">+{{$dn}} in sub-workflows</span>{{end}}{{end}}
+                    <a href="{{base}}/submissions/{{$root}}/tasks/{{.ID}}/logs" class="text-indigo-600 hover:text-indigo-500 ml-2">Logs</a>
+                </td>
+            </tr>
+            {{if $isSub}}
+            <tr id="sw-row-{{.ID}}" class="hidden">
+                <td colspan="6" class="p-0 border-t-0">
+                    <div id="sw-content-{{.ID}}" class="bg-gray-50 border-l-2 border-indigo-200 ml-4 pl-3 py-1">
+                        <span class="text-xs text-gray-400">Loading…</span>
+                    </div>
+                </td>
+            </tr>
+            {{end}}
+            {{else}}
+            <tr><td colspan="6" class="px-3 py-2 text-gray-400 text-center">No tasks</td></tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+{{end}}`,
+
+	// Timing panel component (#226): submission-level wall/scheduling/compute
+	// aggregates, critical path and per-task queue/run bars, backed by the
+	// exact math GET /api/v1/submissions/{id}/timing exposes
+	// (internal/timing.BuildReport). Rendered both inline on initial page
+	// load and as the HandleSubmissionTimingPanel HTMX fragment (the
+	// "include sub-workflows" toggle re-fetches and swaps this whole block).
+	// Data: {SubmissionID string, Report *timing.Report (may be nil),
+	// IncludeChildren bool, TimingBars []timingBarRow}.
+	"components/timing_panel": `{{define "timing_panel"}}
+<div id="timing-panel-{{.SubmissionID}}" class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+    <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
+        <h3 class="text-lg leading-6 font-medium text-gray-900">Timing</h3>
+        {{if .Report}}
+        <button hx-get="{{base}}/submissions/{{.SubmissionID}}/timing-panel?include_children={{if .IncludeChildren}}false{{else}}true{{end}}"
+                hx-target="#timing-panel-{{.SubmissionID}}"
+                hx-swap="outerHTML"
+                class="inline-flex items-center px-3 py-1 text-xs border border-gray-300 rounded text-gray-700 bg-white hover:bg-gray-50">
+            {{if .IncludeChildren}}Hide sub-workflow trees{{else}}Include sub-workflow trees{{end}}
+        </button>
+        {{end}}
+    </div>
+    {{if not .Report}}
+    <div class="border-t border-gray-200 px-4 py-4 text-sm text-gray-500">Timing data unavailable.</div>
+    {{else}}
+    <div class="border-t border-gray-200 px-4 py-4">
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Wall</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.WallS}}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Scheduling</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.SchedulingS}}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Compute</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{printf "%.1fs" .Report.Submission.ComputeS}}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Critical Path</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.CriticalPathS}}</dd>
+            </div>
+            {{if .Report.Submission.PrestageS}}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Prestage</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.PrestageS}}</dd>
+            </div>
+            {{end}}
+            {{if .Report.Submission.PoststageS}}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Poststage</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{fmtSecs .Report.Submission.PoststageS}}</dd>
+            </div>
+            {{end}}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase">Queue (sum)</dt>
+                <dd class="mt-1 text-lg font-semibold text-gray-900">{{printf "%.1fs" .Report.Submission.QueueS}}</dd>
+            </div>
+        </dl>
+
+        {{if gt (len .TimingBars) 0}}
+        <div class="space-y-1.5">
+            {{range .TimingBars}}
+            <div class="flex items-center text-xs">
+                <div class="w-40 truncate pr-2 text-gray-600" title="{{.StepID}} ({{.TaskID}})">
+                    {{.StepID}}{{if eq .Kind "subworkflow"}} <span class="text-indigo-500">(sub-wf)</span>{{end}}
+                </div>
+                <div class="flex-1 h-4 bg-gray-100 rounded overflow-hidden flex">
+                    {{if gt .QueuePct 0}}<div class="h-full bg-amber-400" style="width: {{.QueuePct}}%" title="queue: {{fmtSecs .QueueS}}"></div>{{end}}
+                    {{if gt .RunPct 0}}<div class="h-full bg-blue-500" style="width: {{.RunPct}}%" title="run: {{fmtSecs .RunS}}"></div>{{end}}
+                </div>
+                <div class="w-32 pl-2 text-gray-500 text-right">
+                    {{if .QueueS}}q {{fmtSecs .QueueS}}{{end}}{{if .RunS}} / r {{fmtSecs .RunS}}{{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+        <div class="flex items-center gap-4 mt-3 text-xs text-gray-500">
+            <div class="flex items-center"><div class="w-3 h-3 rounded mr-1 bg-amber-400"></div>Queue</div>
+            <div class="flex items-center"><div class="w-3 h-3 rounded mr-1 bg-blue-500"></div>Run</div>
+        </div>
+        {{else}}
+        <div class="text-sm text-gray-500">No task timing to show yet.</div>
+        {{end}}
+
+        {{if .Report.Children}}
+        <div class="mt-6 space-y-4 border-t border-gray-100 pt-4">
+            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Sub-workflow trees</h4>
+            {{range .Report.Children}}
+            {{template "timing_panel" dict "SubmissionID" .Submission.ID "Report" . "IncludeChildren" true "TimingBars" (buildTimingBars .)}}
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}`,
 
 	"login": `{{define "content"}}
 <div class="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
@@ -584,7 +910,7 @@ var templates = map[string]string{
             <div class="text-sm text-red-700">{{.Error}}</div>
         </div>
         {{end}}
-        <form class="mt-8 space-y-6" action="/login" method="POST">
+        <form class="mt-8 space-y-6" action="{{base}}/login" method="POST">
             <div class="rounded-md shadow-sm -space-y-px">
                 <div>
                     <label for="username" class="sr-only">Username</label>
@@ -695,13 +1021,13 @@ var templates = map[string]string{
             <div class="px-4 py-5 border-b border-gray-200 sm:px-6">
                 <div class="flex justify-between items-center">
                     <h3 class="text-lg leading-6 font-medium text-gray-900">Recent Workflows</h3>
-                    <a href="/workflows" class="text-sm text-indigo-600 hover:text-indigo-500">View all</a>
+                    <a href="{{base}}/workflows" class="text-sm text-indigo-600 hover:text-indigo-500">View all</a>
                 </div>
             </div>
             <ul class="divide-y divide-gray-200">
                 {{range .RecentWorkflows}}
                 <li>
-                    <a href="/workflows/{{.ID}}" class="block hover:bg-gray-50 px-4 py-4">
+                    <a href="{{base}}/workflows/{{.ID}}" class="block hover:bg-gray-50 px-4 py-4">
                         <div class="flex items-center justify-between">
                             <p class="text-sm font-medium text-indigo-600 truncate">{{.Name}}</p>
                             <p class="text-xs text-gray-500">{{formatTime .CreatedAt}}</p>
@@ -720,13 +1046,13 @@ var templates = map[string]string{
             <div class="px-4 py-5 border-b border-gray-200 sm:px-6">
                 <div class="flex justify-between items-center">
                     <h3 class="text-lg leading-6 font-medium text-gray-900">Recent Submissions</h3>
-                    <a href="/submissions" class="text-sm text-indigo-600 hover:text-indigo-500">View all</a>
+                    <a href="{{base}}/submissions" class="text-sm text-indigo-600 hover:text-indigo-500">View all</a>
                 </div>
             </div>
             <ul class="divide-y divide-gray-200">
                 {{range .RecentSubmissions}}
                 <li>
-                    <a href="/submissions/{{.ID}}" class="block hover:bg-gray-50 px-4 py-4">
+                    <a href="{{base}}/submissions/{{.ID}}" class="block hover:bg-gray-50 px-4 py-4">
                         <div class="flex items-center justify-between">
                             <p class="text-sm font-medium text-gray-900 truncate">{{.WorkflowName}}</p>
                             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
@@ -753,10 +1079,10 @@ var templates = map[string]string{
     <div class="mt-8">
         <h3 class="text-lg font-medium text-gray-900 mb-4">Quick Actions</h3>
         <div class="flex space-x-4">
-            <a href="/workflows/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+            <a href="{{base}}/workflows/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                 Create Workflow
             </a>
-            <a href="/submissions/new" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50">
+            <a href="{{base}}/submissions/new" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50">
                 Submit Job
             </a>
         </div>
@@ -769,7 +1095,7 @@ var templates = map[string]string{
     <div class="text-center">
         <h1 class="text-4xl font-bold text-gray-900 mb-4">Error</h1>
         <p class="text-gray-600 mb-8">{{.Message}}</p>
-        <a href="/" class="text-indigo-600 hover:text-indigo-500">Return to Dashboard</a>
+        <a href="{{base}}/" class="text-indigo-600 hover:text-indigo-500">Return to Dashboard</a>
     </div>
 </div>
 {{end}}`,
@@ -778,7 +1104,7 @@ var templates = map[string]string{
 <div class="px-4 py-6 sm:px-0">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Workflows</h1>
-        <a href="/workflows/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+        <a href="{{base}}/workflows/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
             Create Workflow
         </a>
     </div>
@@ -796,19 +1122,19 @@ var templates = map[string]string{
             <div>
                 <label class="block text-xs font-medium text-gray-500 mb-1">Type</label>
                 <div class="flex space-x-1">
-                    <a href="/workflows?limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workflows?limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if not .ClassFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         All
                     </a>
-                    <a href="/workflows?class=Workflow&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workflows?class=Workflow&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .ClassFilter "Workflow"}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Workflows
                     </a>
-                    <a href="/workflows?class=Tool&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workflows?class=Tool&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .ClassFilter "Tool"}}bg-purple-100 text-purple-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Tools
                     </a>
-                    <a href="/workflows?label=executor:bvbrc&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workflows?label=executor:bvbrc&amp;limit={{.Pagination.Limit}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if hasLabel .LabelFilters "executor:bvbrc"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         BV-BRC
                     </a>
@@ -821,7 +1147,7 @@ var templates = map[string]string{
                 Search
             </button>
             {{if or .SearchQuery .ClassFilter .LabelFilters}}
-            <a href="/workflows"
+            <a href="{{base}}/workflows"
                class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                 Clear
             </a>
@@ -832,7 +1158,7 @@ var templates = map[string]string{
             <span class="text-xs font-medium text-gray-500 self-center">Labels:</span>
             {{range .LabelVocab}}
             {{$lbl := printf "%s:%s" .Key .Value}}
-            <a href="/workflows?label={{urlquery $lbl}}{{with $.SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with $.ClassFilter}}&amp;class={{.}}{{end}}"
+            <a href="{{base}}/workflows?label={{urlquery $lbl}}{{with $.SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with $.ClassFilter}}&amp;class={{.}}{{end}}"
                class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border {{if index $.ActiveLabels $lbl}}ring-2 ring-indigo-500 {{labelColor .Color}} {{labelBorderColor .Color}}{{else}}{{labelColor .Color}} {{labelBorderColor .Color}} hover:ring-1 hover:ring-gray-400{{end}}">
                 {{.Key}}: {{.Value}}
             </a>
@@ -850,7 +1176,7 @@ var templates = map[string]string{
             <li id="workflow-{{.ID}}">
                 <div class="px-4 py-4 sm:px-6 hover:bg-gray-50">
                     <div class="flex items-center justify-between">
-                        <a href="/workflows/{{.ID}}" class="flex-1">
+                        <a href="{{base}}/workflows/{{.ID}}" class="flex-1">
                             <div class="flex items-center">
                                 <p class="text-sm font-medium text-indigo-600 truncate">{{.Name}}</p>
                                 <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{classBadgeColor .Class}}">
@@ -867,15 +1193,15 @@ var templates = map[string]string{
                             <p class="mt-1 text-sm text-gray-500">{{.Description}}</p>
                         </a>
                         <div class="ml-4 flex items-center space-x-2">
-                            <a href="/submissions/new?workflow_id={{.ID}}"
+                            <a href="{{base}}/submissions/new?workflow_id={{.ID}}"
                                class="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
                                 Submit
                             </a>
-                            <a href="/workflows/{{.ID}}/edit"
+                            <a href="{{base}}/workflows/{{.ID}}/edit"
                                class="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
                                 Edit
                             </a>
-                            <button hx-delete="/workflows/{{.ID}}"
+                            <button hx-delete="{{base}}/workflows/{{.ID}}"
                                     hx-target="#workflow-{{.ID}}"
                                     hx-swap="outerHTML"
                                     hx-confirm="Are you sure you want to delete this workflow?"
@@ -904,9 +1230,9 @@ var templates = map[string]string{
             {{else}}
             <li class="px-4 py-8 text-center text-gray-500">
                 {{if or $.SearchQuery $.ClassFilter}}
-                No workflows match your filters. <a href="/workflows" class="text-indigo-600 hover:text-indigo-500">Clear filters</a>
+                No workflows match your filters. <a href="{{base}}/workflows" class="text-indigo-600 hover:text-indigo-500">Clear filters</a>
                 {{else}}
-                No workflows found. <a href="/workflows/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
+                No workflows found. <a href="{{base}}/workflows/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
                 {{end}}
             </li>
             {{end}}
@@ -927,11 +1253,11 @@ var templates = map[string]string{
                 <p class="mt-1 text-sm text-gray-500">{{.Workflow.Description}}</p>
             </div>
             <div class="flex space-x-2">
-                <a href="/workflows/{{.Workflow.ID}}/edit"
+                <a href="{{base}}/workflows/{{.Workflow.ID}}/edit"
                    class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50">
                     Edit
                 </a>
-                <a href="/submissions/new?workflow_id={{.Workflow.ID}}"
+                <a href="{{base}}/submissions/new?workflow_id={{.Workflow.ID}}"
                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                     Submit
                 </a>
@@ -1156,7 +1482,7 @@ var templates = map[string]string{
                 </div>
             </div>
             <div class="px-4 py-3 bg-gray-50 text-right sm:px-6">
-                <a href="/workflows" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
+                <a href="{{base}}/workflows" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
                     Cancel
                 </a>
                 <button type="submit" id="create-workflow-btn" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -1179,14 +1505,14 @@ var templates = map[string]string{
         };
 
         try {
-            const resp = await fetch('/api/v1/workflows', {
+            const resp = await fetch('{{base}}/api/v1/workflows', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body)
             });
             const data = await resp.json();
             if (resp.ok && data.data && data.data.id) {
-                window.location.href = '/workflows/' + data.data.id;
+                window.location.href = '{{base}}/workflows/' + data.data.id;
             } else {
                 const msg = (data.error && data.error.message) || 'Failed to create workflow';
                 GoWe.Toast.error(msg);
@@ -1240,7 +1566,7 @@ var templates = map[string]string{
                 </div>
             </div>
             <div class="px-4 py-3 bg-gray-50 text-right sm:px-6">
-                <a href="/workflows/{{.Workflow.ID}}" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
+                <a href="{{base}}/workflows/{{.Workflow.ID}}" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
                     Cancel
                 </a>
                 <button type="submit" id="save-workflow-btn" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -1263,14 +1589,14 @@ var templates = map[string]string{
         };
 
         try {
-            const resp = await fetch('/api/v1/workflows/{{.Workflow.ID}}', {
+            const resp = await fetch('{{base}}/api/v1/workflows/{{.Workflow.ID}}', {
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body)
             });
             const data = await resp.json();
             if (resp.ok) {
-                window.location.href = '/workflows/{{.Workflow.ID}}';
+                window.location.href = '{{base}}/workflows/{{.Workflow.ID}}';
             } else {
                 const msg = (data.error && data.error.message) || 'Failed to update workflow';
                 GoWe.Toast.error(msg);
@@ -1303,14 +1629,14 @@ var templates = map[string]string{
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
                 </a>
             </div>
-            <a href="/submissions/export?format=csv{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
+            <a href="{{base}}/submissions/export?format=csv{{with .StateFilter}}&amp;state={{.}}{{end}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}&amp;view={{.ViewMode}}"
                class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                 <svg class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
                 Export CSV
             </a>
-            <a href="/submissions/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+            <a href="{{base}}/submissions/new" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                 New Submission
             </a>
         </div>
@@ -1329,23 +1655,23 @@ var templates = map[string]string{
             <div>
                 <label class="block text-xs font-medium text-gray-500 mb-1">Status</label>
                 <div class="flex space-x-1">
-                    <a href="/submissions?view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="{{base}}/submissions?view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if not .StateFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         All
                     </a>
-                    <a href="/submissions?state=PENDING&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="{{base}}/submissions?state=PENDING&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "PENDING"}}bg-yellow-100 text-yellow-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Pending
                     </a>
-                    <a href="/submissions?state=RUNNING&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="{{base}}/submissions?state=RUNNING&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "RUNNING"}}bg-blue-100 text-blue-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Running
                     </a>
-                    <a href="/submissions?state=COMPLETED&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="{{base}}/submissions?state=COMPLETED&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "COMPLETED"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Completed
                     </a>
-                    <a href="/submissions?state=FAILED&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
+                    <a href="{{base}}/submissions?state=FAILED&amp;view={{.ViewMode}}{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}{{with .DateStart}}&amp;date_start={{.}}{{end}}{{with .DateEnd}}&amp;date_end={{.}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "FAILED"}}bg-red-100 text-red-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Failed
                     </a>
@@ -1371,7 +1697,7 @@ var templates = map[string]string{
                     Filter
                 </button>
                 {{if or .SearchQuery .DateStart .DateEnd .StateFilter}}
-                <a href="/submissions?view={{.ViewMode}}" class="px-3 py-1 text-sm text-gray-500 hover:text-gray-700">
+                <a href="{{base}}/submissions?view={{.ViewMode}}" class="px-3 py-1 text-sm text-gray-500 hover:text-gray-700">
                     Clear all
                 </a>
                 {{end}}
@@ -1415,7 +1741,7 @@ var templates = map[string]string{
             </thead>
             <tbody class="divide-y divide-gray-100">
                 {{range .Submissions}}
-                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/submissions/{{.ID}}'">
+                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='{{base}}/submissions/{{.ID}}'">
                     <!-- Workflow name + ID -->
                     <td class="px-4 py-3 whitespace-nowrap" style="width: 25%;">
                         <p class="text-sm font-medium text-indigo-600 truncate max-w-xs">{{.WorkflowName}}</p>
@@ -1475,9 +1801,9 @@ var templates = map[string]string{
                 <tr>
                     <td colspan="4" class="px-4 py-8 text-center text-gray-500">
                         {{if or $.SearchQuery $.StateFilter $.DateStart $.DateEnd}}
-                        No submissions match your filters. <a href="/submissions?view={{$.ViewMode}}" class="text-indigo-600 hover:text-indigo-500">Clear filters</a>
+                        No submissions match your filters. <a href="{{base}}/submissions?view={{$.ViewMode}}" class="text-indigo-600 hover:text-indigo-500">Clear filters</a>
                         {{else}}
-                        No submissions found. <a href="/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
+                        No submissions found. <a href="{{base}}/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
                         {{end}}
                     </td>
                 </tr>
@@ -1489,7 +1815,7 @@ var templates = map[string]string{
     <!-- Card View -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {{range .Submissions}}
-        <a href="/submissions/{{.ID}}" class="block bg-white shadow rounded-lg hover:shadow-md transition-shadow">
+        <a href="{{base}}/submissions/{{.ID}}" class="block bg-white shadow rounded-lg hover:shadow-md transition-shadow">
             <div class="p-4">
                 <!-- Header: Name + Status -->
                 <div class="flex items-start justify-between mb-3">
@@ -1544,9 +1870,9 @@ var templates = map[string]string{
         {{else}}
         <div class="col-span-full bg-white shadow rounded-lg px-4 py-8 text-center text-gray-500">
             {{if or $.SearchQuery $.StateFilter $.DateStart $.DateEnd}}
-            No submissions match your filters. <a href="/submissions?view={{$.ViewMode}}" class="text-indigo-600 hover:text-indigo-500">Clear filters</a>
+            No submissions match your filters. <a href="{{base}}/submissions?view={{$.ViewMode}}" class="text-indigo-600 hover:text-indigo-500">Clear filters</a>
             {{else}}
-            No submissions found. <a href="/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
+            No submissions found. <a href="{{base}}/submissions/new" class="text-indigo-600 hover:text-indigo-500">Create one</a>
             {{end}}
         </div>
         {{end}}
@@ -1559,7 +1885,7 @@ var templates = map[string]string{
 {{end}}`,
 
 	"submissions/detail": `{{define "content"}}
-<div class="px-4 py-6 sm:px-0" {{if not .Submission.State.IsTerminal}}hx-trigger="every 5s" hx-get="/submissions/{{.Submission.ID}}" hx-select="main" hx-swap="outerHTML" hx-target="main"{{end}}>
+<div class="px-4 py-6 sm:px-0" {{if not .Submission.State.IsTerminal}}hx-trigger="every 5s" hx-get="{{base}}/submissions/{{.Submission.ID}}" hx-select="main" hx-swap="outerHTML" hx-target="main"{{end}}>
     <div class="mb-6">
         <div class="flex items-center justify-between">
             <div>
@@ -1577,13 +1903,13 @@ var templates = map[string]string{
                     {{.Submission.State}}
                 </span>
                 {{if not .Submission.State.IsTerminal}}
-                <button hx-post="/submissions/{{.Submission.ID}}/cancel"
+                <button hx-post="{{base}}/submissions/{{.Submission.ID}}/cancel"
                         hx-confirm="Are you sure you want to cancel this submission?"
                         class="inline-flex items-center px-3 py-1 border border-red-300 text-sm font-medium rounded text-red-700 bg-white hover:bg-red-50">
                     Cancel
                 </button>
                 {{end}}
-                <button hx-delete="/submissions/{{.Submission.ID}}"
+                <button hx-delete="{{base}}/submissions/{{.Submission.ID}}"
                         hx-confirm="Are you sure you want to delete this submission? This will permanently remove the submission and all its tasks."
                         class="inline-flex items-center px-3 py-1 border border-red-300 text-sm font-medium rounded text-red-700 bg-white hover:bg-red-50">
                     <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1592,7 +1918,7 @@ var templates = map[string]string{
                     Delete
                 </button>
                 {{if eq .Submission.State.String "FAILED"}}
-                <button hx-post="/submissions/{{.Submission.ID}}/resume"
+                <button hx-post="{{base}}/submissions/{{.Submission.ID}}/resume"
                         hx-confirm="Resume this submission from failed tasks?"
                         class="inline-flex items-center px-3 py-1 border border-green-300 text-sm font-medium rounded text-green-700 bg-white hover:bg-green-50">
                     <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1604,6 +1930,14 @@ var templates = map[string]string{
             </div>
         </div>
     </div>
+
+    <!-- Non-blocking input validation notice (#273, warn mode) -->
+    {{if .Warning}}
+    <div class="mb-4 rounded-md bg-yellow-50 border border-yellow-200 p-4">
+        <div class="text-sm font-medium text-yellow-800">Input validation warning</div>
+        <div class="text-sm text-yellow-700">{{.Warning}}</div>
+    </div>
+    {{end}}
 
     <!-- Stage Pills Progress Bar -->
     {{if gt (len .Submission.Tasks) 0}}
@@ -1657,10 +1991,13 @@ var templates = map[string]string{
     <!-- Tasks -->
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:px-6 flex items-center justify-between">
-            <h3 class="text-lg leading-6 font-medium text-gray-900">Tasks ({{len .Submission.Tasks}})</h3>
+            <h3 class="text-lg leading-6 font-medium text-gray-900">
+                {{$swTotal := intOrZero .SubworkflowDescendantTotal}}
+                Tasks ({{len .Submission.Tasks}}{{if gt $swTotal 0}} total, +{{$swTotal}} in sub-workflows{{end}})
+            </h3>
             {{if eq .Submission.State.String "FAILED"}}
             <div class="flex space-x-2">
-                <button hx-post="/submissions/{{.Submission.ID}}/recompute-failed"
+                <button hx-post="{{base}}/submissions/{{.Submission.ID}}/recompute-failed"
                         hx-confirm="Recompute all failed tasks?"
                         class="inline-flex items-center px-3 py-1 text-xs border border-orange-300 rounded text-orange-700 bg-white hover:bg-orange-50">
                     Recompute Failed
@@ -1676,17 +2013,33 @@ var templates = map[string]string{
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Executor</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Run</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                     {{range .Submission.Tasks}}
-                    <tr class="hover:bg-gray-50">
+                    {{$isSub := isExpandableSubworkflowProxy .}}
+                    <tr class="hover:bg-gray-50{{if $isSub}} cursor-pointer{{end}}"
+                        {{if $isSub}}
+                        onclick="document.getElementById('sw-row-{{.ID}}').classList.toggle('hidden')"
+                        hx-get="{{base}}/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/children"
+                        hx-trigger="click once"
+                        hx-target="#sw-content-{{.ID}}"
+                        hx-swap="innerHTML"
+                        {{end}}>
                         <td class="px-6 py-4 whitespace-nowrap">
                             <div class="flex items-center">
                                 <div class="w-3 h-3 rounded-full mr-2 {{stateDotColor .State.String}}"></div>
                                 <div>
-                                    <div class="text-sm font-medium text-gray-900">{{.StepID}}</div>
+                                    <div class="text-sm font-medium text-gray-900">
+                                        {{.StepID}}
+                                        {{if $isSub}}
+                                        <span class="text-xs text-indigo-500">(sub-workflow &#9656;)</span>
+                                        {{$dn := descendantCount $.SubworkflowDescendants .ID}}{{if gt $dn 0}}<span class="text-xs text-gray-400">+{{$dn}} in sub-workflows</span>{{end}}
+                                        {{end}}
+                                    </div>
                                     <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
                                 </div>
                             </div>
@@ -1717,13 +2070,15 @@ var templates = map[string]string{
                                 -
                             {{end}}
                         </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{taskQueueDisplay .}}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{taskRunDisplay .}}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm space-x-2">
-                            <a href="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/logs"
+                            <a href="{{base}}/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/logs"
                                class="text-indigo-600 hover:text-indigo-500">
                                 Logs
                             </a>
                             {{if eq .State.String "FAILED"}}
-                            <button hx-post="/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/recompute"
+                            <button hx-post="{{base}}/submissions/{{$.Submission.ID}}/tasks/{{.ID}}/recompute"
                                     hx-confirm="Recompute this task from the beginning?"
                                     class="text-orange-600 hover:text-orange-500">
                                 Recompute
@@ -1731,15 +2086,27 @@ var templates = map[string]string{
                             {{end}}
                         </td>
                     </tr>
+                    {{if $isSub}}
+                    <tr id="sw-row-{{.ID}}" class="hidden">
+                        <td colspan="7" class="p-0 border-t-0">
+                            <div id="sw-content-{{.ID}}" class="bg-gray-50 border-l-2 border-indigo-200 ml-6 pl-3 py-1">
+                                <span class="text-xs text-gray-400">Loading…</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {{end}}
                     {{else}}
                     <tr>
-                        <td colspan="5" class="px-6 py-4 text-sm text-gray-500 text-center">No tasks</td>
+                        <td colspan="7" class="px-6 py-4 text-sm text-gray-500 text-center">No tasks</td>
                     </tr>
                     {{end}}
                 </tbody>
             </table>
         </div>
     </div>
+
+    <!-- Timing -->
+    {{template "timing_panel" dict "SubmissionID" .Submission.ID "Report" .Timing "IncludeChildren" false "TimingBars" .TimingBars}}
 
     <!-- Submission Details -->
     <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
@@ -1751,7 +2118,7 @@ var templates = map[string]string{
                 <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
                     <dt class="text-sm font-medium text-gray-500">Workflow</dt>
                     <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
-                        <a href="/workflows/{{.Submission.WorkflowID}}" class="text-indigo-600 hover:text-indigo-500">
+                        <a href="{{base}}/workflows/{{.Submission.WorkflowID}}" class="text-indigo-600 hover:text-indigo-500">
                             {{.Submission.WorkflowName}}
                         </a>
                     </dd>
@@ -1773,6 +2140,41 @@ var templates = map[string]string{
             </dl>
         </div>
     </div>
+
+    <!-- Secrets (metadata only: names, state, retention, purged_at — never values) -->
+    {{if .Submission.SecretNames}}
+    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+        <div class="px-4 py-5 sm:px-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Secrets</h3>
+        </div>
+        <div class="border-t border-gray-200">
+            <dl>
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">State</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SecretsState}}</dd>
+                </div>
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Names</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 font-mono">
+                        {{range .Submission.SecretNames}}<span class="inline-block mr-2">{{.}}</span>{{end}}
+                    </dd>
+                </div>
+                {{if .Submission.SecretsRetention}}
+                <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Retention</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Submission.SecretsRetention}}</dd>
+                </div>
+                {{end}}
+                {{if .Submission.SecretsPurgedAt}}
+                <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                    <dt class="text-sm font-medium text-gray-500">Purged</dt>
+                    <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{formatTimePtr .Submission.SecretsPurgedAt}}</dd>
+                </div>
+                {{end}}
+            </dl>
+        </div>
+    </div>
+    {{end}}
 
     <!-- Inputs -->
     {{if .Submission.Inputs}}
@@ -1851,14 +2253,14 @@ var templates = map[string]string{
     </div>
     {{end}}
 
-    <form action="/submissions" method="POST" class="space-y-6">
+    <form action="{{base}}/submissions" method="POST" class="space-y-6">
         <div class="bg-white shadow sm:rounded-lg">
             <div class="px-4 py-5 sm:p-6">
                 <div class="space-y-6">
                     <div>
                         <label for="workflow_id" class="block text-sm font-medium text-gray-700">Workflow</label>
                         <select name="workflow_id" id="workflow_id" required
-                                onchange="if(this.value) window.location.href='/submissions/new?workflow_id='+this.value"
+                                onchange="if(this.value) window.location.href='{{base}}/submissions/new?workflow_id='+this.value"
                                 class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
                             <option value="">Select a workflow...</option>
                             {{range .Workflows}}
@@ -1923,7 +2325,7 @@ var templates = map[string]string{
                 </div>
             </div>
             <div class="px-4 py-3 bg-gray-50 text-right sm:px-6">
-                <a href="/submissions" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
+                <a href="{{base}}/submissions" class="inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 mr-3">
                     Cancel
                 </a>
                 <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -1939,7 +2341,7 @@ var templates = map[string]string{
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-6">
         <div class="flex items-center space-x-2 text-sm text-gray-500 mb-2">
-            <a href="/submissions/{{.SubmissionID}}" class="hover:text-gray-700">Submission</a>
+            <a href="{{base}}/submissions/{{.SubmissionID}}" class="hover:text-gray-700">Submission</a>
             <span>/</span>
             <span>Task Logs</span>
         </div>
@@ -1980,10 +2382,14 @@ var templates = map[string]string{
 	"admin/stats": `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
-        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Statistics</h1>
@@ -2145,10 +2551,14 @@ var templates = map[string]string{
 	"admin/health": `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
-        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">System Health</h1>
@@ -2252,7 +2662,7 @@ var templates = map[string]string{
     <nav class="flex mb-4" aria-label="Breadcrumb">
         <ol class="flex items-center space-x-2">
             <li>
-                <a href="/workspace" class="text-gray-500 hover:text-gray-700">Home</a>
+                <a href="{{base}}/workspace" class="text-gray-500 hover:text-gray-700">Home</a>
             </li>
             <!-- TODO: Build path segments -->
         </ol>
@@ -2263,7 +2673,7 @@ var templates = map[string]string{
             {{range .Items}}
             <li>
                 {{if eq .Type "folder"}}
-                <a href="/workspace?path={{urlquery .Path}}" class="block hover:bg-gray-50 px-4 py-4">
+                <a href="{{base}}/workspace?path={{urlquery .Path}}" class="block hover:bg-gray-50 px-4 py-4">
                     <div class="flex items-center">
                         <svg class="h-5 w-5 text-yellow-400 mr-3" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -2301,7 +2711,7 @@ var templates = map[string]string{
             <p class="mt-1 text-sm text-gray-500">{{len .Workers}}{{if or .SearchQuery .StateFilter}} matching{{end}} of {{.AllCount}} registered worker{{if ne .AllCount 1}}s{{end}}</p>
         </div>
         {{if and .Session .Session.IsAdmin (gt .OfflineCount 0)}}
-        <button hx-post="/workers/purge-offline"
+        <button hx-post="{{base}}/workers/purge-offline"
                 hx-confirm="Delete all {{.OfflineCount}} offline worker{{if ne .OfflineCount 1}}s{{end}}?"
                 class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2325,19 +2735,19 @@ var templates = map[string]string{
             <div>
                 <label class="block text-xs font-medium text-gray-500 mb-1">Status</label>
                 <div class="flex space-x-1">
-                    <a href="/workers{{with .SearchQuery}}?search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workers{{with .SearchQuery}}?search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if not .StateFilter}}bg-indigo-100 text-indigo-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         All
                     </a>
-                    <a href="/workers?state=online{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workers?state=online{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "online"}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Online
                     </a>
-                    <a href="/workers?state=draining{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workers?state=draining{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "draining"}}bg-yellow-100 text-yellow-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Draining
                     </a>
-                    <a href="/workers?state=offline{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
+                    <a href="{{base}}/workers?state=offline{{with .SearchQuery}}&amp;search={{urlquery .}}{{end}}"
                        class="px-3 py-1 text-sm rounded-full {{if eq .StateFilter "offline"}}bg-gray-200 text-gray-800{{else}}bg-gray-100 text-gray-800 hover:bg-gray-200{{end}}">
                         Offline
                     </a>
@@ -2349,7 +2759,7 @@ var templates = map[string]string{
                 Search
             </button>
             {{if or .SearchQuery .StateFilter}}
-            <a href="/workers"
+            <a href="{{base}}/workers"
                class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                 Clear
             </a>
@@ -2431,7 +2841,7 @@ var templates = map[string]string{
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {{if .CurrentTask}}
                         {{$subID := index $.TaskSubmission .CurrentTask}}
-                        {{if $subID}}<a href="/submissions/{{$subID}}" class="text-blue-600 hover:text-blue-800 hover:underline" title="{{.CurrentTask}}">{{truncate .CurrentTask 12}}</a>{{else}}<span class="text-blue-600">{{truncate .CurrentTask 12}}</span>{{end}}
+                        {{if $subID}}<a href="{{base}}/submissions/{{$subID}}" class="text-blue-600 hover:text-blue-800 hover:underline" title="{{.CurrentTask}}">{{truncate .CurrentTask 12}}</a>{{else}}<span class="text-blue-600">{{truncate .CurrentTask 12}}</span>{{end}}
                         {{else}}
                         <span class="text-gray-400">idle</span>
                         {{end}}
@@ -2441,7 +2851,7 @@ var templates = map[string]string{
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .RegisteredAt}}</td>
                     {{if and $.Session $.Session.IsAdmin}}
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
-                        <button hx-delete="/workers/{{.ID}}"
+                        <button hx-delete="{{base}}/workers/{{.ID}}"
                                 hx-target="#worker-{{.ID}}"
                                 hx-swap="outerHTML"
                                 hx-confirm="Delete worker {{.Name}}?"
@@ -2466,7 +2876,7 @@ var templates = map[string]string{
         </svg>
         {{if or .SearchQuery .StateFilter}}
         <h3 class="mt-2 text-sm font-medium text-gray-900">No workers match your filters</h3>
-        <p class="mt-1 text-sm text-gray-500"><a href="/workers" class="text-indigo-600 hover:text-indigo-500">Clear filters</a></p>
+        <p class="mt-1 text-sm text-gray-500"><a href="{{base}}/workers" class="text-indigo-600 hover:text-indigo-500">Clear filters</a></p>
         {{else}}
         <h3 class="mt-2 text-sm font-medium text-gray-900">No workers registered</h3>
         <p class="mt-1 text-sm text-gray-500">Start a worker to see it appear here.</p>
@@ -2479,9 +2889,14 @@ var templates = map[string]string{
 	"admin/labels": `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Labels</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Tasks</a>
     </div>
     <div class="mb-8">
         <h1 class="text-2xl font-semibold text-gray-900">Label Vocabulary</h1>
@@ -2492,7 +2907,7 @@ var templates = map[string]string{
     <div class="bg-white shadow sm:rounded-lg mb-6">
         <div class="px-4 py-5 sm:p-6">
             <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Add Label</h3>
-            <form method="POST" action="/admin/labels" class="flex flex-wrap items-end gap-4">
+            <form method="POST" action="{{base}}/admin/labels" class="flex flex-wrap items-end gap-4">
                 <div>
                     <label class="block text-xs font-medium text-gray-500 mb-1">Key</label>
                     <input type="text" name="key" required placeholder="e.g. domain"
@@ -2558,7 +2973,7 @@ var templates = map[string]string{
                     <td class="px-6 py-4 text-sm text-gray-500">{{.Description}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .CreatedAt}}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-right">
-                        <button hx-delete="/admin/labels/{{.ID}}"
+                        <button hx-delete="{{base}}/admin/labels/{{.ID}}"
                                 hx-target="#label-{{.ID}}"
                                 hx-swap="outerHTML"
                                 hx-confirm="Delete label {{.Key}}:{{.Value}}?"
@@ -2583,10 +2998,14 @@ var templates = map[string]string{
 	"admin/tasks": `{{define "content"}}
 <div class="px-4 py-6 sm:px-0">
     <div class="mb-4 flex space-x-4 border-b border-gray-200">
-        <a href="/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
-        <a href="/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
-        <a href="/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
-        <a href="/admin/tasks" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Tasks</a>
+        <a href="{{base}}/admin/stats" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Stats</a>
+        <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
+        <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
+        <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
+        <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
+        <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
+        <a href="{{base}}/admin/tasks" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Tasks</a>
     </div>
     <div class="mb-4">
         <h1 class="text-2xl font-semibold text-gray-900">Active Tasks</h1>
@@ -2614,7 +3033,7 @@ var templates = map[string]string{
                     <td class="px-4 py-3 text-sm text-gray-900">{{.StepID}}</td>
                     <td class="px-4 py-3">
                         {{with index $.Submissions .SubmissionID}}
-                        <a href="/submissions/{{.ID}}" class="text-sm text-indigo-600 hover:text-indigo-800 truncate" style="max-width: 200px;" title="{{.WorkflowName}}">{{.WorkflowName}}</a>
+                        <a href="{{base}}/submissions/{{.ID}}" class="text-sm text-indigo-600 hover:text-indigo-800 truncate" style="max-width: 200px;" title="{{.WorkflowName}}">{{.WorkflowName}}</a>
                         {{else}}
                         <span class="text-xs font-mono text-gray-400">{{.SubmissionID}}</span>
                         {{end}}

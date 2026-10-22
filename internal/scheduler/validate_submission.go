@@ -62,7 +62,7 @@ func ValidateSubmissionInputs(logger *slog.Logger, wf *model.Workflow, inputs ma
 		for i, si := range step.In {
 			stepInputDefs[i] = stepinput.InputDefFromModel(
 				si.ID, si.Sources, si.Source,
-				si.Default, si.ValueFrom, si.LoadContents, si.LinkMerge,
+				si.Default, si.ValueFrom, si.LoadContents, si.LinkMerge, si.PickValue,
 			)
 		}
 		job, err := stepinput.ResolveInputs(
@@ -90,7 +90,11 @@ func ValidateSubmissionInputs(logger *slog.Logger, wf *model.Workflow, inputs ma
 		if err := validate.ValidateEnumValues(cwlTool, job); err != nil {
 			return fmt.Errorf("step %s: %w", step.ID, err)
 		}
-		if err := validate.ToolInputs(cwlTool, job); err != nil {
+		// Record field names (srr_id vs srr_accession). Not ToolInputs: its
+		// required/null check belongs to --input-validation (#273) and to
+		// dispatch, and upstream accepts a submission that omits a required
+		// workflow input (the dry run reports it).
+		if err := validate.ValidateRecordFields(cwlTool, job); err != nil {
 			return fmt.Errorf("step %s: %w", step.ID, err)
 		}
 	}
@@ -158,7 +162,7 @@ func InputTypeWarningsJSON(logger *slog.Logger, wf *model.Workflow, inputs map[s
 		for i, si := range step.In {
 			stepInputDefs[i] = stepinput.InputDefFromModel(
 				si.ID, si.Sources, si.Source,
-				si.Default, si.ValueFrom, si.LoadContents, si.LinkMerge,
+				si.Default, si.ValueFrom, si.LoadContents, si.LinkMerge, si.PickValue,
 			)
 		}
 		job, err := stepinput.ResolveInputs(

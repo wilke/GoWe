@@ -42,16 +42,29 @@ type Task struct {
 
 	// DependsOn is retained for backward compatibility with existing DB rows.
 	// New code should use StepInstance-level dependency tracking instead.
-	DependsOn   []string   `json:"depends_on,omitempty"`
-	Priority    int        `json:"priority"`
-	RetryCount  int        `json:"retry_count"`
-	MaxRetries  int        `json:"max_retries"`
-	Stdout      string     `json:"-"`
-	Stderr      string     `json:"-"`
-	ExitCode    *int       `json:"-"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	DependsOn  []string  `json:"depends_on,omitempty"`
+	Priority   int       `json:"priority"`
+	RetryCount int       `json:"retry_count"`
+	MaxRetries int       `json:"max_retries"`
+	Stdout     string    `json:"-"`
+	Stderr     string    `json:"-"`
+	ExitCode   *int      `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
+	// DispatchedAt is stamped once per dispatch attempt (submit to the
+	// executor), regardless of executor type — unlike StartedAt, CheckoutTask
+	// never touches this column, so it is never stale while a worker task is
+	// QUEUED. A sub-workflow proxy task sets it equal to CreatedAt.
+	DispatchedAt *time.Time `json:"dispatched_at,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+
+	// StageInMs/StageOutMs are the worker-measured input/output staging
+	// durations for this task's execution, reported alongside the terminal
+	// result. Nil when the executor is not `worker`, when staging did not
+	// occur, or when the reporting worker predates this field (version skew:
+	// an old worker never sends it, so it persists as NULL).
+	StageInMs  *int64 `json:"stage_in_ms,omitempty"`
+	StageOutMs *int64 `json:"stage_out_ms,omitempty"`
 }
 
 // DatasetRequirement describes a reference dataset needed by a CWL tool.
@@ -98,6 +111,24 @@ type RuntimeHints struct {
 	// token as BVBRC_TOKEN env var into the container execution.
 	InjectBVBRCToken bool `json:"inject_bvbrc_token,omitempty"`
 
+	// TokenEnvNames are the environment variable names the worker uses when
+	// injecting the user's token (from the tool blessing). Metadata only; the
+	// token itself lives in StagerOverrides.HTTPCredential. Survives ScrubSecrets.
+	TokenEnvNames []string `json:"token_env_names,omitempty"`
+
+	// ToolHash is the tool-blessing digest ("sha256:...") of the final
+	// post-merge tool this task runs. Metadata; survives ScrubSecrets.
+	ToolHash string `json:"tool_hash,omitempty"`
+
+	// TokenBlessingID is the id of the tool blessing that authorised token
+	// injection for this task. Metadata; survives ScrubSecrets.
+	TokenBlessingID string `json:"token_blessing_id,omitempty"`
+
+	// ImageSHA256s are the blessed image digests (one per host build); the
+	// worker must verify its resolved image is a member before
+	// injecting the token. Metadata; survives ScrubSecrets.
+	ImageSHA256s []string `json:"image_sha256s,omitempty"`
+
 	// RequiredDatasets lists reference datasets needed by this task.
 	// Parsed from the gowe:ResourceData CWL hint.
 	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`
@@ -110,6 +141,28 @@ type RuntimeHints struct {
 	// task working data (no cleanup) so it can be inspected afterwards.
 	// Propagated from the submission's "debug" label.
 	Debug bool `json:"debug,omitempty"`
+
+	// Secrets are the subset of the submission's secrets this task may see (name → value).
+	// Encrypted at rest in tasks.runtime_hints; cleared at terminal state; delivered to the
+	// container by the worker. Never returned by the API.
+	Secrets map[string]string `json:"secrets,omitempty"`
+	// SecretEnvNames lists the keys of Secrets that the executor exposes to the
+	// tool as environment variables (from gowe:Execution.secret_env /
+	// inject_secrets). Keys of Secrets not listed here exist only for
+	// cwltool:Secrets job re-injection and must NOT be placed in the env.
+	SecretEnvNames []string `json:"secret_env_names,omitempty"`
+
+	// SecretInputs names workflow inputs declared secret via cwltool:Secrets whose values
+	// were removed from the persisted job and must be re-injected by the worker from Secrets.
+	SecretInputs []string `json:"secret_inputs,omitempty"`
+
+	// InputValidation is the server's --input-validation mode (#273:
+	// "warn"|"enforce"|"off") at the time this task was created, stamped by
+	// the scheduler (populateToolAndJob) so a worker executing this task
+	// applies the same policy without its own flag. Empty means warn — a
+	// task from an older server, or created before an upgrade, must never
+	// start silently rejecting values. See internal/validate.Mode.
+	InputValidation string `json:"input_validation,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.
@@ -148,4 +201,19 @@ type HTTPCredential struct {
 // HasTool returns true if this task has a Tool definition for worker execution.
 func (t *Task) HasTool() bool {
 	return t.Tool != nil && len(t.Tool) > 0
+}
+
+// ScrubSecrets removes every secret-bearing value from the hints in place:
+// the task-embedded copies of the submission's secrets and the delegated
+// HTTP credential. Metadata (SecretInputs, SecretEnvNames) is kept. Call it
+// whenever a task reaches a terminal state or a submission's secrets are
+// purged, on every path that persists the task afterwards.
+func (h *RuntimeHints) ScrubSecrets() {
+	if h == nil {
+		return
+	}
+	h.Secrets = nil
+	if h.StagerOverrides != nil {
+		h.StagerOverrides.HTTPCredential = nil
+	}
 }

@@ -1,5 +1,206 @@
 # Changelog
 
+## [0.26.1](https://github.com/wilke/GoWe/compare/v0.26.0...v0.26.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **scheduler:** keep the end of stderr in submission errors ([#338](https://github.com/wilke/GoWe/issues/338)) ([9759a32](https://github.com/wilke/GoWe/commit/9759a32846f54103179fd91534cad97c84bb0aa3))
+
+## [0.26.0](https://github.com/wilke/GoWe/compare/v0.25.0...v0.26.0) (2026-10-16)
+
+
+### Features
+
+* **cwl/esviritu:** unique fragments and duplicates per detected virus ([#335](https://github.com/wilke/GoWe/issues/335)) ([0cd0654](https://github.com/wilke/GoWe/commit/0cd0654e2d98b7d0be9add0521ab6c5b408bf7fd))
+
+
+### Bug Fixes
+
+* **toolexec:** evaluate EnvVarRequirement with the real runtime context ([#336](https://github.com/wilke/GoWe/issues/336)) ([299aacb](https://github.com/wilke/GoWe/commit/299aacb02f6be9664d9e7e94f903cf251b6d19a1))
+
+## [0.25.0](https://github.com/wilke/GoWe/compare/v0.24.0...v0.25.0) (2026-10-16)
+
+
+### Features
+
+* **cwl:** add Kraken2 tool and run-folder workflow ([#321](https://github.com/wilke/GoWe/issues/321)) ([ad9d5d9](https://github.com/wilke/GoWe/commit/ad9d5d9c78c678339ae033cba46a8cc93974e7c9))
+* **cwl:** rRNA content tools (SILVA mapping, SortMeRNA) and run-folder workflows ([#322](https://github.com/wilke/GoWe/issues/322)) ([1c0ad93](https://github.com/wilke/GoWe/commit/1c0ad93e5ffd58f2500d0f3621cc486d691a81b3))
+* **scheduler:** capacity-aware dispatch — evaluate resource expressions, gate checkout on worker caps ([#331](https://github.com/wilke/GoWe/issues/331)) ([e03a24e](https://github.com/wilke/GoWe/commit/e03a24e336269f283b05b24daaf9a2d13cee13a9))
+
+
+### Bug Fixes
+
+* **worker:** keep output directory layout on file:// stage-out; fail on collisions ([#333](https://github.com/wilke/GoWe/issues/333)) ([35f07c1](https://github.com/wilke/GoWe/commit/35f07c1e4ab2cf43fb6d7a5285c681514b4fb133))
+
+## [0.24.0](https://github.com/wilke/GoWe/compare/v0.23.0...v0.24.0) (2026-10-14)
+
+
+### Features
+
+* **cwl:** add EsViritu tool and run-folder workflow ([#278](https://github.com/wilke/GoWe/issues/278)) ([fcbeb32](https://github.com/wilke/GoWe/commit/fcbeb32a9ebbc7673b0cb5f14666a19c3a0c6d76))
+
+
+### Bug Fixes
+
+* **cwl-runner:** apply ResourceRequirement to scatter iterations ([#319](https://github.com/wilke/GoWe/issues/319)) ([ac7b0c9](https://github.com/wilke/GoWe/commit/ac7b0c93bc37ad550fa99482c19246ac815cf96b))
+* **cwl-runner:** print usage only for flag and argument errors ([#311](https://github.com/wilke/GoWe/issues/311)) ([0e56228](https://github.com/wilke/GoWe/commit/0e5622899c2e832d1925b6217c7290fa28312268))
+* **cwl-runner:** resolve --image-dir for scattered steps ([#314](https://github.com/wilke/GoWe/issues/314)) ([511fd92](https://github.com/wilke/GoWe/commit/511fd9201a5f736e4a11d913e16c346413f99f7b))
+* **cwltool:** validate tool outputs against declared types ([#315](https://github.com/wilke/GoWe/issues/315)) ([dc78fe4](https://github.com/wilke/GoWe/commit/dc78fe46b13f221a2d38edfe28baf8f77038d008))
+* **toolexec:** mask stderr before cutting its tail, on a rune boundary ([#318](https://github.com/wilke/GoWe/issues/318)) ([7c36e79](https://github.com/wilke/GoWe/commit/7c36e792c43c9bbb7d211b333d9bb9ebc5bc6e4f))
+
+## [0.23.0](https://github.com/wilke/GoWe/compare/v0.22.0...v0.23.0) (2026-10-14)
+
+
+### Features
+
+* **cwl-runner:** accept the worker's bind and env flags ([#306](https://github.com/wilke/GoWe/issues/306)) ([1cd16e1](https://github.com/wilke/GoWe/commit/1cd16e13aabf58dba938963a8c8806bb182ae77c))
+
+
+### Bug Fixes
+
+* **worker:** gate Apptainer --cpus/--memory on delegated cgroups ([#301](https://github.com/wilke/GoWe/issues/301)) ([e38f863](https://github.com/wilke/GoWe/commit/e38f86326906f26db701635d2492f988ca981324))
+
+## [0.22.0](https://github.com/wilke/GoWe/compare/v0.21.0...v0.22.0) (2026-10-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* tools that use gowe:Execution.inject_bvbrc_token no longer receive the user's token unless an administrator has blessed the tool with `gowe admin bless` (pinned image); unblessed submissions are refused at submit time with TOOL_NOT_BLESSED. gowe:Execution under `requirements` is rejected at registration. --token-inject-groups is now staging-only and deprecated. Bless the three bvbrc-* helper tools before submitting genome-analysis-pipeline; see docs/upgrading.md.
+
+### Security
+
+* add tool-blessing infrastructure (inert) ([#290](https://github.com/wilke/GoWe/issues/290)) ([2a3e96f](https://github.com/wilke/GoWe/commit/2a3e96f1bd4c7b4014689a8edf1af14334a0d651))
+* bind worker keys to the workers they register ([#288](https://github.com/wilke/GoWe/issues/288)) ([6632b86](https://github.com/wilke/GoWe/commit/6632b866bb6f1d73939eb8beeffae168cb12929b))
+* isolate tool environments and keep the worker key off argv ([#291](https://github.com/wilke/GoWe/issues/291)) ([3176b81](https://github.com/wilke/GoWe/commit/3176b816a8d0ca4922aad9012ab034e308e5e5ae))
+* provider token reaches a tool only when the tool requests it and an admin blessed it ([#293](https://github.com/wilke/GoWe/issues/293)) ([cfeb0eb](https://github.com/wilke/GoWe/commit/cfeb0eb03bd0b42641acd49b55d67a435fcd046c))
+* **worker:** inject the provider token only for blessed tasks with a verified image; drop it after the task ([#292](https://github.com/wilke/GoWe/issues/292)) ([70ede04](https://github.com/wilke/GoWe/commit/70ede0468c46f96927e872f726e3434675bb5ac0))
+* **worker:** refuse GOWE_WORKER_KEY; fix 0.22 upgrade order ([#300](https://github.com/wilke/GoWe/issues/300)) ([83c58df](https://github.com/wilke/GoWe/commit/83c58dfdef4ed821d85e3240349433bee829b3fd))
+
+## [0.21.0](https://github.com/wilke/GoWe/compare/v0.20.1...v0.21.0) (2026-09-24)
+
+
+### Features
+
+* validate CWL input values against their declared types ([#273](https://github.com/wilke/GoWe/issues/273)) ([#275](https://github.com/wilke/GoWe/issues/275)) ([09cb80a](https://github.com/wilke/GoWe/commit/09cb80aa273469e9611b2d720a80a902e0d8ff45))
+
+## [0.20.1](https://github.com/wilke/GoWe/compare/v0.20.0...v0.20.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **scheduler:** keep pre-staging alive for RUNNING submissions; never activate before inputs are staged ([#270](https://github.com/wilke/GoWe/issues/270)) ([9cc555d](https://github.com/wilke/GoWe/commit/9cc555d7dd190b5658f2e868dcbed1e6e19ca616))
+
+## [0.20.0](https://github.com/wilke/GoWe/compare/v0.19.0...v0.20.0) (2026-09-16)
+
+
+### Features
+
+* **secrets:** submission-time secrets — encrypted, opt-in delivery, retention policies ([#265](https://github.com/wilke/GoWe/issues/265)) ([590026c](https://github.com/wilke/GoWe/commit/590026ce2b4fce7aa785eb4f7d3cc6127ab4cb33))
+
+
+### Bug Fixes
+
+* **scheduler,server:** fail fast when workspace pre-staging fails; retry re-stages; reject non-ASCII ws:// paths ([#268](https://github.com/wilke/GoWe/issues/268)) ([660aa46](https://github.com/wilke/GoWe/commit/660aa46dfbc9921d1bcd225a2903ea60ad5acd9b))
+
+## [0.19.0](https://github.com/wilke/GoWe/compare/v0.18.1...v0.19.0) (2026-09-09)
+
+
+### Features
+
+* **server,ui:** --base-path to mount the web UI behind a reverse-proxy path prefix ([#253](https://github.com/wilke/GoWe/issues/253)) ([df7e8e8](https://github.com/wilke/GoWe/commit/df7e8e87543e9ae510efc5d4d469a835ed34e839))
+* **server:** user-authenticated fleet roster endpoint; warn when worker API is keyless ([#256](https://github.com/wilke/GoWe/issues/256)) ([0f7342e](https://github.com/wilke/GoWe/commit/0f7342ee2c65d44a637d39e5ac20b00102066be1))
+
+## [0.18.1](https://github.com/wilke/GoWe/compare/v0.18.0...v0.18.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **store:** upsert in GetOrCreateUser to survive concurrent first logins ([#245](https://github.com/wilke/GoWe/issues/245)) ([61d551f](https://github.com/wilke/GoWe/commit/61d551f693b35e1218ee8fab773967897ef5222d))
+
+## [0.18.0](https://github.com/wilke/GoWe/compare/v0.17.2...v0.18.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** tokens that fail signature verification are rejected with 401. Deployments without outbound access to the BV-BRC key servers can set `--insecure-skip-token-verify` to restore the previous behavior.
+* **worker,scheduler:** restore opt-in gate for BV-BRC token injection ([#229](https://github.com/wilke/GoWe/issues/229))
+
+### Features
+
+* **bvbrc,staging:** resolve wildcard-glob outputs and recursive ws:// directories; promote workspace staging to supported ([#223](https://github.com/wilke/GoWe/issues/223)) ([3025ad9](https://github.com/wilke/GoWe/commit/3025ad92445a32eab304c471b150bce6d8593a63))
+* **server:** opt-in --cors-origins with proper preflight; document the reverse-proxy browser story ([#231](https://github.com/wilke/GoWe/issues/231)) ([f6c84de](https://github.com/wilke/GoWe/commit/f6c84de732feee16e4d2b4ec05b3e553f542a64b))
+* **store,server,cli:** preserve as-submitted inputs; add gowe submit --label ([#242](https://github.com/wilke/GoWe/issues/242)) ([aad4cef](https://github.com/wilke/GoWe/commit/aad4cef7d2aaeb0f3658ae970df9d90ce2d7d40a))
+* **ui,server:** expandable sub-workflow trees, timing panel, and Grafana link ([#235](https://github.com/wilke/GoWe/issues/235)) ([706270b](https://github.com/wilke/GoWe/commit/706270be30dd9e8143b7b3b968dc643be3cf11bf))
+* **ui:** admin view — worker fleet, keys, output verification, redelivery, labels ([#234](https://github.com/wilke/GoWe/issues/234)) ([1d35eff](https://github.com/wilke/GoWe/commit/1d35eff7701ecf2b50b44dd2a8fc78f42f5d2299))
+
+
+### Bug Fixes
+
+* **scheduler:** stop hot-looping on orphaned step instances and missing workflows ([#232](https://github.com/wilke/GoWe/issues/232)) ([5e56b7f](https://github.com/wilke/GoWe/commit/5e56b7f32bd1756df47e80b5283546a2e09fa2c4))
+* **server,store:** submissions list workflow filter matches all versions of a name ([#241](https://github.com/wilke/GoWe/issues/241)) ([1cea960](https://github.com/wilke/GoWe/commit/1cea960f0921ba59611e37cdf945c84e3faeae71))
+* **server:** verify BV-BRC token signatures against pinned issuer keys ([#243](https://github.com/wilke/GoWe/issues/243)) ([a12f703](https://github.com/wilke/GoWe/commit/a12f7036c2cff893df3d5f3d937db9d0590e2ee0))
+* **ui:** guard resume/recompute task transitions with CAS and submission-state gates ([#233](https://github.com/wilke/GoWe/issues/233)) ([3e7d22c](https://github.com/wilke/GoWe/commit/3e7d22ca767a11f85e7831222c7ffeac87feada9))
+* **worker,scheduler:** restore opt-in gate for BV-BRC token injection ([#229](https://github.com/wilke/GoWe/issues/229)) ([3709601](https://github.com/wilke/GoWe/commit/3709601407c76923e9f59a817e5d2c1d3abf7c90))
+
+## [0.17.2](https://github.com/wilke/GoWe/compare/v0.17.1...v0.17.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **scheduler:** annotate token-expiry and preflight failures; specific step errors win in submission messages ([#218](https://github.com/wilke/GoWe/issues/218)) ([153c2d9](https://github.com/wilke/GoWe/commit/153c2d9a875e1a011ef1da49d612175057f34056))
+* **staging,server,cli:** verify transfer sizes and surface close/sync errors — no silent truncation ([#219](https://github.com/wilke/GoWe/issues/219)) ([b375948](https://github.com/wilke/GoWe/commit/b37594847f0be0abf2d0a34dcdbbb137437ba44e))
+* **toolexec,cwloutput:** keep intentional basename renames on record outputs; fix stale dirname on renamed directories ([#217](https://github.com/wilke/GoWe/issues/217)) ([96ee609](https://github.com/wilke/GoWe/commit/96ee609015679e7649b1c4ac677b1ea6716e9a19))
+
+## [0.17.1](https://github.com/wilke/GoWe/compare/v0.17.0...v0.17.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cwloutput,toolexec,cli:** honor outputEval basename renames when staging outputs ([#213](https://github.com/wilke/GoWe/issues/213)) ([906ab2e](https://github.com/wilke/GoWe/commit/906ab2e96aea434495f4e7f473830f0e4ab89082))
+
+## [0.17.0](https://github.com/wilke/GoWe/compare/v0.16.2...v0.17.0) (2026-09-02)
+
+
+### Features
+
+* **cli,server,worker,cwl-runner:** surface the stamped build version everywhere ([#209](https://github.com/wilke/GoWe/issues/209)) ([b46242a](https://github.com/wilke/GoWe/commit/b46242a74cca87c99d9c4054d2dbd01cf0cd165b))
+
+
+### Bug Fixes
+
+* **bundle,server,cli:** deterministic packing; version-aware dedup with --force; immutable workflow ids ([#207](https://github.com/wilke/GoWe/issues/207)) ([8d26ee0](https://github.com/wilke/GoWe/commit/8d26ee08a494e03963b6712a62e9a23f1538773d))
+* **scheduler:** set StepInstance.Error on remaining silent-FAILED branches; fail ExpressionTool scatter on when-eval error ([#204](https://github.com/wilke/GoWe/issues/204)) ([2230698](https://github.com/wilke/GoWe/commit/2230698556fd0b1037f6c9f4acd98c0a4dd5e9a1))
+
+## [0.16.2](https://github.com/wilke/GoWe/compare/v0.16.1...v0.16.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **cwlrunner:** parallelize nested scatter/sub-workflows; global -j cap; add --cores budget ([#202](https://github.com/wilke/GoWe/issues/202)) ([99ff8c2](https://github.com/wilke/GoWe/commit/99ff8c2a5ebc11b2d5bb9f8814ccff35f7b6add5))
+
+## [0.16.1](https://github.com/wilke/GoWe/compare/v0.16.0...v0.16.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **scheduler,parser,stepinput:** honor step-level pickValue; stop skip-cascade on skipped deps ([#199](https://github.com/wilke/GoWe/issues/199)) ([7545d9e](https://github.com/wilke/GoWe/commit/7545d9e209a694413b301e50f358cd7f1356a7ce))
+* **server:** report actual scheduler state in health endpoint ([#195](https://github.com/wilke/GoWe/issues/195)) ([5785287](https://github.com/wilke/GoWe/commit/5785287ccf3e7fc6dc83e418fb10f49323039153))
+
+## [0.16.0](https://github.com/wilke/GoWe/compare/v0.15.0...v0.16.0) (2026-09-01)
+
+
+### Features
+
+* **scheduler,worker,server,store:** dispatch and staging attribution for timing ([#191](https://github.com/wilke/GoWe/issues/191)) ([90ef7f0](https://github.com/wilke/GoWe/commit/90ef7f0fbc3a56e2708810a1b7081454bdd71e7b))
+* **server,cli,ui:** submission timing view ([#188](https://github.com/wilke/GoWe/issues/188)) ([c5e6fb9](https://github.com/wilke/GoWe/commit/c5e6fb96dfab8afea9ecf914b5a0352018874654))
+* **server,scheduler,metrics:** Prometheus /metrics with bounded labels and exactly-once observation ([#192](https://github.com/wilke/GoWe/issues/192)) ([86801ef](https://github.com/wilke/GoWe/commit/86801efdc72c97d1fdda98a53962352bbc94c789)), closes [#185](https://github.com/wilke/GoWe/issues/185)
+
+
+### Bug Fixes
+
+* **scheduler,server,worker:** guarded task transitions and report validation ([#190](https://github.com/wilke/GoWe/issues/190)) ([0a8f595](https://github.com/wilke/GoWe/commit/0a8f595b8e36a50060ae8314994caa943e62e1d2)), closes [#160](https://github.com/wilke/GoWe/issues/160)
+
 ## [0.15.0](https://github.com/wilke/GoWe/compare/v0.14.0...v0.15.0) (2026-08-26)
 
 

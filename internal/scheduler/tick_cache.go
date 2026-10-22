@@ -13,13 +13,22 @@ type tickCache struct {
 	submissions   map[string]*model.Submission
 	workflows     map[string]*model.Workflow
 	stepInstances map[string][]*model.StepInstance // keyed by submission ID
+
+	// workflowLoadFailureSeen dedupes getWorkflowOrFail's consecutive-tick
+	// failure accounting within a single tick: a submission can have step
+	// instances selected by more than one phase in the same tick (e.g. one
+	// WAITING, one READY), and each phase calls getWorkflowOrFail
+	// independently. Without this, such a submission would be double-counted
+	// toward missingWorkflowFailThreshold. Keyed by submission ID.
+	workflowLoadFailureSeen map[string]bool
 }
 
 func newTickCache() *tickCache {
 	return &tickCache{
-		submissions:   make(map[string]*model.Submission),
-		workflows:     make(map[string]*model.Workflow),
-		stepInstances: make(map[string][]*model.StepInstance),
+		submissions:             make(map[string]*model.Submission),
+		workflows:               make(map[string]*model.Workflow),
+		stepInstances:           make(map[string][]*model.StepInstance),
+		workflowLoadFailureSeen: make(map[string]bool),
 	}
 }
 

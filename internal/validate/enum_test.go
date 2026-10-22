@@ -8,7 +8,7 @@ import (
 	"github.com/me/gowe/pkg/cwl"
 )
 
-func enumTool(symbols ...string) *cwl.CommandLineTool {
+func symbolsEnumTool(symbols ...string) *cwl.CommandLineTool {
 	return &cwl.CommandLineTool{Inputs: map[string]cwl.ToolInputParam{
 		"ligand_library_type": {Type: "string", Symbols: symbols},
 	}}
@@ -20,7 +20,7 @@ func enumTool(symbols ...string) *cwl.CommandLineTool {
 // accepted, reached BV-BRC, and failed inside the app minutes later. Docking
 // job 23710910 died with "Unknown ligand library type selected named_library".
 func TestValidateEnumValues_RejectsUndeclaredValue(t *testing.T) {
-	tool := enumTool("smiles_list", "ws_file")
+	tool := symbolsEnumTool("smiles_list", "ws_file")
 	err := ValidateEnumValues(tool, map[string]any{"ligand_library_type": "named_library"})
 	if err == nil {
 		t.Fatal("undeclared enum value accepted")
@@ -38,7 +38,7 @@ func TestValidateEnumValues_RejectsUndeclaredValue(t *testing.T) {
 }
 
 func TestValidateEnumValues_AcceptsDeclaredValues(t *testing.T) {
-	tool := enumTool("smiles_list", "ws_file", "named_library")
+	tool := symbolsEnumTool("smiles_list", "ws_file", "named_library")
 	for _, v := range []string{"smiles_list", "ws_file", "named_library"} {
 		if err := ValidateEnumValues(tool, map[string]any{"ligand_library_type": v}); err != nil {
 			t.Errorf("%s rejected: %v", v, err)
@@ -63,7 +63,7 @@ func TestValidateEnumValues_ArrayOfEnums(t *testing.T) {
 }
 
 func TestValidateEnumValues_SkipsWhatItShould(t *testing.T) {
-	tool := enumTool("smiles_list", "ws_file")
+	tool := symbolsEnumTool("smiles_list", "ws_file")
 
 	t.Run("absent input", func(t *testing.T) {
 		if err := ValidateEnumValues(tool, map[string]any{}); err != nil {

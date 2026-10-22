@@ -9,6 +9,7 @@ import (
 )
 
 func newRegisterCmd() *cobra.Command {
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "register <tool.cwl> [tool2.cwl ...]",
 		Short: "Register CWL tools and workflows with the server",
@@ -29,6 +30,12 @@ func newRegisterCmd() *cobra.Command {
 					"name": result.Name,
 					"cwl":  string(result.Packed),
 				}
+				if force {
+					// Bypass server-side dedup: always create a new row
+					// with a fresh parse, even if identical content was
+					// already registered.
+					wfReq["force"] = true
+				}
 				wfResp, err := client.Post("/api/v1/workflows/", wfReq)
 				if err != nil {
 					return fmt.Errorf("register %s: %w", cwlPath, err)
@@ -45,11 +52,17 @@ func newRegisterCmd() *cobra.Command {
 				if wfClass == "" {
 					wfClass = "Workflow"
 				}
+				deduplicated, _ := wfData["deduplicated"].(bool)
 
-				fmt.Printf("Registered: %s (%s) %s\n", wfName, wfClass, wfID)
+				if deduplicated {
+					fmt.Printf("Registered (existing): %s (%s) %s\n", wfName, wfClass, wfID)
+				} else {
+					fmt.Printf("Registered: %s (%s) %s\n", wfName, wfClass, wfID)
+				}
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "Bypass dedup and always register a new row with a fresh parse")
 	return cmd
 }

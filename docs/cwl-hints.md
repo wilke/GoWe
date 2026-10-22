@@ -108,6 +108,67 @@ hints:
 
 ---
 
+## `gowe:Execution.secret_env` / `inject_secrets` — Submission-time Secrets
+
+Opts a step into seeing some or all of the submitter's [submission-time secrets](../security/authentication.md#8-submission-time-secrets-260) (`secrets: {NAME: value}` on `POST /api/v1/submissions`). A step with neither field sees no submission secrets at all — this is what makes it safe for unrelated steps (or unrelated submissions sharing a worker group) to run side by side.
+
+```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
+hints:
+  gowe:Execution:
+    secret_env: [HF_TOKEN, COLLECTION_STORE_DSN]   # this task's container env gets exactly these
+```
+
+```yaml
+hints:
+  gowe:Execution:
+    inject_secrets: true   # this task's container env gets every submission secret
+```
+
+| Field | Type | Description |
+|-------|------|--------------|
+| `secret_env` | `[string]` | Names of submission secrets to inject as env vars into this task's container. A name absent from the submission's secrets fails the task **pre-dispatch**, naming the missing secret in the error — the task is never dispatched without it. |
+| `inject_secrets` | `bool` | Injects every submission secret as an env var. A no-op (not an error) when the submission carries none. |
+
+Both fields are additive with `gowe:ResourceData`/dataset hints and independent of `executor`/`worker_group` — but as of this release, only tasks actually dispatched to a **worker** reliably receive delivered secrets (the server-side local/docker executors do not yet deliver `secret_env`/`inject_secrets` — see the "Known limitations" note in the security doc linked above). Route a step that needs secrets to a worker explicitly if you're not already relying on `DockerRequirement` auto-promotion:
+
+```yaml
+hints:
+  gowe:Execution:
+    executor: worker
+    secret_env: [REGISTRY_DSN]
+```
+
+### `cwltool:Secrets` — declaring a workflow input as secret
+
+The (unstandardized, but widely adopted) `cwltool:Secrets` extension marks specific **workflow inputs** as secret. Declare it once, at the top-level `Workflow` document, naming the input IDs:
+
+```yaml
+$namespaces:
+  cwltool: http://commonwl.org/cwltool#
+
+class: Workflow
+hints:
+  "cwltool:Secrets":
+    secrets: [registry_dsn]
+inputs:
+  registry_dsn: string   # submitted as an ordinary string input: "hunter2..."
+outputs: [...]
+steps:
+  fetch:
+    in:
+      dsn: registry_dsn        # direct sourcing — re-injected automatically
+    out: [...]
+```
+
+At submission, GoWe strips `registry_dsn`'s real value out of `inputs`/`submitted_inputs` (replacing it with the literal `<secret>` placeholder) and stores it under the derived key `INPUT_REGISTRY_DSN`. A step that sources the declared input **directly** (`in: dsn: registry_dsn`, no intermediate step output, no `valueFrom`) has the real value re-injected into its in-memory job before the tool runs — so `$(inputs.dsn)` in an argument or an `InitialWorkDirRequirement` file interpolation sees the real value, while the persisted record never does. Sourcing through a step output, `valueFrom`, or a nested sub-workflow's own `cwltool:Secrets` declaration is not (yet) re-injected — keep the declared input on a directly-consuming step for now.
+
+`cwltool:Secrets` inputs are also validated: a declared input supplied as a non-string value is rejected with **400** at submission time.
+
+---
+
 ## `DockerRequirement` — Container Image (CWL Standard)
 
 This is a standard CWL hint, not GoWe-specific. Documented here because GoWe extends its behavior for Apptainer/SIF support.

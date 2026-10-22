@@ -31,9 +31,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, t := range tasks {
-		sanitizeTaskCredentials(t)
-	}
+	tasks = sanitizeTaskCredentialsSlice(tasks)
 
 	respondList(w, reqID, tasks, &model.Pagination{
 		Total:   total,
@@ -70,17 +68,66 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
 		return
 	}
-	sanitizeTaskCredentials(task)
-	respondOK(w, reqID, task)
+	respondOK(w, reqID, sanitizeTaskCredentials(task))
 }
 
-// sanitizeTaskCredentials strips sensitive credentials from task data before
-// returning it in API responses. Workers receive credentials through the
-// checkout endpoint; they must not leak through the public task API.
-func sanitizeTaskCredentials(t *model.Task) {
-	if t.RuntimeHints != nil && t.RuntimeHints.StagerOverrides != nil {
-		t.RuntimeHints.StagerOverrides.HTTPCredential = nil
+// sanitizeTaskCredentials returns a copy of t with sensitive runtime-hint
+// data — the HTTP credential override and any submission-time secret values
+// (RuntimeHints.Secrets; see RuntimeHints.ScrubSecrets) — stripped, safe for
+// a user-facing API response. Workers receive credentials and secrets
+// through the checkout endpoint (handleWorkerCheckout, deliberately NOT
+// sanitized); they must not leak through any other task-serializing path.
+//
+// t itself (and anything it points to) is left untouched: this returns a
+// copy rather than mutating in place, so a caller that still needs the
+// original — or that got t from a layer that might reuse/cache the pointer —
+// is never surprised by a scrubbed value appearing somewhere it shouldn't.
+func sanitizeTaskCredentials(t *model.Task) *model.Task {
+	if t == nil {
+		return nil
 	}
+	out := *t
+	out.RuntimeHints = scrubRuntimeHintsCopy(t.RuntimeHints)
+	return &out
+}
+
+// sanitizeTaskCredentialsSlice applies sanitizeTaskCredentials across a list
+// of tasks, returning a new slice (the input slice and its elements are
+// untouched).
+func sanitizeTaskCredentialsSlice(tasks []*model.Task) []*model.Task {
+	out := make([]*model.Task, len(tasks))
+	for i, t := range tasks {
+		out[i] = sanitizeTaskCredentials(t)
+	}
+	return out
+}
+
+// sanitizeTaskValueSlice is sanitizeTaskCredentialsSlice for a []model.Task
+// (value, not pointer, slice) — the shape model.Submission.Tasks uses.
+func sanitizeTaskValueSlice(tasks []model.Task) []model.Task {
+	out := make([]model.Task, len(tasks))
+	for i := range tasks {
+		out[i] = tasks[i]
+		out[i].RuntimeHints = scrubRuntimeHintsCopy(tasks[i].RuntimeHints)
+	}
+	return out
+}
+
+// scrubRuntimeHintsCopy returns a copy of h with RuntimeHints.ScrubSecrets
+// applied, safe to attach to a task that will be serialized to a client.
+// Returns nil for a nil input. h and anything it points to (notably
+// StagerOverrides) are left untouched.
+func scrubRuntimeHintsCopy(h *model.RuntimeHints) *model.RuntimeHints {
+	if h == nil {
+		return nil
+	}
+	cp := *h
+	if h.StagerOverrides != nil {
+		so := *h.StagerOverrides
+		cp.StagerOverrides = &so
+	}
+	cp.ScrubSecrets()
+	return &cp
 }
 
 func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {

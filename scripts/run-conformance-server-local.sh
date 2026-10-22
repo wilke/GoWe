@@ -181,6 +181,7 @@ log_info "Starting server with local executor..."
     --anonymous-executors "local,docker,worker,container" \
     --scheduler-poll 100ms \
     --log-level warn \
+    --input-validation enforce \
     > "$WORK_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 

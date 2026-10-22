@@ -158,3 +158,62 @@ func replayCompleted(t *testing.T, label string, check func(*cwl.CommandLineTool
 			"-- the rule is too strict", rejected, label)
 	}
 }
+
+// TestHistoryReplay_TypeSchemaEnforce replays every COMPLETED submission
+// through the upstream #273 validator (validate.SubmissionInputs, what
+// --input-validation=enforce gates on). Measured 2026-10-22 against the dev
+// gowe.db: 26 of 268 refused — ints where the CWL says string (code, genome_size),
+// a list for Metagenomic Read Mapping's srr_ids, 0/1 for booleans, an array
+// for a single-record library — all of which BV-BRC's app layer ran to
+// completion. So --input-validation stays at warn and the fork's
+// --record-validation carries the submit-time gate. This test reports the
+// count; it fails only if the count grows past that baseline.
+func TestHistoryReplay_TypeSchemaEnforce(t *testing.T) {
+	const baseline = 26
+	db := os.Getenv("GOWE_DB")
+	if db == "" {
+		t.Skip("set GOWE_DB to replay submission history")
+	}
+	conn, err := sql.Open("sqlite", "file:"+db+"?mode=ro")
+	if err != nil {
+		t.Skipf("open: %v", err)
+	}
+	defer conn.Close()
+	rows, err := conn.Query(`SELECT w.name, w.raw_cwl, s.inputs
+		FROM submissions s JOIN workflows w ON w.id = s.workflow_id
+		WHERE s.state = 'COMPLETED' AND COALESCE(w.raw_cwl,'') != ''`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	var total, rejected, unparsed int
+	byReason := map[string]int{}
+	for rows.Next() {
+		var name, raw, inputsJSON string
+		if err := rows.Scan(&name, &raw, &inputsJSON); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		var inputs map[string]any
+		if json.Unmarshal([]byte(inputsJSON), &inputs) != nil {
+			continue
+		}
+		total++
+		errs, verr := SubmissionInputs([]byte(raw), nil, inputs, Options{})
+		if verr != nil {
+			unparsed++
+			continue
+		}
+		if len(errs) > 0 {
+			rejected++
+			byReason[name+": "+SummarizeErrors(errs)]++
+		}
+	}
+	t.Logf("replayed %d COMPLETED submissions through SubmissionInputs (%d unparsed)", total, unparsed)
+	t.Logf("rejected: %d", rejected)
+	for r, n := range byReason {
+		t.Logf("   (%d) %s", n, r)
+	}
+	if rejected > baseline {
+		t.Errorf("%d payload(s) that COMPLETED on BV-BRC would be refused under --input-validation=enforce (baseline %d)", rejected, baseline)
+	}
+}

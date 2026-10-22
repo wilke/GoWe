@@ -13,35 +13,49 @@ import (
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/executor"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/ui"
+	"github.com/me/gowe/internal/validate"
+	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
 
 // Server is the GoWe REST API server.
 type Server struct {
-	router           chi.Router
-	logger           *slog.Logger
-	config           config.ServerConfig
-	startTime        time.Time
-	parser           *parser.Parser
-	validator        *parser.Validator
-	store            store.Store
-	scheduler        scheduler.Scheduler
-	registry         *executor.Registry       // optional; used by dry-run to check executor availability
-	bvbrcCaller      bvbrc.RPCCaller          // optional; AppService caller, nil when no BV-BRC token
-	workspaceURL     string                   // optional; BV-BRC Workspace endpoint for the UI (empty = production)
-	uiUploadMaxSize  int64                    // optional; cap on UI workspace upload bodies (0 = ui default)
-	testApps         []map[string]any         // optional; static app list for testing without BV-BRC
-	ui               *ui.UI                   // UI handler for web interface
-	adminConfig      *AdminConfig             // optional; admin role configuration
-	anonConfig       *AnonymousConfig         // optional; anonymous access configuration
-	workerKeyConfig  *WorkerKeyConfig         // optional; static worker keys (file/env)
-	workerAuth       *WorkerKeyAuthenticator  // validates static + DB-backed worker keys
-	fileUploadConfig *FileUploadConfig        // optional; file upload proxy configuration
-	wsStager         *staging.WorkspaceStager // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+	router                chi.Router
+	logger                *slog.Logger
+	config                config.ServerConfig
+	startTime             time.Time
+	parser                *parser.Parser
+	validator             *parser.Validator
+	store                 store.Store
+	scheduler             scheduler.Scheduler
+	registry              *executor.Registry           // optional; used by dry-run to check executor availability
+	bvbrcCaller           bvbrc.RPCCaller              // optional; AppService caller, nil when no BV-BRC token
+	workspaceURL          string                       // optional; BV-BRC Workspace endpoint for the UI (empty = production)
+	uiUploadMaxSize       int64                        // optional; cap on UI workspace upload bodies (0 = ui default)
+	testApps              []map[string]any             // optional; static app list for testing without BV-BRC
+	ui                    *ui.UI                       // UI handler for web interface
+	adminConfig           *AdminConfig                 // optional; admin role configuration
+	anonConfig            *AnonymousConfig             // optional; anonymous access configuration
+	workerKeyConfig       *WorkerKeyConfig             // optional; static worker keys (file/env)
+	workerAuth            *WorkerKeyAuthenticator      // validates static + DB-backed worker keys
+	tokenVerifier         *bvbrc.Verifier              // optional; verifies BV-BRC provider token signatures (nil = verification disabled)
+	allowUnverifiedMGRAST bool                         // allow the unverified X-MG-RAST-Token path even when tokenVerifier is set
+	authDenylist          *AuthDenylist                // optional; local username/token-id denylist checked after identity is established
+	fileUploadConfig      *FileUploadConfig            // optional; file upload proxy configuration
+	wsStager              *staging.WorkspaceStager     // optional; BV-BRC Workspace stager for admin output verification/re-delivery
+	serverSideStaging     bool                         // true when the scheduler runs server-side ws:// pre/post-staging (--workspace-staging=server); see WithServerSideStaging
+	metrics               *metrics.Registry            // optional; nil disables Prometheus instrumentation (every Registry method no-ops on nil)
+	workflowNames         *workflowNameCache           // LRU backing workflowNameFor, the worker-report path's metric label lookup
+	basePath              string                       // optional; mounts the UI/API under this path prefix behind a reverse proxy (see WithBasePath)
+	secretsRetention      model.SecretsRetentionPolicy // default secrets_retention applied to a submission that doesn't specify one (see WithSecretsRetention); zero value is SecretsRetentionKeep
+	inputValidation       validate.Mode                // --input-validation mode (#273); empty means warn (see validate.Mode.Effective)
+	recordValidation      validate.Mode                // --record-validation mode (fork): record shape / field names / enum values at submit; empty means enforce
+	tokenBlessing         string                       // --token-blessing mode: "enforce" (default) or "dev" (see WithTokenBlessingMode)
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -96,6 +110,28 @@ func WithWorkspaceStager(ws *staging.WorkspaceStager) Option {
 	}
 }
 
+// WithServerSideStaging records whether the scheduler was configured for
+// server-side workspace pre/post-staging (--workspace-staging=server), as
+// distinct from wsStager being set (which also happens in passthrough mode,
+// solely for the admin output verification/re-delivery endpoints). Used by
+// handleRetrySubmission (#267) to decide whether a retry needs to reset the
+// pre-stage markers and route back through PENDING instead of RUNNING.
+func WithServerSideStaging(enabled bool) Option {
+	return func(s *Server) {
+		s.serverSideStaging = enabled
+	}
+}
+
+// WithMetrics sets the Prometheus metrics registry. A nil Registry (the
+// default when this option is never applied) leaves instrumentation
+// disabled — every Registry method no-ops on a nil receiver, so handler code
+// never checks for this.
+func WithMetrics(m *metrics.Registry) Option {
+	return func(s *Server) {
+		s.metrics = m
+	}
+}
+
 // WithRedeliverSourceDirs sets the directories the admin re-delivery endpoint
 // may read local originals from (symlinks resolved, segment-aware prefix).
 // Without it, re-delivery never opens a local file.
@@ -138,18 +174,110 @@ func WithWorkerKeyConfig(cfg *WorkerKeyConfig) Option {
 	}
 }
 
+// WithTokenVerifier enables cryptographic verification of BV-BRC provider
+// token signatures against a pinned issuer allowlist. Passing nil (or
+// omitting this option) disables verification and preserves the previous
+// behavior of trusting the un= field as claimed.
+func WithTokenVerifier(v *bvbrc.Verifier) Option {
+	return func(s *Server) {
+		s.tokenVerifier = v
+	}
+}
+
+// WithAllowUnverifiedMGRAST permits the X-MG-RAST-Token header path — which
+// establishes identity with no signature check — even when a token
+// verifier is configured. Has no effect when no verifier is set (that path
+// is already unverified in that case).
+func WithAllowUnverifiedMGRAST(allow bool) Option {
+	return func(s *Server) {
+		s.allowUnverifiedMGRAST = allow
+	}
+}
+
+// WithBasePath mounts the web UI and API under the given path prefix (e.g.
+// "/gowe"), for deployment behind a path-preserving reverse proxy (nginx
+// proxy_pass with no URI part, where the prefix arrives in the request
+// path). The server answers BOTH at root paths (unchanged, for workers/CLI/
+// existing API clients) and under the prefix; every URL, redirect, and
+// session-cookie path the UI emits is rendered under the prefix. Empty (the
+// default) is root-mounted only, byte-identical to pre-#250 behavior. The
+// value must already be normalized (leading "/", no trailing "/", not just
+// "/") — see cmd/server's normalizeBasePath.
+func WithBasePath(p string) Option {
+	return func(s *Server) {
+		s.basePath = p
+	}
+}
+
+// WithSecretsRetention sets the default secrets_retention policy applied to
+// a submission whose create request leaves secrets_retention empty (see
+// --secrets-retention / GOWE_SECRETS_RETENTION in cmd/server). Explicit
+// per-submission values (including "keep", used by dev/demo tenants for
+// reproducible debugging) always override this default.
+func WithSecretsRetention(policy model.SecretsRetentionPolicy) Option {
+	return func(s *Server) {
+		s.secretsRetention = policy
+	}
+}
+
+// WithInputValidation sets the server's --input-validation mode (#273):
+// warn, enforce, or off (see validate.Mode). Not setting it (the zero value)
+// means warn. Threaded into handleCreateSubmission (validate.SubmissionInputs)
+// and the web UI's Config.InputValidation.
+func WithInputValidation(mode validate.Mode) Option {
+	return func(s *Server) {
+		s.inputValidation = mode
+	}
+}
+
+// WithRecordValidation sets the fork's --record-validation mode: the
+// synchronous check of record shape, record field names, required record
+// fields and enum values against each step's CWL at POST /submissions
+// (scheduler.ValidateSubmissionInputs). enforce (the default when unset)
+// answers 400; warn logs and accepts; off skips. It is separate from
+// --input-validation because the upstream TypeSchema check in enforce mode
+// refuses payloads BV-BRC's app layer accepts (26 of 268 completed
+// submissions: ints for strings, a list for srr_ids; see
+// internal/validate/history_replay_test.go), while this check only catches
+// payloads that cannot run.
+func WithRecordValidation(mode validate.Mode) Option {
+	return func(s *Server) {
+		s.recordValidation = mode
+	}
+}
+
+// RecordValidationMode is the effective --record-validation mode (enforce
+// when unset).
+func (s *Server) RecordValidationMode() validate.Mode {
+	if s.recordValidation == "" {
+		return validate.ModeEnforce
+	}
+	return s.recordValidation
+}
+
+// WithAuthDenylist sets a local, immediate-effect denylist of usernames and
+// provider token IDs. Requests from a denylisted user or token are
+// rejected after identity is established, whether or not the token
+// signature was verified.
+func WithAuthDenylist(users, tokenIDs []string) Option {
+	return func(s *Server) {
+		s.authDenylist = NewAuthDenylist(users, tokenIDs)
+	}
+}
+
 // New creates a new Server with all routes registered.
 // sched may be nil if no scheduling is desired (e.g. in tests).
 func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, logger *slog.Logger, opts ...Option) *Server {
 	s := &Server{
-		router:    chi.NewRouter(),
-		logger:    logger.With("component", "server"),
-		config:    cfg,
-		startTime: time.Now(),
-		parser:    parser.New(logger),
-		validator: parser.NewValidator(logger),
-		store:     st,
-		scheduler: sched,
+		router:        chi.NewRouter(),
+		logger:        logger.With("component", "server"),
+		config:        cfg,
+		startTime:     time.Now(),
+		parser:        parser.New(logger),
+		validator:     parser.NewValidator(logger),
+		store:         st,
+		scheduler:     sched,
+		workflowNames: newWorkflowNameCache(defaultWorkflowNameCacheSize),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -163,10 +291,14 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	// terminated in-process, when the operator opts in explicitly, or (behind a
 	// trusted proxy) per-request based on X-Forwarded-Proto.
 	s.ui = ui.New(st, logger, ui.Config{
+		InputValidation:     s.inputValidation,
 		SecureCookies:       cfg.SecureCookies || cfg.TLSEnabled(),
 		TrustForwardedProto: cfg.BehindProxy,
 		WorkspaceURL:        s.workspaceURL,
 		UploadMaxSize:       s.uiUploadMaxSize,
+		GrafanaURL:          cfg.GrafanaURL,
+		BasePath:            s.basePath,
+		TokenBlessingDev:    s.tokenBlessingMode() == tokenBlessingDev,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)
@@ -174,6 +306,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 	if s.adminConfig != nil {
 		s.ui.WithAdminChecker(s.adminConfig)
 	}
+	s.ui.WithMetrics(s.metrics)
 
 	s.routes()
 	return s
@@ -232,9 +365,50 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-// Handler returns the http.Handler for this server.
+// Handler returns the http.Handler for this server. When WithBasePath is
+// set, the returned handler answers both at root paths (unchanged) and
+// under the configured prefix — see withBasePath.
 func (s *Server) Handler() http.Handler {
-	return s.router
+	if s.basePath == "" {
+		return s.router
+	}
+	return withBasePath(s.basePath, s.router)
+}
+
+// withBasePath wraps next so it is dual-mounted: requests are served both at
+// root paths exactly as before, and under the "base" prefix by stripping the
+// prefix and re-routing through the same handler. The prefix is stripped
+// only on a real path-segment boundary — for base "/a/b", "/a/b" and
+// "/a/b/..." are stripped, but "/a/bfoo" is left untouched (and falls
+// through to next unmodified, which 404s exactly like any other unmatched
+// root path). "GET <base>" (no trailing slash) redirects to "<base>/"
+// rather than 404ing, matching the usual trailing-slash-canonicalization
+// pattern for a mount point.
+func withBasePath(base string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+
+		if p == base {
+			http.Redirect(w, r, base+"/", http.StatusMovedPermanently)
+			return
+		}
+
+		if p == base+"/" || strings.HasPrefix(p, base+"/") {
+			stripped := strings.TrimPrefix(p, base)
+			if stripped == "" {
+				stripped = "/"
+			}
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = stripped
+			r2.URL.RawPath = ""
+			next.ServeHTTP(w, r2)
+			return
+		}
+
+		// Not under the prefix (or only a lookalike, e.g. "/a/bfoo" against
+		// base "/a/b"): serve unchanged at the root path.
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routes() {
@@ -254,6 +428,14 @@ func (s *Server) routes() {
 
 	// API routes (JSON)
 	r.Route("/api/v1", func(r chi.Router) {
+		// Opt-in CORS (--cors-origins). Off by default: a token-issuing API
+		// must not become browser-reachable by accident. Mounted first in
+		// this scope so a preflight OPTIONS request from a listed origin is
+		// answered before it ever reaches worker/user auth middleware below.
+		if len(s.config.CORSOrigins) > 0 {
+			r.Use(corsMiddleware(s.config.CORSOrigins))
+		}
+
 		// Public endpoints (no auth required)
 		r.Get("/", s.handleDiscovery)
 		r.Get("/health", s.handleHealth)
@@ -276,7 +458,7 @@ func (s *Server) routes() {
 
 		// Protected endpoints (user auth required)
 		r.Group(func(r chi.Router) {
-			r.Use(apiAuthMiddleware(s.store, s.adminConfig, s.anonConfig, s.logger))
+			r.Use(apiAuthMiddleware(s.store, s.adminConfig, s.anonConfig, s.logger, s.tokenVerifier, s.allowUnverifiedMGRAST, s.authDenylist))
 
 			// Workflows
 			r.Route("/workflows", func(r chi.Router) {
@@ -299,9 +481,11 @@ func (s *Server) routes() {
 				r.Post("/", s.handleCreateSubmission)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", s.handleGetSubmission)
+					r.Get("/timing", s.handleSubmissionTiming)
 					r.Put("/cancel", s.handleCancelSubmission)
 					r.Delete("/", s.handleDeleteSubmission)
 					r.Put("/retry", s.handleRetrySubmission)
+					r.Delete("/secrets", s.handleDeleteSubmissionSecrets)
 					// Tasks nested under submissions
 					r.Route("/tasks", func(r chi.Router) {
 						r.Get("/", s.handleListTasks)
@@ -312,6 +496,11 @@ func (s *Server) routes() {
 					})
 				})
 			})
+
+			// Fleet roster: slim, read-only worker status for any signed-in user
+			// (no worker key required). Distinct from GET /workers, which sits
+			// behind workerAuthMiddleware and returns the full record.
+			r.Get("/fleet", s.handleFleetRoster)
 
 			// Apps (BV-BRC proxy)
 			r.Route("/apps", func(r chi.Router) {
@@ -358,6 +547,7 @@ func (s *Server) routes() {
 						r.Delete("/", s.handleRevokeWorkerKey)
 					})
 				})
+				r.Route("/tool-blessings", s.toolBlessingRoutes)
 				r.Route("/labels", func(r chi.Router) {
 					r.Get("/", s.handleListLabelVocabulary)
 					r.Post("/", s.handleCreateLabelVocabulary)

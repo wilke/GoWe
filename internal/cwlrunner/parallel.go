@@ -16,18 +16,34 @@ type ParallelConfig struct {
 	// Enabled controls whether parallel execution is used.
 	Enabled bool
 
-	// MaxWorkers limits concurrent tool executions (steps + scatter iterations).
-	// Default: runtime.NumCPU()
+	// MaxWorkers limits concurrent tool executions across the ENTIRE run:
+	// top-level DAG steps, scatter iterations, nested sub-workflow steps,
+	// and scatter-over-subworkflow iterations all draw from this one budget
+	// (see Semaphore). Default: runtime.NumCPU()
 	MaxWorkers int
 
 	// FailFast stops execution on first error.
 	// Default: true
 	FailFast bool
 
-	// Semaphore controls global concurrency for tool executions.
+	// Semaphore controls global concurrency for tool executions. It is
+	// created ONCE per run (see Runner.executeWorkflow) and reused --
+	// unchanged -- by every parallelExecutor created for nested
+	// sub-workflows, so all nesting levels share the same MaxWorkers budget.
 	// When set, this limits total concurrent processes across all steps
 	// and scatter iterations. If nil, MaxWorkers is used to create one.
 	Semaphore *Semaphore
+
+	// CoresBudget is the optional machine core budget for the --cores flag
+	// (0 = disabled, the default). Each leaf tool execution acquires weight
+	// equal to its evaluated ResourceRequirement cores (default 1) from
+	// Cores, in addition to a Semaphore slot.
+	CoresBudget int
+
+	// Cores is the weighted semaphore enforcing CoresBudget. Like
+	// Semaphore, it is created once per run and shared across all nesting
+	// levels. Nil when CoresBudget <= 0.
+	Cores *CoresSemaphore
 }
 
 // DefaultParallelConfig returns the default parallel configuration.
@@ -73,9 +89,15 @@ type parallelExecutor struct {
 func newParallelExecutor(r *Runner, graph *cwl.GraphDocument, dag *parser.DAGResult,
 	workflowInputs map[string]any, config ParallelConfig) *parallelExecutor {
 
-	// Create semaphore if not provided - this limits total concurrent tool executions
+	// Create semaphores if not provided - this is a fallback for callers that
+	// construct a parallelExecutor directly (e.g. tests) without going
+	// through Runner.executeWorkflow, which creates them once at the top of
+	// a run and shares them across all nesting levels via r.Parallel.
 	if config.Semaphore == nil && config.MaxWorkers > 0 {
 		config.Semaphore = NewSemaphore(config.MaxWorkers)
+	}
+	if config.Cores == nil && config.CoresBudget > 0 {
+		config.Cores = NewCoresSemaphore(config.CoresBudget, r.logger)
 	}
 
 	pe := &parallelExecutor{
@@ -371,6 +393,16 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 	// Check if this is an ExpressionTool
 	toolRef := stripHash(job.step.Run)
 	if exprTool, ok := pe.graph.ExpressionTools[toolRef]; ok {
+		// Handle scatter over an ExpressionTool (checked before 'when', same
+		// order as the serial executeSubWorkflow/executeWorkflowSequential
+		// loops). Without this check, a scattered ExpressionTool step would
+		// run once with its (unexpanded) array inputs instead of once per
+		// combination; executeScatterExpressionTool evaluates 'when' and
+		// valueFrom per iteration itself.
+		if len(job.step.Scatter) > 0 {
+			return pe.runner.executeScatterExpressionTool(ctx, pe.graph, exprTool, job.step, job.inputs, pe.evaluator)
+		}
+
 		// Handle conditional execution
 		if job.step.When != "" {
 			evalCtx := cwlexpr.NewContext(job.inputs)
@@ -425,12 +457,31 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 		return nil, fmt.Errorf("tool %s not found", job.step.Run)
 	}
 
+	// Clone before mutating: tool is the pointer stored in the shared
+	// graph.Tools map. Under nested/scattered parallelism the SAME tool
+	// pointer can be reached concurrently by multiple goroutines -- e.g.
+	// scatter-over-subworkflow iterations each execute their own copy of the
+	// child workflow's steps, but all iterations share the one child
+	// *cwl.GraphDocument (and therefore the same *cwl.CommandLineTool
+	// objects in its Tools map). mergeStepRequirements below mutates
+	// tool.Requirements/tool.Hints (map writes), which would otherwise race
+	// (and can panic with "concurrent map writes"). Cloning here gives this
+	// step execution its own private copy before any mutation.
+	tool = cloneToolForExecution(tool)
+
 	// Merge step requirements into tool (step requirements override tool hints).
 	mergeStepRequirements(tool, &job.step)
 
-	// Handle scatter if present
+	// Handle scatter if present. Route through the parallel scatter executor
+	// whenever parallel execution is enabled -- including MaxWorkers == 1 (a
+	// plain `-j 1`): executeScatterParallelWithMetrics acquires the shared
+	// semaphore per iteration, so a capacity-1 semaphore serializes it
+	// *through the same global cap* that binds every other step in the run.
+	// The plain (non-semaphore-aware) executeScatterWithMetrics must only be
+	// used when parallel execution is off entirely, otherwise a scattered
+	// step could run its iterations without ever consulting the cap.
 	if len(job.step.Scatter) > 0 {
-		if pe.config.Enabled && pe.config.MaxWorkers > 1 {
+		if pe.config.Enabled {
 			return pe.runner.executeScatterParallelWithMetrics(ctx, pe.graph, tool, job.step, job.inputs, job.stepID, pe.config, pe.evaluator)
 		}
 		return pe.runner.executeScatterWithMetrics(ctx, pe.graph, tool, job.step, job.inputs, job.stepID, pe.evaluator)
@@ -457,13 +508,55 @@ func (pe *parallelExecutor) executeStep(ctx context.Context, job stepJob) (map[s
 		}
 	}
 
-	// Acquire semaphore slot for tool execution (non-scatter)
-	if !pe.config.Semaphore.Acquire(ctx) {
+	// Acquire semaphore slot(s) for tool execution (non-scatter). This is a
+	// leaf tool execution -- see the INVARIANT comment on Semaphore.
+	coresWeight, ok := acquireExecutionSlot(ctx, pe.config, tool, job.inputs, pe.evaluator)
+	if !ok {
 		return nil, ctx.Err()
 	}
-	defer pe.config.Semaphore.Release()
+	defer releaseExecutionSlot(pe.config, coresWeight)
 
 	return pe.runner.executeToolWithStepID(ctx, pe.graph, tool, job.inputs, false, job.stepID)
+}
+
+// acquireExecutionSlot acquires both the global tool-execution count
+// semaphore and (if --cores is enabled) the weighted core-budget semaphore
+// for a single leaf tool execution, in a fixed order: count first, then
+// cores. releaseExecutionSlot releases in the reverse order (cores, then
+// count). Using one fixed order at every acquisition site is what keeps this
+// deadlock-free composition-wise: no code path ever acquires cores before
+// count, so there is no lock-ordering cycle to deadlock on.
+//
+// This must only be called for leaf tool executions (see the INVARIANT
+// comment on Semaphore) -- never by structural steps waiting on children.
+//
+// Returns the cores weight actually acquired (0 if --cores is disabled or
+// acquisition failed; always safe to pass to releaseExecutionSlot) and
+// whether acquisition succeeded (false means ctx was cancelled while
+// waiting).
+func acquireExecutionSlot(ctx context.Context, config ParallelConfig, tool *cwl.CommandLineTool, inputs map[string]any, evaluator *cwlexpr.Evaluator) (int64, bool) {
+	if !config.Semaphore.Acquire(ctx) {
+		return 0, false
+	}
+
+	weight := resourceCoresWeight(tool, inputs, evaluator)
+	toolID := ""
+	if tool != nil {
+		toolID = tool.ID
+	}
+	coresWeight, ok := config.Cores.Acquire(ctx, weight, toolID)
+	if !ok {
+		config.Semaphore.Release()
+		return 0, false
+	}
+	return coresWeight, true
+}
+
+// releaseExecutionSlot releases what acquireExecutionSlot acquired, in
+// reverse order (cores, then count).
+func releaseExecutionSlot(config ParallelConfig, coresWeight int64) {
+	config.Cores.Release(coresWeight)
+	config.Semaphore.Release()
 }
 
 // newCWLExprEvaluator creates a new expression evaluator with the given library.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -26,6 +27,29 @@ func unmarshalJSON(data string, dest any, field string) error {
 		return fmt.Errorf("corrupt %s JSON: %w", field, err)
 	}
 	return nil
+}
+
+// formatTimePtr formats a *time.Time as an RFC3339Nano *string for a
+// nullable TEXT column, returning nil (SQL NULL) when t is nil.
+func formatTimePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format(time.RFC3339Nano)
+	return &s
+}
+
+// scanTimePtr parses a nullable RFC3339Nano TEXT column into a *time.Time,
+// returning nil when raw is nil (SQL NULL).
+func scanTimePtr(raw *string) (*time.Time, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	t, err := parseTimeOrZero(*raw)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // parseTimeOrZero parses an RFC3339Nano time string, returning zero time for empty strings.
@@ -119,6 +143,10 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 	if err != nil {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
+	secretInputsCol, err := marshalSecretInputs(wf.SecretInputs)
+	if err != nil {
+		return err
+	}
 
 	// Default class to "Workflow" if not set.
 	class := wf.Class
@@ -127,14 +155,43 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at, secret_inputs)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		wf.ID, wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
 		wf.CreatedBy,
 		wf.CreatedAt.Format(time.RFC3339Nano), wf.UpdatedAt.Format(time.RFC3339Nano),
+		secretInputsCol,
 	)
 	return err
+}
+
+// marshalSecretInputs JSON-encodes a workflow's SecretInputs for storage,
+// returning nil (SQL NULL) for an empty slice so a workflow with no
+// cwltool:Secrets declaration leaves the column untouched.
+func marshalSecretInputs(ids []string) (*string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal secret_inputs: %w", err)
+	}
+	s := string(b)
+	return &s, nil
+}
+
+// unmarshalSecretInputs reverses marshalSecretInputs for a value read from
+// the database. A NULL/empty column decodes to a nil slice, no error.
+func unmarshalSecretInputs(col *string) ([]string, error) {
+	if col == nil || *col == "" {
+		return nil, nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(*col), &ids); err != nil {
+		return nil, fmt.Errorf("unmarshal secret_inputs: %w", err)
+	}
+	return ids, nil
 }
 
 func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workflow, error) {
@@ -143,12 +200,13 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 	var wf model.Workflow
 	var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 	var createdAt, updatedAt string
+	var secretInputsCol *string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at, secret_inputs
 		 FROM workflows WHERE id = ?`, id,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt, &secretInputsCol)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -173,6 +231,9 @@ func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*model.Workfl
 		return nil, err
 	}
 	if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+		return nil, err
+	}
+	if wf.SecretInputs, err = unmarshalSecretInputs(secretInputsCol); err != nil {
 		return nil, err
 	}
 
@@ -185,12 +246,13 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 	var wf model.Workflow
 	var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 	var createdAt, updatedAt string
+	var secretInputsCol *string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
-		 FROM workflows WHERE content_hash = ?`, hash,
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at, secret_inputs
+		 FROM workflows WHERE content_hash = ? ORDER BY created_at DESC LIMIT 1`, hash,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt, &secretInputsCol)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -215,6 +277,9 @@ func (s *SQLiteStore) GetWorkflowByHash(ctx context.Context, hash string) (*mode
 		return nil, err
 	}
 	if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+		return nil, err
+	}
+	if wf.SecretInputs, err = unmarshalSecretInputs(secretInputsCol); err != nil {
 		return nil, err
 	}
 
@@ -227,12 +292,13 @@ func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*mode
 	var wf model.Workflow
 	var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 	var createdAt, updatedAt string
+	var secretInputsCol *string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at, secret_inputs
 		 FROM workflows WHERE name = ? ORDER BY created_at DESC LIMIT 1`, name,
 	).Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt)
+		&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt, &secretInputsCol)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -257,6 +323,9 @@ func (s *SQLiteStore) GetWorkflowByName(ctx context.Context, name string) (*mode
 		return nil, err
 	}
 	if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+		return nil, err
+	}
+	if wf.SecretInputs, err = unmarshalSecretInputs(secretInputsCol); err != nil {
 		return nil, err
 	}
 
@@ -312,7 +381,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at
+		`SELECT id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at, secret_inputs
 		 FROM workflows`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
 		queryArgs...,
 	)
@@ -326,9 +395,10 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 		var wf model.Workflow
 		var inputsJSON, outputsJSON, stepsJSON, labelsJSON string
 		var createdAt, updatedAt string
+		var secretInputsCol *string
 
 		if err := rows.Scan(&wf.ID, &wf.Name, &wf.Description, &wf.Class, &wf.CWLVersion, &wf.ContentHash, &wf.RawCWL,
-			&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt); err != nil {
+			&inputsJSON, &outputsJSON, &stepsJSON, &labelsJSON, &wf.CreatedBy, &createdAt, &updatedAt, &secretInputsCol); err != nil {
 			return nil, 0, err
 		}
 		if err := unmarshalJSON(inputsJSON, &wf.Inputs, "inputs"); err != nil {
@@ -352,6 +422,10 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 			continue
 		}
 		if wf.UpdatedAt, err = parseTimeOrZero(updatedAt); err != nil {
+			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
+			continue
+		}
+		if wf.SecretInputs, err = unmarshalSecretInputs(secretInputsCol); err != nil {
 			slog.Error("skipping corrupt workflow row", "id", wf.ID, "error", err)
 			continue
 		}
@@ -380,6 +454,10 @@ func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) er
 	if err != nil {
 		return fmt.Errorf("marshal labels: %w", err)
 	}
+	secretInputsCol, err := marshalSecretInputs(wf.SecretInputs)
+	if err != nil {
+		return err
+	}
 
 	// Default class to "Workflow" if not set.
 	class := wf.Class
@@ -389,10 +467,10 @@ func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) er
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workflows SET name=?, description=?, class=?, cwl_version=?, content_hash=?, raw_cwl=?,
-		 inputs=?, outputs=?, steps=?, labels=?, updated_at=? WHERE id=?`,
+		 inputs=?, outputs=?, steps=?, labels=?, updated_at=?, secret_inputs=? WHERE id=?`,
 		wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
-		wf.UpdatedAt.Format(time.RFC3339Nano), wf.ID,
+		wf.UpdatedAt.Format(time.RFC3339Nano), secretInputsCol, wf.ID,
 	)
 	if err != nil {
 		return err
@@ -434,6 +512,21 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 	if err != nil {
 		return fmt.Errorf("marshal inputs: %w", err)
 	}
+
+	// submitted_inputs is an immutable snapshot captured ONCE, here, at
+	// creation time. It defaults to a verbatim copy of Inputs unless the
+	// caller has already set SubmittedInputs explicitly (e.g. a test
+	// constructing a submission directly). No other write path may touch
+	// this column — see UpdateSubmissionInputs, which rewrites Inputs alone.
+	submittedInputs := sub.SubmittedInputs
+	if submittedInputs == nil {
+		submittedInputs = sub.Inputs
+	}
+	submittedInputsJSON, err := json.Marshal(submittedInputs)
+	if err != nil {
+		return fmt.Errorf("marshal submitted_inputs: %w", err)
+	}
+
 	outputsJSON, err := json.Marshal(sub.Outputs)
 	if err != nil {
 		return fmt.Errorf("marshal outputs: %w", err)
@@ -462,14 +555,43 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 		return err
 	}
 
+	// Secrets are write-once here, like submitted_inputs above: no other
+	// write path touches these four columns (secrets_purged_at is later
+	// updated only by the dedicated PurgeSubmissionSecrets). Empty Secrets
+	// encrypts to "" (stored as SQL NULL) and secret_names/secrets_purged_at
+	// follow suit so a submission with no secrets leaves all four columns
+	// NULL/empty.
+	storedSecrets, err := s.encryptSecretsMap(sub.Secrets, submissionSecretsAAD(sub.ID))
+	if err != nil {
+		return err
+	}
+	var secretsCol, secretNamesCol *string
+	if storedSecrets != "" {
+		secretsCol = &storedSecrets
+	}
+	if len(sub.SecretNames) > 0 {
+		b, err := json.Marshal(sub.SecretNames)
+		if err != nil {
+			return fmt.Errorf("marshal secret_names: %w", err)
+		}
+		s := string(b)
+		secretNamesCol = &s
+	}
+
 	_, err = ex.ExecContext(ctx,
-		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO submissions (id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs,
+		 secrets, secret_names, secrets_retention, secrets_purged_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
 		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
 		storedToken, tokenExpiry, sub.AuthProvider, sub.ParentTaskID,
 		sub.OutputDestination, sub.OutputState,
+		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
+		formatTimePtr(sub.PoststageStartedAt), formatTimePtr(sub.PoststageCompletedAt),
+		string(submittedInputsJSON),
+		secretsCol, secretNamesCol, sub.SecretsRetention, formatTimePtr(sub.SecretsPurgedAt),
 	)
 	return err
 }
@@ -509,15 +631,23 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	var state, createdAt string
 	var completedAt *string
 	var tokenExpiry int64
+	var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
+	var submittedInputsJSON *string
+	var secretsCol, secretNamesJSON, secretsPurgedAt *string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, error, output_destination, output_state,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, submitted_inputs,
+		 secrets, secret_names, secrets_retention, secrets_purged_at
 		 FROM submissions WHERE id = ?`, id,
 	).Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 		&inputsJSON, &outputsJSON, &labelsJSON,
 		&sub.SubmittedBy, &createdAt, &completedAt,
 		&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID, &errorJSON,
-		&sub.OutputDestination, &sub.OutputState)
+		&sub.OutputDestination, &sub.OutputState,
+		&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt,
+		&submittedInputsJSON,
+		&secretsCol, &secretNamesJSON, &sub.SecretsRetention, &secretsPurgedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -530,6 +660,21 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	if sub.UserToken, err = s.decryptToken(sub.UserToken, submissionTokenAAD(sub.ID)); err != nil {
 		return nil, fmt.Errorf("decrypt user token: %w", err)
 	}
+	var storedSecrets string
+	if secretsCol != nil {
+		storedSecrets = *secretsCol
+	}
+	if sub.Secrets, err = s.decryptSecretsMap(storedSecrets, submissionSecretsAAD(sub.ID)); err != nil {
+		return nil, fmt.Errorf("decrypt submission secrets: %w", err)
+	}
+	if secretNamesJSON != nil {
+		if err := unmarshalJSON(*secretNamesJSON, &sub.SecretNames, "secret_names"); err != nil {
+			return nil, err
+		}
+	}
+	if sub.SecretsPurgedAt, err = scanTimePtr(secretsPurgedAt); err != nil {
+		return nil, err
+	}
 	if err := unmarshalJSON(inputsJSON, &sub.Inputs, "inputs"); err != nil {
 		return nil, err
 	}
@@ -538,6 +683,13 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	}
 	if err := unmarshalJSON(labelsJSON, &sub.Labels, "labels"); err != nil {
 		return nil, err
+	}
+	// submitted_inputs is nullable: NULL means no snapshot (pre-#239 row),
+	// scanned as nil and left as a nil map, no error.
+	if submittedInputsJSON != nil {
+		if err := unmarshalJSON(*submittedInputsJSON, &sub.SubmittedInputs, "submitted_inputs"); err != nil {
+			return nil, err
+		}
 	}
 	if errorJSON != "" {
 		var subErr model.SubmissionError
@@ -558,6 +710,18 @@ func (s *SQLiteStore) GetSubmission(ctx context.Context, id string) (*model.Subm
 	}
 	if tokenExpiry > 0 {
 		sub.TokenExpiry = time.Unix(tokenExpiry, 0)
+	}
+	if sub.PrestageStartedAt, err = scanTimePtr(prestageStartedAt); err != nil {
+		return nil, err
+	}
+	if sub.PrestageCompletedAt, err = scanTimePtr(prestageCompletedAt); err != nil {
+		return nil, err
+	}
+	if sub.PoststageStartedAt, err = scanTimePtr(poststageStartedAt); err != nil {
+		return nil, err
+	}
+	if sub.PoststageCompletedAt, err = scanTimePtr(poststageCompletedAt); err != nil {
+		return nil, err
 	}
 
 	// Load associated tasks.
@@ -587,6 +751,14 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	if opts.WorkflowID != "" {
 		whereClauses = append(whereClauses, "workflow_id = ?")
 		countArgs = append(countArgs, opts.WorkflowID)
+	}
+	if opts.WorkflowName != "" {
+		// Match submissions against every workflow ID ever registered under
+		// this name, not just the newest one — re-registering a workflow
+		// under the same name creates a new ID/row, and earlier submissions
+		// still reference the older IDs.
+		whereClauses = append(whereClauses, "workflow_id IN (SELECT id FROM workflows WHERE name = ?)")
+		countArgs = append(countArgs, opts.WorkflowName)
 	}
 	if opts.DateStart != "" {
 		whereClauses = append(whereClauses, "created_at >= ?")
@@ -650,8 +822,13 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	return subs, total, err
 }
 
-// submissionListColumns is the column set scanned by scanSubmissionRows.
-const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state`
+// submissionListColumns is the column set scanned by scanSubmissionRows. New
+// columns are appended at the end so the position of every existing column
+// stays stable.
+// secret_names/secrets_retention/secrets_purged_at are metadata only (#260):
+// never the encrypted secrets column itself, so list rows can report
+// SecretsState() without a per-row decrypt.
+const submissionListColumns = `id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, user_token, token_expiry, auth_provider, parent_task_id, output_destination, output_state, prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at, secret_names, secrets_retention, secrets_purged_at`
 
 // scanSubmissionRows scans submissionListColumns rows, skipping (with an error
 // log) rows that fail token decryption or JSON/timestamp parsing so one corrupt
@@ -664,12 +841,16 @@ func (s *SQLiteStore) scanSubmissionRows(rows *sql.Rows) ([]*model.Submission, e
 		var state, createdAt string
 		var completedAt *string
 		var tokenExpiry int64
+		var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
+		var secretNamesJSON, secretsPurgedAt *string
 
 		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 			&inputsJSON, &outputsJSON, &labelsJSON,
 			&sub.SubmittedBy, &createdAt, &completedAt,
 			&sub.UserToken, &tokenExpiry, &sub.AuthProvider, &sub.ParentTaskID,
-			&sub.OutputDestination, &sub.OutputState); err != nil {
+			&sub.OutputDestination, &sub.OutputState,
+			&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt,
+			&secretNamesJSON, &sub.SecretsRetention, &secretsPurgedAt); err != nil {
 			return nil, err
 		}
 
@@ -706,6 +887,32 @@ func (s *SQLiteStore) scanSubmissionRows(rows *sql.Rows) ([]*model.Submission, e
 		if tokenExpiry > 0 {
 			sub.TokenExpiry = time.Unix(tokenExpiry, 0)
 		}
+		if sub.PrestageStartedAt, err = scanTimePtr(prestageStartedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.PrestageCompletedAt, err = scanTimePtr(prestageCompletedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.PoststageStartedAt, err = scanTimePtr(poststageStartedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if sub.PoststageCompletedAt, err = scanTimePtr(poststageCompletedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
+		if secretNamesJSON != nil {
+			if err := unmarshalJSON(*secretNamesJSON, &sub.SecretNames, "secret_names"); err != nil {
+				slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+				continue
+			}
+		}
+		if sub.SecretsPurgedAt, err = scanTimePtr(secretsPurgedAt); err != nil {
+			slog.Error("skipping corrupt submission row", "id", sub.ID, "error", err)
+			continue
+		}
 
 		subs = append(subs, &sub)
 	}
@@ -723,6 +930,34 @@ func (s *SQLiteStore) ListSubmissionsAwaitingOutputStaging(ctx context.Context) 
 	query := `SELECT ` + submissionListColumns + `
 		FROM submissions
 		WHERE state = 'COMPLETED' AND output_destination != '' AND (output_state = '' OR output_state IS NULL)
+		ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return s.scanSubmissionRows(rows)
+}
+
+// ListSubmissionsAwaitingPrestage returns RUNNING submissions whose server-side
+// workspace pre-staging was started but never completed
+// (prestage_started_at IS NOT NULL AND prestage_completed_at IS NULL). This is
+// the recovery half of the scheduler's pre-stage loop selection (#268/#269):
+// PENDING submissions are already covered by the loop's existing PENDING scan,
+// but a submission that raced onto RUNNING before pre-staging finished (or one
+// left stuck by the pre-fix deadlock) must keep being retried until pre-stage
+// either completes or exhausts its failure threshold — otherwise it is never
+// looked at again and dispatchReady defers it forever. No pagination cap here:
+// unlike the PENDING scan, this set is self-limiting — every RUNNING row
+// either completes pre-staging within a few ticks or fails outright once
+// prestageFailThreshold is reached (becoming terminal and leaving this set).
+func (s *SQLiteStore) ListSubmissionsAwaitingPrestage(ctx context.Context) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_awaiting_prestage", "table", "submissions")
+
+	query := `SELECT ` + submissionListColumns + `
+		FROM submissions
+		WHERE state = 'RUNNING' AND prestage_started_at IS NOT NULL AND prestage_completed_at IS NULL
 		ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -770,6 +1005,30 @@ func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Ti
 	return counts, rows.Err()
 }
 
+// GetSubmissionMeta is a lean SELECT of workflow_name and labels only — no
+// inputs/outputs/tasks/timestamps, no token decryption — for label lookups
+// (e.g. Prometheus workflow labeling) that only need to name a submission's
+// workflow.
+func (s *SQLiteStore) GetSubmissionMeta(ctx context.Context, id string) (*model.SubmissionMeta, error) {
+	s.logger.Debug("sql", "op", "select_meta", "table", "submissions", "id", id)
+
+	var meta model.SubmissionMeta
+	var labelsJSON string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT workflow_name, labels FROM submissions WHERE id = ?`, id,
+	).Scan(&meta.WorkflowName, &labelsJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := unmarshalJSON(labelsJSON, &meta.Labels, "labels"); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
 // execSubmissionUpdate marshals the mutable submission columns and runs the
 // shared UPDATE with the given WHERE clause, returning the number of rows
 // affected. It is the single write path behind UpdateSubmission and
@@ -800,9 +1059,12 @@ func (s *SQLiteStore) execSubmissionUpdate(ctx context.Context, sub *model.Submi
 	args := append([]any{
 		string(sub.State), string(outputsJSON), string(labelsJSON), errorJSON,
 		completedAt, sub.OutputDestination, sub.OutputState,
+		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
+		formatTimePtr(sub.PoststageStartedAt), formatTimePtr(sub.PoststageCompletedAt),
 	}, whereArgs...)
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=?`+where,
+		`UPDATE submissions SET state=?, outputs=?, labels=?, error=?, completed_at=?, output_destination=?, output_state=?,
+		 prestage_started_at=?, prestage_completed_at=?, poststage_started_at=?, poststage_completed_at=?`+where,
 		args...,
 	)
 	if err != nil {
@@ -873,6 +1135,72 @@ func (s *SQLiteStore) ActivateSubmission(ctx context.Context, id string) (bool, 
 	return n > 0, nil
 }
 
+// PurgeSubmissionSecrets clears a submission's secret values (secrets=NULL)
+// while keeping secret_names for auditability, and stamps secrets_purged_at.
+// Used by the scheduler's retention sweep once a submission's
+// SecretsRetention policy says its secret values are due for removal; see
+// ListSubmissionsWithSecretsForRetention.
+func (s *SQLiteStore) PurgeSubmissionSecrets(ctx context.Context, id string, at time.Time) error {
+	s.logger.Debug("sql", "op", "purge_secrets", "table", "submissions", "id", id)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE submissions SET secrets=NULL, secrets_purged_at=? WHERE id=?`,
+		at.Format(time.RFC3339Nano), id)
+	if err != nil {
+		return fmt.Errorf("purge submission secrets %s: %w", id, err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("submission %s not found", id)
+	}
+	return nil
+}
+
+// ListSubmissionsWithSecretsForRetention returns terminal-state submissions
+// that still carry secret values (submissions.secrets IS NOT NULL/non-empty),
+// with just enough loaded (state, created_at, completed_at,
+// secrets_retention, secret_names) for the scheduler's retention sweep to
+// decide whether to purge and to log a purge by count. Secret values are
+// never decrypted or returned here — every result's Secrets field is nil —
+// so this query is cheap to run every tick.
+func (s *SQLiteStore) ListSubmissionsWithSecretsForRetention(ctx context.Context) ([]*model.Submission, error) {
+	s.logger.Debug("sql", "op", "list_secrets_for_retention", "table", "submissions")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workflow_id, workflow_name, state, created_at, completed_at, secrets_retention, secret_names
+		 FROM submissions
+		 WHERE secrets IS NOT NULL AND secrets != '' AND state IN (?, ?, ?)`,
+		string(model.SubmissionStateCompleted), string(model.SubmissionStateFailed), string(model.SubmissionStateCancelled))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []*model.Submission
+	for rows.Next() {
+		var sub model.Submission
+		var state, createdAt string
+		var completedAt, secretNamesJSON *string
+		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state, &createdAt, &completedAt, &sub.SecretsRetention, &secretNamesJSON); err != nil {
+			return nil, err
+		}
+		sub.State = model.SubmissionState(state)
+		if sub.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
+			return nil, err
+		}
+		if sub.CompletedAt, err = scanTimePtr(completedAt); err != nil {
+			return nil, err
+		}
+		if secretNamesJSON != nil {
+			if err := unmarshalJSON(*secretNamesJSON, &sub.SecretNames, "secret_names"); err != nil {
+				return nil, err
+			}
+		}
+		subs = append(subs, &sub)
+	}
+	return subs, rows.Err()
+}
+
 func (s *SQLiteStore) DeleteSubmission(ctx context.Context, id string) error {
 	s.logger.Debug("sql", "op", "delete", "table", "submissions", "id", id)
 
@@ -937,7 +1265,8 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 	s.logger.Debug("sql", "op", "list_children", "table", "submissions", "parent_task_id", parentTaskID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id, error
+		`SELECT id, workflow_id, workflow_name, state, inputs, outputs, labels, submitted_by, created_at, completed_at, parent_task_id, error,
+		 prestage_started_at, prestage_completed_at, poststage_started_at, poststage_completed_at
 		 FROM submissions WHERE parent_task_id = ? ORDER BY created_at`, parentTaskID)
 	if err != nil {
 		return nil, err
@@ -950,10 +1279,12 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 		var inputsJSON, outputsJSON, labelsJSON, errorJSON string
 		var state, createdAt string
 		var completedAt *string
+		var prestageStartedAt, prestageCompletedAt, poststageStartedAt, poststageCompletedAt *string
 
 		if err := rows.Scan(&sub.ID, &sub.WorkflowID, &sub.WorkflowName, &state,
 			&inputsJSON, &outputsJSON, &labelsJSON,
-			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID, &errorJSON); err != nil {
+			&sub.SubmittedBy, &createdAt, &completedAt, &sub.ParentTaskID, &errorJSON,
+			&prestageStartedAt, &prestageCompletedAt, &poststageStartedAt, &poststageCompletedAt); err != nil {
 			return nil, err
 		}
 
@@ -983,6 +1314,18 @@ func (s *SQLiteStore) GetChildSubmissions(ctx context.Context, parentTaskID stri
 				return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 			}
 			sub.CompletedAt = &t
+		}
+		if sub.PrestageStartedAt, err = scanTimePtr(prestageStartedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+		}
+		if sub.PrestageCompletedAt, err = scanTimePtr(prestageCompletedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+		}
+		if sub.PoststageStartedAt, err = scanTimePtr(poststageStartedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
+		}
+		if sub.PoststageCompletedAt, err = scanTimePtr(poststageCompletedAt); err != nil {
+			return nil, fmt.Errorf("corrupt child submission row %s: %w", sub.ID, err)
 		}
 
 		subs = append(subs, &sub)
@@ -1018,11 +1361,16 @@ func (s *SQLiteStore) insertStepInstance(ctx context.Context, ex execer, si *mod
 		return fmt.Errorf("marshal scatter_dims: %w", err)
 	}
 
+	var errText *string
+	if si.Error != "" {
+		errText = &si.Error
+	}
+
 	_, err = ex.ExecContext(ctx,
-		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO step_instances (id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, error, created_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		si.ID, si.SubmissionID, si.StepID, string(si.State),
-		si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON),
+		si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), errText,
 		si.CreatedAt.Format(time.RFC3339Nano), completedAt,
 	)
 	return err
@@ -1056,13 +1404,14 @@ func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.St
 	var si model.StepInstance
 	var state, outputsJSON, createdAt string
 	var completedAt *string
+	var errText *string
 	var scatterDimsJSON string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, error, created_at, completed_at
 		 FROM step_instances WHERE id = ?`, id,
 	).Scan(&si.ID, &si.SubmissionID, &si.StepID, &state,
-		&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &createdAt, &completedAt)
+		&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &errText, &createdAt, &completedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1072,6 +1421,9 @@ func (s *SQLiteStore) GetStepInstance(ctx context.Context, id string) (*model.St
 	}
 
 	si.State = model.StepInstanceState(state)
+	if errText != nil {
+		si.Error = *errText
+	}
 	if err := unmarshalJSON(outputsJSON, &si.Outputs, "outputs"); err != nil {
 		return nil, err
 	}
@@ -1118,9 +1470,14 @@ func (s *SQLiteStore) execStepInstanceUpdate(ctx context.Context, ex execer, si 
 		return fmt.Errorf("marshal scatter_dims: %w", err)
 	}
 
+	var errText *string
+	if si.Error != "" {
+		errText = &si.Error
+	}
+
 	result, err := ex.ExecContext(ctx,
-		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, completed_at=? WHERE id=?`,
-		string(si.State), si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), completedAt, si.ID,
+		`UPDATE step_instances SET state=?, scatter_count=?, scatter_method=?, scatter_dims=?, outputs=?, error=?, completed_at=? WHERE id=?`,
+		string(si.State), si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), errText, completedAt, si.ID,
 	)
 	if err != nil {
 		return err
@@ -1136,7 +1493,7 @@ func (s *SQLiteStore) ListStepsBySubmission(ctx context.Context, submissionID st
 	s.logger.Debug("sql", "op", "list", "table", "step_instances", "submission_id", submissionID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, error, created_at, completed_at
 		 FROM step_instances WHERE submission_id = ? ORDER BY created_at`, submissionID)
 	if err != nil {
 		return nil, err
@@ -1150,7 +1507,7 @@ func (s *SQLiteStore) ListStepsByState(ctx context.Context, state model.StepInst
 	s.logger.Debug("sql", "op", "list_by_state", "table", "step_instances", "state", state)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, created_at, completed_at
+		`SELECT id, submission_id, step_id, state, scatter_count, scatter_method, scatter_dims, outputs, error, created_at, completed_at
 		 FROM step_instances WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -1187,14 +1544,18 @@ func (s *SQLiteStore) scanStepInstances(rows *sql.Rows) ([]*model.StepInstance, 
 		var si model.StepInstance
 		var state, outputsJSON, createdAt string
 		var completedAt *string
+		var errText *string
 		var scatterDimsJSON string
 
 		if err := rows.Scan(&si.ID, &si.SubmissionID, &si.StepID, &state,
-			&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &createdAt, &completedAt); err != nil {
+			&si.ScatterCount, &si.ScatterMethod, &scatterDimsJSON, &outputsJSON, &errText, &createdAt, &completedAt); err != nil {
 			return nil, err
 		}
 
 		si.State = model.StepInstanceState(state)
+		if errText != nil {
+			si.Error = *errText
+		}
 		if err := unmarshalJSON(outputsJSON, &si.Outputs, "outputs"); err != nil {
 			slog.Error("skipping corrupt step_instance row", "id", si.ID, "error", err)
 			continue
@@ -1236,6 +1597,27 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 	return s.insertTask(ctx, s.db, task)
 }
 
+// taskColumns is the column set returned by every unscoped `SELECT * FROM
+// tasks` query and the column order for `INSERT INTO tasks`. Scanned
+// positionally by scanTask, scanTasks, and CheckoutTask's own inline scan —
+// all three must stay in this exact order. New columns are appended at the
+// end so the position of every existing column stays stable.
+const taskColumns = `id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
+	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
+	 stdout, stderr, exit_code, created_at, started_at, completed_at,
+	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms`
+
+// checkInjectBlessed refuses to persist a non-terminal task that asks for the
+// user's token to be injected into the tool environment without naming the
+// blessing that authorised it (model.ErrUnblessedInject). Terminal tasks are
+// exempt so a failed/cancelled row can always be written.
+func checkInjectBlessed(task *model.Task) error {
+	if h := task.RuntimeHints; h != nil && h.InjectBVBRCToken && h.TokenBlessingID == "" && !task.State.IsTerminal() {
+		return fmt.Errorf("task %s: %w", task.ID, model.ErrUnblessedInject)
+	}
+	return nil
+}
+
 // insertTask marshals the task (including runtime-hint encryption) and runs
 // the shared INSERT on the given execer. It is the single insert path behind
 // CreateTask and CreateTasksAndDispatchStep so both persist the same field
@@ -1261,12 +1643,15 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
 	}
-	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
+	if err := checkInjectBlessed(task); err != nil {
+		return err
+	}
+	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
 		return err
 	}
 
-	var startedAt, completedAt *string
+	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
 		s := task.StartedAt.Format(time.RFC3339Nano)
 		startedAt = &s
@@ -1275,13 +1660,14 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		s := task.CompletedAt.Format(time.RFC3339Nano)
 		completedAt = &s
 	}
+	if task.DispatchedAt != nil {
+		s := task.DispatchedAt.Format(time.RFC3339Nano)
+		dispatchedAt = &s
+	}
 
 	_, err = ex.ExecContext(ctx,
-		`INSERT INTO tasks (id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (`+taskColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1289,7 +1675,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		task.Stdout, task.Stderr, task.ExitCode,
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
-		task.ScatterIndex,
+		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
 	)
 	return err
 }
@@ -1324,10 +1710,7 @@ func (s *SQLiteStore) CreateTasksAndDispatchStep(ctx context.Context, tasks []*m
 func (s *SQLiteStore) GetTask(ctx context.Context, id string) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "select", "table", "tasks", "id", id)
 	return s.scanTask(s.db.QueryRowContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE id = ?`, id))
 }
 
@@ -1335,10 +1718,7 @@ func (s *SQLiteStore) ListTasksBySubmission(ctx context.Context, submissionID st
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "submission_id", submissionID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE submission_id = ? ORDER BY created_at`, submissionID)
 	if err != nil {
 		return nil, err
@@ -1378,10 +1758,7 @@ func (s *SQLiteStore) ListTasksBySubmissionPaged(ctx context.Context, submission
 
 	queryArgs := append(args, opts.Limit, opts.Offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks`+whereSQL+` ORDER BY `+orderSQL+` LIMIT ? OFFSET ?`,
 		queryArgs...,
 	)
@@ -1401,10 +1778,7 @@ func (s *SQLiteStore) ListTasksByStepInstance(ctx context.Context, stepInstanceI
 	s.logger.Debug("sql", "op", "list", "table", "tasks", "step_instance_id", stepInstanceID)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE step_instance_id = ? ORDER BY scatter_index, created_at`, stepInstanceID)
 	if err != nil {
 		return nil, err
@@ -1437,12 +1811,15 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 	if err != nil {
 		return 0, fmt.Errorf("marshal job: %w", err)
 	}
-	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID))
+	if err := checkInjectBlessed(task); err != nil {
+		return 0, err
+	}
+	runtimeHintsJSON, err := s.marshalRuntimeHints(task.RuntimeHints, task.ID)
 	if err != nil {
 		return 0, err
 	}
 
-	var startedAt, completedAt *string
+	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
 		v := task.StartedAt.Format(time.RFC3339Nano)
 		startedAt = &v
@@ -1450,6 +1827,10 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 	if task.CompletedAt != nil {
 		v := task.CompletedAt.Format(time.RFC3339Nano)
 		completedAt = &v
+	}
+	if task.DispatchedAt != nil {
+		v := task.DispatchedAt.Format(time.RFC3339Nano)
+		dispatchedAt = &v
 	}
 
 	args := append([]any{
@@ -1459,12 +1840,14 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 		startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.StepInstanceID, task.ScatterIndex,
+		dispatchedAt, task.StageInMs, task.StageOutMs,
 	}, whereArgs...)
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
 		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
 		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
-		 step_instance_id=?, scatter_index=?`+where,
+		 step_instance_id=?, scatter_index=?,
+		 dispatched_at=?, stage_in_ms=?, stage_out_ms=?`+where,
 		args...,
 	)
 	if err != nil {
@@ -1504,6 +1887,25 @@ func (s *SQLiteStore) TerminalizeTask(ctx context.Context, task *model.Task) (bo
 	return n > 0, nil
 }
 
+// TerminalizeTaskFrom writes the same field set as UpdateTask, but only while
+// the task is still in the exact `from` state — a tighter compare-and-set
+// than TerminalizeTask's "not already terminal" guard. Use it when the
+// caller's snapshot is only valid for one specific state: e.g. a task
+// observed as QUEUED that a worker may have since checked out (moving it to
+// RUNNING with a new external_id). TerminalizeTask's NOT-IN guard would still
+// let that write through and clobber the checkout; this method's exact-state
+// guard does not. Returns applied=false (no error) when the task has already
+// moved on, so the caller can leave it alone.
+func (s *SQLiteStore) TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error) {
+	s.logger.Debug("sql", "op", "terminalize_from", "table", "tasks", "id", task.ID, "from", from)
+
+	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=? AND state=?`, task.ID, string(from))
+	if err != nil {
+		return false, fmt.Errorf("terminalize task %s from %s: %w", task.ID, from, err)
+	}
+	return n > 0, nil
+}
+
 // CASTaskState moves a task from one exact state to another (compare-and-set).
 // Returns applied=false (no error) when the task is no longer in the `from`
 // state — e.g. a concurrent cancel SKIPPED it — so a stale snapshot can never
@@ -1523,14 +1925,87 @@ func (s *SQLiteStore) CASTaskState(ctx context.Context, id string, from, to mode
 	return n > 0, nil
 }
 
+// MarkTaskRunning transitions a task QUEUED→RUNNING (compare-and-set),
+// stamping started_at only when it is not already set (COALESCE keeps a
+// pre-existing stamp, e.g. one written by CheckoutTask). It deliberately
+// writes no other column — never external_id — so a stale poll snapshot can
+// never clobber a concurrent checkout's worker assignment (the F-J zombie
+// class). Returns applied=false (no error) when the task is no longer QUEUED.
+func (s *SQLiteStore) MarkTaskRunning(ctx context.Context, id string) (bool, error) {
+	s.logger.Debug("sql", "op", "mark_running", "table", "tasks", "id", id)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ? AND state = ?`,
+		string(model.TaskStateRunning), now, id, string(model.TaskStateQueued))
+	if err != nil {
+		return false, fmt.Errorf("mark task %s running: %w", id, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
+// UpdateTaskPriority sets only the priority column. A full-row
+// read-modify-write here would be in the same clobber class as F-J: it could
+// overwrite a concurrent checkout's external_id/started_at.
+func (s *SQLiteStore) UpdateTaskPriority(ctx context.Context, id string, priority int) error {
+	s.logger.Debug("sql", "op", "update_priority", "table", "tasks", "id", id, "priority", priority)
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET priority = ? WHERE id = ?`, priority, id)
+	if err != nil {
+		return fmt.Errorf("update task %s priority: %w", id, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("task %s not found", id)
+	}
+	return nil
+}
+
+// ScrubTaskSecretsForSubmission clears RuntimeHints.Secrets and any
+// StagerOverrides.HTTPCredential from every task belonging to submissionID,
+// persisting the change with a narrow runtime_hints-only write (see
+// UpdateTaskPriority: a full-row write here could clobber a concurrent
+// checkout/report). Tasks with nothing to scrub are left untouched. Returns
+// the number of task rows actually rewritten.
+func (s *SQLiteStore) ScrubTaskSecretsForSubmission(ctx context.Context, submissionID string) (int, error) {
+	s.logger.Debug("sql", "op", "scrub_secrets", "table", "tasks", "submission_id", submissionID)
+
+	tasks, err := s.ListTasksBySubmission(ctx, submissionID)
+	if err != nil {
+		return 0, fmt.Errorf("list tasks for submission %s: %w", submissionID, err)
+	}
+
+	scrubbed := 0
+	for _, t := range tasks {
+		if t.RuntimeHints == nil {
+			continue
+		}
+		hasSecret := len(t.RuntimeHints.Secrets) > 0 ||
+			(t.RuntimeHints.StagerOverrides != nil && t.RuntimeHints.StagerOverrides.HTTPCredential != nil)
+		if !hasSecret {
+			continue
+		}
+		t.RuntimeHints.ScrubSecrets()
+		runtimeHintsJSON, err := s.marshalRuntimeHints(t.RuntimeHints, t.ID)
+		if err != nil {
+			return scrubbed, fmt.Errorf("marshal scrubbed runtime_hints for task %s: %w", t.ID, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE tasks SET runtime_hints = ? WHERE id = ?`, runtimeHintsJSON, t.ID,
+		); err != nil {
+			return scrubbed, fmt.Errorf("scrub secrets for task %s: %w", t.ID, err)
+		}
+		scrubbed++
+	}
+	return scrubbed, nil
+}
+
 func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "list_by_state", "table", "tasks", "state", state)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = ? ORDER BY created_at`, string(state))
 	if err != nil {
 		return nil, err
@@ -1540,14 +2015,67 @@ func (s *SQLiteStore) GetTasksByState(ctx context.Context, state model.TaskState
 	return s.scanTasks(rows)
 }
 
+// CountTasksByState returns the current global count of tasks per state (a
+// single GROUP BY query), used to refresh the gowe_tasks{state} gauge once
+// per scheduler tick.
+func (s *SQLiteStore) CountTasksByState(ctx context.Context) (map[string]int, error) {
+	s.logger.Debug("sql", "op", "count_by_state", "table", "tasks")
+
+	rows, err := s.db.QueryContext(ctx, `SELECT state, COUNT(*) FROM tasks GROUP BY state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var state string
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, err
+		}
+		counts[state] = count
+	}
+	return counts, rows.Err()
+}
+
+// CountTasksQueuedByGroup returns the current count of QUEUED tasks per
+// worker group (a single GROUP BY query on the runtime_hints worker_group
+// JSON field, ” normalized to "default" in SQL so the map's keys already
+// match the gowe_queue_depth{group} label convention), used to refresh that
+// gauge once per scheduler tick. json_extract reads the plaintext
+// worker_group field directly — only the nested HTTP bearer credential
+// inside runtime_hints is ever encrypted (see tokens.go), so this needs no
+// decryption.
+func (s *SQLiteStore) CountTasksQueuedByGroup(ctx context.Context) (map[string]int, error) {
+	s.logger.Debug("sql", "op", "count_queued_by_group", "table", "tasks")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(NULLIF(json_extract(runtime_hints, '$.worker_group'), ''), 'default') AS grp, COUNT(*)
+		 FROM tasks WHERE state = ?
+		 GROUP BY grp`, string(model.TaskStateQueued))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var group string
+		var count int
+		if err := rows.Scan(&group, &count); err != nil {
+			return nil, err
+		}
+		counts[group] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "get_active_tasks")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state IN (?, ?, ?, ?)
 		 ORDER BY priority DESC, created_at`,
 		string(model.TaskStatePending), string(model.TaskStateScheduled),
@@ -1640,12 +2168,17 @@ func (s *SQLiteStore) GetTaskSummaries(ctx context.Context, submissionIDs []stri
 	return result, rows.Err()
 }
 
+// ResetFailedTasks also clears started_at (M1): without this, a retried
+// bvbrc task's MarkTaskRunning (COALESCE(started_at, ?)) would preserve the
+// PRIOR attempt's stamp instead of stamping the new one, because a non-nil
+// started_at survives from the failed attempt otherwise.
 func (s *SQLiteStore) ResetFailedTasks(ctx context.Context, submissionID string) (int, error) {
 	s.logger.Debug("sql", "op", "reset_failed_tasks", "submission_id", submissionID)
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks
-		 SET state = ?, retry_count = 0, completed_at = NULL, stderr = '', exit_code = NULL
+		 SET state = ?, retry_count = 0, started_at = NULL, completed_at = NULL, stderr = '', exit_code = NULL,
+		     stage_in_ms = NULL, stage_out_ms = NULL
 		 WHERE submission_id = ? AND state = ?`,
 		string(model.TaskStatePending), submissionID, string(model.TaskStateFailed))
 	if err != nil {
@@ -1660,7 +2193,7 @@ func (s *SQLiteStore) ResetFailedSteps(ctx context.Context, submissionID string)
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE step_instances
-		 SET state = ?, completed_at = NULL
+		 SET state = ?, completed_at = NULL, error = NULL
 		 WHERE submission_id = ? AND state = ?`,
 		string(model.StepStateWaiting), submissionID, string(model.StepStateFailed))
 	if err != nil {
@@ -1681,7 +2214,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var state, executorType, createdAt string
-	var startedAt, completedAt *string
+	var startedAt, completedAt, dispatchedAt *string
 
 	err := row.Scan(
 		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
@@ -1691,7 +2224,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&task.Stdout, &task.Stderr, &task.ExitCode,
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
-		&task.ScatterIndex,
+		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1720,7 +2253,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 	if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
 		return nil, err
 	}
-	if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
+	if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
 		return nil, fmt.Errorf("decrypt runtime_hints token: %w", err)
 	}
 	if task.CreatedAt, err = parseTimeOrZero(createdAt); err != nil {
@@ -1740,6 +2273,13 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		}
 		task.CompletedAt = &t
 	}
+	if dispatchedAt != nil {
+		t, err := parseTimeOrZero(*dispatchedAt)
+		if err != nil {
+			return nil, err
+		}
+		task.DispatchedAt = &t
+	}
 
 	return &task, nil
 }
@@ -1751,7 +2291,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var state, executorType, createdAt string
-		var startedAt, completedAt *string
+		var startedAt, completedAt, dispatchedAt *string
 
 		if err := rows.Scan(
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
@@ -1761,7 +2301,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
-			&task.ScatterIndex,
+			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		); err != nil {
 			return nil, err
 		}
@@ -1792,7 +2332,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
 			continue
 		}
-		if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
+		if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
 			slog.Error("skipping task row with undecryptable token", "id", task.ID, "error", err)
 			continue
 		}
@@ -1817,6 +2357,14 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 				continue
 			}
 			task.CompletedAt = &t
+		}
+		if dispatchedAt != nil {
+			t, err := parseTimeOrZero(*dispatchedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+				continue
+			}
+			task.DispatchedAt = &t
 		}
 
 		tasks = append(tasks, &task)
@@ -1921,53 +2469,94 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO workers (id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workers (`+workerColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
-		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version,
+		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version, w.KeyID,
+		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
 	)
 	return err
+}
+
+// workerColumns is the single column list for workers reads/inserts; its order
+// must match scanWorker and the CreateWorker argument list.
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb"
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// corruptWorkerRowError marks a row that scanned but whose JSON/time columns
+// do not decode; list callers skip such rows, GetWorker returns the error.
+type corruptWorkerRowError struct {
+	id  string
+	err error
+}
+
+func (e *corruptWorkerRowError) Error() string { return e.err.Error() }
+func (e *corruptWorkerRowError) Unwrap() error { return e.err }
+
+// scanWorker scans one workerColumns row. A raw sql error (including
+// sql.ErrNoRows) is returned as-is; a decode failure is a *corruptWorkerRowError.
+func scanWorker(sc rowScanner) (*model.Worker, error) {
+	var w model.Worker
+	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
+	var gpuEnabled int
+	var maxCPUs, maxMem sql.NullInt64
+	if err := sc.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
+		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
+		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem); err != nil {
+		return nil, err
+	}
+	w.State = model.WorkerState(state)
+	w.Runtime = model.ContainerRuntime(runtime)
+	w.GPUEnabled = gpuEnabled != 0
+	if maxCPUs.Valid {
+		v := int(maxCPUs.Int64)
+		w.MaxCPUs = &v
+	}
+	if maxMem.Valid {
+		v := maxMem.Int64
+		w.MaxMemMB = &v
+	}
+	var err error
+	if err = unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	if err = unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	if w.RegisteredAt, err = parseTimeOrZero(registeredAt); err != nil {
+		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	return &w, nil
+}
+
+// nullableInt maps a nil capacity pointer to SQL NULL.
+func nullableInt[T int | int64](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return int64(*p)
 }
 
 func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, error) {
 	s.logger.Debug("sql", "op", "select", "table", "workers", "id", id)
 
-	var w model.Worker
-	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-	var gpuEnabled int
-
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
-		 FROM workers WHERE id = ?`, id,
-	).Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version)
-
+	w, err := scanWorker(s.db.QueryRowContext(ctx,
+		`SELECT `+workerColumns+` FROM workers WHERE id = ?`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	w.State = model.WorkerState(state)
-	w.Runtime = model.ContainerRuntime(runtime)
-	w.GPUEnabled = gpuEnabled != 0
-	if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
-		return nil, err
-	}
-	if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
-		return nil, err
-	}
-	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
-		return nil, err
-	}
-	if w.RegisteredAt, err = parseTimeOrZero(registeredAt); err != nil {
-		return nil, err
-	}
-
-	return &w, nil
+	return w, nil
 }
 
 func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
@@ -1990,10 +2579,11 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
-		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=? WHERE id=?`,
+		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=?, max_cpus=?, max_mem_mb=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
-		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON), w.ID,
+		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON),
+		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB), w.ID,
 	)
 	if err != nil {
 		return err
@@ -2019,12 +2609,34 @@ func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
 	return nil
 }
 
+// AdoptWorkerKey binds a legacy worker row (key_id = ”) to keyID. It is a
+// compare-and-set: it reports true only when this call performed the binding,
+// so two concurrent adopters cannot both win.
+func (s *SQLiteStore) AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error) {
+	s.logger.Debug("sql", "op", "update", "table", "workers", "id", id, "col", "key_id")
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET key_id = ? WHERE id = ? AND key_id = ''`, keyID, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ListWorkersByKey returns the workers bound to the given worker key id.
+func (s *SQLiteStore) ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "WHERE key_id = ?", keyID)
+}
+
 func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) {
+	return s.listWorkers(ctx, "")
+}
+
+func (s *SQLiteStore) listWorkers(ctx context.Context, where string, args ...any) ([]*model.Worker, error) {
 	s.logger.Debug("sql", "op", "list", "table", "workers")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
-		 FROM workers ORDER BY registered_at`)
+		`SELECT `+workerColumns+` FROM workers `+where+` ORDER BY registered_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2032,40 +2644,16 @@ func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*model.Worker, error) 
 
 	var workers []*model.Worker
 	for rows.Next() {
-		var w model.Worker
-		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-		var gpuEnabled int
-
-		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
+		w, err := scanWorker(rows)
+		if err != nil {
+			var corrupt *corruptWorkerRowError
+			if errors.As(err, &corrupt) {
+				slog.Error("skipping corrupt worker row", "id", corrupt.id, "error", corrupt.err)
+				continue
+			}
 			return nil, err
 		}
-
-		w.State = model.WorkerState(state)
-		w.Runtime = model.ContainerRuntime(runtime)
-		w.GPUEnabled = gpuEnabled != 0
-		if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if t, err := parseTimeOrZero(lastSeen); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.LastSeen = t
-		}
-		if t, err := parseTimeOrZero(registeredAt); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.RegisteredAt = t
-		}
-
-		workers = append(workers, &w)
+		workers = append(workers, w)
 	}
 	return workers, rows.Err()
 }
@@ -2108,14 +2696,46 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	}
 	defer tx.Rollback()
 
+	// Look up the worker's datasets, GPU and capacity BEFORE the candidate
+	// query: the capacity bounds are part of that query so a run of unfit
+	// tasks at the head of the queue cannot fill the LIMIT window and starve
+	// fitting tasks behind it (#324).
+	var workerDatasetsJSON string
+	var workerDatasets map[string]string
+	var workerGPUEnabled bool
+	var workerMaxCPUs, workerMaxMem sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled, max_cpus, max_mem_mb FROM workers WHERE id = ?`, workerID).
+		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem); err != nil {
+		if err != sql.ErrNoRows {
+			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
+		}
+		workerDatasets = map[string]string{}
+	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
+		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
+		workerDatasets = map[string]string{}
+	}
+	// A NULL capacity (legacy worker, or no such row) disables the fit check
+	// for that dimension; the SQL binds below are NULL in that case.
+	var capCPUs, capMem any
+	if workerMaxCPUs.Valid {
+		capCPUs = workerMaxCPUs.Int64
+	}
+	if workerMaxMem.Valid {
+		capMem = workerMaxMem.Int64
+	}
+
 	// Find oldest QUEUED task assigned to the worker executor.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
-		 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
-		 stdout, stderr, exit_code, created_at, started_at, completed_at,
-		 tool, job, runtime_hints, scatter_index
+		`SELECT `+taskColumns+`
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
-		 ORDER BY priority DESC, created_at LIMIT 10`)
+		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
+		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)
+		   AND (? IS NULL OR COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN json_extract(runtime_hints,'$.cores') END, 0) <= ?)
+		   AND (? IS NULL OR COALESCE(CASE WHEN json_valid(runtime_hints)
+		         THEN json_extract(runtime_hints,'$.ram_mb') END, 0) <= ?)
+		 ORDER BY priority DESC, created_at LIMIT 10`, capCPUs, capCPUs, capMem, capMem)
 	if err != nil {
 		return nil, err
 	}
@@ -2126,7 +2746,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var stateStr, executorType, createdAt string
-		var startedAt, completedAt *string
+		var startedAt, completedAt, dispatchedAt *string
 
 		if err := rows.Scan(
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
@@ -2136,7 +2756,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			&task.Stdout, &task.Stderr, &task.ExitCode,
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
-			&task.ScatterIndex,
+			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		); err != nil {
 			rows.Close()
 			return nil, err
@@ -2168,7 +2788,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
 			continue
 		}
-		if err := s.revealRuntimeHints(task.RuntimeHints, taskHintsAAD(task.ID)); err != nil {
+		if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
 			slog.Error("skipping task row with undecryptable token in checkout", "id", task.ID, "error", err)
 			continue
 		}
@@ -2194,26 +2814,20 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			}
 			task.CompletedAt = &t
 		}
+		if dispatchedAt != nil {
+			t, err := parseTimeOrZero(*dispatchedAt)
+			if err != nil {
+				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+				continue
+			}
+			task.DispatchedAt = &t
+		}
 
 		candidates = append(candidates, &task)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-
-	// Look up the worker's datasets and GPU capability for affinity matching.
-	var workerDatasetsJSON string
-	var workerDatasets map[string]string
-	var workerGPUEnabled bool
-	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled FROM workers WHERE id = ?`, workerID).Scan(&workerDatasetsJSON, &workerGPUEnabled); err != nil {
-		if err != sql.ErrNoRows {
-			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
-		}
-		workerDatasets = map[string]string{}
-	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
-		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
-		workerDatasets = map[string]string{}
 	}
 
 	// Filter by runtime capability, worker group, and dataset affinity.
@@ -2228,6 +2842,21 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	var eligible []scored
 
 	for _, task := range candidates {
+		// Check worker capacity (defence in depth: the candidate query
+		// already applies the same bounds).
+		if task.RuntimeHints != nil {
+			if workerMaxCPUs.Valid && int64(task.RuntimeHints.Cores) > workerMaxCPUs.Int64 {
+				s.logger.Debug("checkout skip: task exceeds worker cores", "task_id", task.ID, "worker_id", workerID,
+					"want", task.RuntimeHints.Cores, "max", workerMaxCPUs.Int64)
+				continue
+			}
+			if workerMaxMem.Valid && task.RuntimeHints.RamMB > workerMaxMem.Int64 {
+				s.logger.Debug("checkout skip: task exceeds worker memory", "task_id", task.ID, "worker_id", workerID,
+					"want_mb", task.RuntimeHints.RamMB, "max_mb", workerMaxMem.Int64)
+				continue
+			}
+		}
+
 		// Check container runtime capability.
 		taskNeedsContainer := false
 		if task.RuntimeHints != nil && task.RuntimeHints.DockerImage != "" {
@@ -2347,8 +2976,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	// Find stale workers first.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version
-		 FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
+		`SELECT `+workerColumns+` FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -2356,37 +2984,16 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 
 	var stale []*model.Worker
 	for rows.Next() {
-		var w model.Worker
-		var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-		var gpuEnabled int
-		if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
-			&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice, &datasetsJSON, &w.Version); err != nil {
+		w, err := scanWorker(rows)
+		if err != nil {
+			var corrupt *corruptWorkerRowError
+			if errors.As(err, &corrupt) {
+				slog.Error("skipping corrupt worker row", "id", corrupt.id, "error", corrupt.err)
+				continue
+			}
 			return nil, err
 		}
-		w.State = model.WorkerState(state)
-		w.Runtime = model.ContainerRuntime(runtime)
-		w.GPUEnabled = gpuEnabled != 0
-		if err := unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		}
-		if t, err := parseTimeOrZero(lastSeen); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.LastSeen = t
-		}
-		if t, err := parseTimeOrZero(registeredAt); err != nil {
-			slog.Error("skipping corrupt worker row", "id", w.ID, "error", err)
-			continue
-		} else {
-			w.RegisteredAt = t
-		}
-		stale = append(stale, &w)
+		stale = append(stale, w)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -2611,9 +3218,13 @@ func (s *SQLiteStore) GetOrCreateUser(ctx context.Context, username string, prov
 		LastLoginAt: now,
 	}
 
+	// Upsert: concurrent first requests for the same username race this
+	// insert (SELECT above saw no row for both). ON CONFLICT lets the loser
+	// land as a last_login touch instead of a UNIQUE-constraint error.
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO users (id, username, provider, role, created_at, last_login)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET last_login = excluded.last_login`,
 		user.ID, user.Username, user.Provider, user.Role,
 		user.CreatedAt.Unix(), user.LastLoginAt.Unix(),
 	)
@@ -2621,8 +3232,18 @@ func (s *SQLiteStore) GetOrCreateUser(ctx context.Context, username string, prov
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 
-	s.logger.Info("user created", "id", user.ID, "username", username, "provider", provider)
-	return user, nil
+	// Re-read so the caller gets the winning row (ID/role of the row that
+	// actually exists, whichever request created it).
+	existing, err := s.GetUser(ctx, username)
+	if err != nil {
+		return nil, fmt.Errorf("read user after upsert: %w", err)
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("user %s missing after upsert", username)
+	}
+
+	s.logger.Info("user created", "id", existing.ID, "username", username, "provider", provider)
+	return existing, nil
 }
 
 func (s *SQLiteStore) UpdateUser(ctx context.Context, user *model.User) error {

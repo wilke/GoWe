@@ -8,12 +8,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/me/gowe/internal/bundle"
 	"github.com/me/gowe/internal/bvbrc"
+	"github.com/me/gowe/internal/wslocation"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
+	"github.com/me/gowe/pkg/model"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -28,6 +31,10 @@ func newSubmitCmd() *cobra.Command {
 	var debug bool
 	var workflowRef string
 	var workspaceURL string
+	var labelFlags []string
+	var secretFlags []string
+	var secretFile string
+	var secretsRetention string
 
 	cmd := &cobra.Command{
 		Use:   "submit [<workflow.cwl>]",
@@ -142,7 +149,13 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 			}
 
 			// 4. POST /api/v1/submissions
-			labels := map[string]string{}
+			labels, err := parseLabelFlags(labelFlags)
+			if err != nil {
+				return err
+			}
+			// Implicit labels from their own flags are applied last, so they
+			// win over any --label with the same key (worker_group, debug are
+			// reserved).
 			if workerGroup != "" {
 				labels["worker_group"] = workerGroup
 			}
@@ -158,6 +171,25 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 				subReq["output_destination"] = outputDest
 			}
 
+			// Secrets: merge --secret-file with --secret flags (flags win on
+			// a name collision), validate names before anything leaves this
+			// process, and never print a value anywhere in this command.
+			secrets, err := parseSecretFlags(secretFile, secretFlags)
+			if err != nil {
+				return err
+			}
+			if len(secrets) > 0 {
+				for name := range secrets {
+					if err := model.ValidateSecretName(name); err != nil {
+						return err
+					}
+				}
+				subReq["secrets"] = secrets
+			}
+			if secretsRetention != "" {
+				subReq["secrets_retention"] = secretsRetention
+			}
+
 			subPath := "/api/v1/submissions/"
 			if dryRun {
 				subPath += "?dry_run=true"
@@ -165,6 +197,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 
 			subResp, err := client.Post(subPath, subReq)
 			if err != nil {
+				printAPIErrorDetails(os.Stderr, err)
 				return fmt.Errorf("create submission: %w", err)
 			}
 
@@ -183,6 +216,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 			}
 			state, _ := subData["state"].(string)
 			fmt.Printf("Submission created: %s (state: %s)\n", submissionID, state)
+			printSubmissionWarnings(os.Stdout, subResp.Data)
 			return nil
 		},
 	}
@@ -196,7 +230,90 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 	cmd.Flags().StringVar(&outputDest, "output-destination", "", "Target URI for uploading outputs (e.g., ws:///user@bvbrc/home/results/)")
 	cmd.Flags().StringVar(&workflowRef, "workflow", "", "Submit using an already-registered workflow (by ID or name)")
 	cmd.Flags().StringVar(&workspaceURL, "workspace-url", defaultWorkspaceURL(), "BV-BRC Workspace service URL for --workspace-upload (or GOWE_WORKSPACE_URL env)")
+	cmd.Flags().StringArrayVar(&labelFlags, "label", nil, "Attach a label to the submission (repeatable, key=value); reserved keys worker_group/debug are set by their own flags")
+	cmd.Flags().StringArrayVar(&secretFlags, "secret", nil, "Attach a submission-time secret (repeatable, NAME=value); merged with --secret-file, this flag wins on a name collision")
+	cmd.Flags().StringVar(&secretFile, "secret-file", "", "Load submission-time secrets from a NAME=value file ('#' comments allowed; same format as gowe-worker --secret-file)")
+	cmd.Flags().StringVar(&secretsRetention, "secrets-retention", "", "Retention policy for this submission's secret values: keep, ttl:<duration>, on_success, or on_terminal (empty uses the server default)")
 	return cmd
+}
+
+// parseSecretFlags merges a --secret-file (NAME=value per line, '#' comments,
+// same format as gowe-worker's) with repeatable --secret NAME=value flags.
+// File entries are loaded first so CLI flags win on a name collision.
+// Returns nil (not an error) when neither is set.
+func parseSecretFlags(file string, flags []string) (map[string]string, error) {
+	if file == "" && len(flags) == 0 {
+		return nil, nil
+	}
+	secrets := map[string]string{}
+	if file != "" {
+		loaded, err := parseSecretFileCLI(file)
+		if err != nil {
+			return nil, fmt.Errorf("load secret file: %w", err)
+		}
+		for k, v := range loaded {
+			secrets[k] = v
+		}
+	}
+	for i, entry := range flags {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || key == "" {
+			// Never print the raw entry: a mistyped "--secret value" (no
+			// "=") would otherwise print the secret value itself to
+			// stderr. Name the NAME when we have one (found but empty
+			// value is fine — only a missing "=" or empty name is an
+			// error), otherwise fall back to a 1-based position.
+			if found {
+				return nil, fmt.Errorf("invalid --secret entry with name %q: name must be non-empty", key)
+			}
+			return nil, fmt.Errorf("invalid --secret entry #%d: expected NAME=value", i+1)
+		}
+		secrets[key] = value
+	}
+	return secrets, nil
+}
+
+// parseSecretFileCLI reads a secrets file with NAME=value lines. Lines
+// starting with # and blank lines are skipped. Mirrors
+// cmd/worker/main.go's parseSecretFile (same format, kept separate since
+// the CLI and worker binaries share no internal package for it).
+func parseSecretFileCLI(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	secrets := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" {
+			secrets[key] = value
+		}
+	}
+	return secrets, nil
+}
+
+// parseLabelFlags parses repeatable --label key=value flags into a labels
+// map. Each entry must contain '=' with a non-empty key; the value may be
+// empty. Later entries with the same key overwrite earlier ones.
+func parseLabelFlags(raw []string) (map[string]string, error) {
+	labels := map[string]string{}
+	for _, entry := range raw {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || key == "" {
+			return nil, fmt.Errorf("invalid --label %q: expected key=value with a non-empty key", entry)
+		}
+		labels[key] = value
+	}
+	return labels, nil
 }
 
 // defaultWorkspaceURL returns the Workspace service URL, checking GOWE_WORKSPACE_URL first.
@@ -331,7 +448,7 @@ func uploadFileToWorkspace(ctx context.Context, ws *bvbrcpkg.Client, fileObj map
 	for k, v := range fileObj {
 		result[k] = v
 	}
-	result["location"] = "ws://" + wsPath
+	result["location"] = wslocation.Resolve(wsPath)
 	result["path"] = wsPath
 	result["basename"] = basename
 	return result, nil

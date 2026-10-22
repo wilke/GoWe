@@ -480,6 +480,18 @@ func TestTick_RetryOnFailure(t *testing.T) {
 		t.Errorf("after tick 1: RetryCount = %d, want 0", task.RetryCount)
 	}
 
+	// Simulate the failed attempt having reported staging times (as a worker
+	// task would): resubmitRetrying (#190-review fix 6) must clear these
+	// before the next attempt, so a retry doesn't show the prior attempt's
+	// stage durations.
+	staleStageIn := int64(1200)
+	staleStageOut := int64(300)
+	task.StageInMs = &staleStageIn
+	task.StageOutMs = &staleStageOut
+	if err := st.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("stamp stale stage times: %v", err)
+	}
+
 	// Tick 2: resubmit RETRYING -> RetryCount=1 -> FAILED -> RETRYING.
 	if err := sched.Tick(ctx); err != nil {
 		t.Fatalf("Tick 2: %v", err)
@@ -490,6 +502,12 @@ func TestTick_RetryOnFailure(t *testing.T) {
 	}
 	if task.RetryCount != 1 {
 		t.Errorf("after tick 2: RetryCount = %d, want 1", task.RetryCount)
+	}
+	if task.StageInMs != nil {
+		t.Errorf("after tick 2: StageInMs = %v, want nil (resubmit must clear prior attempt's stage times)", task.StageInMs)
+	}
+	if task.StageOutMs != nil {
+		t.Errorf("after tick 2: StageOutMs = %v, want nil (resubmit must clear prior attempt's stage times)", task.StageOutMs)
 	}
 
 	// Tick 3: resubmit RETRYING -> RetryCount=2 -> FAILED. 2 >= 2 -> stays FAILED.
@@ -620,6 +638,76 @@ func TestStart_StopsOnContextCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not return within 5 seconds after context cancellation")
 	}
+}
+
+// waitForState polls sched.State() until it equals want or the timeout
+// elapses, failing the test on timeout.
+func waitForState(t *testing.T, sched *Loop, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sched.State() == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("State() = %q after timeout, want %q", sched.State(), want)
+}
+
+// TestLoop_State covers the not_started -> running -> stopped lifecycle
+// reported by State(), exercised via both context cancellation and an
+// explicit Stop() call (issue #193: /api/v1/health must report the real
+// scheduler state instead of a hardcoded "not_started").
+func TestLoop_State(t *testing.T) {
+	t.Run("not started", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		if got := sched.State(); got != StateNotStarted {
+			t.Errorf("State() before Start = %q, want %q", got, StateNotStarted)
+		}
+	})
+
+	t.Run("running", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+
+		go func() { _ = sched.Start(ctx) }()
+		waitForState(t, sched, StateRunning)
+	})
+
+	t.Run("stopped via context cancel", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		done := make(chan error, 1)
+		go func() { done <- sched.Start(ctx) }()
+		waitForState(t, sched, StateRunning)
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Start did not return within 5 seconds after context cancellation")
+		}
+		if got := sched.State(); got != StateStopped {
+			t.Errorf("State() after context cancel = %q, want %q", got, StateStopped)
+		}
+	})
+
+	t.Run("stopped via Stop", func(t *testing.T) {
+		sched, _ := testSetup(t)
+		ctx := context.Background()
+
+		go func() { _ = sched.Start(ctx) }()
+		waitForState(t, sched, StateRunning)
+
+		if err := sched.Stop(); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if got := sched.State(); got != StateStopped {
+			t.Errorf("State() after Stop = %q, want %q", got, StateStopped)
+		}
+	})
 }
 
 // --- Feature C: WorkerCapabilities / canMatchTask tests ---
@@ -1086,6 +1174,91 @@ func TestDetectStuckTasks_ProgressResets(t *testing.T) {
 	}
 }
 
+// TestCancelChildSubmission_ScrubsTaskSecrets is the H2/H3 regression test
+// for the scheduler's own sub-workflow cancel cascade (cancelChildSubmission,
+// called from pollSubworkflowTask's reconciliation branch and
+// reconcileDispatchWithCancel — never through the server's cancel handler,
+// internal/cancelseq, where the equivalent scrub is already wired).
+// CancelNonTerminalTasks is a bulk state/completed_at UPDATE that never
+// touches runtime_hints, so without an explicit scrub call a child
+// submission's non-terminal (e.g. QUEUED, waiting on a worker) task would
+// keep its addSecrets-attached secret values at rest forever once cancelled.
+func TestCancelChildSubmission_ScrubsTaskSecrets(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	parentWF := &model.Workflow{ID: "wf_parent", Name: "parent", CWLVersion: "v1.2", CreatedAt: now, UpdatedAt: now}
+	if err := st.CreateWorkflow(ctx, parentWF); err != nil {
+		t.Fatalf("CreateWorkflow(parent): %v", err)
+	}
+	childWF := &model.Workflow{ID: "wf_child", Name: "child", CWLVersion: "v1.2", CreatedAt: now, UpdatedAt: now}
+	if err := st.CreateWorkflow(ctx, childWF); err != nil {
+		t.Fatalf("CreateWorkflow(child): %v", err)
+	}
+
+	child := &model.Submission{
+		ID:         "sub_child",
+		WorkflowID: childWF.ID,
+		State:      model.SubmissionStateRunning,
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		Labels:     map[string]string{},
+		CreatedAt:  now,
+	}
+	if err := st.CreateSubmission(ctx, child); err != nil {
+		t.Fatalf("CreateSubmission(child): %v", err)
+	}
+
+	// A real (non-proxy) task belonging to the child, still QUEUED (e.g.
+	// waiting on a worker group nothing serves), carrying secrets attached
+	// by addSecrets at its own dispatch time — exactly what
+	// CancelNonTerminalTasks would leave untouched.
+	task := &model.Task{
+		ID:           "task_child_1",
+		SubmissionID: child.ID,
+		StepID:       "child_step",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		RuntimeHints: &model.RuntimeHints{
+			WorkerGroup:    "nonexistent",
+			Secrets:        map[string]string{"HF_TOKEN": "hf_super_secret_value"},
+			SecretEnvNames: []string{"HF_TOKEN"},
+		},
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		MaxRetries: 3,
+		CreatedAt:  now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	sched.cancelChildSubmission(ctx, child)
+
+	updatedChild, err := st.GetSubmission(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("GetSubmission(child): %v", err)
+	}
+	if updatedChild.State != model.SubmissionStateCancelled {
+		t.Fatalf("child.State = %q, want CANCELLED", updatedChild.State)
+	}
+
+	updatedTask, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if updatedTask.State.IsTerminal() != true {
+		t.Errorf("task.State = %q, want a terminal (cancelled/skipped) state", updatedTask.State)
+	}
+	if updatedTask.RuntimeHints != nil && len(updatedTask.RuntimeHints.Secrets) != 0 {
+		t.Errorf("task.RuntimeHints.Secrets = %v, want nil — cancelling the child submission must scrub secrets from its tasks", updatedTask.RuntimeHints.Secrets)
+	}
+	if updatedTask.RuntimeHints == nil || len(updatedTask.RuntimeHints.SecretEnvNames) != 1 || updatedTask.RuntimeHints.SecretEnvNames[0] != "HF_TOKEN" {
+		t.Errorf("task.RuntimeHints.SecretEnvNames = %v, want [HF_TOKEN] (kept)", updatedTask.RuntimeHints)
+	}
+}
+
 func TestDetectStuckTasks_FailAction(t *testing.T) {
 	sched, st := testSetup(t)
 	ctx := context.Background()
@@ -1131,6 +1304,66 @@ func TestDetectStuckTasks_FailAction(t *testing.T) {
 	}
 	if !strings.Contains(updated.Stderr, "Task stuck: no capable worker") {
 		t.Errorf("expected stuck task reason in stderr, got: %s", updated.Stderr)
+	}
+}
+
+// TestDetectStuckTasks_FailAction_ScrubsSecrets is the H2 scrub-consolidation
+// regression test for the gap found while auditing every terminal-marking
+// write in loop.go: detectStuckTasks' StuckTaskAction=="fail" path
+// terminalizes a real (non-proxy) task via TerminalizeTaskFrom without going
+// through submitAndUpdateTask or pollInFlight — the only two call sites
+// scrubTaskToken previously covered — so a stuck QUEUED task carrying
+// RuntimeHints.Secrets (attached by addSecrets at dispatch, exactly like any
+// other worker-bound task) stayed at rest on the FAILED row forever.
+func TestDetectStuckTasks_FailAction_ScrubsSecrets(t *testing.T) {
+	sched, st := testSetup(t)
+	ctx := context.Background()
+	sched.config.StuckTaskThreshold = 2
+	sched.config.StuckTaskAction = "fail"
+
+	now := time.Now().UTC()
+	task := &model.Task{
+		ID:           "task_stuck_fail_secrets",
+		SubmissionID: "sub_test",
+		StepID:       "step1",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		RuntimeHints: &model.RuntimeHints{
+			DockerImage:    "alpine",
+			WorkerGroup:    "nonexistent",
+			Secrets:        map[string]string{"HF_TOKEN": "hf_super_secret_value"},
+			SecretEnvNames: []string{"HF_TOKEN"},
+		},
+		Inputs:     map[string]any{},
+		Outputs:    map[string]any{},
+		MaxRetries: 3,
+		CreatedAt:  now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	affected := make(map[string]bool)
+	for i := 0; i < 3; i++ {
+		if err := sched.detectStuckTasks(ctx, affected); err != nil {
+			t.Fatalf("detectStuckTasks tick %d: %v", i, err)
+		}
+	}
+
+	updated, err := st.GetTask(ctx, "task_stuck_fail_secrets")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if updated.State != model.TaskStateFailed {
+		t.Fatalf("expected task to be FAILED, got %s", updated.State)
+	}
+	if updated.RuntimeHints != nil && len(updated.RuntimeHints.Secrets) != 0 {
+		t.Errorf("RuntimeHints.Secrets = %v, want nil — a stuck-then-failed task must not keep secret values at rest", updated.RuntimeHints.Secrets)
+	}
+	// Metadata (which env vars were secret) is not sensitive and should
+	// survive, same as every other scrub call site.
+	if updated.RuntimeHints == nil || len(updated.RuntimeHints.SecretEnvNames) != 1 || updated.RuntimeHints.SecretEnvNames[0] != "HF_TOKEN" {
+		t.Errorf("RuntimeHints.SecretEnvNames = %v, want [HF_TOKEN] (kept)", updated.RuntimeHints)
 	}
 }
 
@@ -1264,32 +1497,105 @@ func TestRequirementKeyForTask(t *testing.T) {
 	}
 }
 
-// TestGroupAutoInjectsToken verifies the scoped token-injection policy: only
-// worker groups the operator opted into (--token-inject-groups) auto-receive the
-// submitter's token; the default/untrusted groups stay opt-in (SPEC §13.5).
-func TestGroupAutoInjectsToken(t *testing.T) {
-	l := &Loop{config: Config{TokenInjectGroups: []string{"bvbrc", "esmfold"}}}
-	cases := []struct {
-		group string
-		want  bool
-	}{
-		{"bvbrc", true},
-		{"esmfold", true},
-		{"default", false},
-		{"", false}, // empty group resolves to "default"
-		{"random", false},
-	}
-	for _, c := range cases {
-		task := &model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: c.group}}
-		if got := l.groupAutoInjectsToken(task); got != c.want {
-			t.Errorf("group %q: got %v, want %v", c.group, got, c.want)
-		}
+// TestAreStepDependenciesSatisfied covers the CWL v1.2 "no skip cascade"
+// semantics: a SKIPPED dependency must count as satisfied (its outputs
+// resolve to null downstream), while a FAILED dependency must still block
+// (and cascade-skip) the consumer.
+func TestAreStepDependenciesSatisfied(t *testing.T) {
+	mk := func(state model.StepInstanceState) *model.StepInstance {
+		return &model.StepInstance{State: state}
 	}
 
-	// With no configured groups, nothing auto-injects (safe default).
-	empty := &Loop{config: Config{}}
-	if empty.groupAutoInjectsToken(&model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: "bvbrc"}}) {
-		t.Error("empty TokenInjectGroups must never auto-inject")
+	tests := []struct {
+		name          string
+		dependsOn     []string
+		steps         map[string]*model.StepInstance
+		wantSatisfied bool
+		wantBlocked   bool
+	}{
+		{
+			name:          "no dependencies",
+			dependsOn:     nil,
+			steps:         map[string]*model.StepInstance{},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "all completed",
+			dependsOn: []string{"a", "b"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateCompleted),
+				"b": mk(model.StepStateCompleted),
+			},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "skipped dependency is satisfied, not blocked",
+			dependsOn: []string{"a"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateSkipped),
+			},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "mix of completed and skipped is satisfied",
+			dependsOn: []string{"a", "b"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateCompleted),
+				"b": mk(model.StepStateSkipped),
+			},
+			wantSatisfied: true,
+			wantBlocked:   false,
+		},
+		{
+			name:      "failed dependency still blocks",
+			dependsOn: []string{"a"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateFailed),
+			},
+			wantSatisfied: false,
+			wantBlocked:   true,
+		},
+		{
+			name:      "failed dependency blocks even alongside a completed one",
+			dependsOn: []string{"a", "b"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateCompleted),
+				"b": mk(model.StepStateFailed),
+			},
+			wantSatisfied: false,
+			wantBlocked:   true,
+		},
+		{
+			name:      "still-running dependency is neither satisfied nor blocked",
+			dependsOn: []string{"a"},
+			steps: map[string]*model.StepInstance{
+				"a": mk(model.StepStateRunning),
+			},
+			wantSatisfied: false,
+			wantBlocked:   false,
+		},
+		{
+			name:          "missing dependency is treated as blocked",
+			dependsOn:     []string{"missing"},
+			steps:         map[string]*model.StepInstance{},
+			wantSatisfied: false,
+			wantBlocked:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			satisfied, blocked := areStepDependenciesSatisfied(tt.dependsOn, tt.steps)
+			if satisfied != tt.wantSatisfied {
+				t.Errorf("satisfied = %v, want %v", satisfied, tt.wantSatisfied)
+			}
+			if blocked != tt.wantBlocked {
+				t.Errorf("blocked = %v, want %v", blocked, tt.wantBlocked)
+			}
+		})
 	}
 }
 
@@ -1487,49 +1793,4 @@ func TestTick_RetryPreservesPriorAttemptLogs(t *testing.T) {
 		t.Errorf("identical attempt output was duplicated %d times; stderr=%q",
 			strings.Count(combined, "executable file not found"), task.Stderr)
 	}
-}
-
-// TestStderrSnippet guards which half of a long stderr survives.
-//
-// The old code kept the first 1000 bytes. BV-BRC job stderr opens with an
-// environment dump and ends with the diagnosis, so that stored boilerplate and
-// threw away the reason -- Gene Tree job 23710821 reported "unknown error" to
-// the user while its stderr said "number of sequences is 2, less than 4".
-func TestStderrSnippet(t *testing.T) {
-	t.Run("short output is returned whole", func(t *testing.T) {
-		if got := stderrSnippet("boom"); got != "boom" {
-			t.Errorf("got %q, want %q", got, "boom")
-		}
-	})
-
-	t.Run("empty stays empty", func(t *testing.T) {
-		if got := stderrSnippet(""); got != "" {
-			t.Errorf("got %q, want empty", got)
-		}
-	})
-
-	t.Run("keeps the diagnosis at the end, drops the boilerplate", func(t *testing.T) {
-		boiler := strings.Repeat("Container path: /disks/patric-common/cache\n", 200)
-		reason := "After retrieval, number of sequences is 2, less than 4. Cannot build a tree."
-		got := stderrSnippet(boiler + reason)
-
-		if !strings.Contains(got, reason) {
-			t.Error("the operative last line was dropped — this is the bug this guards")
-		}
-		if len(got) > maxStderrSnippetBytes+64 {
-			t.Errorf("len = %d, want near %d", len(got), maxStderrSnippetBytes)
-		}
-		if !strings.HasPrefix(got, "...(earlier output truncated)") {
-			t.Errorf("missing the truncation marker: %.60q", got)
-		}
-	})
-
-	t.Run("does not open mid-line", func(t *testing.T) {
-		body := strings.Repeat("aaaaaaaaaaaaaaaaaaaa\n", 300) + "final line\n"
-		got := stderrSnippet(body)
-		after := strings.TrimPrefix(got, "...(earlier output truncated)\n")
-		if strings.HasPrefix(after, "aaa") && !strings.HasPrefix(after, "aaaaaaaaaaaaaaaaaaaa\n") {
-			t.Errorf("snippet opens mid-line: %.40q", after)
-		}
-	})
 }

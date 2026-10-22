@@ -3,20 +3,16 @@
 package validate
 
 import (
-	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
+	"github.com/me/gowe/pkg/model"
 )
-
-// ErrInputValidation is a sentinel error for input validation failures.
-// Wrap with %w so callers can use errors.Is to distinguish validation
-// errors from other populate failures (e.g., missing tool, parse errors).
-var ErrInputValidation = errors.New("input validation")
 
 // ApplyRecordFieldDefaults fills missing record fields that declare a
 // default. It mutates records in place (single record or array of records)
@@ -132,10 +128,13 @@ func ValidateRecordShape(tool *cwl.CommandLineTool, inputs map[string]any) error
 	return nil
 }
 
-// ToolInputs validates that inputs match the tool's input schema.
-// Returns an error if required inputs are missing, null is provided for
-// non-optional types, or record-typed inputs contain unknown field names.
-func ToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
+// ToolInputs validates that inputs match the tool's input schema: required/
+// null checks (unchanged in every mode) plus, controlled by mode, a
+// TypeSchema-level value check (#273) — off skips the new check entirely,
+// warn logs (never the offending values) and continues, enforce returns an
+// error wrapping ErrInputValidation. logger may be nil (defaults to
+// slog.Default()).
+func ToolInputs(tool *cwl.CommandLineTool, inputs map[string]any, mode Mode, logger *slog.Logger) error {
 	for inputID, inputDef := range tool.Inputs {
 		value, exists := inputs[inputID]
 
@@ -171,12 +170,16 @@ func ToolInputs(tool *cwl.CommandLineTool, inputs map[string]any) error {
 		return err
 	}
 
-	return nil
+	return validateToolLevelTypes(tool.Inputs, inputs, mode, logger, tool.ID)
 }
 
-// ExpressionToolInputs validates that inputs match the ExpressionTool's input schema.
-// Returns an error if required inputs are missing or null is provided for non-optional types.
-func ExpressionToolInputs(tool *cwl.ExpressionTool, inputs map[string]any) error {
+// ExpressionToolInputs validates that inputs match the ExpressionTool's input
+// schema: required/null checks (unchanged in every mode) plus, controlled by
+// mode, a TypeSchema-level value check (#273) — see ToolInputs. Callers
+// should pass inputs AFTER input defaults have been merged (see
+// exprtool.MergeDefaults) so a null-with-default value is not mistakenly
+// flagged.
+func ExpressionToolInputs(tool *cwl.ExpressionTool, inputs map[string]any, mode Mode, logger *slog.Logger) error {
 	for inputID, inputDef := range tool.Inputs {
 		value, exists := inputs[inputID]
 
@@ -200,7 +203,55 @@ func ExpressionToolInputs(tool *cwl.ExpressionTool, inputs map[string]any) error
 			return fmt.Errorf("null is not valid for non-optional input: %s (type: %s)", inputID, inputDef.Type)
 		}
 	}
+	return validateToolLevelTypes(tool.Inputs, inputs, mode, logger, tool.ID)
+}
+
+// validateToolLevelTypes runs the #273 TypeSchema-level check shared by
+// ToolInputs and ExpressionToolInputs. ToolLevel redaction (Options{ToolLevel:
+// true}) means no offending value is ever included in a message, regardless
+// of mode.
+func validateToolLevelTypes(toolInputs map[string]cwl.ToolInputParam, inputs map[string]any, mode Mode, logger *slog.Logger, toolID string) error {
+	effective := mode.Effective()
+	if effective == ModeOff || len(toolInputs) == 0 {
+		return nil
+	}
+	params := make(map[string]ParamSpec, len(toolInputs))
+	for id, in := range toolInputs {
+		params[id] = ParamSpec{TypeSchema: in.TypeSchema, Default: in.Default, HasDefault: in.Default != nil}
+	}
+	errs := ValidateInputs(params, inputs, Options{ToolLevel: true})
+	if len(errs) == 0 {
+		return nil
+	}
+	summary := SummarizeErrors(errs)
+	if effective == ModeEnforce {
+		return fmt.Errorf("%w: %s", ErrInputValidation, summary)
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	fields := make([]string, len(errs))
+	for i, e := range errs {
+		fields[i] = e.Field
+	}
+	logger.Warn("tool-level input validation failed", "tool", toolID, "fields", fields)
 	return nil
+}
+
+// SummarizeErrors renders a one-line, human-readable summary of field
+// errors for a CLI exit message or an API error's top-level Message: the
+// first error as `input "<id>"<path>: <message>`, plus " (+N more errors)"
+// when there is more than one. Returns "" for an empty slice.
+func SummarizeErrors(errs []model.FieldError) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	first := errs[0]
+	msg := fmt.Sprintf("input %q%s: %s", first.Field, first.Path, first.Message)
+	if len(errs) > 1 {
+		msg += fmt.Sprintf(" (+%d more errors)", len(errs)-1)
+	}
+	return msg
 }
 
 // ValidateRecordFields checks that record-typed inputs contain only field names

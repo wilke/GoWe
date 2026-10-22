@@ -102,7 +102,7 @@ func (s *SharedFileStager) StageIn(_ context.Context, location string, destPath 
 
 // StageOut copies or stages a file from srcPath to the configured destination.
 // For shared filesystems, this might just return a file:// URI without copying.
-func (s *SharedFileStager) StageOut(_ context.Context, srcPath string, taskID string, _ StageOptions) (string, error) {
+func (s *SharedFileStager) StageOut(_ context.Context, srcPath string, taskID string, opts StageOptions) (string, error) {
 	if s.stageOutDir == "" {
 		// Local mode: return file:// URI pointing to the file in-place.
 		absPath, err := filepath.Abs(srcPath)
@@ -113,12 +113,14 @@ func (s *SharedFileStager) StageOut(_ context.Context, srcPath string, taskID st
 	}
 
 	// Copy to stage-out directory.
-	destDir := filepath.Join(s.stageOutDir, taskID)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return "", fmt.Errorf("shared stager: mkdir %s: %w", destDir, err)
+	rel, err := stageOutRelPath(srcPath, opts.RelPath)
+	if err != nil {
+		return "", fmt.Errorf("shared stager: %w", err)
 	}
-
-	destPath := filepath.Join(destDir, filepath.Base(srcPath))
+	destPath := filepath.Join(s.stageOutDir, taskID, rel)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return "", fmt.Errorf("shared stager: mkdir %s: %w", filepath.Dir(destPath), err)
+	}
 
 	info, err := os.Stat(srcPath)
 	if err != nil {
@@ -136,6 +138,20 @@ func (s *SharedFileStager) StageOut(_ context.Context, srcPath string, taskID st
 	}
 
 	return BuildLocation("file", destPath), nil
+}
+
+// StageOutDir stages a directory: in place when no stage-out directory is
+// configured, otherwise <stageOutDir>/<taskID>/<RelPath> is created (and the
+// tree copied when opts.CopyTree is set).
+func (s *SharedFileStager) StageOutDir(_ context.Context, srcDir string, taskID string, opts StageOptions) (string, error) {
+	if s.stageOutDir == "" {
+		absPath, err := filepath.Abs(srcDir)
+		if err != nil {
+			return "", fmt.Errorf("shared stager: abs path: %w", err)
+		}
+		return BuildLocation("file", absPath), nil
+	}
+	return stageOutDirTo("shared stager", s.stageOutDir, srcDir, taskID, opts)
 }
 
 // Supports returns true for file:// and bare paths.
@@ -189,4 +205,7 @@ func (s *SharedFileStager) symlinkDir(srcDir, linkPath string) error {
 }
 
 // Verify interface compliance.
-var _ Stager = (*SharedFileStager)(nil)
+var (
+	_ Stager          = (*SharedFileStager)(nil)
+	_ DirectoryStager = (*SharedFileStager)(nil)
+)

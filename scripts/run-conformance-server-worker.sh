@@ -191,6 +191,7 @@ log_info "Starting server..."
     --upload-local-dir "$WORK_DIR/uploads" \
     --upload-download-dirs "$DOWNLOAD_DIRS" \
     --log-level debug \
+    --input-validation enforce \
     > "$WORK_DIR/logs/server.log" 2>&1 &
 SERVER_PID=$!
 log_info "Server PID: $SERVER_PID"

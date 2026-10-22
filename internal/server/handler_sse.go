@@ -49,7 +49,7 @@ func (s *Server) handleSSESubmission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send initial state.
-	if err := sendSSEEvent(w, flusher, "init", sub); err != nil {
+	if err := sendSSEEvent(w, flusher, "init", sanitizeSubmissionTasks(sub)); err != nil {
 		s.logger.Debug("sse client disconnected", "id", id, "error", err)
 		return
 	}
@@ -89,7 +89,7 @@ func (s *Server) handleSSESubmission(w http.ResponseWriter, r *http.Request) {
 
 			// Send update if state changed.
 			if sub.State != lastState {
-				if err := sendSSEEvent(w, flusher, "update", sub); err != nil {
+				if err := sendSSEEvent(w, flusher, "update", sanitizeSubmissionTasks(sub)); err != nil {
 					s.logger.Debug("sse client disconnected", "id", id)
 					return
 				}
@@ -102,7 +102,7 @@ func (s *Server) handleSSESubmission(w http.ResponseWriter, r *http.Request) {
 
 			// Stop streaming if submission is terminal.
 			if sub.State.IsTerminal() {
-				if err := sendSSEEvent(w, flusher, "complete", sub); err != nil {
+				if err := sendSSEEvent(w, flusher, "complete", sanitizeSubmissionTasks(sub)); err != nil {
 					return
 				}
 				return

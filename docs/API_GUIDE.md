@@ -347,6 +347,45 @@ File inputs support workspace paths for BV-BRC integration:
 }
 ```
 
+
+### Input Type Validation
+
+The server checks each submitted input value against the type the workflow
+declares (issue #273). Enum inputs must use one of their symbols; `int` must be
+a whole number in the 32-bit range; `boolean` must be `true`/`false` (not
+`"true"`); arrays, records and unions are checked recursively. File and
+Directory inputs accept an object with a matching `class`, an object with a
+`location`/`path`, or a plain path string. Missing inputs and nulls keep their
+existing handling (defaults apply first), and inputs whose type the server
+cannot resolve are never rejected.
+
+What happens on a mismatch depends on the server's `--input-validation` mode:
+
+| Mode | Result |
+|------|--------|
+| `warn` (default) | Accepted with `201`; the response carries `warnings` |
+| `enforce` | Rejected with `400 VALIDATION_ERROR`; nothing is created |
+| `off` | New type checks skipped |
+
+An `enforce` rejection names the input and, for enums, the allowed symbols:
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "input \"chunk_method\": expected one of [fixed, fixed_token, sentence, words, semantic], got \"semantic_pooled_typo\"",
+    "details": [
+      {"field": "inputs.chunk_method", "message": "expected one of [fixed, fixed_token, sentence, words, semantic], got \"semantic_pooled_typo\""}
+    ]
+  }
+}
+```
+
+Nested problems carry a `path` (for example `[3]` or `.bait`). The dry run
+below always reports type errors, in every mode. Values of secret inputs are
+never echoed in errors.
+
 ---
 
 ## 5. Validate Before Submitting (Dry Run)
@@ -456,6 +495,16 @@ Fields:
 | `inputs` | yes | Map of input values matching the workflow's input schema |
 | `labels` | no | Key-value metadata for organizing submissions |
 | `output_destination` | no | Where to upload outputs on completion (e.g., `ws://` for BV-BRC workspace) |
+| `secrets` | no | Map of submission-time secrets (`{"NAME": "value"}`, name `^[A-Z][A-Z0-9_]*$`, ≤64KiB each, ≤64 entries). Delivered only to steps that opt in via `gowe:Execution.secret_env`/`inject_secrets` — see [`docs/cwl-hints.md`](cwl-hints.md#gowe-executionsecret_env--inject_secrets--submission-time-secrets). Never echoed back by this or any other endpoint; requires authentication (anonymous submissions may not carry secrets). |
+| `secrets_retention` | no | Overrides the server's default automatic-purge policy for this submission's secret *values*: `"keep"`, `"ttl:<duration>"`, `"on_success"`, or `"on_terminal"`. See [`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260) for the full table. |
+
+**Non-ASCII workspace paths are rejected (#267).** Any `ws://` location in `inputs` (a
+File/Directory, at any nesting depth) or in `output_destination` whose path contains a
+character above U+007F is rejected with **400** `VALIDATION_ERROR`, naming the offending
+input (or `output_destination`), the code point (e.g. `U+2010`), and the file's basename —
+the BV-BRC Workspace API cannot escape such paths (`Workspace.get_download_url` fails with
+`Can't escape \x{2010}, try uri_escape_utf8() instead`). ASCII characters that are valid
+workspace path syntax (`#`, `%`, `?`) are never rejected.
 
 Response (HTTP 201):
 
@@ -475,11 +524,59 @@ Response (HTTP 201):
       "running": 0, "success": 0, "failed": 0, "skipped": 0
     },
     "output_destination": "ws:///user@bvbrc/home/results/batch-42/",
+    "secret_names": ["HF_TOKEN"],
+    "secrets_state": "present",
+    "secrets_retention": "ttl:720h0m0s",
+    "secrets_purged_at": null,
     "created_at": "2026-04-07T12:00:00Z",
     "completed_at": null
   }
 }
 ```
+
+A submission that carried no `secrets` and no `cwltool:Secrets`-declared input omits `secret_names`/`secrets_retention`/`secrets_purged_at` and reports `secrets_state: "none"`. **The real secret value never appears in this or any other response** — only `secret_names` (the keys), `secrets_state`, `secrets_retention`, and `secrets_purged_at` are ever serialized; `secrets` itself is write-only.
+
+### Retrying a failed submission
+
+```
+PUT /api/v1/submissions/{id}/retry
+```
+
+Only submissions in state `FAILED` can be retried. What "retry" resets depends on *why* it
+failed:
+
+- **Ordinary failure** (a step/task failed, inputs already staged): FAILED steps/tasks are
+  reset and the submission goes straight back to `RUNNING` — the same behavior as before
+  #267.
+- **`error.code == "PRESTAGE_FAILED"`, or server-side workspace staging (`--workspace-staging
+  server`) is configured and the submission's inputs still carry an unstaged `ws://`
+  location** (#267): the submission instead goes back to `PENDING`, with `prestage_started_at`
+  /`prestage_completed_at` cleared and `error` cleared, so the scheduler's pre-stage phase
+  re-runs before the submission dispatches again. Retrying without this would otherwise
+  re-dispatch the same unstaged `ws://` inputs and fail identically.
+
+In both cases the response is the same shape:
+
+```json
+{
+  "data": {
+    "id": "sub_xyz789",
+    "state": "PENDING",
+    "steps_reset": 0,
+    "tasks_reset": 0
+  }
+}
+```
+
+### Deleting a submission's secrets
+
+```
+DELETE /api/v1/submissions/{id}/secrets
+```
+
+Manually purges this submission's secret *values* (owner/admin only), independent of its `secrets_retention` policy — the automatic policies above cover the common cases, this is the immediate-and-manual one. Cascades to any descendant child submissions (sub-workflow/scatter fan-out). `secret_names` is retained for auditability; `secrets_state` becomes `"purged"`. Returns **404** if the submission has no secrets to purge.
+
+Once purged, `PUT /api/v1/submissions/{id}/retry` on that submission returns **409** (`"secrets purged; resubmit with secrets"`) rather than silently retrying without them — resubmitting (with `secrets` again) is the supported path.
 
 ---
 
@@ -583,6 +680,108 @@ GET /api/v1/submissions/{sub_id}/tasks/{task_id}/logs
   }
 }
 ```
+
+### Submission Timing
+
+```
+GET /api/v1/submissions/{id}/timing
+GET /api/v1/submissions/{id}/timing?include_children=true
+```
+
+A timing-only projection of a submission: per-task queue/run durations, per-step
+aggregates, and submission-level totals. The response carries timing fields and
+raw timestamps only — task `tool`/`job` definitions and stdout/stderr never ship
+through this endpoint. With `include_children=true` the report recurses into
+sub-workflow child submissions (`children` array of nested reports).
+
+```json
+{
+  "data": {
+    "submission": {
+      "id": "sub_xyz789",
+      "state": "COMPLETED",
+      "wall_s": 322.4,
+      "scheduling_s": 0.8,
+      "compute_s": 301.2,
+      "queue_s": 12.5,
+      "prestage_s": 1.9,
+      "poststage_s": 3.4,
+      "critical_path_s": 310.9,
+      "counts": { "total": 5, "success": 5 },
+      "created_at": "2026-04-07T12:00:00Z",
+      "completed_at": "2026-04-07T12:05:22Z"
+    },
+    "steps": [
+      { "step_id": "predict", "state": "COMPLETED", "wall_s": 290.1,
+        "fan_in_s": 0.9, "max_run_s": 288.0, "tasks": 3,
+        "created_at": "...", "completed_at": "..." }
+    ],
+    "tasks": [
+      { "task_id": "task_001", "step_id": "predict", "scatter_index": 0,
+        "executor": "worker", "state": "SUCCESS", "kind": "task",
+        "queue_s": 4.1, "dispatch_s": 0.05, "checkout_wait_s": 3.6,
+        "stage_in_s": 12.0, "compute_s": 270.5, "stage_out_s": 5.5,
+        "run_s": 288.0, "retry_count": 0,
+        "created_at": "...", "dispatched_at": "...", "started_at": "...",
+        "completed_at": "..." }
+    ]
+  }
+}
+```
+
+Semantics (per-state trust rules):
+
+- `started_at` is trusted as a timestamp only in `RUNNING`/`SUCCESS`/`FAILED`.
+  A `QUEUED` worker or bvbrc task's `started_at` is `null` (or, for a task that
+  was `QUEUED` across a pre-0.15.x-next schema upgrade, a stale dispatch
+  stamp) and is never used — its `queue_s` is "waiting so far" from
+  `created_at`. `dispatched_at`, by contrast, needs no such gating: it is
+  stamped once per dispatch attempt (including retries — a retry overwrites
+  it with the new attempt's timestamp) and never touched again *between*
+  attempts, so it is safe to read (and `dispatch_s = dispatched_at −
+  created_at` is safe to compute) in any state. Because `created_at` stays
+  fixed at the task's original creation while `dispatched_at` moves to the
+  latest attempt, a retried row's `dispatch_s` spans every prior attempt's
+  queue and run time too, not just the gap before the first dispatch.
+- `run_s` requires both timestamps and a `SUCCESS`/`FAILED` state; on
+  `RETRYING`/`SCHEDULED` rows it is the last failed attempt's window, flagged
+  `"retrying": true`, and `queue_s` is measured since first dispatch (it
+  includes prior attempts' run time).
+- `checkout_wait_s` (`started_at − dispatched_at`) is the gap between dispatch
+  and actual execution start: for `worker` tasks, real time spent in the
+  worker's own pull queue after becoming available; for `bvbrc`, real time on
+  the platform's queue before it reported `RUNNING`. Near-zero for synchronous
+  executors (`local`/`container`/`apptainer`), where dispatch and execution
+  start are the same event. It follows the `started_at` trust gate — computed
+  whenever `started_at` is trusted, including `RUNNING` — not `run_s`'s
+  additional terminal-only requirement of a `completed_at` stamp.
+- `stage_in_s`/`stage_out_s` are worker-measured input/output staging
+  durations, present only on `worker` tasks whose worker reported them (nil
+  for every other executor, and for tasks run by a worker that predates this
+  field). `compute_s` on a task row is `run_s` with staging subtracted
+  (`run_s − stage_in_s − stage_out_s`, clamped to zero), populated only for
+  plain `task` rows.
+- `kind` classifies rows: `task`, `subworkflow` (proxy for a child submission;
+  `run_s` is the child's wall time once the child is terminal, and may lag the
+  proxy's own stamps by up to one scheduler tick; `child_submission_id` links
+  the child), `skipped-iteration` (when-skip scatter synthetic — excluded from
+  every aggregate), `cancelled` (`SKIPPED`; no `run_s`, `queue_s` only if it
+  never started).
+- Steps with zero tasks (inline ExpressionTool evaluation, when-skipped steps)
+  are flagged `"inline": true`; their `wall_s` spans the step instance's own
+  lifetime and therefore includes dependency wait. Because that interval
+  starts at submission time rather than at the step's actual dispatch, an
+  inline step sitting mid-chain can overlap its upstream dependency's
+  interval; `critical_path_s` sums per-step intervals along dependency
+  chains, so it can exceed `wall_s` when this happens.
+- On the submission: `compute_s` sums task `run_s` (sub-workflow proxies
+  contribute their child's wall time, unchanged by this section's per-task
+  `compute_s`); `scheduling_s` is submission creation → first task creation
+  (pre-dispatch work, including prestage); `prestage_s`/`poststage_s` are the
+  ws:// input pre-staging and output delivery phase durations respectively
+  (present only when a submission has ws:// inputs/outputs to stage, and only
+  once each phase has both started and completed); `critical_path_s` is the
+  longest path over the workflow step DAG.
 
 ---
 
@@ -729,7 +928,8 @@ Runs the verification above, then for every file that does **not** verify:
 
 1. locates the local original by **checksum + size** among the output `File`
    objects recorded on the submission's tasks (and its children's tasks) —
-   `file://<stage-out-dir>/<task-id>/<name>`; basenames are not used because
+   `file://<stage-out-dir>/<task-id>/<path-below-the-task-output-dir>` (the
+   output directory layout is preserved, e.g. `.../<task-id>/plots/a/f.js`); basenames are not used because
    scatter shards share them;
 2. admits the candidate only if it resolves (symlinks followed) under one of
    the server's `--redeliver-source-dirs`, is a regular file, and has the
@@ -816,6 +1016,81 @@ gowe admin redeliver sub_abc                            # repair
 The commands exit non-zero when any output fails verification or re-delivery.
 The server is started with `--redeliver-source-dirs /path/to/stage-out` to
 allow re-uploads from the shared stage-out directory.
+
+---
+
+## 11. Admin: Tool Blessings
+
+A *blessing* is an administrator's decision that one specific tool (identified
+by a content hash) may receive the submitting user's token, pinned to a list of
+image sha256 digests. This release only **records** blessings; nothing consults
+them yet (submission and dispatch are unchanged). See
+[security/tool-blessing.md](security/tool-blessing.md) for the model.
+
+All endpoints require the admin role (401 when unauthenticated, 403 for a non-admin; a worker key alone is not enough) and live under
+`/api/v1/admin/tool-blessings`. Blessings are never deleted; revoking sets
+`revoked_at`. Blessings do not expire.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/admin/tool-blessings[?include_revoked=true]` | List blessings (active only by default) |
+| GET | `/admin/tool-blessings/pending` | Registered tools that request the token (`gowe:Execution.inject_bvbrc_token` in `hints`) but have no active blessing |
+| POST | `/admin/tool-blessings/inspect` | Hash + review report for a tool; blesses nothing |
+| POST | `/admin/tool-blessings` | Bless a tool (201; 409 if an active blessing for that hash exists) |
+| POST | `/admin/tool-blessings/{id}/images` | Add another allowed image digest (`{id}` may also be an active `sha256:...` tool hash) |
+| DELETE | `/admin/tool-blessings/{id}` | Revoke (`{"reason": "..."}` required); `{id}` may also be an active `sha256:...` tool hash (as on `POST /{id}/images`) |
+
+### Inspect
+
+```bash
+curl -X POST $GOWE/api/v1/admin/tool-blessings/inspect \
+  -d '{"workflow": "bvbrc-helper"}'          # registered workflow/tool id or name
+# or: {"cwl": "<raw CWL text>", "tool_id": "helper"}   (gowe:// run references are resolved)
+```
+
+Response `data`: `tool_id`, `tool_hash` (`sha256:...`), `hash_version`,
+`image_ref`, `requests_token`, `summary` (command, requirement/hint classes,
+every InitialWorkDirRequirement script verbatim in `summary.scripts`, and
+`summary.flags`), `warnings`, and `active_blessing` if one exists. Review flags
+cover declared `stdout:`/`stderr:` outputs, shell stream redirection (`2>&1`),
+verbose/debug flags, scripts that print the environment or request headers,
+input-derived executable content and `NetworkAccess`.
+
+### Bless
+
+```bash
+curl -X POST $GOWE/api/v1/admin/tool-blessings -d '{
+  "workflow": "bvbrc-helper", "tool_id": "helper",
+  "tool_hash": "sha256:...",                  # optional; refused (400) if it differs from the recomputed hash
+  "image_sha256s": ["<64 hex>"],              # REQUIRED, at least one
+  "env_names": ["BVBRC_TOKEN"],               # optional; default BVBRC_TOKEN, KB_AUTH_TOKEN
+  "worker_groups": ["default"],               # optional extra restriction; default any
+  "note": "reviewed 2026-10-12"
+}'
+```
+
+Instead of `workflow`, a `tool_hash` alone selects a registered tool with that
+hash. The server always recomputes the hash from the registered CWL. The tool
+must declare `DockerRequirement.dockerPull` that is a `.sif` path or a `name@sha256:<64 hex>` reference (tags such as `:latest` are refused), `worker_groups` must be plain group names, and it must not put `gowe:Execution`
+under `requirements` (only `hints` is honoured).
+
+### CLI
+
+```bash
+gowe admin bless bvbrc-helper --image-file /scout/containers/python.sif \
+    --env BVBRC_TOKEN --groups default --note "reviewed"       # prints the report, asks to confirm
+gowe admin bless ./tool.cwl --tool helper --image-sha256 <hex> --yes
+gowe admin blessings [--all] [--pending] [--json]
+gowe admin blessings add-image <id> --image-file other-host.sif
+gowe admin unbless <id|sha256:hash> --reason "found echoing env"
+```
+
+`--image-file` computes the sha256 locally. A local `.cwl` file is only
+inspected; the tool must be registered for the server to bless it by hash.
+
+Each action logs an `AUDIT tool blessing ...` line and increments
+`gowe_tool_blessing_events_total{action="create|add_image|revoke"}`. The web UI
+equivalent is `/admin/tool-blessings`.
 
 ---
 

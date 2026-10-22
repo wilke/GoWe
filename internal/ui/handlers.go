@@ -19,7 +19,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/bvbrc"
+	"github.com/me/gowe/internal/cancelseq"
+	"github.com/me/gowe/internal/metrics"
+	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/timing"
+	"github.com/me/gowe/internal/tokencheck"
+	"github.com/me/gowe/internal/validate"
 	bvbrcpkg "github.com/me/gowe/pkg/bvbrc"
 	"github.com/me/gowe/pkg/model"
 )
@@ -38,6 +44,11 @@ type UI struct {
 	adminChecker AdminChecker    // Admin role checker (nil = no admins)
 	startTime    time.Time
 
+	// metrics is nil unless the server was started with --metrics-addr;
+	// every Registry method no-ops on a nil receiver, so handler code never
+	// checks for this.
+	metrics *metrics.Registry
+
 	// workspaceURL is the BV-BRC Workspace JSON-RPC endpoint. Every
 	// workspace operation builds a per-request client against it with the
 	// session's token; see workspaceClient.
@@ -48,10 +59,37 @@ type UI struct {
 	// Session cookie hardening.
 	secureCookies       bool // Always set the Secure attribute on session cookies
 	trustForwardedProto bool // Honor X-Forwarded-Proto when deciding the Secure attribute
+
+	// grafanaURL is rendered as a nav link (target _blank) when non-empty.
+	grafanaURL string
+	// apiBaseURL overrides the base URL used for the admin outputs
+	// loopback calls (see admin_outputs.go). Empty (the production default)
+	// derives it per-request from the connection's local address; tests set
+	// this to an httptest.Server URL instead.
+	apiBaseURL string
+
+	// basePath mounts the UI under this path prefix (e.g. "/gowe") behind a
+	// reverse proxy. Empty (the default) is root-mounted, byte-identical to
+	// pre-#250 behavior. Already normalized by the caller (leading "/", no
+	// trailing "/", never just "/") — see cmd/server's normalizeBasePath.
+	// Every URL, redirect, and session-cookie path the UI emits goes
+	// through href (or the "base" template func) so it lands under this
+	// prefix when set.
+	basePath string
+
+	// inputValidation is the server's --input-validation mode (#273),
+	// copied from Config.InputValidation. Read through Effective() (never
+	// the zero value directly) so an unset mode means warn.
+	inputValidation  validate.Mode
+	tokenBlessingDev bool // --token-blessing=dev banner
 }
 
 // Config holds UI configuration.
 type Config struct {
+	// InputValidation is the server's --input-validation mode (#273): how the
+	// submission form treats input values that do not match their declared CWL
+	// types. The zero value means warn.
+	InputValidation validate.Mode
 	// SecureCookies forces the Secure attribute on session cookies for every
 	// request. Set this when TLS is terminated in-process, or by a trusted
 	// upstream proxy that always speaks HTTPS to clients.
@@ -68,6 +106,18 @@ type Config struct {
 	// UploadMaxSize is the largest workspace upload request body accepted,
 	// in bytes. Zero selects DefaultUploadMaxSize.
 	UploadMaxSize int64
+	// GrafanaURL is an external link to a Grafana instance, rendered in the
+	// nav/header when non-empty (target _blank). Empty hides the link.
+	GrafanaURL string
+	// TokenBlessingDev shows a loud banner on every page: the server runs with
+	// --token-blessing=dev, so tools that request the user's token get it
+	// without an administrator blessing.
+	TokenBlessingDev bool
+	// BasePath mounts the UI under this path prefix behind a reverse proxy.
+	// Empty (the default) is root-mounted, byte-identical to pre-#250
+	// behavior. Must already be normalized — see cmd/server's
+	// normalizeBasePath (leading "/", no trailing "/", never just "/").
+	BasePath string
 }
 
 // DefaultUploadMaxSize is the workspace upload cap when none is configured.
@@ -92,7 +142,21 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		trustForwardedProto: cfg.TrustForwardedProto,
 		workspaceURL:        workspaceURL,
 		uploadMaxSize:       uploadMaxSize,
+		grafanaURL:          cfg.GrafanaURL,
+		basePath:            cfg.BasePath,
+		inputValidation:     cfg.InputValidation,
+		tokenBlessingDev:    cfg.TokenBlessingDev,
 	}
+}
+
+// href prepends the configured base path (empty when unset) to a
+// root-absolute path, e.g. href("/login") -> "/gowe/login" when mounted
+// under "/gowe", or "/login" unchanged when unset. Every redirect and
+// cookie path the UI emits goes through this (or the equivalent "base"
+// template func for HTML emitted from the template constants) so it lands
+// under the prefix when one is configured.
+func (ui *UI) href(p string) string {
+	return ui.basePath + p
 }
 
 // resolveSecureCookie decides whether a session cookie should carry the Secure
@@ -131,11 +195,17 @@ func (ui *UI) WithAdminChecker(checker AdminChecker) {
 	ui.adminChecker = checker
 }
 
+// WithMetrics sets the Prometheus metrics registry (nil is valid and leaves
+// instrumentation disabled).
+func (ui *UI) WithMetrics(m *metrics.Registry) {
+	ui.metrics = m
+}
+
 // HandleLogin renders the login page.
 func (ui *UI) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// If already logged in, redirect to dashboard.
 	if sess, _ := ui.sessions.GetSessionFromRequest(r); sess != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/"), http.StatusSeeOther)
 		return
 	}
 
@@ -149,7 +219,7 @@ func (ui *UI) HandleLogin(w http.ResponseWriter, r *http.Request) {
 // HandleLoginPost processes the login form.
 func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/login?error=Invalid+request", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Invalid+request"), http.StatusSeeOther)
 		return
 	}
 
@@ -157,7 +227,7 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 
 	if username == "" || password == "" {
-		http.Redirect(w, r, "/login?error=Username+and+password+required", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Username+and+password+required"), http.StatusSeeOther)
 		return
 	}
 
@@ -165,7 +235,7 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	token, err := ui.authenticateBVBRC(r.Context(), username, password)
 	if err != nil {
 		ui.logger.Warn("login failed", "username", username, "error", err)
-		http.Redirect(w, r, "/login?error=Invalid+credentials", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Invalid+credentials"), http.StatusSeeOther)
 		return
 	}
 
@@ -188,15 +258,15 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	sess, err := ui.sessions.CreateSession(r.Context(), sessionUsername, sessionUsername, string(role), token, tokenInfo.Expiry)
 	if err != nil {
 		ui.logger.Error("create session failed", "error", err)
-		http.Redirect(w, r, "/login?error=Session+creation+failed", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login?error=Session+creation+failed"), http.StatusSeeOther)
 		return
 	}
 
 	// Set session cookie.
-	SetSessionCookie(w, sess, ui.secureCookie(r))
+	SetSessionCookie(w, sess, ui.secureCookie(r), ui.basePath)
 
 	ui.logger.Info("user logged in", "username", username, "session", sess.ID)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, ui.href("/"), http.StatusSeeOther)
 }
 
 // HandleLogout clears the session and redirects to login.
@@ -207,8 +277,8 @@ func (ui *UI) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		ui.logger.Info("user logged out", "username", sess.Username, "session", sess.ID)
 	}
-	ClearSessionCookie(w)
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	ClearSessionCookie(w, ui.basePath)
+	http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 }
 
 // HandleDashboard renders the main dashboard.
@@ -556,11 +626,51 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #225: sub-workflow proxy tasks (executor_type "subworkflow") get a
+	// recursive descendant task count so the Tasks panel can show "N total,
+	// +M in sub-workflows" and each proxy row its own branch's count, without
+	// eagerly fetching every descendant row (only proxy nodes are walked).
+	descendants := ui.buildSubworkflowDescendants(r.Context(), sub.Tasks)
+
+	// #226: the timing panel is backed by the exact same computation as
+	// GET /api/v1/submissions/{id}/timing (internal/timing.BuildReport),
+	// scoped to this submission's own tasks; the "include sub-workflows"
+	// toggle re-fetches via HandleSubmissionTimingPanel.
+	timingReport, err := timing.BuildReport(r.Context(), ui.store, ui.logger, sub, time.Now().UTC(), false, map[string]bool{}, 0)
+	if err != nil {
+		slog.Error("submission detail: failed to build timing report", "submission_id", sub.ID, "error", err)
+		timingReport = nil
+	}
+
+	// Warning surfaces a non-blocking input-validation notice (#273,
+	// validate.ModeWarn) carried through the post-create redirect. The
+	// redirect only carries a boolean ?validation=warn flag (never the
+	// message text - a raw ?warning=<text> param would let anyone render
+	// arbitrary text on the page, #273 review); when present, the warning
+	// is recomputed here, server-side, from the stored submission's own
+	// inputs and the workflow's own CWL/secret list, so it can only ever
+	// show what the validator itself would emit.
+	var warning string
+	if r.URL.Query().Get("validation") == "warn" && workflow != nil {
+		inputs := sub.SubmittedInputs
+		if inputs == nil {
+			inputs = sub.Inputs
+		}
+		if fieldErrs, verr := validate.SubmissionInputs([]byte(workflow.RawCWL), workflow.SecretInputs, inputs, validate.Options{}); verr == nil && len(fieldErrs) > 0 {
+			warning = formatFieldErrors(fieldErrs)
+		}
+	}
+
 	data := map[string]any{
-		"Title":      fmt.Sprintf("Submission %s - GoWe", sub.ID),
-		"Session":    sess,
-		"Submission": sub,
-		"Workflow":   workflow,
+		"Title":                      fmt.Sprintf("Submission %s - GoWe", sub.ID),
+		"Session":                    sess,
+		"Submission":                 sub,
+		"Workflow":                   workflow,
+		"SubworkflowDescendants":     descendants,
+		"SubworkflowDescendantTotal": subworkflowDescendantTotal(descendants),
+		"Timing":                     timingReport,
+		"TimingBars":                 buildTimingBars(timingReport),
+		"Warning":                    warning,
 	}
 	ui.render(w, "submissions/detail", data)
 }
@@ -622,23 +732,26 @@ func (ui *UI) HandleSubmissionCreate(w http.ResponseWriter, r *http.Request) {
 func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/submissions/new?error=Invalid+request", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?error=Invalid+request"), http.StatusSeeOther)
 		return
 	}
 
 	workflowID := r.FormValue("workflow_id")
 	if workflowID == "" {
-		http.Redirect(w, r, "/submissions/new?error=Workflow+is+required", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?error=Workflow+is+required"), http.StatusSeeOther)
 		return
 	}
 
 	wf, err := ui.store.GetWorkflow(r.Context(), workflowID)
 	if err != nil || wf == nil {
-		http.Redirect(w, r, "/submissions/new?error=Workflow+not+found", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?error=Workflow+not+found"), http.StatusSeeOther)
 		return
 	}
 
-	// Collect inputs from form fields named inputs[key].
+	// Collect inputs from form fields named inputs[key], building proper CWL
+	// values (File/Directory objects, typed arrays, long/int/float/double/
+	// boolean) per the input's declared type BEFORE validation and storage
+	// (#273) — see convertFormInput.
 	inputs := make(map[string]any)
 	for _, inp := range wf.Inputs {
 		val := r.FormValue("inputs[" + inp.ID + "]")
@@ -648,23 +761,45 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 			}
 			continue
 		}
-		// Coerce values based on declared type.
-		switch {
-		case inp.Type == "int" || inp.Type == "int?":
-			if n, err := strconv.Atoi(val); err == nil {
-				inputs[inp.ID] = n
-				continue
+		inputs[inp.ID] = convertFormInput(val, inp.Type)
+	}
+
+	// Validate inputs against the workflow's declared CWL types (#273),
+	// unless the server has input validation switched off entirely. A parse
+	// failure of the stored CWL is logged and never blocks the submission —
+	// it means "could not validate", not "rejected". enforce re-renders the
+	// creation form with a visible error instead of creating anything; warn
+	// creates the submission as usual and carries a non-blocking notice
+	// through to the resulting page.
+	var validationWarning string
+	mode := ui.inputValidation.Effective()
+	if mode != validate.ModeOff {
+		fieldErrs, verr := validate.SubmissionInputs([]byte(wf.RawCWL), wf.SecretInputs, inputs, validate.Options{})
+		if verr != nil {
+			ui.logger.Error("submission input validation: parse failed, skipping", "workflow_id", wf.ID, "error", verr)
+		} else if len(fieldErrs) > 0 {
+			msg := formatFieldErrors(fieldErrs)
+			if mode == validate.ModeEnforce {
+				http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+workflowID+"&error="+url.QueryEscape(msg)), http.StatusSeeOther)
+				return
 			}
-		case inp.Type == "float" || inp.Type == "double" || inp.Type == "float?" || inp.Type == "double?":
-			if f, err := strconv.ParseFloat(val, 64); err == nil {
-				inputs[inp.ID] = f
-				continue
+			validationWarning = msg
+			// Mirror the server's warn-mode accounting (handler_submissions.go):
+			// one gowe_input_validation_failures_total observation per distinct
+			// input, plus a structured log line naming only the fields, never
+			// values.
+			fields := make([]string, 0, len(fieldErrs))
+			seen := make(map[string]bool, len(fieldErrs))
+			for _, fe := range fieldErrs {
+				fields = append(fields, fe.Field)
+				if !seen[fe.Field] {
+					seen[fe.Field] = true
+					ui.metrics.IncInputValidationFailure(wf.Name, fe.Field, string(mode))
+				}
 			}
-		case inp.Type == "boolean" || inp.Type == "boolean?":
-			inputs[inp.ID] = val == "true" || val == "on" || val == "1"
-			continue
+			ui.logger.Warn("submission accepted with input validation warnings",
+				"workflow_id", wf.ID, "workflow", wf.Name, "fields", fields)
 		}
-		inputs[inp.ID] = val
 	}
 
 	// Parse optional labels JSON.
@@ -676,6 +811,19 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	// Set worker group label if provided (mirrors CLI --group behavior).
 	if workerGroup := strings.TrimSpace(r.FormValue("worker_group")); workerGroup != "" {
 		labels["worker_group"] = workerGroup
+	}
+
+	// Provider-token policy fast-fail (same check as the REST API): a step
+	// whose tool requests the user's token must be admin-blessed. Without
+	// this the user would only see a pre-dispatch task failure.
+	tokenChecker := &tokencheck.Checker{Parser: parser.New(ui.logger), Store: ui.store, Logger: ui.logger, Dev: ui.tokenBlessingDev}
+	tokenErr, tokenWarnings := tokenChecker.Check(r.Context(), wf, inputs, labels, sess != nil && sess.Token != "")
+	if tokenErr != nil {
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+url.QueryEscape(workflowID)+"&error="+url.QueryEscape(string(tokenErr.Code)+": "+tokenErr.Message)), http.StatusSeeOther)
+		return
+	}
+	for _, tw := range tokenWarnings {
+		ui.logger.Warn("DEV MODE: submission accepted with an unblessed token-requesting tool", "workflow", wf.Name, "detail", tw.Message)
 	}
 
 	now := time.Now().UTC()
@@ -705,7 +853,7 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 
 	if err := ui.store.CreateSubmission(r.Context(), sub); err != nil {
 		ui.logger.Error("create submission failed", "error", err)
-		http.Redirect(w, r, "/submissions/new?workflow_id="+workflowID+"&error=Failed+to+create+submission", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+workflowID+"&error=Failed+to+create+submission"), http.StatusSeeOther)
 		return
 	}
 
@@ -724,19 +872,31 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	if err := ui.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {
 		ui.logger.Error("batch create step instances failed", "error", err, "submission_id", sub.ID)
 		// Submission with zero steps is an orphan the scheduler can't progress — treat as hard failure.
-		http.Redirect(w, r, "/submissions/new?workflow_id="+workflowID+"&error=Failed+to+initialize+submission", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+workflowID+"&error=Failed+to+initialize+submission"), http.StatusSeeOther)
 		return
 	}
 
 	ui.logger.Info("submission created via UI", "id", sub.ID, "workflow", wf.Name, "user", sub.SubmittedBy)
-	http.Redirect(w, r, "/submissions/"+sub.ID, http.StatusSeeOther)
+	dest := "/submissions/" + sub.ID
+	if validationWarning != "" {
+		// A boolean flag, never the message itself: the detail page below
+		// recomputes the warning server-side from the stored submission and
+		// workflow rather than rendering arbitrary text reflected off the
+		// query string (#273 review - a `?warning=<attacker text>` param
+		// would otherwise be rendered verbatim on the detail page).
+		dest += "?validation=warn"
+	}
+	http.Redirect(w, r, ui.href(dest), http.StatusSeeOther)
 }
 
 // HandleSubmissionCancel cancels a running submission (HTMX).
 //
-// Note: unlike the API cancel handler, this path performs no synchronous
-// fan-out to sub-workflow child submissions — the scheduler's reconciliation
-// cascade cancels them one nesting level per tick (correct, slightly slower).
+// This runs the same cancel sequence as the API handler (internal/server),
+// shared via internal/cancelseq: cancel non-terminal steps/tasks, fan out
+// synchronously to sub-workflow child submissions, and observe metrics.
+// Before internal/cancelseq existed, this handler finalized the submission
+// directly and did none of that — a UI-initiated cancel left tasks running
+// and workers never learned about it (issue #185).
 func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	id := ui.pathParam(r, "id")
@@ -759,16 +919,16 @@ func (ui *UI) HandleSubmissionCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sub.State = model.SubmissionStateCancelled
-	now := time.Now()
+	now := time.Now().UTC()
 	sub.CompletedAt = &now
 
-	if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
+	if _, err := cancelseq.Run(r.Context(), ui.store, ui.metrics, ui.logger, sub, now); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	// Redirect to refresh the page.
-	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -800,6 +960,11 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	ui.store.CancelNonTerminalSteps(r.Context(), id, now)
 	ui.store.CancelNonTerminalTasks(r.Context(), id, now)
+	// Scrub task-embedded secrets before the delete: if DeleteSubmission
+	// fails part-way, no task row is left holding a secret copy (#260).
+	if _, err := ui.store.ScrubTaskSecretsForSubmission(r.Context(), id); err != nil {
+		ui.logger.Warn("scrub task secrets before delete", "submission_id", id, "error", err)
+	}
 
 	if err := ui.store.DeleteSubmission(r.Context(), id); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -807,7 +972,7 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect to the submission list after deletion.
-	w.Header().Set("HX-Redirect", "/submissions")
+	w.Header().Set("HX-Redirect", ui.href("/submissions"))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -907,6 +1072,28 @@ func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resetFailedTaskForQueue prepares a FAILED task snapshot for re-execution
+// (QUEUED, cleared retry/output bookkeeping) and writes it back only while
+// the task is still exactly FAILED in the store — a guarded full-row write
+// in the same style as CASTaskState, reusing the exact-state primitive
+// TerminalizeTaskFrom (see its stuck-task caller in
+// internal/scheduler/loop.go) instead of an unconditional UpdateTask. A
+// concurrent scheduler write (markRetries' FAILED→RETRYING CAS, or a cancel
+// SKIP) between the caller's read and this write makes the guard reject the
+// write (applied=false, no error) instead of the stale UI snapshot
+// clobbering the winning state — the caller must skip/count/report that
+// task rather than treat it as reset.
+func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (bool, error) {
+	task.State = model.TaskStateQueued
+	task.RetryCount = 0
+	task.Stdout = ""
+	task.Stderr = ""
+	task.ExitCode = nil
+	task.StartedAt = nil
+	task.CompletedAt = nil
+	return ui.store.TerminalizeTaskFrom(ctx, &task, model.TaskStateFailed)
+}
+
 // HandleSubmissionResume resumes a failed submission.
 func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
@@ -930,22 +1117,26 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reset failed tasks to QUEUED and their parent step instances to DISPATCHED.
+	requeuedCount := 0
+	skippedCount := 0
 	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
-		if task.State == model.TaskStateFailed {
-			task.State = model.TaskStateQueued
-			task.RetryCount = 0
-			task.Stdout = ""
-			task.Stderr = ""
-			task.ExitCode = nil
-			task.StartedAt = nil
-			task.CompletedAt = nil
-			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
-				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
-			}
-			if task.StepInstanceID != "" {
-				resetSteps[task.StepInstanceID] = true
-			}
+		if task.State != model.TaskStateFailed {
+			continue
+		}
+		applied, err := ui.resetFailedTaskForQueue(r.Context(), task)
+		if err != nil {
+			ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
+			continue
+		}
+		if !applied {
+			skippedCount++
+			ui.logger.Info("resume: task no longer FAILED, skipping", "task_id", task.ID, "submission_id", id)
+			continue
+		}
+		requeuedCount++
+		if task.StepInstanceID != "" {
+			resetSteps[task.StepInstanceID] = true
 		}
 	}
 	// Reset parent step instances so scheduler re-evaluates them.
@@ -969,9 +1160,13 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ui.logger.Info("submission resumed", "id", id)
-	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	ui.logger.Info("submission resumed", "id", id, "requeued", requeuedCount, "skipped", skippedCount)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
+	// HTMX discards the body when HX-Redirect is set (it drives a full-page
+	// navigation instead), so this is purely for API/test observability of
+	// any CAS misses skipped above.
+	fmt.Fprintf(w, "requeued %d, skipped %d", requeuedCount, skippedCount)
 }
 
 // HandleRecomputeFailed recomputes all failed tasks in a submission.
@@ -984,26 +1179,35 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Gate on submission state: a cancelled submission is not actionable —
+	// re-queuing its failed tasks would resurrect work the user explicitly
+	// tore down (mirrors the cancel handler's terminal-state gate).
+	if sub.State == model.SubmissionStateCancelled {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	// Reset all failed tasks and their parent step instances.
 	recomputeCount := 0
+	skippedCount := 0
 	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
-		if task.State == model.TaskStateFailed {
-			task.State = model.TaskStateQueued
-			task.RetryCount = 0
-			task.Stdout = ""
-			task.Stderr = ""
-			task.ExitCode = nil
-			task.StartedAt = nil
-			task.CompletedAt = nil
-			if err := ui.store.UpdateTask(r.Context(), &task); err != nil {
-				ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
-			} else {
-				recomputeCount++
-			}
-			if task.StepInstanceID != "" {
-				resetSteps[task.StepInstanceID] = true
-			}
+		if task.State != model.TaskStateFailed {
+			continue
+		}
+		applied, err := ui.resetFailedTaskForQueue(r.Context(), task)
+		if err != nil {
+			ui.logger.Error("failed to reset task", "task_id", task.ID, "error", err)
+			continue
+		}
+		if !applied {
+			skippedCount++
+			ui.logger.Info("recompute: task no longer FAILED, skipping", "task_id", task.ID, "submission_id", id)
+			continue
+		}
+		recomputeCount++
+		if task.StepInstanceID != "" {
+			resetSteps[task.StepInstanceID] = true
 		}
 	}
 	for siID := range resetSteps {
@@ -1027,9 +1231,13 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount)
-	w.Header().Set("HX-Redirect", "/submissions/"+id)
+	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount, "skipped", skippedCount)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
+	// HTMX discards the body when HX-Redirect is set (it drives a full-page
+	// navigation instead), so this is purely for API/test observability of
+	// any CAS misses skipped above.
+	fmt.Fprintf(w, "recomputed %d, skipped %d", recomputeCount, skippedCount)
 }
 
 // HandleTaskRecompute recomputes a single task.
@@ -1048,16 +1256,34 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset the task.
-	task.State = model.TaskStateQueued
-	task.RetryCount = 0
-	task.Stdout = ""
-	task.Stderr = ""
-	task.ExitCode = nil
-	task.StartedAt = nil
-	task.CompletedAt = nil
-	if err := ui.store.UpdateTask(r.Context(), task); err != nil {
+	// Gate on submission state before writing: a cancelled submission is not
+	// actionable (mirrors the cancel handler's terminal-state gate). Fetched
+	// up front so the CANCELLED check happens before any task write.
+	sub, err := ui.store.GetSubmission(r.Context(), subID)
+	if err != nil || sub == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if sub.State == model.SubmissionStateCancelled {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Reset the task via a guarded write: only applies while the task is
+	// still exactly FAILED. A concurrent scheduler write (e.g. markRetries'
+	// FAILED→RETRYING CAS winning the race against this handler's read
+	// above) makes the guard reject the write instead of this stale
+	// snapshot resurrecting/double-executing a task the scheduler already
+	// claimed.
+	applied, err := ui.resetFailedTaskForQueue(r.Context(), *task)
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !applied {
+		ui.logger.Info("task recompute: task no longer FAILED, skipping", "task_id", taskID, "submission_id", subID)
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprintf(w, "task %s is no longer FAILED, skipped", taskID)
 		return
 	}
 
@@ -1074,11 +1300,7 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set submission back to RUNNING if it was terminal.
-	sub, err := ui.store.GetSubmission(r.Context(), subID)
-	if err != nil {
-		slog.Error("task recompute: failed to get submission", "submission_id", subID, "error", err)
-	}
-	if sub != nil && sub.State.IsTerminal() {
+	if sub.State.IsTerminal() {
 		sub.State = model.SubmissionStateRunning
 		sub.CompletedAt = nil
 		if err := ui.store.UpdateSubmission(r.Context(), sub); err != nil {
@@ -1087,7 +1309,7 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("task recomputed", "task_id", taskID, "submission_id", subID)
-	w.Header().Set("HX-Redirect", "/submissions/"+subID)
+	w.Header().Set("HX-Redirect", ui.href("/submissions/"+subID))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1190,7 +1412,7 @@ func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("purged offline workers via UI", "count", count)
-	w.Header().Set("HX-Redirect", "/workers")
+	w.Header().Set("HX-Redirect", ui.href("/workers"))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1351,7 +1573,7 @@ func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.FormValue("key"))
 	value := strings.TrimSpace(r.FormValue("value"))
 	if key == "" || value == "" {
-		http.Redirect(w, r, "/admin/labels?error=Key+and+value+are+required", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/admin/labels?error=Key+and+value+are+required"), http.StatusSeeOther)
 		return
 	}
 
@@ -1368,14 +1590,14 @@ func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			qv := url.Values{}
 			qv.Set("error", fmt.Sprintf("Entry already exists for %s:%s", key, value))
-			http.Redirect(w, r, "/admin/labels?"+qv.Encode(), http.StatusSeeOther)
+			http.Redirect(w, r, ui.href("/admin/labels?"+qv.Encode()), http.StatusSeeOther)
 			return
 		}
 		ui.renderError(w, "Failed to create label", err)
 		return
 	}
 
-	http.Redirect(w, r, "/admin/labels", http.StatusSeeOther)
+	http.Redirect(w, r, ui.href("/admin/labels"), http.StatusSeeOther)
 }
 
 // HandleAdminLabelDelete deletes a CV entry (HTMX DELETE).
@@ -1703,7 +1925,7 @@ func (ui *UI) HandleWorkspace(w http.ResponseWriter, r *http.Request) {
 	client, err := ui.workspaceClient(sess)
 	if err != nil {
 		// The browser page needs a BV-BRC login; send the user there.
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, ui.href("/login"), http.StatusSeeOther)
 		return
 	}
 
@@ -1870,9 +2092,41 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 	// This will be replaced with templ templates.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	// GrafanaURL is nav-level chrome shared by the layout template on every
+	// page; inject it here rather than in each handler. A handler that
+	// already set it (none currently do) is left alone.
+	if _, ok := data["GrafanaURL"]; !ok {
+		data["GrafanaURL"] = ui.grafanaURL
+	}
+	if _, ok := data["BasePath"]; !ok {
+		data["BasePath"] = ui.basePath
+	}
+	data["TokenBlessingDev"] = ui.tokenBlessingDev
+
 	var buf bytes.Buffer
 	if err := renderTemplate(&buf, template, data); err != nil {
 		ui.logger.Error("template render failed", "template", template, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	buf.WriteTo(w)
+}
+
+// renderFragment renders a standalone "components/" partial (no layout
+// wrapper) for an HTMX fragment-swap response. See renderFragment in
+// templates.go for the naming convention.
+func (ui *UI) renderFragment(w http.ResponseWriter, template string, data map[string]any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if _, ok := data["BasePath"]; !ok {
+		data["BasePath"] = ui.basePath
+	}
+
+	var buf bytes.Buffer
+	if err := renderFragment(&buf, template, data); err != nil {
+		ui.logger.Error("fragment render failed", "template", template, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}

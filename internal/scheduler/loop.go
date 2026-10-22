@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,12 +20,32 @@ import (
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/stepinput"
 	"github.com/me/gowe/internal/store"
+	"github.com/me/gowe/internal/toolhash"
+	"github.com/me/gowe/internal/toolmerge"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
+)
+
+// Scheduler lifecycle states, reported via Loop.State() (and surfaced by the
+// /api/v1/health endpoint). Stored as an atomic int32 internally; these are
+// the string values exposed to callers.
+const (
+	StateNotStarted = "not_started" // NewLoop constructed, Start not yet called.
+	StateRunning    = "running"     // Start has entered its poll loop.
+	StateStopped    = "stopped"     // Start returned (ctx cancelled or Stop called).
+)
+
+// loopState codes backing the atomic state field. Ordered so the zero value
+// matches "not started".
+const (
+	loopStateNotStarted int32 = iota
+	loopStateRunning
+	loopStateStopped
 )
 
 // Config holds scheduler configuration.
@@ -35,12 +56,23 @@ type Config struct {
 	ForceExecutor    string // Force all tasks to this executor, ignoring CWL hints. Empty = respect hints.
 	WorkspaceStaging string // "server" = pre/post-stage ws:// on scheduler, "" = passthrough to workers.
 
-	// TokenInjectGroups lists worker groups whose tasks automatically receive the
-	// submitter's provider token, without the per-tool gowe:Execution.inject_bvbrc_token
-	// opt-in. This scopes the auto-injection to operator-trusted groups (e.g. curated
-	// BV-BRC tool workers) while default/untrusted groups stay opt-in (least privilege,
-	// SPECIFICATION.md §13.5, ADR-0010). Empty = no group auto-injection.
+	// TokenInjectGroups lists worker groups whose tasks receive the submitter's
+	// provider token as a STAGING credential (so the worker can fetch ws:// /
+	// shock:// inputs and upload outputs). DEPRECATED and staging-only: it can
+	// no longer cause the token to be injected into a tool's environment —
+	// that requires the tool to request it and an administrator blessing
+	// (credentials.go, SPECIFICATION.md §13.5). Need-based delivery makes the
+	// flag unnecessary. Empty = none.
 	TokenInjectGroups []string
+
+	// TokenBlessing is the --token-blessing mode: TokenBlessingEnforce
+	// (default when empty) or TokenBlessingDev.
+	TokenBlessing string
+
+	// DevImageDir is --dev-image-dir: the directory relative .sif image refs
+	// are resolved against to pin the image digest of an unblessed tool's
+	// grant in dev mode. Ignored in enforce mode.
+	DevImageDir string
 
 	// PreflightDeferralTicks is the number of ticks to defer a worker task dispatch
 	// when no online worker can satisfy its requirements. After this many ticks,
@@ -74,6 +106,13 @@ type WorkerCapabilities struct {
 	Groups       map[string]int  // group → count of online workers
 	Datasets     map[string]int  // dataset ID → count of online workers
 	Workers      []*model.Worker // full list of online workers
+
+	// Largest self-reported capacity among online workers, per group (#324).
+	// Workers that did not report a dimension (legacy) are counted in
+	// UncappedByGroup instead and never block a task on that dimension.
+	MaxCoresByGroup map[string]int
+	MaxMemMBByGroup map[string]int64
+	UncappedByGroup map[string]int // group → online workers with any unreported capacity
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -86,6 +125,12 @@ type Loop struct {
 	doneCh   chan struct{}
 	stopOnce sync.Once
 
+	// state tracks the lifecycle for State()/health reporting. Holds one of
+	// the loopState* constants; read/written via atomic ops so State() is
+	// safe to call from the HTTP handler goroutine while Start()'s loop runs
+	// on its own goroutine.
+	state atomic.Int32
+
 	// Cached per-tick: structured worker capability snapshot.
 	cachedWorkerCaps *WorkerCapabilities
 
@@ -93,11 +138,24 @@ type Loop struct {
 	// pre-flight check failure (no capable worker). Key = stepInstanceID.
 	deferredSteps map[string]int
 
+	// missingWorkflowTicks tracks how many consecutive ticks a submission's
+	// workflow has failed to load (deleted, or a store error), so
+	// getWorkflowOrFail can bound the retry and FAIL the submission instead of
+	// looping forever. Key = submissionID. See #128.
+	missingWorkflowTicks map[string]int
+
 	// stuckTracker detects classes of QUEUED tasks making zero progress.
 	stuck stuckTracker
 
 	// wsStager handles server-side workspace pre/post-staging (nil if disabled).
 	wsStager wsStagerInterface
+
+	// prestageFailures tracks how many consecutive ticks server-side
+	// workspace pre-staging has failed for a submission. Key = submissionID.
+	// Mirrors missingWorkflowTicks's bounded-retry pattern (#128): once
+	// prestageFailThreshold is reached, failPrestage FAILs the submission
+	// instead of retrying forever (#267). Cleared on success or on give-up.
+	prestageFailures map[string]int
 
 	// unsupportedSteps tracks step instances that failed due to unsupported
 	// CWL requirements (e.g., InplaceUpdateRequirement). Key = stepInstanceID,
@@ -114,6 +172,52 @@ type Loop struct {
 	// cache provides per-tick memoization for frequently-read DB entities
 	// (submissions, workflows, step instances). Reset at the start of each Tick().
 	cache *tickCache
+
+	// metrics is nil unless the server was started with --metrics-addr;
+	// every Registry method no-ops on a nil receiver, so instrumentation
+	// call sites throughout this file never check for nil themselves.
+	metrics *metrics.Registry
+
+	// lastSecretsSweep rate-limits sweepSecretsRetention (secrets_retention.go,
+	// #260) to once per minute even though Tick() calls it every tick; zero
+	// value runs the sweep on the very first tick.
+	lastSecretsSweep time.Time
+
+	// inputValidation is the server's --input-validation mode (#273),
+	// stamped into every task's RuntimeHints (populateToolAndJob) so workers
+	// follow the same policy, and used directly for server-run
+	// ExpressionTools (executeExpressionTool) and tool-level validation on
+	// the synchronous executors. Empty (unset) means warn — see
+	// validate.Mode.Effective.
+	inputValidation validate.Mode
+}
+
+// SetMetrics wires the Prometheus metrics registry into the scheduler. Not
+// setting it (nil) leaves instrumentation disabled.
+func (l *Loop) SetMetrics(m *metrics.Registry) {
+	l.metrics = m
+}
+
+// SetInputValidation wires the server's --input-validation mode (#273) into
+// the scheduler. Not setting it (zero value) means warn.
+func (l *Loop) SetInputValidation(mode validate.Mode) {
+	l.inputValidation = mode
+}
+
+// workflowNameForTask looks up a task's workflow name via the per-tick
+// submission cache for Prometheus workflow labeling. Returns "" on any
+// lookup failure (missing submission, store error) rather than propagating
+// the error — a label lookup miss must never block instrumentation-adjacent
+// scheduler work.
+func (l *Loop) workflowNameForTask(ctx context.Context, task *model.Task) string {
+	if l.cache == nil {
+		return ""
+	}
+	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
+	if err != nil || sub == nil {
+		return ""
+	}
+	return sub.WorkflowName
 }
 
 // taskRequirementKey groups QUEUED tasks by their scheduling requirements
@@ -121,6 +225,8 @@ type Loop struct {
 type taskRequirementKey struct {
 	WorkerGroup string
 	PrestageIDs string // sorted, comma-joined
+	Cores       int    // RuntimeHints.Cores (0 = none)
+	RamMB       int64  // RuntimeHints.RamMB (0 = none)
 }
 
 // stuckTracker tracks per-requirement-key progress of QUEUED tasks.
@@ -132,15 +238,17 @@ type stuckTracker struct {
 // NewLoop creates a new scheduler loop.
 func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Logger) *Loop {
 	return &Loop{
-		store:             st,
-		registry:          reg,
-		config:            cfg,
-		logger:            logger.With("component", "scheduler"),
-		stopCh:            make(chan struct{}),
-		doneCh:            make(chan struct{}),
-		deferredSteps:     make(map[string]int),
-		unsupportedSteps:  make(map[string]string),
-		invalidInputSteps: make(map[string]string),
+		store:                st,
+		registry:             reg,
+		config:               cfg,
+		logger:               logger.With("component", "scheduler"),
+		stopCh:               make(chan struct{}),
+		doneCh:               make(chan struct{}),
+		deferredSteps:        make(map[string]int),
+		missingWorkflowTicks: make(map[string]int),
+		unsupportedSteps:     make(map[string]string),
+		prestageFailures:     make(map[string]int),
+		invalidInputSteps:    make(map[string]string),
 		stuck: stuckTracker{
 			lastCounts: make(map[taskRequirementKey]int),
 			staleTicks: make(map[taskRequirementKey]int),
@@ -151,6 +259,12 @@ func NewLoop(st store.Store, reg *executor.Registry, cfg Config, logger *slog.Lo
 // Start begins the scheduling loop. Blocks until ctx is cancelled or Stop is called.
 func (l *Loop) Start(ctx context.Context) error {
 	l.logger.Info("scheduler started", "poll_interval", l.config.PollInterval)
+	l.state.Store(loopStateRunning)
+	// Belt-and-braces: covers a return via panic recovery or any future exit
+	// path that forgets to set the state explicitly. The exit branches below
+	// set it before closing doneCh so Stop()'s caller never observes a stale
+	// "running" state (close(doneCh) unblocks Stop() before this defer runs).
+	defer l.state.Store(loopStateStopped)
 	ticker := time.NewTicker(l.config.PollInterval)
 	defer ticker.Stop()
 
@@ -158,10 +272,12 @@ func (l *Loop) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			l.logger.Info("scheduler stopping (context cancelled)")
+			l.state.Store(loopStateStopped)
 			close(l.doneCh)
 			return ctx.Err()
 		case <-l.stopCh:
 			l.logger.Info("scheduler stopping (stop called)")
+			l.state.Store(loopStateStopped)
 			close(l.doneCh)
 			return nil
 		case <-ticker.C:
@@ -169,6 +285,21 @@ func (l *Loop) Start(ctx context.Context) error {
 				l.logger.Error("tick error", "error", err)
 			}
 		}
+	}
+}
+
+// State reports the scheduler's current lifecycle state: "not_started"
+// before Start is called, "running" while its poll loop is active, and
+// "stopped" once Start has returned (context cancelled or Stop called).
+// Safe to call concurrently with Start/Stop from any goroutine.
+func (l *Loop) State() string {
+	switch l.state.Load() {
+	case loopStateRunning:
+		return StateRunning
+	case loopStateStopped:
+		return StateStopped
+	default:
+		return StateNotStarted
 	}
 }
 
@@ -208,6 +339,15 @@ func (l *Loop) finalizeSubmissionCAS(ctx context.Context, sub *model.Submission)
 	applied, err := l.store.FinalizeSubmission(ctx, sub)
 	if err == nil && l.cache != nil {
 		l.cache.invalidateSubmission(sub.ID)
+	}
+	// This is the single instrumentation point for gowe_submission_wall_seconds
+	// on the scheduler side: both normal completion (finalizeSubmissions,
+	// phase 5) and the scheduler's own cancel cascade (cancelChildSubmission)
+	// go through this wrapper. F-M: a submission cancelled via the API/UI
+	// handler never reaches here — cancelseq.Run observes its own wall time
+	// directly.
+	if err == nil && applied {
+		l.metrics.ObserveSubmissionWall(sub)
 	}
 	return applied, err
 }
@@ -276,67 +416,236 @@ func (l *Loop) listSubmissionsByState(ctx context.Context, state string) ([]*mod
 // Tick runs a single scheduling iteration using the 3-level state architecture:
 // Submissions → StepInstances → Tasks.
 func (l *Loop) Tick(ctx context.Context) error {
+	tickStart := time.Now()
+	defer func() { l.metrics.ObserveTickPhase("total", time.Since(tickStart)) }()
+
 	l.cachedWorkerCaps = nil          // Reset per-tick worker capability cache.
 	l.cache = newTickCache()          // Reset per-tick entity cache.
 	affected := make(map[string]bool) // submissionIDs touched this tick
 
 	// Phase 1: Advance WAITING StepInstances to READY when all dependencies are met.
+	phaseStart := time.Now()
 	if err := l.advanceWaiting(ctx, affected); err != nil {
 		return fmt.Errorf("phase 1 (waiting): %w", err)
 	}
+	l.metrics.ObserveTickPhase("1", time.Since(phaseStart))
 
 	// Phase 1.5: Pre-stage workspace inputs for PENDING submissions (server-side mode).
 	if l.wsStager != nil {
+		phaseStart = time.Now()
 		if err := l.prestageWorkspaceInputs(ctx, affected); err != nil {
 			return fmt.Errorf("phase 1.5 (pre-stage): %w", err)
 		}
+		l.metrics.ObserveTickPhase("1.5", time.Since(phaseStart))
 	}
 
 	// Phase 2: Dispatch READY StepInstances — resolve inputs, create Tasks, submit to executors.
+	phaseStart = time.Now()
 	if err := l.dispatchReady(ctx, affected); err != nil {
 		return fmt.Errorf("phase 2 (dispatch): %w", err)
 	}
+	l.metrics.ObserveTickPhase("2", time.Since(phaseStart))
 
 	// Phase 2.5: Re-submit RETRYING tasks.
+	phaseStart = time.Now()
 	if err := l.resubmitRetrying(ctx, affected); err != nil {
 		return fmt.Errorf("phase 2.5 (retry): %w", err)
 	}
+	l.metrics.ObserveTickPhase("2.5", time.Since(phaseStart))
 
 	// Phase 3: Poll QUEUED/RUNNING tasks for status updates (async executors).
+	phaseStart = time.Now()
 	if err := l.pollInFlight(ctx, affected); err != nil {
 		return fmt.Errorf("phase 3 (poll): %w", err)
 	}
+	l.metrics.ObserveTickPhase("3", time.Since(phaseStart))
 
 	// Phase 3.5: Detect stuck QUEUED worker tasks (progress-based).
 	if l.config.StuckTaskThreshold > 0 {
+		phaseStart = time.Now()
 		if err := l.detectStuckTasks(ctx, affected); err != nil {
 			l.logger.Error("phase 3.5 (stuck detection)", "error", err)
 		}
+		l.metrics.ObserveTickPhase("3.5", time.Since(phaseStart))
 	}
 
 	// Phase 4: Advance DISPATCHED/RUNNING StepInstances when all their Tasks are terminal.
+	phaseStart = time.Now()
 	if err := l.advanceSteps(ctx, affected); err != nil {
 		return fmt.Errorf("phase 4 (advance steps): %w", err)
 	}
+	l.metrics.ObserveTickPhase("4", time.Since(phaseStart))
 
 	// Phase 5: Finalize submissions where all StepInstances are terminal.
+	phaseStart = time.Now()
 	if err := l.finalizeSubmissions(ctx, affected); err != nil {
 		return fmt.Errorf("phase 5 (finalize): %w", err)
 	}
+	l.metrics.ObserveTickPhase("5", time.Since(phaseStart))
+
+	// Secrets retention sweep (#260): rate-limited internally to once per
+	// minute, so calling it every tick is cheap. See secrets_retention.go.
+	l.sweepSecretsRetention(ctx, time.Now())
 
 	// Phase 5.5: Upload outputs to workspace for completed submissions (server-side mode).
 	if l.wsStager != nil {
+		phaseStart = time.Now()
 		if err := l.poststageWorkspaceOutputs(ctx, affected); err != nil {
 			return fmt.Errorf("phase 5.5 (post-stage): %w", err)
 		}
+		l.metrics.ObserveTickPhase("5.5", time.Since(phaseStart))
 	}
 
 	// Phase 6: Transition newly-FAILED tasks to RETRYING if retries remain.
+	phaseStart = time.Now()
 	if err := l.markRetries(ctx, affected); err != nil {
 		return fmt.Errorf("phase 6 (retries): %w", err)
 	}
+	l.metrics.ObserveTickPhase("6", time.Since(phaseStart))
+
+	// Phase 7: Refresh state gauges from a fresh snapshot. Not a numbered
+	// phase in the architecture doc (it observes, never mutates), so it has
+	// no gowe_scheduler_tick_seconds{phase} entry of its own — it's folded
+	// into "total".
+	l.refreshGauges(ctx)
 
 	return nil
+}
+
+// refreshGauges sets gowe_tasks{state}, gowe_submissions{state},
+// gowe_workers{state,group}, and gowe_queue_depth{group} from a fresh
+// per-tick snapshot. A no-op when metrics are disabled (RefreshGauges is
+// nil-safe) except for the store round-trips themselves, which this method
+// skips entirely when l.metrics is nil.
+func (l *Loop) refreshGauges(ctx context.Context) {
+	if l.metrics == nil {
+		return
+	}
+	taskCounts, err := l.store.CountTasksByState(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: count tasks by state", "error", err)
+	}
+	subCounts, err := l.store.CountSubmissionsByState(ctx, time.Time{}, "")
+	if err != nil {
+		l.logger.Error("refresh gauges: count submissions by state", "error", err)
+	}
+	queueDepth, err := l.store.CountTasksQueuedByGroup(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: count tasks queued by group", "error", err)
+	}
+	// A fresh ListWorkers, not workerCapabilities().Workers: that cache is
+	// deliberately online-only (it answers "can a task be scheduled right
+	// now"), which would hide offline/draining workers from this gauge
+	// entirely instead of reporting them at 0 in their own state bucket.
+	workers, err := l.store.ListWorkers(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: list workers", "error", err)
+	}
+	l.metrics.RefreshGauges(taskCounts, subCounts, workers, queueDepth)
+}
+
+// missingWorkflowFailThreshold is the number of consecutive ticks a
+// non-terminal submission's workflow may fail to load (deleted, or a store
+// error) before the submission itself is FAILED. Mirrors the deferredSteps /
+// PreflightDeferralTicks bounded-retry pattern. See #128: without a bound, a
+// submission whose workflow was deleted out from under it re-attempted the
+// load, logged an error, and gave up for the tick — forever, at 100ms/tick in
+// production (304 identical log lines for a single submission).
+const missingWorkflowFailThreshold = 10
+
+// orphanedByTerminalSubmission marks si SKIPPED with a diagnostic Error
+// explaining that its owning submission is already terminal
+// (COMPLETED/FAILED/CANCELLED). Every phase that selects step instances
+// purely by state (advanceWaiting, dispatchReady, advanceSteps) must run this
+// instead of its normal processing when it discovers the owning submission is
+// terminal — otherwise a submission that finalized (or was cancelled) without
+// its cancellation cascading to every step instance leaves orphans that get
+// re-selected, and re-fail identically, every tick forever (#128).
+func (l *Loop) orphanedByTerminalSubmission(ctx context.Context, si *model.StepInstance, sub *model.Submission) {
+	now := time.Now().UTC()
+	si.State = model.StepStateSkipped
+	si.CompletedAt = &now
+	si.Error = fmt.Sprintf("orphaned by terminal submission: submission %s is %s", sub.ID, sub.State)
+	if err := l.updateStepInstance(ctx, si); err != nil {
+		l.logger.Error("terminalize orphaned step instance", "si_id", si.ID, "submission_id", sub.ID, "error", err)
+		return
+	}
+	l.logger.Warn("step instance orphaned by terminal submission; skipped",
+		"si_id", si.ID, "step_id", si.StepID, "submission_id", sub.ID, "submission_state", sub.State)
+}
+
+// getWorkflowOrFail resolves sub's workflow through the tick cache. The
+// caller must already have confirmed sub is non-terminal (terminal
+// submissions are handled by orphanedByTerminalSubmission instead). When the
+// workflow cannot be loaded, it tracks consecutive-tick failures per
+// submission (deduped within a single tick via the tick cache — see
+// tickCache.workflowLoadFailureSeen) and, once missingWorkflowFailThreshold is
+// reached, FAILs the submission outright via failSubmissionMissingWorkflow so
+// the retry is bounded (#128). Logging is rate-limited: a full Warn only on
+// the first occurrence and every Nth tick thereafter, so a stuck submission
+// cannot flood the log the way #128's production evidence showed. Returns nil
+// on any failure — callers should skip the step instance(s) for this tick
+// exactly as before.
+func (l *Loop) getWorkflowOrFail(ctx context.Context, sub *model.Submission, phase string) *model.Workflow {
+	wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
+	if err == nil && wf != nil {
+		delete(l.missingWorkflowTicks, sub.ID)
+		return wf
+	}
+
+	if l.cache.workflowLoadFailureSeen[sub.ID] {
+		return nil
+	}
+	l.cache.workflowLoadFailureSeen[sub.ID] = true
+
+	l.missingWorkflowTicks[sub.ID]++
+	count := l.missingWorkflowTicks[sub.ID]
+
+	if count == 1 {
+		l.logger.Warn("get workflow for "+phase, "submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err)
+	} else if count%missingWorkflowFailThreshold == 0 {
+		l.logger.Warn("get workflow for "+phase, "submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err, "consecutive_ticks", count)
+	} else {
+		l.logger.Debug("get workflow for "+phase, "submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err, "consecutive_ticks", count)
+	}
+
+	if count >= missingWorkflowFailThreshold {
+		l.failSubmissionMissingWorkflow(ctx, sub)
+	}
+
+	return nil
+}
+
+// failSubmissionMissingWorkflow FAILs sub after its workflow has been
+// unreachable for missingWorkflowFailThreshold consecutive ticks (see
+// getWorkflowOrFail), persisting a diagnostic Error so the reason survives
+// for API/UI consumers. Any of sub's other non-terminal step instances are
+// left for the terminal-submission guard (orphanedByTerminalSubmission) to
+// pick up and skip — on a later phase this same tick, or the next tick at the
+// latest, once the cache reflects the FAILED state (#128).
+func (l *Loop) failSubmissionMissingWorkflow(ctx context.Context, sub *model.Submission) {
+	now := time.Now().UTC()
+	sub.State = model.SubmissionStateFailed
+	sub.CompletedAt = &now
+	sub.Error = &model.SubmissionError{
+		Code:    "WORKFLOW_UNAVAILABLE",
+		Message: fmt.Sprintf("workflow %s missing/unloadable", sub.WorkflowID),
+	}
+
+	applied, err := l.finalizeSubmissionCAS(ctx, sub)
+	if err != nil {
+		l.logger.Error("fail submission: workflow missing/unloadable",
+			"submission_id", sub.ID, "workflow_id", sub.WorkflowID, "error", err)
+		return
+	}
+	delete(l.missingWorkflowTicks, sub.ID)
+	if !applied {
+		// Lost the race to a concurrent terminal write (e.g. a cancel) — that
+		// write wins, nothing more to do.
+		return
+	}
+	l.logger.Error("submission failed: workflow missing/unloadable",
+		"submission_id", sub.ID, "workflow_id", sub.WorkflowID, "consecutive_ticks", missingWorkflowFailThreshold)
 }
 
 // advanceWaiting transitions WAITING StepInstances to READY (deps met) or SKIPPED (blocked).
@@ -356,6 +665,23 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 	}
 
 	for subID, steps := range bySubmission {
+		sub, err := l.cache.getSubmission(ctx, l.store, subID)
+		if err != nil || sub == nil {
+			l.logger.Error("get submission for advance", "submission_id", subID, "error", err)
+			continue
+		}
+
+		// A terminal submission (COMPLETED/FAILED/CANCELLED) can never make
+		// progress: these WAITING step instances are orphans (e.g. a cancel
+		// whose cascade missed them). Terminalize them once instead of
+		// re-selecting and re-attempting them every tick (#128).
+		if sub.State.IsTerminal() {
+			for _, si := range steps {
+				l.orphanedByTerminalSubmission(ctx, si, sub)
+			}
+			continue
+		}
+
 		// Load all step instances for this submission to check dependencies.
 		allSteps, err := l.cache.listStepsBySubmission(ctx, l.store, subID)
 		if err != nil {
@@ -368,14 +694,8 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 		}
 
 		// Load workflow to get step dependencies.
-		sub, err := l.cache.getSubmission(ctx, l.store, subID)
-		if err != nil || sub == nil {
-			l.logger.Error("get submission for advance", "submission_id", subID, "error", err)
-			continue
-		}
-		wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
-		if err != nil || wf == nil {
-			l.logger.Error("get workflow for advance", "submission_id", subID, "error", err)
+		wf := l.getWorkflowOrFail(ctx, sub, "advance")
+		if wf == nil {
 			continue
 		}
 		stepDefs := make(map[string]*model.Step)
@@ -417,6 +737,10 @@ func (l *Loop) advanceWaiting(ctx context.Context, affected map[string]bool) err
 }
 
 // areStepDependenciesSatisfied checks whether all upstream step dependencies are met.
+//
+// Per CWL v1.2, there is no "skip cascade": a SKIPPED (when-false) producer
+// yields null outputs, and its consumers still run — gated only by their own
+// `when` condition. Only a FAILED dependency blocks (and cascades) the consumer.
 func areStepDependenciesSatisfied(dependsOn []string, stepByStepID map[string]*model.StepInstance) (satisfied bool, blocked bool) {
 	if len(dependsOn) == 0 {
 		return true, false
@@ -427,9 +751,9 @@ func areStepDependenciesSatisfied(dependsOn []string, stepByStepID map[string]*m
 			return false, true
 		}
 		switch dep.State {
-		case model.StepStateFailed, model.StepStateSkipped:
+		case model.StepStateFailed:
 			return false, true
-		case model.StepStateCompleted:
+		case model.StepStateCompleted, model.StepStateSkipped:
 			continue
 		default:
 			return false, false
@@ -451,9 +775,30 @@ func (l *Loop) dispatchReady(ctx context.Context, affected map[string]bool) erro
 			l.logger.Error("get submission for dispatch", "si_id", si.ID, "error", err)
 			continue
 		}
-		wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
-		if err != nil || wf == nil {
-			l.logger.Error("get workflow for dispatch", "si_id", si.ID, "error", err)
+
+		// A terminal submission can never make progress: this READY step
+		// instance is an orphan. Terminalize it once instead of re-attempting
+		// dispatch every tick (#128).
+		if sub.State.IsTerminal() {
+			l.orphanedByTerminalSubmission(ctx, si, sub)
+			continue
+		}
+
+		// A submission with server-side pre-staging still in flight must not
+		// dispatch: its inputs may still carry ws:// locations, and a
+		// dispatched task never gets the submitter's credential to resolve
+		// them itself (addUserToken only embeds it when l.wsStager == nil —
+		// passthrough mode). Defer this step to a later tick; pre-staging
+		// either completes (rewriting the inputs to file://, after which this
+		// same READY step dispatches normally) or exhausts its retries and
+		// FAILs the submission (prestageFailThreshold, see workspace.go),
+		// at which point the terminal check above orphans it instead (#267).
+		if l.wsStager != nil && sub.PrestageStartedAt != nil && sub.PrestageCompletedAt == nil {
+			continue
+		}
+
+		wf := l.getWorkflowOrFail(ctx, sub, "dispatch")
+		if wf == nil {
 			continue
 		}
 		if err := l.dispatchStep(ctx, si, wf, sub); err != nil {
@@ -473,6 +818,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	if !sub.TokenExpiry.IsZero() && time.Now().After(sub.TokenExpiry) {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("submission token expired at %s", sub.TokenExpiry.Format(time.RFC3339))
 		si.CompletedAt = &now
 		l.logger.Warn("step failed due to token expiry", "si_id", si.ID, "submission_id", sub.ID)
 		return l.updateStepInstance(ctx, si)
@@ -510,6 +856,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 			// CWL spec: non-boolean 'when' expressions must fail the step.
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("when condition evaluation: %v", err)
 			si.CompletedAt = &now
 			l.logger.Error("when condition evaluation failed", "si_id", si.ID, "error", err)
 			return l.updateStepInstance(ctx, si)
@@ -536,6 +883,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Use a synthetic task map built from step instance outputs.
 	tasksByStep := buildSyntheticTasksByStep(allSteps)
 
+	var populateErr error
 	if err := l.populateToolAndJob(tmpTask, step, wf, mergedInputs, tasksByStep); err != nil {
 		// Input validation errors are not recoverable by legacy fallback —
 		// failing the step prevents bad inputs from reaching BV-BRC.
@@ -548,8 +896,18 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 				"si_id", si.ID, "step_id", si.StepID, "error", err)
 			return l.updateStepInstance(ctx, si)
 		}
+		populateErr = err
 		l.logger.Warn("failed to populate Tool/Job, falling back to legacy mode",
 			"si_id", si.ID, "error", err)
+	}
+
+	// Evaluate ResourceRequirement (including expressions) into the hints so
+	// the preflight and CheckoutTask see what the worker will enforce (#324).
+	// Scatter steps are evaluated per iteration in dispatchScatterStep: the
+	// template job still holds whole arrays for the scattered inputs.
+	hinter := l.newResourceHinter(si, tmpTask)
+	if len(step.Scatter) == 0 {
+		hinter.apply(tmpTask)
 	}
 
 	// Determine executor type.
@@ -558,29 +916,13 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Pre-flight check: if executor is "worker", verify a capable worker exists.
 	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
 		caps := l.workerCapabilities()
-		canMatch, reason := canMatchTask(caps, tmpTask.RuntimeHints)
+		var req cwltool.ResourceRequest
+		if len(step.Scatter) == 0 && tmpTask.RuntimeHints != nil {
+			req = cwltool.ResourceRequest{Cores: tmpTask.RuntimeHints.Cores, RamMB: tmpTask.RuntimeHints.RamMB}
+		}
+		canMatch, reason := canMatchTask(caps, l.preflightHints(tmpTask, step, sub, caps, req))
 		if !canMatch {
-			l.deferredSteps[si.ID]++
-			count := l.deferredSteps[si.ID]
-			if count >= l.config.PreflightDeferralTicks {
-				delete(l.deferredSteps, si.ID)
-				now := time.Now().UTC()
-				si.State = model.StepStateFailed
-				si.CompletedAt = &now
-				l.logger.Error("step failed: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
-					"deferred_ticks", count)
-				return l.updateStepInstance(ctx, si)
-			}
-			if count == 1 {
-				l.logger.Warn("deferring step dispatch: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason)
-			} else {
-				l.logger.Debug("deferring step dispatch: no capable worker",
-					"si_id", si.ID, "step_id", si.StepID, "reason", reason,
-					"deferred_ticks", count)
-			}
-			return nil // Leave step in READY for next tick.
+			return l.deferOrFailPreflight(ctx, si, reason)
 		}
 		// Worker can match — clear any prior deferral.
 		delete(l.deferredSteps, si.ID)
@@ -610,7 +952,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 
 	// Scatter dispatch.
 	if len(step.Scatter) > 0 {
-		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType)
+		return l.dispatchScatterStep(ctx, si, tmpTask, step, wf, sub, mergedInputs, tasksByStep, stepOutputs, execType, populateErr, hinter)
 	}
 
 	// ExpressionTool dispatch.
@@ -619,6 +961,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		now := time.Now().UTC()
 		if err != nil {
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("expression tool: %v", err)
 			si.CompletedAt = &now
 			l.logger.Error("expression tool failed", "si_id", si.ID, "error", err)
 		} else {
@@ -647,6 +990,7 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	if err := ResolveTaskInputs(task, step, mergedInputs, tasksByStep, nil); err != nil {
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("resolve inputs: %v", err)
 		si.CompletedAt = &now
 		return l.updateStepInstance(ctx, si)
 	}
@@ -654,8 +998,12 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		validate.ApplyRecordFieldDefaults(cwlTool, task.Inputs)
 	}
 
-	// Add user token.
-	l.addUserToken(task, sub)
+	// Credential policy: token grant (blessing check), user token for
+	// staging, opted-in submission secrets. A denial fails the task
+	// pre-dispatch — a task that expected the token never runs without it.
+	if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
+		return l.failTaskPreDispatch(ctx, task, si, err.Error())
+	}
 
 	if err := l.store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
@@ -680,12 +1028,87 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	return l.updateStepInstance(ctx, si)
 }
 
+// resolveWorkerGroup resolves the worker group a task created from step
+// will carry, with the precedence createTaskFromStep applies: the tool's own
+// hints, then the step's gowe:Execution.worker_group, then the submission
+// label (`gowe submit --group`). Empty means the default group.
+func resolveWorkerGroup(hints *model.RuntimeHints, step *model.Step, sub *model.Submission) string {
+	if hints != nil && hints.WorkerGroup != "" {
+		return hints.WorkerGroup
+	}
+	if step != nil && step.Hints != nil && step.Hints.WorkerGroup != "" {
+		return step.Hints.WorkerGroup
+	}
+	if sub != nil && sub.Labels != nil {
+		return sub.Labels["worker_group"]
+	}
+	return ""
+}
+
+// preflightHints builds the hints the dispatch preflight checks for a step.
+// The template task carries no worker group (createTaskFromStep adds it from
+// the step hints or the submission label), so the preflight resolves the
+// effective group here and checks capacity against that group's workers,
+// not against "default" or every online worker (#324).
+//
+// Capacity (req) is only checked when the effective group has online
+// workers: with none online nothing can be said about fit, so the preflight
+// keeps its pre-#324 group-less semantics and the stuck-task detector owns
+// the "group offline" case. With the group online the step is checked as
+// CheckoutTask will see it (group, capacity, prestage, GPU) so a task no
+// worker in its group can ever take fails here with the reason, instead of
+// sitting QUEUED forever.
+func (l *Loop) preflightHints(tmpTask *model.Task, step *model.Step, sub *model.Submission,
+	caps *WorkerCapabilities, req cwltool.ResourceRequest) *model.RuntimeHints {
+	hints := cloneRuntimeHints(tmpTask.RuntimeHints)
+	hints.Cores, hints.RamMB = 0, 0
+	group := resolveWorkerGroup(tmpTask.RuntimeHints, step, sub)
+	if group == "" {
+		group = defaultWorkerGroupKey
+	}
+	if caps.Groups[group] == 0 {
+		return hints
+	}
+	hints.WorkerGroup = group
+	hints.Cores, hints.RamMB = req.Cores, req.RamMB
+	return hints
+}
+
+// deferOrFailPreflight records one more preflight deferral for si. Below
+// PreflightDeferralTicks the step stays READY for the next tick; at the
+// bound it is FAILED with the reason.
+func (l *Loop) deferOrFailPreflight(ctx context.Context, si *model.StepInstance, reason string) error {
+	l.deferredSteps[si.ID]++
+	count := l.deferredSteps[si.ID]
+	if count >= l.config.PreflightDeferralTicks {
+		delete(l.deferredSteps, si.ID)
+		now := time.Now().UTC()
+		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("no capable worker: %s (deferred %d ticks)", reason, count)
+		si.CompletedAt = &now
+		l.logger.Error("step failed: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+			"deferred_ticks", count)
+		return l.updateStepInstance(ctx, si)
+	}
+	if count == 1 {
+		l.logger.Warn("deferring step dispatch: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason)
+	} else {
+		l.logger.Debug("deferring step dispatch: no capable worker",
+			"si_id", si.ID, "step_id", si.StepID, "reason", reason,
+			"deferred_ticks", count)
+	}
+	return nil // Leave step in READY for next tick.
+}
+
 // dispatchScatterStep handles scatter dispatch for CommandLineTools and ExpressionTools.
 // Creates N Tasks (one per scatter combination) and executes them.
 func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, tmpTask *model.Task,
 	step *model.Step, wf *model.Workflow, sub *model.Submission,
 	mergedInputs map[string]any, tasksByStep map[string]*model.Task,
-	stepOutputs map[string]map[string]any, execType model.ExecutorType) error {
+	stepOutputs map[string]map[string]any, execType model.ExecutorType, populateErr error,
+	hinter *resourceHinter) error {
 
 	l.logger.Info("dispatching scatter step",
 		"si_id", si.ID, "step_id", si.StepID,
@@ -707,6 +1130,14 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		if !ok {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			if populateErr != nil {
+				// Most common root cause: job-input resolution (e.g. a
+				// step-level pickValue error) failed earlier, so the scatter
+				// input never got its real (array) value.
+				si.Error = fmt.Sprintf("scatter input %q: input resolution failed: %v", scatterInput, populateErr)
+			} else {
+				si.Error = fmt.Sprintf("scatter input %q is not an array (got %T)", scatterInput, value)
+			}
 			si.CompletedAt = &now
 			return l.updateStepInstance(ctx, si)
 		}
@@ -724,6 +1155,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 	default:
 		now := time.Now().UTC()
 		si.State = model.StepStateFailed
+		si.Error = fmt.Sprintf("unknown scatterMethod %q", method)
 		si.CompletedAt = &now
 		return l.updateStepInstance(ctx, si)
 	}
@@ -734,18 +1166,49 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		if tmpTask.RuntimeHints != nil {
 			expressionLib = tmpTask.RuntimeHints.ExpressionLib
 		}
-		for _, combo := range combinations {
+		for i, combo := range combinations {
 			if err := applyScatterValueFrom(step, combo, mergedInputs, expressionLib); err != nil {
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d valueFrom: %v", i, err)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
 		}
 	}
 
-	si.ScatterCount = len(combinations)
 	isExprTool := isExpressionTool(tmpTask.Tool)
+
+	// Per-iteration ResourceRequirement (#324): evaluated once here, used by
+	// the preflight below and stored on each task further down. An iteration
+	// that no online worker in the step's group can fit makes the whole step
+	// unfinishable, so it is deferred/failed like a non-scatter step rather
+	// than left QUEUED forever.
+	var reqs []cwltool.ResourceRequest
+	if !isExprTool {
+		reqs = hinter.evaluateAll(combinations)
+		if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
+			caps := l.workerCapabilities()
+			for i, req := range reqs {
+				if req.Cores == 0 && req.RamMB == 0 {
+					continue
+				}
+				if step.When != "" {
+					// An iteration `when` skips needs no worker; an evaluation
+					// error is reported by the dispatch loop below.
+					if run, err := l.evaluateWhenForScatterIterationFromSteps(step, combinations[i], mergedInputs, stepOutputs); err != nil || !run {
+						continue
+					}
+				}
+				if ok, reason := canMatchTask(caps, l.preflightHints(tmpTask, step, sub, caps, req)); !ok {
+					return l.deferOrFailPreflight(ctx, si, fmt.Sprintf("scatter iteration %d: %s", i, reason))
+				}
+			}
+			delete(l.deferredSteps, si.ID)
+		}
+	}
+
+	si.ScatterCount = len(combinations)
 
 	// For ExpressionTools, execute inline and collect results.
 	if isExprTool {
@@ -754,7 +1217,13 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 			if step.When != "" {
 				shouldRun, err := l.evaluateWhenForScatterIterationFromSteps(step, combo, mergedInputs, stepOutputs)
 				if err != nil {
-					l.logger.Warn("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+					// CWL spec: non-boolean 'when' expressions must fail the step.
+					now := time.Now().UTC()
+					si.State = model.StepStateFailed
+					si.Error = fmt.Sprintf("scatter iteration %d when evaluation: %v", i, err)
+					si.CompletedAt = &now
+					l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
+					return l.updateStepInstance(ctx, si)
 				} else if !shouldRun {
 					nullOutputs := make(map[string]any)
 					for _, outID := range step.Out {
@@ -770,6 +1239,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 			if err != nil {
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d expression tool: %v", i, err)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -801,6 +1271,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				// CWL spec: non-boolean 'when' expressions must fail.
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d when evaluation: %v", i, err)
 				si.CompletedAt = &now
 				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
 				return l.updateStepInstance(ctx, si)
@@ -820,6 +1291,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				if err := l.store.CreateTask(ctx, task); err != nil {
 					now := time.Now().UTC()
 					si.State = model.StepStateFailed
+					si.Error = fmt.Sprintf("scatter iteration %d: create task: %v", i, err)
 					si.CompletedAt = &now
 					return l.updateStepInstance(ctx, si)
 				}
@@ -831,12 +1303,16 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 		task := l.createTaskFromStep(si, tmpTask, step, sub, execType, i)
 		task.Job = combo
 		task.Inputs = combo
+		hinter.applyRequest(task, reqs[i])
 
-		l.addUserToken(task, sub)
+		if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
+			return l.failTaskPreDispatch(ctx, task, si, fmt.Sprintf("scatter iteration %d: %v", i, err))
+		}
 
 		if err := l.store.CreateTask(ctx, task); err != nil {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("scatter iteration %d: create task: %v", i, err)
 			si.CompletedAt = &now
 			return l.updateStepInstance(ctx, si)
 		}
@@ -850,6 +1326,7 @@ func (l *Loop) dispatchScatterStep(ctx context.Context, si *model.StepInstance, 
 				// Scatter iteration failed.
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d task failed", i)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -963,6 +1440,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 		if !ok {
 			now := time.Now().UTC()
 			si.State = model.StepStateFailed
+			si.Error = fmt.Sprintf("scatter input %q is not an array (got %T)", scatterInput, value)
 			si.CompletedAt = &now
 			return l.updateStepInstance(ctx, si)
 		}
@@ -982,10 +1460,11 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 		if tmpTask.RuntimeHints != nil {
 			expressionLib = tmpTask.RuntimeHints.ExpressionLib
 		}
-		for _, combo := range combinations {
+		for i, combo := range combinations {
 			if err := applyScatterValueFrom(step, combo, mergedInputs, expressionLib); err != nil {
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d valueFrom: %v", i, err)
 				si.CompletedAt = &now
 				return l.updateStepInstance(ctx, si)
 			}
@@ -1016,6 +1495,7 @@ func (l *Loop) dispatchScatterSubWorkflow(ctx context.Context, si *model.StepIns
 				// CWL spec: non-boolean 'when' expressions must fail the step.
 				now := time.Now().UTC()
 				si.State = model.StepStateFailed
+				si.Error = fmt.Sprintf("scatter iteration %d when evaluation: %v", i, err)
 				si.CompletedAt = &now
 				l.logger.Error("scatter when eval failed", "si_id", si.ID, "iter", i, "error", err)
 				return l.updateStepInstance(ctx, si)
@@ -1099,27 +1579,44 @@ func (l *Loop) createSubworkflowProxyTask(si *model.StepInstance, tmpTask *model
 	now := time.Now().UTC()
 	task.State = model.TaskStateRunning
 	task.StartedAt = &now
+	// Proxies are "dispatched" the instant they're created — there is no
+	// separate submit step (the child submission itself is the dispatch).
+	createdAt := task.CreatedAt
+	task.DispatchedAt = &createdAt
 	task.Job = job
 	task.Inputs = job
 	task.MaxRetries = 0
 	// No addUserToken: the proxy never executes, so a token at rest on a
 	// long-lived RUNNING row is pure exposure, and propagating the parent's
 	// OutputDestination here would contradict the child-level drop. [F6]
+	// No addSecrets either, for the same reason: the proxy never executes,
+	// so it carries none of the submission's secrets at rest. The paired
+	// child submission inherits Secrets/SecretNames/SecretsRetention
+	// directly (see createChildSubmission) and re-derives its own tasks'
+	// secret subsets when it dispatches its own steps.
 	return task
 }
 
 // failSubworkflowProxy records a non-retryable sub-workflow dispatch failure:
-// the proxy task goes FAILED with the reason in Stderr (so
-// buildSubmissionError surfaces it) and the step instance is failed. [F11]
+// the proxy task goes FAILED with the reason in Stderr, the step instance's
+// Error is set to the same reason (so buildSubmissionError surfaces it even
+// when no failed task is found under the step), and the step instance is
+// failed. [F11]
 func (l *Loop) failSubworkflowProxy(ctx context.Context, task *model.Task, si *model.StepInstance, reason string) {
 	now := time.Now().UTC()
 	task.State = model.TaskStateFailed
 	task.Stderr = reason
 	task.CompletedAt = &now
-	if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+	// Defense in depth: proxy tasks never carry RuntimeHints.Secrets (see
+	// reconcileDispatchWithCancel's identical note) — scrub unconditionally.
+	scrubTaskToken(task)
+	if applied, err := l.store.TerminalizeTask(ctx, task); err != nil {
 		l.logger.Error("fail subworkflow proxy", "task_id", task.ID, "error", err)
+	} else if applied {
+		l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "subworkflow")
 	}
 	si.State = model.StepStateFailed
+	si.Error = reason
 	si.CompletedAt = &now
 	if err := l.updateStepInstance(ctx, si); err != nil {
 		l.logger.Error("fail subworkflow step", "si_id", si.ID, "error", err)
@@ -1157,10 +1654,20 @@ func (l *Loop) reconcileDispatchWithCancel(ctx context.Context, subID, siID stri
 	for _, task := range tasks {
 		task.State = model.TaskStateSkipped
 		task.CompletedAt = &now
+		// Defense in depth: these are sub-workflow proxy tasks, which never
+		// carry RuntimeHints.Secrets in the first place (createSubworkflowProxyTask
+		// never calls addSecrets), so this is a no-op today — but every
+		// path that terminalizes a task row scrubs unconditionally so a
+		// future caller of reconcileDispatchWithCancel with a non-proxy task
+		// can't reintroduce H2.
+		scrubTaskToken(task)
 		// CAS: when-skipped synthetic SUCCESS tasks are already terminal and
-		// stay as they are.
-		if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+		// stay as they are. Proxies are excluded from CancelNonTerminalTasks,
+		// so this is the one per-row SKIP count, gated on the write applying.
+		if applied, err := l.store.TerminalizeTask(ctx, task); err != nil {
 			l.logger.Error("skip proxy task after cancel", "task_id", task.ID, "error", err)
+		} else if applied {
+			l.metrics.AddTasksSkipped(1)
 		}
 	}
 	l.skipStepInstanceIfActive(ctx, siID)
@@ -1187,9 +1694,19 @@ func (l *Loop) cancelChildSubmission(ctx context.Context, child *model.Submissio
 	if _, err := l.store.CancelNonTerminalSteps(ctx, child.ID, now); err != nil {
 		l.logger.Error("cancel child steps", "child_id", child.ID, "error", err)
 	}
-	if _, err := l.store.CancelNonTerminalTasks(ctx, child.ID, now); err != nil {
+	tasksCancelled, err := l.store.CancelNonTerminalTasks(ctx, child.ID, now)
+	if err != nil {
 		l.logger.Error("cancel child tasks", "child_id", child.ID, "error", err)
 	}
+	// H2/H3: CancelNonTerminalTasks is a bulk state/completed_at UPDATE — it
+	// does not touch runtime_hints, so a cancelled child's tasks would keep
+	// any addSecrets-attached secret values at rest. This is the scheduler's
+	// own sub-workflow cancel cascade, which bypasses the server's cancel
+	// handler (internal/cancelseq) where the scrub is already wired.
+	if _, err := l.store.ScrubTaskSecretsForSubmission(ctx, child.ID); err != nil {
+		l.logger.Warn("scrub secrets after cancel", "submission_id", child.ID, "error", err)
+	}
+	l.metrics.AddTasksSkipped(tasksCancelled)
 	l.logger.Info("child submission cancelled", "child_id", child.ID)
 }
 
@@ -1233,25 +1750,21 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		ScatterIndex:   scatterIndex,
 		Tool:           tmpTask.Tool,
 		Job:            tmpTask.Job,
-		RuntimeHints:   tmpTask.RuntimeHints,
 		Inputs:         map[string]any{},
 		Outputs:        map[string]any{},
 		MaxRetries:     l.config.MaxRetries,
 		CreatedAt:      now,
 	}
+	// Private copy: the group/GPU/dataset propagation below must not leak
+	// into the template's hints, which the preflight and the other scatter
+	// iterations read. nil stays nil.
+	if tmpTask.RuntimeHints != nil {
+		task.RuntimeHints = cloneRuntimeHints(tmpTask.RuntimeHints)
+	}
 
 	if step.Hints != nil {
 		if step.Hints.BVBRCAppID != "" {
 			task.BVBRCAppID = step.Hints.BVBRCAppID
-		}
-		// Propagate worker group from step hints to task runtime hints.
-		if step.Hints.WorkerGroup != "" {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			if task.RuntimeHints.WorkerGroup == "" {
-				task.RuntimeHints.WorkerGroup = step.Hints.WorkerGroup
-			}
 		}
 		// Propagate GPU requirement from step hints.
 		if step.Hints.RequiresGPU {
@@ -1260,13 +1773,9 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 			}
 			task.RuntimeHints.RequiresGPU = true
 		}
-		// Propagate BV-BRC token injection hint.
-		if step.Hints.InjectBVBRCToken {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			task.RuntimeHints.InjectBVBRCToken = true
-		}
+		// The token request is NOT propagated from step hints: only
+		// attachCredentials (credentials.go) may set InjectBVBRCToken, and only
+		// for a blessed tool that itself requests it.
 		// Propagate dataset requirements from step hints to task runtime hints.
 		if len(step.Hints.RequiredDatasets) > 0 {
 			if task.RuntimeHints == nil {
@@ -1278,16 +1787,16 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		}
 	}
 
-	// Submission-level worker group (from labels) as fallback.
-	if sub.Labels != nil {
-		if wg := sub.Labels["worker_group"]; wg != "" {
-			if task.RuntimeHints == nil {
-				task.RuntimeHints = &model.RuntimeHints{}
-			}
-			if task.RuntimeHints.WorkerGroup == "" {
-				task.RuntimeHints.WorkerGroup = wg
-			}
+	// Worker group: tool hints, then step hints, then the submission label
+	// (same resolution the dispatch preflight uses, see resolveWorkerGroup).
+	if wg := resolveWorkerGroup(task.RuntimeHints, step, sub); wg != "" {
+		if task.RuntimeHints == nil {
+			task.RuntimeHints = &model.RuntimeHints{}
 		}
+		task.RuntimeHints.WorkerGroup = wg
+	}
+
+	if sub.Labels != nil {
 		// Debug submissions: workers keep all task working data for inspection.
 		if sub.Labels["debug"] == "true" {
 			if task.RuntimeHints == nil {
@@ -1339,8 +1848,11 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 		return l.cachedWorkerCaps
 	}
 	caps := &WorkerCapabilities{
-		Groups:   make(map[string]int),
-		Datasets: make(map[string]int),
+		Groups:          make(map[string]int),
+		Datasets:        make(map[string]int),
+		MaxCoresByGroup: make(map[string]int),
+		MaxMemMBByGroup: make(map[string]int64),
+		UncappedByGroup: make(map[string]int),
 	}
 	workers, err := l.store.ListWorkers(context.Background())
 	if err != nil {
@@ -1361,6 +1873,19 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 			group = "default"
 		}
 		caps.Groups[group]++
+		if w.MaxCPUs != nil {
+			if *w.MaxCPUs > caps.MaxCoresByGroup[group] {
+				caps.MaxCoresByGroup[group] = *w.MaxCPUs
+			}
+		}
+		if w.MaxMemMB != nil {
+			if *w.MaxMemMB > caps.MaxMemMBByGroup[group] {
+				caps.MaxMemMBByGroup[group] = *w.MaxMemMB
+			}
+		}
+		if w.MaxCPUs == nil || w.MaxMemMB == nil {
+			caps.UncappedByGroup[group]++
+		}
 		for dsID := range w.Datasets {
 			caps.Datasets[dsID]++
 		}
@@ -1376,6 +1901,8 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 // Only GoWe-specific hard constraints are checked:
 //   - Worker group (gowe:Execution.worker_group)
 //   - Prestage datasets (gowe:ResourceData with mode=prestage)
+//   - Capacity: RuntimeHints.Cores / RamMB against each worker's self-reported
+//     max CPUs / memory (a worker that did not report a dimension fits, #324)
 //
 // DockerRequirement (DockerImage) is NOT checked here because CWL treats it as
 // a hint — workers without container runtimes can still execute tools bare.
@@ -1399,9 +1926,13 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	}
 
 	wantGPU := hints != nil && hints.RequiresGPU
+	wantCores, wantRam := 0, int64(0)
+	if hints != nil {
+		wantCores, wantRam = hints.Cores, hints.RamMB
+	}
 
 	// Fast path: no constraints beyond "any worker".
-	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU {
+	if wantGroup == "" && len(prestageIDs) == 0 && !wantGPU && wantCores == 0 && wantRam == 0 {
 		return true, ""
 	}
 
@@ -1419,6 +1950,13 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 			if wGroup != wantGroup {
 				continue
 			}
+		}
+		// Check capacity; an unreported (nil) dimension fits.
+		if wantCores > 0 && w.MaxCPUs != nil && *w.MaxCPUs < wantCores {
+			continue
+		}
+		if wantRam > 0 && w.MaxMemMB != nil && *w.MaxMemMB < wantRam {
+			continue
 		}
 		// Check prestage datasets — worker must have ALL of them.
 		if len(prestageIDs) > 0 {
@@ -1448,6 +1986,20 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 			reasons = append(reasons, fmt.Sprintf("no workers with prestage dataset %q", dsID))
 		}
 	}
+	capGroup := wantGroup
+	if capGroup == "" {
+		capGroup = "default"
+	}
+	if caps.Groups[capGroup] > 0 {
+		if wantCores > 0 && caps.UncappedByGroup[capGroup] == 0 && caps.MaxCoresByGroup[capGroup] < wantCores {
+			reasons = append(reasons, fmt.Sprintf("no online worker in group %q has >= %d cores (largest %d)",
+				capGroup, wantCores, caps.MaxCoresByGroup[capGroup]))
+		}
+		if wantRam > 0 && caps.UncappedByGroup[capGroup] == 0 && caps.MaxMemMBByGroup[capGroup] < wantRam {
+			reasons = append(reasons, fmt.Sprintf("no online worker in group %q has >= %d MiB (largest %d MiB)",
+				capGroup, wantRam, caps.MaxMemMBByGroup[capGroup]))
+		}
+	}
 	if wantGPU {
 		hasGPU := false
 		for _, w := range caps.Workers {
@@ -1471,68 +2023,16 @@ func (l *Loop) hasOnlineWorkers() bool {
 	return l.workerCapabilities().OnlineCount > 0
 }
 
-// addUserToken adds user authentication token to task runtime hints.
-// Worker and BV-BRC executor tasks always receive the submitter's token so
-// that tools can make authenticated downstream calls (workspace, AppService).
-// For other executor types, the token is only embedded when server-side
-// workspace staging is disabled (wsStager == nil) or when the step has the
-// InjectBVBRCToken hint.
-// groupAutoInjectsToken reports whether a worker task's target group is one the
-// operator has opted into automatic token injection via --token-inject-groups.
-// Tasks in other groups (including the default group) get the token only when
-// they explicitly opt in (gowe:Execution.inject_bvbrc_token) — preserving the
-// least-privilege boundary in SPECIFICATION.md §13.5 for untrusted tools.
-func (l *Loop) groupAutoInjectsToken(task *model.Task) bool {
-	if len(l.config.TokenInjectGroups) == 0 {
-		return false
-	}
-	group := "default"
-	if task.RuntimeHints != nil && task.RuntimeHints.WorkerGroup != "" {
-		group = task.RuntimeHints.WorkerGroup
-	}
-	for _, g := range l.config.TokenInjectGroups {
-		if g == group {
-			return true
-		}
-	}
-	return false
-}
-
-func (l *Loop) addUserToken(task *model.Task, sub *model.Submission) {
-	needsToken := l.wsStager == nil ||
-		(task.RuntimeHints != nil && task.RuntimeHints.InjectBVBRCToken) ||
-		task.ExecutorType == model.ExecutorTypeBVBRC ||
-		(task.ExecutorType == model.ExecutorTypeWorker && l.groupAutoInjectsToken(task))
-	if sub.UserToken != "" && needsToken {
-		if task.RuntimeHints == nil {
-			task.RuntimeHints = &model.RuntimeHints{}
-		}
-		if task.RuntimeHints.StagerOverrides == nil {
-			task.RuntimeHints.StagerOverrides = &model.StagerOverrides{}
-		}
-		task.RuntimeHints.StagerOverrides.HTTPCredential = &model.HTTPCredential{
-			Type:  "bearer",
-			Token: sub.UserToken,
-		}
-	}
-
-	// Propagate output destination so workers can stage outputs to the right place.
-	if sub.OutputDestination != "" {
-		if task.RuntimeHints == nil {
-			task.RuntimeHints = &model.RuntimeHints{}
-		}
-		task.RuntimeHints.OutputDestination = sub.OutputDestination
-	}
-}
-
-// scrubTaskToken removes the user authentication token from a task's runtime
-// hints so that credentials are not persisted in the database after the task
-// reaches a terminal state. The token is only needed while the task is in
-// flight; once complete, keeping it at rest is unnecessary exposure.
+// scrubTaskToken removes the user authentication token and any delivered
+// submission secrets from a task's runtime hints so that credentials are not
+// persisted in the database after the task reaches a terminal state. Both
+// are only needed while the task is in flight; once complete, keeping them
+// at rest is unnecessary exposure. RuntimeHints.SecretInputs/SecretEnvNames
+// (naming which inputs/env vars were secret, not their values) are
+// deliberately kept — see model.RuntimeHints.ScrubSecrets, the single
+// implementation every terminal-marking call site in this file delegates to.
 func scrubTaskToken(task *model.Task) {
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
-	}
+	task.RuntimeHints.ScrubSecrets()
 }
 
 // submitAndUpdateTask submits a task to its executor and updates its state.
@@ -1542,14 +2042,33 @@ func scrubTaskToken(task *model.Task) {
 func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	exec, err := l.registry.Get(task.ExecutorType)
 	if err != nil {
+		// No executor lookup succeeded, so the task was never actually
+		// dispatched — DispatchedAt deliberately stays nil here (unlike the
+		// success path below, which always stamps it).
 		now := time.Now().UTC()
 		task.State = model.TaskStateFailed
 		task.Stderr = err.Error()
 		task.CompletedAt = &now
+		// H2: this terminal write does not go through the success branch
+		// below, which is where scrubTaskToken used to live exclusively —
+		// scrub explicitly so a task that had addSecrets-attached
+		// RuntimeHints.Secrets (dispatch always runs addSecrets before
+		// submitAndUpdateTask) doesn't keep them at rest just because its
+		// executor type failed to resolve.
+		scrubTaskToken(task)
 		l.persistSubmitOutcome(ctx, task)
 		return
 	}
 
+	// DispatchedAt is stamped for every executor on every dispatch attempt
+	// (including retries — resubmitRetrying calls back into this function).
+	// StartedAt is kept in step with it only for synchronous executors
+	// (local/container/apptainer), whose Submit() call IS the execution
+	// start. worker and bvbrc tasks run asynchronously: worker's StartedAt is
+	// written solely by CheckoutTask (real pickup time), and bvbrc's solely
+	// by MarkTaskRunning on first observed platform RUNNING (PR0) — stamping
+	// it here would just be the stale "dispatch time" value the PR1 trust
+	// rules warn QUEUED consumers never to trust (F-J class).
 	// Executors write their run output straight onto the task (the local
 	// executor assigns task.Stdout/task.Stderr from the command result), which
 	// wipes the previous attempt's logs before we can fold them. Snapshot the
@@ -1557,7 +2076,10 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	prevStdout, prevStderr := task.Stdout, task.Stderr
 
 	now := time.Now().UTC()
-	task.StartedAt = &now
+	task.DispatchedAt = &now
+	if isSyncExecutor(task.ExecutorType) {
+		task.StartedAt = &now
+	}
 	externalID, submitErr := exec.Submit(ctx, task)
 	task.ExternalID = externalID
 
@@ -1575,6 +2097,23 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 			strings.Contains(errMsg, "context canceled") {
 			task.MaxRetries = task.RetryCount
 		}
+		// #273: a synchronous executor (local/docker/apptainer) failed
+		// because a supplied input value did not match its declared CWL
+		// type (enforce mode) — retrying would fail identically every time,
+		// so make this FAILED terminal rather than consume the task's
+		// retry budget.
+		if validate.IsPermanent(submitErr) {
+			task.MaxRetries = task.RetryCount
+		}
+		// H2: this is a THIRD terminal-marking branch (beyond the
+		// newState.IsTerminal() success-path branch scrubTaskToken
+		// previously lived in exclusively) — a synchronous executor
+		// (local/container/apptainer) that runs the tool and then returns a
+		// non-nil error (e.g. the command exited non-zero) goes FAILED here,
+		// carrying whatever addSecrets attached at dispatch. Without this,
+		// every local/docker/apptainer task that simply fails (the common
+		// case, not just a cancel) keeps its secret values at rest forever.
+		scrubTaskToken(task)
 		l.logger.Info("task failed (submit error)", "task_id", task.ID, "error", submitErr)
 	} else {
 		newState, statusErr := exec.Status(ctx, task)
@@ -1602,6 +2141,19 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 	l.persistSubmitOutcome(ctx, task)
 }
 
+// isSyncExecutor reports whether task submission and execution start happen
+// in the same call (local/container/apptainer run inline in Submit()).
+// worker and bvbrc are asynchronous: their real run-start is observed later
+// (worker checkout, bvbrc's first polled RUNNING), never at submit time.
+func isSyncExecutor(t model.ExecutorType) bool {
+	switch t {
+	case model.ExecutorTypeWorker, model.ExecutorTypeBVBRC:
+		return false
+	default:
+		return true
+	}
+}
+
 // persistSubmitOutcome writes a submit result without overwriting a state a
 // concurrent cancel already made terminal (TerminalizeTask's guard fits both
 // the QUEUED and FAILED outcomes: write only while the row is non-terminal).
@@ -1614,7 +2166,9 @@ func (l *Loop) persistSubmitOutcome(ctx context.Context, task *model.Task) {
 	if !applied {
 		l.logger.Info("task reached a terminal state concurrently, submit outcome discarded",
 			"task_id", task.ID, "outcome_state", task.State)
+		return
 	}
+	l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "submit")
 }
 
 // mergeScatterOutputs merges scatter results into arrays with proper nesting.
@@ -1658,6 +2212,21 @@ func (l *Loop) evaluateWhenConditionFromSteps(step *model.Step, submissionInputs
 		inputs[k] = v
 	}
 
+	resolveWhenSource := func(src string) any {
+		if strings.Contains(src, "/") {
+			parts := strings.SplitN(src, "/", 2)
+			stepID, outputID := parts[0], parts[1]
+			if outputs, ok := stepOutputs[stepID]; ok {
+				return outputs[outputID]
+			}
+			return nil
+		}
+		// Always set the input, even if nil. CWL spec requires
+		// null (not undefined) for missing optional inputs so
+		// that when expressions like $(inputs.x !== null) work.
+		return submissionInputs[src]
+	}
+
 	for _, si := range step.In {
 		if si.Source == "" && len(si.Sources) == 0 {
 			continue
@@ -1668,32 +2237,38 @@ func (l *Loop) evaluateWhenConditionFromSteps(step *model.Step, submissionInputs
 			sources = strings.Split(si.Source, ",")
 		}
 		if len(sources) == 1 {
-			src := sources[0]
-			if strings.Contains(src, "/") {
-				parts := strings.SplitN(src, "/", 2)
-				stepID, outputID := parts[0], parts[1]
-				if outputs, ok := stepOutputs[stepID]; ok {
-					inputs[si.ID] = outputs[outputID]
+			v := resolveWhenSource(sources[0])
+			// pickValue-aware resolution mirrors stepinput.ResolveInputs so that
+			// `when` sees the same flat, picked value as the step's job inputs
+			// (a single source may itself be an array from a scattered
+			// conditional producer).
+			if si.PickValue != "" {
+				values := []any{v}
+				if arr, ok := v.([]any); ok {
+					values = arr
 				}
-			} else {
-				// Always set the input, even if nil. CWL spec requires
-				// null (not undefined) for missing optional inputs so
-				// that when expressions like $(inputs.x !== null) work.
-				inputs[si.ID] = submissionInputs[src]
+				picked, err := cwloutput.ApplyPickValue(values, si.PickValue)
+				if err != nil {
+					return false, fmt.Errorf("when condition input %s: %w", si.ID, err)
+				}
+				v = picked
 			}
+			inputs[si.ID] = v
 		} else if len(sources) > 1 {
 			values := make([]any, len(sources))
 			for i, src := range sources {
-				if strings.Contains(src, "/") {
-					parts := strings.SplitN(src, "/", 2)
-					if outputs, ok := stepOutputs[parts[0]]; ok {
-						values[i] = outputs[parts[1]]
-					}
-				} else {
-					values[i] = submissionInputs[src]
-				}
+				values[i] = resolveWhenSource(src)
 			}
-			inputs[si.ID] = values
+			merged := cwloutput.ApplyLinkMerge(values, si.LinkMerge)
+			if si.PickValue != "" {
+				picked, err := cwloutput.ApplyPickValue(merged, si.PickValue)
+				if err != nil {
+					return false, fmt.Errorf("when condition input %s: %w", si.ID, err)
+				}
+				inputs[si.ID] = picked
+			} else {
+				inputs[si.ID] = merged
+			}
 		}
 	}
 
@@ -1770,6 +2345,17 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.ExitCode = nil
 		task.CompletedAt = nil
 		task.StartedAt = nil
+		task.StageInMs = nil
+		task.StageOutMs = nil
+
+		// Re-run the whole credential policy for the retry: the previous
+		// attempt's terminal scrub cleared the delivered token and secrets,
+		// and the blessing must be re-checked (it may have been revoked
+		// since). See reattachCredentialsForRetry.
+		if failed := l.reattachCredentialsForRetry(ctx, task); failed {
+			affected[task.SubmissionID] = true
+			continue
+		}
 
 		l.logger.Info("retrying task", "task_id", task.ID, "attempt", task.RetryCount)
 		l.submitAndUpdateTask(ctx, task)
@@ -1777,6 +2363,69 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 	}
 
 	return nil
+}
+
+// reattachCredentialsForRetry re-runs attachCredentials on a task being
+// resubmitted out of RETRYING, using the same sub/step/wf lookups the original
+// dispatch used. It resets the task's SecretInputs/SecretEnvNames metadata
+// first so a second (or third...) retry does not accumulate duplicate entries
+// from the still-present pre-scrub metadata; the token grant is recomputed
+// from scratch (a revoked blessing now fails the retry). Returns true when the
+// task could not be re-attached (submission/workflow unavailable, a denial, or
+// a missing secret) — in that case the task has already been persisted FAILED
+// (mirroring failTaskPreDispatch) and the caller must not call
+// submitAndUpdateTask.
+//
+// Tasks that carry no credentials and cannot need any (no secrets metadata, no
+// grant, not BV-BRC/worker) are left untouched so a retry never depends on the
+// submission still being loadable for them.
+func (l *Loop) reattachCredentialsForRetry(ctx context.Context, task *model.Task) bool {
+	expects := task.ExecutorType == model.ExecutorTypeBVBRC || task.ExecutorType == model.ExecutorTypeWorker
+	if h := task.RuntimeHints; h != nil &&
+		(len(h.SecretEnvNames) > 0 || len(h.SecretInputs) > 0 || h.InjectBVBRCToken || h.TokenBlessingID != "") {
+		expects = true
+	}
+	if !expects {
+		return false
+	}
+	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
+	if err != nil || sub == nil {
+		l.logger.Error("retry: load submission to re-attach credentials", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, "retry: submission unavailable to re-attach credentials")
+	}
+	wf, err := l.cache.getWorkflow(ctx, l.store, sub.WorkflowID)
+	if err != nil || wf == nil {
+		l.logger.Error("retry: load workflow to re-attach credentials", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, "retry: workflow unavailable to re-attach credentials")
+	}
+	step := findStep(wf, task.StepID)
+
+	if task.RuntimeHints != nil {
+		task.RuntimeHints.SecretInputs = nil
+		task.RuntimeHints.SecretEnvNames = nil
+	}
+	if err := l.attachCredentials(ctx, task, step, wf, sub); err != nil {
+		l.logger.Error("retry: re-attach credentials failed", "task_id", task.ID, "error", err)
+		return l.failRetryingTaskNow(ctx, task, err.Error())
+	}
+	return false
+}
+
+// failRetryingTaskNow terminalizes a SCHEDULED (claimed-for-retry) task as
+// FAILED with no further retries, for use when reattachCredentialsForRetry
+// cannot proceed. Mirrors failTaskPreDispatch's task-side effects; unlike
+// that helper it has no step instance in hand, so it persists through
+// persistSubmitOutcome (TerminalizeTask), same as submitAndUpdateTask's own
+// no-executor-found branch.
+func (l *Loop) failRetryingTaskNow(ctx context.Context, task *model.Task, reason string) bool {
+	now := time.Now().UTC()
+	task.State = model.TaskStateFailed
+	task.Stderr = reason
+	task.CompletedAt = &now
+	task.MaxRetries = task.RetryCount
+	task.RuntimeHints.ScrubSecrets() // never persist a half-attached credential
+	l.persistSubmitOutcome(ctx, task)
+	return true
 }
 
 // pollInFlight checks QUEUED and RUNNING tasks for status updates (for async executors).
@@ -1795,6 +2444,15 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				l.pollSubworkflowTask(ctx, task, affected)
 				continue
 			}
+			// QUEUED worker tasks change state only via server handlers
+			// (checkout → RUNNING, complete → terminal): polling them here
+			// races the checkout transaction — the stale snapshot write was
+			// the F-J zombie (external_id clobbered, task invisible to
+			// Requeue/ReconcileWorkerTasks). They stay in the RUNNING scan so
+			// worker-reported terminal states are still collected.
+			if state == model.TaskStateQueued && task.ExecutorType == model.ExecutorTypeWorker {
+				continue
+			}
 			exec, err := l.registry.Get(task.ExecutorType)
 			if err != nil {
 				l.logger.Error("get executor for poll", "task_id", task.ID, "error", err)
@@ -1811,12 +2469,8 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				continue
 			}
 
-			task.State = newState
-			if newState == model.TaskStateRunning && task.StartedAt == nil {
-				now := time.Now().UTC()
-				task.StartedAt = &now
-			}
 			if newState.IsTerminal() {
+				task.State = newState
 				now := time.Now().UTC()
 				task.CompletedAt = &now
 				stdout, stderr, _ := exec.Logs(ctx, task)
@@ -1835,16 +2489,40 @@ func (l *Loop) pollInFlight(ctx context.Context, affected map[string]bool) error
 				if !applied {
 					l.logger.Info("task reached a terminal state concurrently, leaving as-is",
 						"task_id", task.ID, "polled_state", newState)
+				} else {
+					l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "poll")
 				}
 				affected[task.SubmissionID] = true
 				continue
 			}
 
-			if err := l.store.UpdateTask(ctx, task); err != nil {
-				l.logger.Error("update polled task", "task_id", task.ID, "error", err)
+			// Non-terminal observations persist through narrow CAS writes only —
+			// never a full-row UpdateTask, which would clobber concurrent
+			// handler writes (external_id, started_at; the F-J zombie).
+			if task.State == model.TaskStateQueued && newState == model.TaskStateRunning {
+				applied, err := l.store.MarkTaskRunning(ctx, task.ID)
+				if err != nil {
+					l.logger.Error("mark polled task running", "task_id", task.ID, "error", err)
+					continue
+				}
+				if !applied {
+					// The task left QUEUED concurrently (checkout, cancel SKIP,
+					// worker report) — the winning write stands.
+					l.logger.Debug("task no longer QUEUED, leaving as-is",
+						"task_id", task.ID, "polled_state", newState)
+					continue
+				}
+				affected[task.SubmissionID] = true
 				continue
 			}
-			affected[task.SubmissionID] = true
+
+			// Any other non-terminal observation — e.g. a transient bvbrc
+			// RUNNING→QUEUED regression — is deliberately NOT persisted:
+			// MarkTaskRunning cannot express it, and rewriting the row from a
+			// stale snapshot is exactly the F-J clobber. The platform state is
+			// re-observed next tick. [N1]
+			l.logger.Debug("ignoring non-terminal state observation",
+				"task_id", task.ID, "state", task.State, "polled_state", newState)
 		}
 	}
 
@@ -1904,9 +2582,20 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 		now := time.Now().UTC()
 		task.State = model.TaskStateSkipped
 		task.CompletedAt = &now
-		if _, err := l.store.TerminalizeTask(ctx, task); err != nil {
+		// Defense in depth: subworkflow proxy tasks never carry
+		// RuntimeHints.Secrets (see reconcileDispatchWithCancel's identical
+		// note) — scrub unconditionally anyway.
+		scrubTaskToken(task)
+		applied, err := l.store.TerminalizeTask(ctx, task)
+		if err != nil {
 			l.logger.Error("skip orphaned subworkflow proxy", "task_id", task.ID, "error", err)
 			return
+		}
+		// Proxies are excluded from CancelNonTerminalTasks (its RETURN
+		// COUNT never sees them) — this reconciliation retirement is the
+		// one per-row SKIP count, gated on the CAS write applying.
+		if applied {
+			l.metrics.AddTasksSkipped(1)
 		}
 		if si != nil && !si.State.IsTerminal() {
 			l.skipStepInstanceIfActive(ctx, si.ID)
@@ -1949,6 +2638,9 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 	}
 	now := time.Now().UTC()
 	task.CompletedAt = &now
+	// Defense in depth: proxy tasks never carry RuntimeHints.Secrets (see
+	// reconcileDispatchWithCancel's identical note) — scrub unconditionally.
+	scrubTaskToken(task)
 	// CAS write: a concurrent cancel may have already terminalized this proxy
 	// (SKIPPED); the child's result must not overwrite it. [F3]
 	applied, err := l.store.TerminalizeTask(ctx, task)
@@ -1962,6 +2654,7 @@ func (l *Loop) pollSubworkflowTask(ctx context.Context, task *model.Task, affect
 	} else {
 		l.logger.Info("subworkflow proxy advanced",
 			"task_id", task.ID, "state", task.State, "child_id", child.ID)
+		l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "subworkflow")
 	}
 	affected[task.SubmissionID] = true
 }
@@ -2068,6 +2761,7 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 				"count", count, "reason", reason,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key],
 				"threshold", l.config.StuckTaskThreshold)
 		}
@@ -2081,12 +2775,14 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 				"count", count, "reason", reason,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key])
 		} else {
 			l.logger.Warn("stuck tasks: queued but not being picked up",
 				"count", count,
 				"group", key.WorkerGroup,
 				"prestage", key.PrestageIDs,
+				"cores", key.Cores, "ram_mb", key.RamMB,
 				"stale_ticks", l.stuck.staleTicks[key])
 		}
 
@@ -2109,11 +2805,35 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 			// No capable worker exists — retrying won't help. Exhaust retries
 			// so markRetries does not re-queue this task.
 			oldest.MaxRetries = oldest.RetryCount
-			if err := l.store.UpdateTask(ctx, oldest); err != nil {
+			// H2: this is a real (non-proxy) task that may have been
+			// dispatched with addSecrets-attached RuntimeHints.Secrets and
+			// then sat QUEUED long enough to be declared stuck — this
+			// terminal write does not go through submitAndUpdateTask or
+			// pollInFlight, so it must scrub explicitly or the secret values
+			// stay at rest on a FAILED row forever.
+			scrubTaskToken(oldest)
+			// CAS write: oldest was snapshotted as QUEUED, but a worker may
+			// have checked it out (QUEUED->RUNNING with a new external_id)
+			// between the snapshot and this write, or a concurrent cancel
+			// may have already terminalized it (SKIPPED). TerminalizeTask's
+			// "not already terminal" guard would still let this stale
+			// full-row write through against a checked-out RUNNING task,
+			// clobbering the worker's external_id; require the task to
+			// still be exactly QUEUED instead.
+			applied, err := l.store.TerminalizeTaskFrom(ctx, oldest, model.TaskStateQueued)
+			if err != nil {
 				l.logger.Error("fail stuck task", "task_id", oldest.ID, "error", err)
+			} else if !applied {
+				l.logger.Debug("stuck task no longer queued, leaving",
+					"task_id", oldest.ID)
 			} else {
 				l.logger.Info("failed stuck task", "task_id", oldest.ID, "reason", reason)
 				affected[oldest.SubmissionID] = true
+				// A stuck QUEUED task never had a started_at, so the
+				// duration histograms are skipped by ObserveTaskTerminal's
+				// own guard — only the failures{reason="stuck"} counter
+				// increments (S1).
+				l.metrics.ObserveTaskTerminal(oldest, l.workflowNameForTask(ctx, oldest), "stuck")
 			}
 		}
 	}
@@ -2134,6 +2854,8 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 	key := taskRequirementKey{}
 	if task.RuntimeHints != nil {
 		key.WorkerGroup = task.RuntimeHints.WorkerGroup
+		key.Cores = task.RuntimeHints.Cores
+		key.RamMB = task.RuntimeHints.RamMB
 		var prestageIDs []string
 		for _, ds := range task.RuntimeHints.RequiredDatasets {
 			if ds.Mode == "prestage" {
@@ -2152,7 +2874,16 @@ func requirementKeyForTask(task *model.Task) taskRequirementKey {
 // for use with canMatchTask.
 func hintsFromRequirementKey(key taskRequirementKey) *model.RuntimeHints {
 	hints := &model.RuntimeHints{}
+	// An untagged task is only ever checked out by default-group workers
+	// (CheckoutTask), so judge it against that group rather than against
+	// every online worker: a large task that only a non-default worker could
+	// fit would otherwise read as matchable and never be reported (#324).
 	hints.WorkerGroup = key.WorkerGroup
+	if hints.WorkerGroup == "" {
+		hints.WorkerGroup = defaultWorkerGroupKey
+	}
+	hints.Cores = key.Cores
+	hints.RamMB = key.RamMB
 	if key.PrestageIDs != "" {
 		for _, id := range strings.Split(key.PrestageIDs, ",") {
 			hints.RequiredDatasets = append(hints.RequiredDatasets, model.DatasetRequirement{
@@ -2177,7 +2908,10 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 	if key.PrestageIDs != "" {
 		fmt.Fprintf(&b, " prestage=[%s]", key.PrestageIDs)
 	}
-	if key.WorkerGroup == "" && key.PrestageIDs == "" {
+	if key.Cores > 0 || key.RamMB > 0 {
+		fmt.Fprintf(&b, " cores>=%d ram_mb>=%d", key.Cores, key.RamMB)
+	}
+	if key.WorkerGroup == "" && key.PrestageIDs == "" && key.Cores == 0 && key.RamMB == 0 {
 		b.WriteString(" (no specific constraints)")
 	}
 	b.WriteString("\n")
@@ -2209,6 +2943,17 @@ func buildStuckTaskError(key taskRequirementKey, reason string, caps *WorkerCapa
 			fmt.Fprintf(&b, ", datasets: [%s]", strings.Join(datasets, ", "))
 		}
 		b.WriteString(")\n")
+		if key.Cores > 0 || key.RamMB > 0 {
+			var parts []string
+			for _, g := range groups {
+				if caps.UncappedByGroup[g] > 0 {
+					parts = append(parts, fmt.Sprintf("%s: (some workers unreported)", g))
+					continue
+				}
+				parts = append(parts, fmt.Sprintf("%s: %d cores, %d MiB", g, caps.MaxCoresByGroup[g], caps.MaxMemMBByGroup[g]))
+			}
+			fmt.Fprintf(&b, "Largest capacity per group: %s\n", strings.Join(parts, "; "))
+		}
 	}
 
 	fmt.Fprintf(&b, "Reason: %s\n", reason)
@@ -2236,6 +2981,22 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 		}
 
 		for _, si := range steps {
+			sub, err := l.cache.getSubmission(ctx, l.store, si.SubmissionID)
+			if err != nil || sub == nil {
+				l.logger.Error("get submission for advance steps", "si_id", si.ID, "error", err)
+				continue
+			}
+
+			// A terminal submission can never make progress: this
+			// DISPATCHED/RUNNING step instance is an orphan (e.g. a cancel
+			// whose cascade missed it, or its workflow was deleted after
+			// finalization). Terminalize it once instead of re-selecting and
+			// re-processing it every tick (#128).
+			if sub.State.IsTerminal() {
+				l.orphanedByTerminalSubmission(ctx, si, sub)
+				continue
+			}
+
 			tasks, err := l.store.ListTasksByStepInstance(ctx, si.ID)
 			if err != nil {
 				l.logger.Error("list tasks for step", "si_id", si.ID, "error", err)
@@ -2451,6 +3212,19 @@ func (l *Loop) finalizeSubmissions(ctx context.Context, affected map[string]bool
 				l.logger.Info("submission finalized", "submission_id", subID, "state", sub.State)
 			}
 		} else if (anyActive || anyFailed) && sub.State == model.SubmissionStatePending {
+			// A submission whose server-side workspace pre-staging is still in
+			// flight must not become RUNNING yet: dispatchReady already defers
+			// its READY steps until PrestageCompletedAt is set (see the
+			// mirrored gate there), so activating it here would just leave it
+			// RUNNING with zero tasks until pre-staging catches up — and if
+			// prestageWorkspaceInputs only ever revisited PENDING submissions,
+			// it would never catch up at all (#269). Leaving it PENDING keeps
+			// it in prestageWorkspaceInputs' PENDING scan; once pre-staging
+			// completes (or exhausts its retries and FAILs the submission),
+			// this branch activates it normally on a later tick.
+			if l.wsStager != nil && sub.PrestageStartedAt != nil && sub.PrestageCompletedAt == nil {
+				continue
+			}
 			if applied, err := l.activateSubmissionCAS(ctx, sub.ID); err != nil {
 				l.logger.Error("activate submission", "submission_id", subID, "error", err)
 			} else if applied {
@@ -2508,6 +3282,15 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 		},
 	}
 
+	// Prefer the step instance's own diagnostic (set at dispatch/evaluation
+	// failure time, e.g. a scatter shape error or a pickValue resolution
+	// failure) — it is more specific than the generic "step failed" message
+	// and, unlike task-level errors below, is the only diagnostic available
+	// when the step never got as far as creating a task.
+	if failedStep.Error != "" {
+		subErr.Message = fmt.Sprintf("step '%s' failed: %s", failedStep.StepID, failedStep.Error)
+	}
+
 	// Look for a failed task under this step to get exit code and stderr.
 	tasks, err := l.store.ListTasksByStepInstance(ctx, failedStep.ID)
 	if err != nil {
@@ -2520,14 +3303,21 @@ func (l *Loop) buildSubmissionError(ctx context.Context, steps []*model.StepInst
 			subErr.Context.TaskID = task.ID
 			subErr.Context.ExitCode = task.ExitCode
 
-			// Include a stderr snippet for the API and the chat message.
-			if stderr := stderrSnippet(task.Stderr); stderr != "" {
+			// Include a stderr snippet for the submission error. Keep the
+			// first line (the executor's own message) and the end, where
+			// tracebacks put the actual error.
+			if stderr := stderrSnippet(task.Stderr, maxSubmissionStderr); stderr != "" {
 				subErr.Context.Stderr = stderr
 			}
 
-			subErr.Message = fmt.Sprintf("step '%s' task failed", failedStep.StepID)
-			if task.ExitCode != nil {
-				subErr.Message = fmt.Sprintf("step '%s' task failed with exit code %d", failedStep.StepID, *task.ExitCode)
+			// A non-empty StepInstance.Error (set above) is more specific than
+			// this generic task-derived message — keep it as Message and let
+			// the task only enrich Context (exit code, stderr). See #205.
+			if failedStep.Error == "" {
+				subErr.Message = fmt.Sprintf("step '%s' task failed", failedStep.StepID)
+				if task.ExitCode != nil {
+					subErr.Message = fmt.Sprintf("step '%s' task failed with exit code %d", failedStep.StepID, *task.ExitCode)
+				}
 			}
 			break
 		}
@@ -2585,38 +3375,11 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 			continue
 		}
 		l.logger.Info("task marked for retry", "task_id", task.ID, "retry_count", task.RetryCount, "max_retries", task.MaxRetries)
+		l.metrics.IncTaskRetry(task, l.workflowNameForTask(ctx, task))
 		affected[task.SubmissionID] = true
 	}
 
 	return nil
-}
-
-// maxStderrSnippetBytes bounds the stderr carried in a submission's error
-// context. It is surfaced through GET /api/v1/submissions/:id and ends up in
-// the user's chat message, so it must stay small.
-const maxStderrSnippetBytes = 2000
-
-// stderrSnippet trims task stderr for the submission error context, keeping
-// the END of the output.
-//
-// This used to keep the first 1000 bytes. For BV-BRC app failures that is
-// exactly the wrong half: a job's stderr opens with a long environment dump
-// (data paths, container path, "Logging to ...") and the actual diagnosis is
-// the last line or two before the stack trace. Gene Tree job 23710821 is the
-// example -- 4,760 bytes of stderr whose operative line was
-// "number of sequences is 2, less than 4. Cannot build a tree.", while the
-// stored snippet held only setup boilerplate and the user was told
-// "unknown error".
-func stderrSnippet(stderr string) string {
-	if len(stderr) <= maxStderrSnippetBytes {
-		return stderr
-	}
-	tail := stderr[len(stderr)-maxStderrSnippetBytes:]
-	// Start on a line boundary so the snippet does not open mid-word.
-	if i := strings.IndexByte(tail, '\n'); i >= 0 && i < 200 {
-		tail = tail[i+1:]
-	}
-	return "...(earlier output truncated)\n" + tail
 }
 
 // maxAttemptLogBytes bounds the accumulated per-attempt log history so a
@@ -2712,12 +3475,10 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		normalizedID := strings.TrimPrefix(id, "#")
 		if normalizedID == toolID || id == toolID {
 			// Convert cwl.CommandLineTool to map[string]any via JSON.
-			data, err := json.Marshal(clt)
+			var err error
+			tool, err = toolmerge.StructToToolMap(clt)
 			if err != nil {
-				return fmt.Errorf("marshal tool: %w", err)
-			}
-			if err := json.Unmarshal(data, &tool); err != nil {
-				return fmt.Errorf("unmarshal tool: %w", err)
+				return err
 			}
 			cwlTool = clt
 			runtimeHints = extractRuntimeHintsFromCWLTool(clt)
@@ -2777,6 +3538,7 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 			si.ValueFrom,
 			si.LoadContents,
 			si.LinkMerge,
+			si.PickValue,
 		)
 	}
 
@@ -2809,11 +3571,11 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 
 	// Merge workflow-level and step-level requirements into the tool.
 	// CWL spec priority: job requirements > tool requirements > step requirements > workflow requirements.
-	mergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
+	toolmerge.MergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
 
 	// Merge cwl:requirements from the job input document (highest priority).
 	if jobReqs, ok := submissionInputs["cwl:requirements"].([]any); ok {
-		mergeJobRequirementsIntoTool(tool, jobReqs)
+		toolmerge.MergeJobRequirementsIntoTool(tool, jobReqs)
 	}
 
 	task.Tool = tool
@@ -2844,6 +3606,25 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 		task.RuntimeHints.Namespaces = graphDoc.Namespaces
 	}
 
+	// Stamp the server's --input-validation mode (#273) so the executing
+	// worker (or synchronous local/docker/apptainer executor) applies the
+	// same policy without a worker-side flag. Empty (an old server, or a
+	// server started with the code default) is interpreted as warn
+	// downstream — see validate.Mode.Effective. Every scatter-combination
+	// Task built from this StepInstance's tmpTask (createTaskFromStep)
+	// shares this same RuntimeHints pointer, so they all inherit it.
+	if task.RuntimeHints == nil {
+		task.RuntimeHints = &model.RuntimeHints{}
+	}
+	task.RuntimeHints.InputValidation = string(l.inputValidation)
+
+	// Stamp the content digest of the FINAL post-merge tool (the map the worker
+	// parses, so it is authoritative). applyTokenGrant re-derives it at
+	// attach time; this makes it visible on every task with a tool.
+	if h, herr := toolhash.Digest(tool); herr == nil {
+		task.RuntimeHints.ToolHash = h
+	}
+
 	return nil
 }
 
@@ -2870,31 +3651,6 @@ func extractRuntimeHints(tool map[string]any) *model.RuntimeHints {
 			}
 		}
 
-		// Extract ResourceRequirement.
-		if resReq, ok := reqs["ResourceRequirement"].(map[string]any); ok {
-			if cores, ok := resReq["coresMin"]; ok {
-				switch v := cores.(type) {
-				case int:
-					hints.Cores = v
-				case float64:
-					hints.Cores = int(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-			if ram, ok := resReq["ramMin"]; ok {
-				switch v := ram.(type) {
-				case int:
-					hints.RamMB = int64(v)
-				case int64:
-					hints.RamMB = v
-				case float64:
-					hints.RamMB = int64(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-		}
 	}
 
 	// Also check hints section.
@@ -2974,29 +3730,6 @@ func extractRuntimeHintsFromCWLTool(tool *cwl.CommandLineTool) *model.RuntimeHin
 			}
 		}
 
-		// ResourceRequirement
-		if resReq, ok := tool.Requirements["ResourceRequirement"].(map[string]any); ok {
-			if cores, ok := resReq["coresMin"]; ok {
-				switch v := cores.(type) {
-				case int:
-					hints.Cores = v
-				case float64:
-					hints.Cores = int(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-			if ram, ok := resReq["ramMin"]; ok {
-				switch v := ram.(type) {
-				case int:
-					hints.RamMB = int64(v)
-				case float64:
-					hints.RamMB = int64(v)
-				case string:
-					// Expression — leave as 0 (evaluated at execution time)
-				}
-			}
-		}
 	}
 
 	// Check hints map.
@@ -3056,6 +3789,33 @@ func hasInplaceUpdateReq(tool map[string]any) bool {
 }
 
 // isExpressionTool checks if a tool map represents a CWL ExpressionTool.
+// mergeExpressionToolInputDefaults mirrors exprtool.Execute's own default-
+// merge step (defaults fill inputs not provided; an explicit null on an
+// Any-typed input with a default keeps that default, per the CWL spec) so
+// #273's tool-level validation can run against the values the tool will
+// actually see, without exprtool needing to export this — Execute itself
+// re-merges from the raw inputs right after this function's caller uses the
+// result only for validation.
+func mergeExpressionToolInputDefaults(tool *cwl.ExpressionTool, inputs map[string]any) map[string]any {
+	merged := make(map[string]any, len(tool.Inputs)+len(inputs))
+	for inputID, inputDef := range tool.Inputs {
+		if inputDef.Default != nil {
+			merged[inputID] = inputDef.Default
+		}
+	}
+	for inputID, val := range inputs {
+		if val == nil {
+			if inputDef, ok := tool.Inputs[inputID]; ok {
+				if inputDef.Type == "Any" && inputDef.Default != nil {
+					continue
+				}
+			}
+		}
+		merged[inputID] = val
+	}
+	return merged
+}
+
 func isExpressionTool(tool map[string]any) bool {
 	if tool == nil {
 		return false
@@ -3081,8 +3841,13 @@ func (l *Loop) executeExpressionTool(task *model.Task) (map[string]any, error) {
 	// ExpressionTools need listings populated just like CommandLineTools.
 	cwltool.PopulateDirectoryListingsFromDefs(tool.Inputs, tool.Requirements, task.Job, false)
 
-	// Validate inputs before execution.
-	if err := validate.ExpressionToolInputs(&tool, task.Job); err != nil {
+	// Validate inputs AFTER defaults are merged (#273): a null/missing value
+	// backed by a declared default must not be flagged. exprtool.Execute
+	// below re-merges from the raw task.Job itself (idempotent — merging
+	// already-present keys is a no-op), so this does not change what
+	// actually runs.
+	mergedForValidation := mergeExpressionToolInputDefaults(&tool, task.Job)
+	if err := validate.ExpressionToolInputs(&tool, mergedForValidation, l.inputValidation, l.logger); err != nil {
 		return nil, err
 	}
 
@@ -3132,80 +3897,6 @@ func extractExpressionLibFromTool(tool map[string]any) []string {
 	return result
 }
 
-// mergeRequirementsIntoTool merges workflow-level and step-level requirements
-// into a tool map. CWL spec priority:
-//
-//	tool requirements > step requirements > workflow requirements > tool hints > step hints > workflow hints
-func mergeRequirementsIntoTool(tool map[string]any, wf *cwl.Workflow, stepID string) {
-	if wf == nil || tool == nil {
-		return
-	}
-
-	// Get or create tool requirements map.
-	toolReqs, _ := tool["requirements"].(map[string]any)
-	if toolReqs == nil {
-		toolReqs = make(map[string]any)
-	}
-
-	toolHints, _ := tool["hints"].(map[string]any)
-	if toolHints == nil {
-		toolHints = make(map[string]any)
-	}
-
-	// Look up the cwl.Step for step-level requirements.
-	var cwlStep *cwl.Step
-	if s, ok := wf.Steps[stepID]; ok {
-		cwlStep = &s
-	}
-
-	// Merge step requirements (higher priority than workflow, lower than tool).
-	if cwlStep != nil && cwlStep.Requirements != nil {
-		for key, val := range cwlStep.Requirements {
-			if _, exists := toolReqs[key]; !exists {
-				toolReqs[key] = val
-			}
-		}
-	}
-
-	// Merge workflow requirements (lowest priority among requirements).
-	if wf.Requirements != nil {
-		for key, val := range wf.Requirements {
-			if _, exists := toolReqs[key]; !exists {
-				toolReqs[key] = val
-			}
-		}
-	}
-
-	// Merge step hints.
-	if cwlStep != nil && cwlStep.Hints != nil {
-		for key, val := range cwlStep.Hints {
-			if _, exists := toolReqs[key]; !exists {
-				if _, exists := toolHints[key]; !exists {
-					toolHints[key] = val
-				}
-			}
-		}
-	}
-
-	// Merge workflow hints.
-	if wf.Hints != nil {
-		for key, val := range wf.Hints {
-			if _, exists := toolReqs[key]; !exists {
-				if _, exists := toolHints[key]; !exists {
-					toolHints[key] = val
-				}
-			}
-		}
-	}
-
-	if len(toolReqs) > 0 {
-		tool["requirements"] = toolReqs
-	}
-	if len(toolHints) > 0 {
-		tool["hints"] = toolHints
-	}
-}
-
 // parseCWLToolFromTaskTool re-parses a task.Tool map into a cwl.CommandLineTool
 // so that helpers like ApplyRecordFieldDefaults can access typed RecordFields.
 // Returns nil if the tool is not a CommandLineTool or parsing fails.
@@ -3224,32 +3915,4 @@ func parseCWLToolFromTaskTool(logger *slog.Logger, tool map[string]any) *cwl.Com
 		return nil
 	}
 	return clt
-}
-
-// mergeJobRequirementsIntoTool merges cwl:requirements from the job input document
-// into a tool map. Job requirements have the highest priority, overriding all other requirements.
-func mergeJobRequirementsIntoTool(tool map[string]any, jobReqs []any) {
-	if tool == nil || len(jobReqs) == 0 {
-		return
-	}
-
-	toolReqs, _ := tool["requirements"].(map[string]any)
-	if toolReqs == nil {
-		toolReqs = make(map[string]any)
-	}
-
-	for _, req := range jobReqs {
-		reqMap, ok := req.(map[string]any)
-		if !ok {
-			continue
-		}
-		class, _ := reqMap["class"].(string)
-		if class == "" {
-			continue
-		}
-		// Job requirements override — use class name as key.
-		toolReqs[class] = reqMap
-	}
-
-	tool["requirements"] = toolReqs
 }

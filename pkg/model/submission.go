@@ -4,20 +4,26 @@ import "time"
 
 // Submission is a specific execution of a Workflow with concrete input values.
 type Submission struct {
-	ID            string            `json:"id"`
-	WorkflowID    string            `json:"workflow_id"`
-	WorkflowName  string            `json:"workflow_name"`
-	State         SubmissionState   `json:"state"`
-	Inputs        map[string]any    `json:"inputs"`
-	Outputs       map[string]any    `json:"outputs,omitempty"`
-	Error         *SubmissionError  `json:"error,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	SubmittedBy   string            `json:"submitted_by,omitempty"`
-	Tasks         []Task            `json:"tasks,omitempty"`
-	TaskSummary   TaskSummary       `json:"task_summary,omitempty"`   // Computed field, not stored
-	QueuePosition int               `json:"queue_position,omitempty"` // Computed field for pending submissions
-	CreatedAt     time.Time         `json:"created_at"`
-	CompletedAt   *time.Time        `json:"completed_at"`
+	ID           string          `json:"id"`
+	WorkflowID   string          `json:"workflow_id"`
+	WorkflowName string          `json:"workflow_name"`
+	State        SubmissionState `json:"state"`
+	Inputs       map[string]any  `json:"inputs"`
+	// SubmittedInputs is an immutable, verbatim copy of Inputs as it was at
+	// submission creation time, captured once by store.CreateSubmission.
+	// Inputs is mutated afterward (e.g. ws:// pre-staging rewrites locations
+	// to transient file:// paths); SubmittedInputs never is, so it always
+	// reflects exactly what the caller submitted.
+	SubmittedInputs map[string]any    `json:"submitted_inputs,omitempty"`
+	Outputs         map[string]any    `json:"outputs,omitempty"`
+	Error           *SubmissionError  `json:"error,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	SubmittedBy     string            `json:"submitted_by,omitempty"`
+	Tasks           []Task            `json:"tasks,omitempty"`
+	TaskSummary     TaskSummary       `json:"task_summary,omitempty"`   // Computed field, not stored
+	QueuePosition   int               `json:"queue_position,omitempty"` // Computed field for pending submissions
+	CreatedAt       time.Time         `json:"created_at"`
+	CompletedAt     *time.Time        `json:"completed_at"`
 
 	// Child submission linkage: if set, this submission was created by the
 	// scheduler to execute a sub-workflow step on behalf of a parent task.
@@ -30,10 +36,47 @@ type Submission struct {
 	// OutputState tracks the output upload lifecycle: "" | "uploading" | "delivered" | "upload_failed" | "skipped".
 	OutputState string `json:"output_state,omitempty"`
 
+	// Prestage/poststage timestamps bound the scheduler's ws:// input
+	// pre-staging and output delivery phases (see internal/scheduler/workspace.go).
+	// PrestageStartedAt is stamped once even across multi-tick retries (a
+	// failed pre-stage attempt leaves it set so the next tick does not
+	// re-stamp it). All four are nil when the submission has no ws://
+	// inputs/outputs to stage.
+	PrestageStartedAt    *time.Time `json:"prestage_started_at,omitempty"`
+	PrestageCompletedAt  *time.Time `json:"prestage_completed_at,omitempty"`
+	PoststageStartedAt   *time.Time `json:"poststage_started_at,omitempty"`
+	PoststageCompletedAt *time.Time `json:"poststage_completed_at,omitempty"`
+
 	// Authentication token fields (not serialized to JSON responses).
 	UserToken    string    `json:"-"` // Provider token for downstream calls
 	TokenExpiry  time.Time `json:"-"` // Token expiration time
 	AuthProvider string    `json:"-"` // Provider name (bvbrc, mgrast)
+
+	// Secrets are submitter-supplied secret values (name → value) delivered only to
+	// opted-in tasks. Never serialized to API clients; encrypted at rest.
+	Secrets map[string]string `json:"-"`
+	// SecretNames lists the names of Secrets (or of purged secrets) for auditability.
+	SecretNames []string `json:"secret_names,omitempty"`
+	// SecretsRetention is the retention policy: "keep" | "ttl:<duration>" | "on_success" | "on_terminal".
+	SecretsRetention string `json:"secrets_retention,omitempty"`
+	// SecretsPurgedAt is set when the secret values were purged (values gone, names kept).
+	SecretsPurgedAt *time.Time `json:"secrets_purged_at,omitempty"`
+}
+
+// SecretsState reports the lifecycle state of this submission's secrets:
+// "none" (never had secrets), "present" (secret names recorded and not yet
+// purged), or "purged" (values removed, SecretNames retained for
+// auditability). Computed from SecretNames/SecretsPurgedAt rather than
+// stored — the server populates an API response field from this at request
+// time; see handleGet/list wiring (owned by another agent, not this package).
+func (s *Submission) SecretsState() string {
+	if s.SecretsPurgedAt != nil {
+		return "purged"
+	}
+	if len(s.SecretNames) > 0 {
+		return "present"
+	}
+	return "none"
 }
 
 // SubmissionError captures structured failure details when a submission fails.
@@ -49,6 +92,14 @@ type SubmissionErrDetail struct {
 	TaskID   string `json:"task_id,omitempty"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	Stderr   string `json:"stderr,omitempty"`
+
+	// Location, Error, and Attempts are populated for PRESTAGE_FAILED
+	// (internal/scheduler/workspace.go): the ws:// input location that
+	// could not be staged, the underlying Workspace stager error, and how
+	// many scheduler-tick pre-stage attempts were made before giving up.
+	Location string `json:"location,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`
 }
 
 // TaskSummary provides an aggregate count of task states within a Submission.
@@ -61,6 +112,14 @@ type TaskSummary struct {
 	Success   int `json:"success"`
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
+}
+
+// SubmissionMeta is the lean projection of a submission's identity used for
+// label lookups (e.g. Prometheus workflow labeling): just enough to name the
+// submission's workflow without loading its inputs/outputs/tasks.
+type SubmissionMeta struct {
+	WorkflowName string            `json:"workflow_name"`
+	Labels       map[string]string `json:"labels,omitempty"`
 }
 
 // ComputeTaskSummary calculates the TaskSummary from a slice of Tasks.

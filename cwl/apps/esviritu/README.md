@@ -1,0 +1,127 @@
+# EsViritu
+
+CWL for [EsViritu](https://github.com/cmmr/EsViritu), which detects, quantifies and profiles viruses in metagenomic reads.
+
+| File | Registered as | Purpose |
+|---|---|---|
+| `esviritu.cwl` | `esviritu` | One sample: one or two FASTQ files |
+| `esviritu-run.cwl` | `esviritu-run` | A whole sequencing run folder with two FASTQ files per sample |
+| `pair-samples.cwl` | (step) | Lists the run folder on the worker and pairs R1/R2 by sample |
+| `esviritu-summarize.cwl` | (step) | `summarize_esv_runs`: combined project tables and HTML report |
+| `esviritu.def` | | Apptainer recipe for the image |
+
+## Image
+
+`esviritu-1.3.4-db3.2.4.sif` (1.1 GB, sha256 `a47da0a0de79253c0c26e16696b6ed563380565a4b16c8da2521146fd8139f12`) contains:
+- bioconda `esviritu:1.3.4--pyhdfd78af_0`;
+- reference DB v3.2.4 at `/opt/esviritu_db/v3.2.4` (Zenodo 17716199, md5 `24d85c1ec3cbffff12e921d2f39c91b2`);
+- the vendored `dataui` R package. The biocontainer lacks it, so without it no HTML report is written.
+
+The tools reference it by relative name. Every worker that runs them needs the file in its `--image-dir`.
+On coconut it is at `/scout/containers/`.
+
+To rebuild, run this from a directory that holds the unpacked DB as `db/v3.2.4`:
+
+    apptainer build --fakeroot esviritu-1.3.4-db3.2.4.sif esviritu.def
+
+## Run folders (`esviritu-run`)
+
+`run_path` is an **absolute path on the worker host**. Every step runs on a worker, including the pairing step.
+The reads are read in place and never copied, uploaded or seen by the server.
+So the folder only has to be visible to the workers that run the job:
+- it must be under one of their `--extra-bind` paths, given as the real path. A host symlink into a bound folder is not
+  visible inside the container: if `/local/incoming` links to the bound `/nfs/seq-data`, use `/nfs/seq-data/...`;
+- pin the job to those workers with `--group`.
+
+Anyone who can submit to that group can profile any FASTQ folder under the workers' `--extra-bind` paths,
+so bind only the sequencing data the group's users may read.
+
+    # run.yml
+    run_path: /nfs/seq-data/RUN_241012_NB551234
+
+    gowe submit --workflow esviritu-run -i run.yml --group esviritu
+
+Steps:
+1. **pair:** finds `<sample>_S<n>_R1_001.fastq.gz` / `_R2_` pairs (also `<sample>_R1.fastq.gz` and `<sample>_1.fq.gz`).
+   - It skips hidden files, anything that is not FASTQ, and `Undetermined_*` (set `include_undetermined: true` to profile them).
+   - Sample and project names keep only `A-Z a-z 0-9 . _ -`; other characters become `_`.
+   - It fails if a sample lacks its mate, still has lane-split files (merge lanes first), two names collide after
+     that cleanup, or a name starts with `-`.
+2. **profile:** runs EsViritu once per sample, in parallel. Defaults suit NextSeq paired-end data: fastp filtering is on, which also trims poly-G tails.
+3. **summarize:** builds the project-level detection, assembly, taxonomy, coverage and read-stats tables plus one HTML report.
+
+A sample with no detectable virus (for example a negative control) succeeds:
+- it writes `<sample>.no_viruses_detected.txt` instead of tables;
+- it still appears in the project read stats.
+
+Any other EsViritu failure fails the task and shows the tail of the EsViritu log. This includes a missing input or a missing DB, which EsViritu itself exits 0 on.
+
+Resources: each sample reserves `threads` cores (default 4, also EsViritu's `--cpu`) and `ram_mb` MB (default 32000).
+The memory default comes from a NextSeq run where a 208M-read sample peaked at 23.6 GB in the
+single-threaded coverage-table step; smaller samples used 9-13 GB. Both are inputs of `esviritu` and
+`esviritu-run`, so they can be set per submission:
+
+    threads: 16
+    ram_mb: 48000
+
+## Duplicates and unique fragments
+
+When viruses are detected, `esviritu.cwl` duplicate-marks the primary alignments of EsViritu's final BAM
+(`samtools markdup`, mates' positions; optical duplicates within `optical_distance` pixels, default 2500 for patterned
+flow cells such as NextSeq 2000 / NovaSeq) and writes `<sample>/<sample>.virus_fragments.tsv`:
+
+| column | meaning |
+|---|---|
+| `primary_reads` | primary alignments on the reference (the basis of EsViritu's `read_count`) |
+| `duplicates`, `optical_duplicates` | reads marked as PCR or optical duplicates |
+| `unique_fragments` | distinct read names among non-duplicate reads: independent molecules |
+| `duplicate_pct` | duplicates / primary_reads |
+| `low_support` | `true` when `unique_fragments` < `min_fragments` (default 50): treat lineage-level labels as unreliable |
+
+Notes:
+- `primary_reads` counts primary alignments only (secondary and supplementary records excluded), so it can differ
+  slightly from EsViritu's `read_count`.
+- `optical_distance`: 2500 for patterned flow cells (NextSeq 1000/2000, NovaSeq), about 100 for non-patterned ones
+  (NextSeq 500/550, HiSeq 2500, MiSeq). Exposed on `esviritu-run` too.
+- `<sample>.markdup.stats.txt` is samtools markdup's full report (library size estimate, optical/PCR pair counts).
+- The BAMs themselves are not outputs. They stay in the task's tmp dir only with `keep_intermediate: true` (on GoWe
+  also only if the worker runs with `--keep-task-dirs`), and after a failed task.
+
+`esviritu-run` merges these into `summary/<project>.virus_fragments.tsv`. Use `unique_fragments` to judge how well a
+detection is supported: in hybrid-capture wastewater libraries we have seen 650 reads of a virus from a single molecule.
+EsViritu's own tables are unchanged. To do this, the tool always runs EsViritu with `--keep True` and removes the temp
+directory itself after a successful run (unless `keep_intermediate: true`). If viruses are detected but the final BAM is
+missing, the task fails.
+
+## Weighted duplicate collapse (`collapse_duplicates`)
+
+`collapse_duplicates: true` needs an EsViritu image with `--collapse-duplicates` (wilke/EsViritu tag
+`v1.3.4-anl.p3` or later); stock EsViritu 1.3.4 does not have it, so the default is `false` and the option is only
+passed when on. Identical reads (read pairs) are collapsed to one representative, which is mapped and processed once
+through the whole pipeline, as with `dedup`, while its copy number is kept as a weight:
+
+- `read_count` and `RPKMF` count distinct reads (like `dedup`); the new `read_count_weighted` and `RPKMF_weighted`
+  count all reads, so they are the abundance columns to compare with runs without collapse.
+- `virus_fragments.tsv` uses the copy numbers: `primary_reads` and `duplicates` count all reads; `optical_duplicates`
+  only covers distinct reads.
+- `<sample>.exemplar_ties.tsv` (merged into `summary/<project>.exemplar_ties.tsv`) lists representative references
+  that EsViritu chose only by name order among references tied on read count and identity (written by the patched
+  image whether or not collapse is on).
+
+On a NextSeq 2000 hybrid-capture run (10 samples) it took about half the CPU time of a run without collapse, the same
+as `dedup`. Weighted read counts matched the run without collapse within 2% for all but one low-abundance taxon, and
+lineage labels matched the `dedup` run. Labels of lineages supported by few unique fragments depend on how ties
+between near-identical references are broken, so they can differ between modes; check `low_support` and
+`exemplar_ties.tsv` before reporting them.
+
+## Single sample (`esviritu`)
+
+    gowe submit --workflow esviritu -i job.example.yml
+
+Local test with the standalone runner:
+
+    cwl-runner --runtime apptainer --image-dir /scout/containers esviritu.cwl job.example.yml
+
+The same flags work for the whole workflow (cwl-runner 0.24.0 or later honours `--image-dir` inside workflows, including scatter steps):
+
+    cwl-runner --runtime apptainer --image-dir /scout/containers esviritu-run.cwl job.yml

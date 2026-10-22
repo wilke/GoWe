@@ -58,6 +58,7 @@ scratchpad*.md
 # Root-level binaries
 /server
 /worker
+/cli
 testdata/cwl-v1.2
 
 # Git worktrees

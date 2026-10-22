@@ -10,14 +10,28 @@ import (
 	"strings"
 
 	"github.com/me/gowe/internal/cwlexpr"
+	"github.com/me/gowe/internal/cwloutput"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 )
 
-// collectOutputs collects tool outputs from the working directory.
-// exitCode is passed for use in outputEval via runtime.exitCode.
-// CollectOutputs collects tool outputs from the working directory.
+// CollectOutputs collects tool outputs from the working directory and then
+// validates them against the declared output types (#279/#310): a missing or
+// null required output, or a value that does not match its declared type,
+// fails; undeclared cwl.output.json keys are dropped with a WARN.
 // This function is exported so that both cwl-runner and worker can use it.
 func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inputs map[string]any, exitCode int, outDir string, namespaces map[string]string) (map[string]any, error) {
+	outputs, err := e.collectOutputs(tool, workDir, inputs, exitCode, outDir, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	return validate.ToolOutputs(tool, outputs, e.logger)
+}
+
+// collectOutputs collects tool outputs from the working directory.
+// exitCode is passed for use in outputEval via runtime.exitCode.
+// (see CollectOutputs for the validated entry point)
+func (e *Executor) collectOutputs(tool *cwl.CommandLineTool, workDir string, inputs map[string]any, exitCode int, outDir string, namespaces map[string]string) (map[string]any, error) {
 	outputs := make(map[string]any)
 
 	// Check for cwl.output.json first - per CWL spec, if this file exists,
@@ -29,6 +43,11 @@ func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 		}
 		// Process File/Directory objects to resolve paths and add metadata.
 		processOutputObjects(outputs, workDir)
+		// A hand-written cwl.output.json can declare a basename that
+		// disagrees with the file it names on disk; honor basename (#212).
+		if err := cwloutput.NormalizeOutputFiles(outputs, workDir); err != nil {
+			return nil, fmt.Errorf("normalize output file basenames: %w", err)
+		}
 		return outputs, nil
 	}
 
@@ -131,7 +150,14 @@ func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 			continue
 		}
 
-		collected, err := e.collectOutputBinding(output.OutputBinding, output.Type, workDir, inputs, tool, exitCode, outDir)
+		// Long-form types (list unions, {type: array, ...} maps) leave Type
+		// empty; fall back to the normalized TypeSchema so the optional /
+		// array decisions see them. Shorthand types keep using Type.
+		var outType any = output.Type
+		if output.Type == "" && output.TypeSchema != nil {
+			outType = output.TypeSchema
+		}
+		collected, err := e.collectOutputBinding(output.OutputBinding, outType, workDir, inputs, tool, exitCode, outDir)
 		if err != nil {
 			return nil, fmt.Errorf("output %s: %w", outputID, err)
 		}
@@ -144,6 +170,16 @@ func (e *Executor) CollectOutputs(tool *cwl.CommandLineTool, workDir string, inp
 		// Apply format to collected File objects.
 		applyFormatToOutput(collected, output.Format, inputs, namespaces)
 		outputs[outputID] = collected
+	}
+
+	// outputEval may have mutated a File's basename in memory without the
+	// staged file following it (#212). Per the CWL spec basename is
+	// authoritative for a materialized file, so rename on disk to match and
+	// keep path/location/nameroot/nameext consistent. Scoped to workDir so
+	// outputEval returning a passthrough input File (staged elsewhere) is
+	// never renamed.
+	if err := cwloutput.NormalizeOutputFiles(outputs, workDir); err != nil {
+		return nil, fmt.Errorf("normalize output file basenames: %w", err)
 	}
 
 	return outputs, nil
@@ -524,11 +560,19 @@ func (e *Executor) collectOutputBinding(binding *cwl.OutputBinding, outputType a
 
 	// Return single file or array based on type.
 	if isArrayType {
-		// Always return array for array types.
+		// Always return array for array types (empty, never nil).
+		if collected == nil {
+			collected = []map[string]any{}
+		}
 		return collected, nil
 	}
 	if len(collected) == 0 && isOptionalType(outputType) {
 		return nil, nil
+	}
+	if len(collected) > 0 && unionHasArray(outputType) {
+		// Optional array ("File[]?", ["null", array]): a single match is
+		// still a one-element array.
+		return collected, nil
 	}
 	if len(collected) == 1 {
 		return collected[0], nil
@@ -650,8 +694,26 @@ func processOutputFileObject(fileObj map[string]any) (map[string]any, error) {
 	}
 
 	absPath, _ := filepath.Abs(path)
+
+	// outputEval (or a hand-authored record-typed File object) may already
+	// carry a basename/nameroot/nameext that intentionally differs from the
+	// on-disk path — that's a rename NormalizeOutputFiles (invoked by the
+	// caller after this function returns) honors by renaming the file on
+	// disk. Only derive these from path when the object doesn't already
+	// carry a non-empty value, so we don't silently discard the rename here
+	// (#214; mirror image of #212's bug, which was in the opposite
+	// direction).
 	basename := filepath.Base(path)
+	if v, ok := fileObj["basename"].(string); ok && v != "" {
+		basename = v
+	}
 	nameroot, nameext := splitNameExtension(basename)
+	if v, ok := fileObj["nameroot"].(string); ok && v != "" {
+		nameroot = v
+	}
+	if v, ok := fileObj["nameext"].(string); ok && v != "" {
+		nameext = v
+	}
 
 	// Compute checksum.
 	checksum, err := computeChecksum(path)

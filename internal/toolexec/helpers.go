@@ -1,6 +1,7 @@
 package toolexec
 
 import (
+	"github.com/me/gowe/internal/cwlexpr"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,7 +152,11 @@ func isDirectoryType(outputType any) bool {
 		return t == "Directory" || t == "Directory?" || t == "Directory[]"
 	case map[string]any:
 		if typeName, ok := t["type"].(string); ok {
-			return typeName == "Directory" || typeName == "array"
+			if typeName == "array" {
+				items, _ := t["items"].(string)
+				return items == "Directory"
+			}
+			return typeName == "Directory"
 		}
 		if items, ok := t["items"].(string); ok {
 			return items == "Directory"
@@ -195,6 +200,22 @@ func isOptionalType(outputType any) bool {
 	return false
 }
 
+// unionHasArray reports whether outputType is an optional/union type with an
+// array member ("File[]?" or ["null", {type: array, ...}]).
+func unionHasArray(outputType any) bool {
+	switch t := outputType.(type) {
+	case string:
+		return strings.HasSuffix(t, "[]?")
+	case []any:
+		for _, m := range t {
+			if isArrayOutputType(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isArrayOutputType checks if the output type is an array type.
 func isArrayOutputType(outputType any) bool {
 	switch t := outputType.(type) {
@@ -210,8 +231,8 @@ func isArrayOutputType(outputType any) bool {
 
 // extractEnvVars extracts environment variables from EnvVarRequirement.
 // Delegates to the shared requirements package.
-func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any) map[string]string {
-	return requirements.ExtractEnvVars(tool, inputs, jobRequirements)
+func extractEnvVars(tool *cwl.CommandLineTool, inputs map[string]any, jobRequirements []any, runtime *cwlexpr.RuntimeContext) map[string]string {
+	return requirements.ExtractEnvVars(tool, inputs, jobRequirements, runtime)
 }
 
 // scanSymlinks walks a directory and returns a set of absolute paths that are symlinks.

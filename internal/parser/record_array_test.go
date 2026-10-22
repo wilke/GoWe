@@ -114,7 +114,7 @@ func TestRecordFieldsFromType_Direct(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := len(recordFieldsFromType(tc.in)); got != tc.want {
+			if got := len(recordFieldsFromType(tc.in, nil, false)); got != tc.want {
 				t.Errorf("got %d fields, want %d", got, tc.want)
 			}
 		})

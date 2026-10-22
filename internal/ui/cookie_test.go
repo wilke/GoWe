@@ -53,7 +53,7 @@ func TestSetSessionCookieSecureAttribute(t *testing.T) {
 
 	for _, secure := range []bool{true, false} {
 		rec := httptest.NewRecorder()
-		SetSessionCookie(rec, sess, secure)
+		SetSessionCookie(rec, sess, secure, "")
 
 		cookies := rec.Result().Cookies()
 		if len(cookies) != 1 {
@@ -69,5 +69,49 @@ func TestSetSessionCookieSecureAttribute(t *testing.T) {
 		if !c.HttpOnly {
 			t.Fatalf("session cookie must be HttpOnly")
 		}
+	}
+}
+
+// TestSessionCookiePathUnderBasePath is the #250 contract: SetSessionCookie
+// and ClearSessionCookie must always agree on the cookie's Path (basePath
+// when set, else "/"), or logout leaves the login-set cookie behind under a
+// reverse-proxy prefix.
+func TestSessionCookiePathUnderBasePath(t *testing.T) {
+	sess := &model.Session{ID: "abc123", ExpiresAt: time.Now().Add(time.Hour)}
+
+	tests := []struct {
+		name     string
+		basePath string
+		wantPath string
+	}{
+		{name: "unset base path defaults to root", basePath: "", wantPath: "/"},
+		{name: "base path used verbatim", basePath: "/x/y", wantPath: "/x/y"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRec := httptest.NewRecorder()
+			SetSessionCookie(setRec, sess, false, tt.basePath)
+			setCookies := setRec.Result().Cookies()
+			if len(setCookies) != 1 {
+				t.Fatalf("SetSessionCookie: expected 1 cookie, got %d", len(setCookies))
+			}
+			if got := setCookies[0].Path; got != tt.wantPath {
+				t.Fatalf("SetSessionCookie Path = %q, want %q", got, tt.wantPath)
+			}
+
+			clearRec := httptest.NewRecorder()
+			ClearSessionCookie(clearRec, tt.basePath)
+			clearCookies := clearRec.Result().Cookies()
+			if len(clearCookies) != 1 {
+				t.Fatalf("ClearSessionCookie: expected 1 cookie, got %d", len(clearCookies))
+			}
+			if got := clearCookies[0].Path; got != tt.wantPath {
+				t.Fatalf("ClearSessionCookie Path = %q, want %q", got, tt.wantPath)
+			}
+			if setCookies[0].Path != clearCookies[0].Path {
+				t.Fatalf("Set/Clear Path mismatch: %q vs %q", setCookies[0].Path, clearCookies[0].Path)
+			}
+		})
 	}
 }

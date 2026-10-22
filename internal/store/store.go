@@ -41,14 +41,47 @@ type Store interface {
 	// ActivateSubmission moves a submission PENDING→RUNNING; applied=false
 	// (no error) when it is no longer PENDING.
 	ActivateSubmission(ctx context.Context, id string) (bool, error)
+	// PurgeSubmissionSecrets clears a submission's secret values (keeping
+	// SecretNames for auditability) and stamps SecretsPurgedAt=at.
+	PurgeSubmissionSecrets(ctx context.Context, id string, at time.Time) error
+	// ScrubTaskSecretsForSubmission clears RuntimeHints.Secrets and any
+	// StagerOverrides.HTTPCredential from every task belonging to
+	// submissionID, persisting the change. CancelNonTerminalTasks (a
+	// state-only bulk UPDATE) and PurgeSubmissionSecrets (which only touches
+	// the submissions row) never reach tasks.runtime_hints, so the per-task
+	// subset of secrets delivered to a task can otherwise survive a cancel
+	// or a manual/retention purge indefinitely (#260 H2/H3). Returns the
+	// number of task rows actually rewritten (tasks with nothing to scrub
+	// are skipped). Safe to call on a submission with no tasks or no
+	// secret-bearing tasks (returns 0, nil).
+	ScrubTaskSecretsForSubmission(ctx context.Context, submissionID string) (int, error)
+	// ListSubmissionsWithSecretsForRetention returns terminal-state
+	// submissions that still carry secret values, for the scheduler's
+	// retention sweep. Secret values are never decrypted here (Secrets is
+	// always nil on the results).
+	ListSubmissionsWithSecretsForRetention(ctx context.Context) ([]*model.Submission, error)
 	// ListSubmissionsAwaitingOutputStaging returns COMPLETED submissions with
 	// an output destination and no recorded delivery outcome (SQL-filtered so
 	// the post-stage phase's cost is bounded by pending deliveries).
 	ListSubmissionsAwaitingOutputStaging(ctx context.Context) ([]*model.Submission, error)
+	// ListSubmissionsAwaitingPrestage returns RUNNING submissions whose
+	// server-side workspace pre-staging was started but never completed
+	// (prestage_started_at set, prestage_completed_at NULL) — the recovery
+	// half of the scheduler's pre-stage loop selection alongside its existing
+	// PENDING scan (#268/#269): without it, a submission that reaches RUNNING
+	// before pre-staging finishes is never revisited and its READY steps
+	// defer forever.
+	ListSubmissionsAwaitingPrestage(ctx context.Context) ([]*model.Submission, error)
 	DeleteSubmission(ctx context.Context, id string) error
 	UpdateSubmissionInputs(ctx context.Context, id string, inputs map[string]any) error
 	GetChildSubmissions(ctx context.Context, parentTaskID string) ([]*model.Submission, error)
 	CountSubmissionsByState(ctx context.Context, since time.Time, submittedBy string) (map[string]int, error)
+	// GetSubmissionMeta is a lean SELECT of workflow_name and labels only
+	// (no inputs/outputs/tasks/timestamps) — for label lookups that only
+	// need to name a submission's workflow, e.g. Prometheus instrumentation
+	// on the handler path where the caller never loads the full row.
+	// Returns (nil, nil) when the submission does not exist.
+	GetSubmissionMeta(ctx context.Context, id string) (*model.SubmissionMeta, error)
 
 	// StepInstance operations
 	CreateStepInstance(ctx context.Context, si *model.StepInstance) error
@@ -74,12 +107,31 @@ type Store interface {
 	// TerminalizeTask is UpdateTask guarded by a compare-and-set: the write is
 	// skipped (applied=false, no error) when the task is already terminal.
 	TerminalizeTask(ctx context.Context, task *model.Task) (bool, error)
+	// TerminalizeTaskFrom is UpdateTask guarded by a compare-and-set against a
+	// single exact state: the write is skipped (applied=false, no error)
+	// unless the task is still in `from`. Use this instead of TerminalizeTask
+	// when the caller's snapshot is only valid for one specific non-terminal
+	// state — e.g. detectStuckTasks failing a task it observed as QUEUED: a
+	// worker that checks the task out between the snapshot and this write
+	// must win, not be clobbered by a stale full-row write that resets
+	// external_id and reports the task terminal out from under the worker.
+	TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error)
 	// CASTaskState moves a task `from`→`to` only while it is still exactly in
 	// `from`; applied=false (no error) otherwise, so a stale snapshot can
 	// never overwrite a concurrent terminal write (e.g. a cancel that SKIPPED
 	// the task). Used for retry marking (FAILED→RETRYING) and retry claiming
 	// (RETRYING→SCHEDULED).
 	CASTaskState(ctx context.Context, id string, from, to model.TaskState) (bool, error)
+	// MarkTaskRunning transitions a task QUEUED→RUNNING (compare-and-set),
+	// stamping started_at only when it is not already set. It writes no other
+	// column — in particular never external_id — so a poll observation can
+	// never clobber a concurrent checkout's worker assignment (the F-J zombie
+	// class). applied=false (no error) when the task is no longer QUEUED.
+	MarkTaskRunning(ctx context.Context, id string) (bool, error)
+	// UpdateTaskPriority sets only the priority column. A full-row
+	// read-modify-write here would be in the same clobber class as F-J: it
+	// could overwrite a concurrent checkout's external_id/started_at.
+	UpdateTaskPriority(ctx context.Context, id string, priority int) error
 	GetTasksByState(ctx context.Context, state model.TaskState) ([]*model.Task, error)
 	GetActiveTasks(ctx context.Context) ([]*model.Task, error)
 	GetTaskSummaries(ctx context.Context, submissionIDs []string) (map[string]model.TaskSummary, error)
@@ -89,6 +141,15 @@ type Store interface {
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
 	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
 	ResetFailedSteps(ctx context.Context, submissionID string) (int, error)
+	// CountTasksByState returns the current global count of tasks per state
+	// (a single GROUP BY query), used to refresh the gowe_tasks{state} gauge
+	// once per scheduler tick.
+	CountTasksByState(ctx context.Context) (map[string]int, error)
+	// CountTasksQueuedByGroup returns the current count of QUEUED tasks per
+	// worker group (a single GROUP BY query keyed on the runtime_hints
+	// worker_group JSON field, '' normalized to "default"), used to refresh
+	// the gowe_queue_depth{group} gauge once per scheduler tick.
+	CountTasksQueuedByGroup(ctx context.Context) (map[string]int, error)
 
 	// Session operations
 	CreateSession(ctx context.Context, sess *model.Session) error
@@ -104,6 +165,9 @@ type Store interface {
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	ListWorkerGroups(ctx context.Context) ([]string, error)
+	// AdoptWorkerKey binds a legacy worker (key_id='') to keyID; CAS, true if bound by this call.
+	AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error)
+	ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error)
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
 	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
 	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
@@ -119,6 +183,14 @@ type Store interface {
 	DeleteWorkerKey(ctx context.Context, id string) error
 	CountWorkerKeys(ctx context.Context) (int, error)
 	TouchWorkerKey(ctx context.Context, id string, when time.Time) error
+
+	// Tool blessing operations (admin-approved token injection; rows are never deleted)
+	CreateToolBlessing(ctx context.Context, b *model.ToolBlessing) error
+	GetToolBlessing(ctx context.Context, id string) (*model.ToolBlessing, error)
+	GetActiveToolBlessingByHash(ctx context.Context, toolHash string) (*model.ToolBlessing, error)
+	ListToolBlessings(ctx context.Context, includeRevoked bool) ([]*model.ToolBlessing, error)
+	RevokeToolBlessing(ctx context.Context, id, revokedBy, reason string) error
+	AddToolBlessingImageSHA256(ctx context.Context, id, sha256 string) error
 
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)

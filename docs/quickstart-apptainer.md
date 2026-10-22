@@ -117,6 +117,12 @@ curl -s -X POST http://localhost:8080/api/v1/submissions/ \
   }' | python3 -m json.tool
 ```
 
+> **Submit-by-name is sharper than it looks.** Registration is append-only — re-registering
+> `boltz-test` creates a new version rather than replacing it, and submitting by name always
+> resolves to the *newest* version under that name, not a pinned one. Fine here where you're
+> the only one registering it; once a name might be re-registered by someone (or something)
+> else, submit by the concrete `wf_...` ID from the registration response instead.
+
 Monitor progress:
 
 ```bash
@@ -129,6 +135,13 @@ curl -s http://localhost:8080/api/v1/submissions/sub_... | python3 -m json.tool
 # Via web UI
 open http://localhost:8080/submissions
 ```
+
+> **Building a separate browser client?** The built-in web UI above is server-rendered and
+> same-origin, so it needs no configuration. A standalone browser client calling `/api/v1`
+> directly is different: it should sit behind a same-origin reverse proxy that injects the
+> bearer token server-side (never ship the token to the browser). `--cors-origins` exists for
+> deliberate cross-origin deployments and is off by default. See
+> [`docs/PRODUCTION.md`](PRODUCTION.md#browser-clients--cors) for the full story.
 
 ## Architecture
 

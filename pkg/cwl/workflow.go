@@ -18,9 +18,9 @@ type Workflow struct {
 // InputParam is a normalized CWL workflow input.
 // Handles both shorthand ("reads_r1: File") and expanded form.
 type InputParam struct {
-	Type    string
-	Doc     string
-	Default any
+	Type    string `json:"type,omitempty"`
+	Doc     string `json:"doc,omitempty"`
+	Default any    `json:"default,omitempty"`
 
 	// Symbols holds the permitted values for an enum-typed input. See the
 	// identically-named field on ToolInputParam.
@@ -28,13 +28,19 @@ type InputParam struct {
 
 	// RecordFields contains field definitions for record types.
 	// Used for resolving secondaryFiles on record fields.
-	RecordFields []RecordField
+	RecordFields []RecordField `json:"recordFields,omitempty"`
 
 	// SecondaryFiles specifies additional files associated with this input.
-	SecondaryFiles []SecondaryFileSchema
+	SecondaryFiles []SecondaryFileSchema `json:"secondaryFiles,omitempty"`
 
 	// LoadContents reads the file contents into the contents field.
-	LoadContents bool
+	LoadContents bool `json:"loadContents,omitempty"`
+
+	// TypeSchema is the canonical, JSON-safe normalized form of this input's
+	// raw CWL type (shorthand-expanded, named types inlined via
+	// SchemaDefRequirement). Populated by the parser from real CWL source;
+	// nil means "do not validate" (see internal/parser/typeschema.go).
+	TypeSchema any `json:"typeSchema,omitempty"`
 }
 
 // OutputParam is a CWL workflow output.
@@ -67,6 +73,7 @@ type StepInput struct {
 	ValueFrom    string // Expression to transform input (requires StepInputExpressionRequirement)
 	LoadContents bool   // Read file contents into the contents field before valueFrom
 	LinkMerge    string // "merge_nested" (default) or "merge_flattened" for multi-source inputs
+	PickValue    string // "first_non_null", "the_only_non_null", or "all_non_null"
 }
 
 // GoWeHint holds GoWe-specific hints extracted from CWL hints.

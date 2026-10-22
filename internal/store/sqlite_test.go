@@ -98,6 +98,50 @@ func TestMigrate_Idempotent(t *testing.T) {
 	}
 }
 
+// TestMigrate_DropsLegacyUniqueContentHashIndex pins the #201 schema
+// migration: workflows.content_hash originally carried a UNIQUE index
+// (idx_workflows_content_hash), which blocks both `register --force` and
+// PUT-publishes-new-version from ever inserting a row whose hash happens to
+// match an existing row. This simulates a pre-#201 database (still on the
+// old unique index) and asserts that re-running Migrate() converts it to
+// non-unique, in place, without erroring.
+func TestMigrate_DropsLegacyUniqueContentHashIndex(t *testing.T) {
+	st := testStore(t) // already migrated once (non-unique index)
+	ctx := context.Background()
+
+	// Simulate a pre-#201 database: drop the (now non-unique) index and
+	// recreate it the old way, UNIQUE.
+	if _, err := st.db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_workflows_content_hash`); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`CREATE UNIQUE INDEX idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''`); err != nil {
+		t.Fatalf("create legacy unique index: %v", err)
+	}
+
+	// Re-migrating must drop the unique index and recreate it non-unique.
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("re-migrate: %v", err)
+	}
+
+	// Two rows sharing a content_hash must now be insertable — this is
+	// exactly what register --force and PUT-publishes-new-version rely on.
+	wf1 := sampleWorkflow()
+	wf1.ID = "wf_dup-hash-1"
+	wf1.ContentHash = "same-hash-for-test"
+	if err := st.CreateWorkflow(ctx, wf1); err != nil {
+		t.Fatalf("create wf1: %v", err)
+	}
+	wf2 := sampleWorkflow()
+	wf2.ID = "wf_dup-hash-2"
+	wf2.ContentHash = "same-hash-for-test"
+	wf2.CreatedAt = wf1.CreatedAt.Add(time.Second)
+	wf2.UpdatedAt = wf2.CreatedAt
+	if err := st.CreateWorkflow(ctx, wf2); err != nil {
+		t.Fatalf("create wf2 with duplicate content_hash: %v (legacy unique index was not migrated away)", err)
+	}
+}
+
 // --- Workflow CRUD tests ---
 
 func TestCreateAndGetWorkflow(t *testing.T) {
@@ -256,6 +300,45 @@ func TestDeleteWorkflow_NotFound(t *testing.T) {
 	st := testStore(t)
 	if err := st.DeleteWorkflow(context.Background(), "wf_nonexistent"); err == nil {
 		t.Error("expected error for nonexistent workflow")
+	}
+}
+
+// TestGetWorkflowByName_ReturnsNewest pins the retrieval contract from
+// #201: by-name lookup must resolve to the newest of any same-name rows
+// (created_at DESC). Timestamps are hand-staggered by whole seconds — like
+// TestListWorkflows_Pagination — because created_at is stored as an
+// RFC3339Nano *string* and compared lexically; RFC3339Nano trims trailing
+// fractional zeros, so two same-second timestamps with different
+// sub-second precision can sort backwards lexically. Whole-second spacing
+// avoids that trap entirely.
+func TestGetWorkflowByName_ReturnsNewest(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var ids []string
+	for i := 0; i < 3; i++ {
+		wf := sampleWorkflow()
+		wf.ID = fmt.Sprintf("wf_same-name-%d", i)
+		wf.Name = "same-name"
+		wf.CreatedAt = base.Add(time.Duration(i) * time.Second)
+		wf.UpdatedAt = wf.CreatedAt
+		if err := st.CreateWorkflow(ctx, wf); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		ids = append(ids, wf.ID)
+	}
+
+	got, err := st.GetWorkflowByName(ctx, "same-name")
+	if err != nil {
+		t.Fatalf("get by name: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil workflow")
+	}
+	wantID := ids[len(ids)-1] // the last-created (newest) row
+	if got.ID != wantID {
+		t.Errorf("id = %q, want %q (newest of %d same-name rows)", got.ID, wantID, len(ids))
 	}
 }
 
@@ -639,6 +722,114 @@ func TestListSubmissions_ExcludeChildren(t *testing.T) {
 			t.Errorf("expected only parent submission, got %d rows", len(subs))
 		}
 	})
+}
+
+// TestListSubmissions_WorkflowNameFilter pins #240: the workflow_id list
+// filter used to resolve a workflow *name* to a single newest ID
+// (GetWorkflowByName), silently dropping submissions created against earlier
+// versions registered under the same name. Filtering by name must match
+// submissions across every workflow ID sharing that name; filtering by an
+// exact ID must keep single-version semantics.
+func TestListSubmissions_WorkflowNameFilter(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	// Three workflow versions sharing the name "vaxpipe", distinct IDs.
+	vax1 := sampleWorkflow()
+	vax1.ID = "wf_vax-1"
+	vax1.Name = "vaxpipe"
+	if err := st.CreateWorkflow(ctx, vax1); err != nil {
+		t.Fatalf("create vax1: %v", err)
+	}
+
+	vax2 := sampleWorkflow()
+	vax2.ID = "wf_vax-2"
+	vax2.Name = "vaxpipe"
+	if err := st.CreateWorkflow(ctx, vax2); err != nil {
+		t.Fatalf("create vax2: %v", err)
+	}
+
+	vax3 := sampleWorkflow()
+	vax3.ID = "wf_vax-3"
+	vax3.Name = "vaxpipe"
+	if err := st.CreateWorkflow(ctx, vax3); err != nil {
+		t.Fatalf("create vax3: %v", err)
+	}
+
+	// A different workflow with a different name.
+	other := sampleWorkflow()
+	other.ID = "wf_other-1"
+	other.Name = "other-pipeline"
+	if err := st.CreateWorkflow(ctx, other); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	// 2 submissions against vax1, 3 against vax2, 1 against vax3, 2 against other.
+	counts := map[string]int{vax1.ID: 2, vax2.ID: 3, vax3.ID: 1, other.ID: 2}
+	i := 0
+	for wfID, n := range counts {
+		for j := 0; j < n; j++ {
+			sub := sampleSubmission(wfID)
+			sub.ID = fmt.Sprintf("sub_wnf-%d", i)
+			i++
+			if err := st.CreateSubmission(ctx, sub); err != nil {
+				t.Fatalf("create submission for %s: %v", wfID, err)
+			}
+		}
+	}
+
+	tests := []struct {
+		name      string
+		opts      model.ListOptions
+		wantTotal int
+		wantIDs   map[string]bool // expected distinct workflow IDs among results, nil = don't check
+	}{
+		{
+			name:      "name filter matches all versions",
+			opts:      model.ListOptions{WorkflowName: "vaxpipe", Limit: 20},
+			wantTotal: 6,
+			wantIDs:   map[string]bool{vax1.ID: true, vax2.ID: true, vax3.ID: true},
+		},
+		{
+			name:      "exact id filter matches only that version",
+			opts:      model.ListOptions{WorkflowID: vax2.ID, Limit: 20},
+			wantTotal: 3,
+			wantIDs:   map[string]bool{vax2.ID: true},
+		},
+		{
+			name:      "name filter matching nothing returns zero rows without error",
+			opts:      model.ListOptions{WorkflowName: "no-such-workflow", Limit: 20},
+			wantTotal: 0,
+			wantIDs:   map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			subs, total, err := st.ListSubmissions(ctx, tt.opts)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if total != tt.wantTotal {
+				t.Errorf("total = %d, want %d", total, tt.wantTotal)
+			}
+			if len(subs) != tt.wantTotal {
+				t.Errorf("len(subs) = %d, want %d", len(subs), tt.wantTotal)
+			}
+			gotIDs := map[string]bool{}
+			for _, s := range subs {
+				gotIDs[s.WorkflowID] = true
+				if unwanted := !tt.wantIDs[s.WorkflowID] && len(tt.wantIDs) > 0; unwanted {
+					t.Errorf("unexpected workflow id %q in results", s.WorkflowID)
+				}
+			}
+			for id := range tt.wantIDs {
+				if !gotIDs[id] {
+					t.Errorf("expected results to include workflow id %q, got none", id)
+				}
+			}
+		})
+	}
 }
 
 func TestUpdateSubmission(t *testing.T) {
@@ -1650,6 +1841,215 @@ func TestBatchCreateStepInstances_Empty(t *testing.T) {
 	if err := st.BatchCreateStepInstances(context.Background(), nil); err != nil {
 		t.Fatalf("empty batch should not error: %v", err)
 	}
+}
+
+// TestStepInstance_ErrorRoundTrip covers GoWe issue #197: the step_instances
+// diagnostic `error` column must round-trip through create, get, update, and
+// both list paths (ListStepsBySubmission and ListStepsByState).
+func TestStepInstance_ErrorRoundTrip(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	sub := sampleSubmission(wf.ID)
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	t.Run("create with no error persists empty", func(t *testing.T) {
+		si := &model.StepInstance{
+			ID:           "si_err-none",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateWaiting,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != "" {
+			t.Errorf("Error = %q, want empty", got.Error)
+		}
+	})
+
+	t.Run("create with error persists and round-trips via Get", func(t *testing.T) {
+		wantErr := "scatter input \"items\" is not an array (got string)"
+		si := &model.StepInstance{
+			ID:           "si_err-create",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateFailed,
+			Outputs:      map[string]any{},
+			Error:        wantErr,
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != wantErr {
+			t.Errorf("Error = %q, want %q", got.Error, wantErr)
+		}
+	})
+
+	t.Run("update sets and clears error", func(t *testing.T) {
+		si := &model.StepInstance{
+			ID:           "si_err-update",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateWaiting,
+			Outputs:      map[string]any{},
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+
+		// Update to FAILED with an error message.
+		si.State = model.StepStateFailed
+		si.Error = "pickValue first_non_null: all sources are null"
+		si.CompletedAt = &now
+		if err := st.UpdateStepInstance(ctx, si); err != nil {
+			t.Fatalf("UpdateStepInstance: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != si.Error {
+			t.Errorf("Error after update = %q, want %q", got.Error, si.Error)
+		}
+
+		// A subsequent update that clears Error must clear the column too.
+		si.Error = ""
+		if err := st.UpdateStepInstance(ctx, si); err != nil {
+			t.Fatalf("UpdateStepInstance (clear): %v", err)
+		}
+		got, err = st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance after clear: %v", err)
+		}
+		if got.Error != "" {
+			t.Errorf("Error after clear = %q, want empty", got.Error)
+		}
+	})
+
+	t.Run("error round-trips through ListStepsBySubmission and ListStepsByState", func(t *testing.T) {
+		wantErr := "when condition evaluation: unexpected type"
+		si := &model.StepInstance{
+			ID:           "si_err-list",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateFailed,
+			Outputs:      map[string]any{},
+			Error:        wantErr,
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+
+		bySub, err := st.ListStepsBySubmission(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("ListStepsBySubmission: %v", err)
+		}
+		var foundInSub bool
+		for _, s := range bySub {
+			if s.ID == si.ID {
+				foundInSub = true
+				if s.Error != wantErr {
+					t.Errorf("ListStepsBySubmission: Error = %q, want %q", s.Error, wantErr)
+				}
+			}
+		}
+		if !foundInSub {
+			t.Fatal("si_err-list not found via ListStepsBySubmission")
+		}
+
+		byState, err := st.ListStepsByState(ctx, model.StepStateFailed)
+		if err != nil {
+			t.Fatalf("ListStepsByState: %v", err)
+		}
+		var foundInState bool
+		for _, s := range byState {
+			if s.ID == si.ID {
+				foundInState = true
+				if s.Error != wantErr {
+					t.Errorf("ListStepsByState: Error = %q, want %q", s.Error, wantErr)
+				}
+			}
+		}
+		if !foundInState {
+			t.Fatal("si_err-list not found via ListStepsByState")
+		}
+	})
+
+	t.Run("BatchCreateStepInstances persists error", func(t *testing.T) {
+		wantErr := "scatter iteration 2 when evaluation: boom"
+		steps := []*model.StepInstance{
+			{
+				ID:           "si_err-batch",
+				SubmissionID: sub.ID,
+				StepID:       "step1",
+				State:        model.StepStateFailed,
+				Outputs:      map[string]any{},
+				Error:        wantErr,
+				CreatedAt:    now,
+			},
+		}
+		if err := st.BatchCreateStepInstances(ctx, steps); err != nil {
+			t.Fatalf("BatchCreateStepInstances: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, "si_err-batch")
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.Error != wantErr {
+			t.Errorf("Error = %q, want %q", got.Error, wantErr)
+		}
+	})
+
+	t.Run("ResetFailedSteps clears the error", func(t *testing.T) {
+		si := &model.StepInstance{
+			ID:           "si_err-reset",
+			SubmissionID: sub.ID,
+			StepID:       "step1",
+			State:        model.StepStateFailed,
+			Outputs:      map[string]any{},
+			Error:        "boom",
+			CompletedAt:  &now,
+			CreatedAt:    now,
+		}
+		if err := st.CreateStepInstance(ctx, si); err != nil {
+			t.Fatalf("CreateStepInstance: %v", err)
+		}
+		if _, err := st.ResetFailedSteps(ctx, sub.ID); err != nil {
+			t.Fatalf("ResetFailedSteps: %v", err)
+		}
+		got, err := st.GetStepInstance(ctx, si.ID)
+		if err != nil {
+			t.Fatalf("GetStepInstance: %v", err)
+		}
+		if got.State != model.StepStateWaiting {
+			t.Errorf("State after reset = %q, want WAITING", got.State)
+		}
+		if got.Error != "" {
+			t.Errorf("Error after reset = %q, want empty", got.Error)
+		}
+	})
 }
 
 // --- CancelNonTerminalSteps tests ---

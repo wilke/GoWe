@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -26,6 +27,9 @@ type healthResponse struct {
 	Store     string            `json:"store"`
 	Executors map[string]string `json:"executors"`
 	Workers   *workerSummary    `json:"workers,omitempty"`
+	// TokenBlessing is the provider-token policy mode: "enforce" or the loud
+	// "dev" (unblessed tools that request the token are granted it).
+	TokenBlessing string `json:"token_blessing"`
 }
 
 func (s *Server) executorStatus() map[string]string {
@@ -89,16 +93,31 @@ func (s *Server) workerSummary(ctx context.Context) *workerSummary {
 	return ws
 }
 
+// schedulerStatus reports the scheduler's lifecycle state. A nil scheduler
+// (server started without one, e.g. some tests) reports "not_started" the
+// same as one that hasn't had Start called yet.
+func (s *Server) schedulerStatus() string {
+	if s.scheduler == nil {
+		return scheduler.StateNotStarted
+	}
+	return s.scheduler.State()
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+	version := s.config.Version
+	if version == "" {
+		version = "dev"
+	}
 	respondOK(w, reqID, healthResponse{
-		Status:    "healthy",
-		Version:   "0.1.0",
-		GoVersion: runtime.Version(),
-		Uptime:    time.Since(s.startTime).Round(time.Second).String(),
-		Scheduler: "not_started",
-		Store:     "skeleton",
-		Executors: s.executorStatus(),
-		Workers:   s.workerSummary(r.Context()),
+		Status:        "healthy",
+		Version:       version,
+		GoVersion:     runtime.Version(),
+		Uptime:        time.Since(s.startTime).Round(time.Second).String(),
+		Scheduler:     s.schedulerStatus(),
+		Store:         "skeleton",
+		Executors:     s.executorStatus(),
+		Workers:       s.workerSummary(r.Context()),
+		TokenBlessing: s.tokenBlessingMode(),
 	})
 }

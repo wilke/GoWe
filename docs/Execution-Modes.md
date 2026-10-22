@@ -43,7 +43,7 @@ GoWe supports multiple execution modes (compute) and storage backends (data). Th
 | **http(s)://** | ❌ | HTTP PUT/POST upload to any HTTP server |
 | **shock://** | ❌ | Shock data service (BV-BRC integration) |
 | **s3://** | ❌ | S3-compatible object storage |
-| **ws://** | ❌ | Workspace service (BV-BRC integration) |
+| **ws://** | ✅* | Workspace service (BV-BRC integration) |
 
 ### Storage Backend Descriptions
 
@@ -55,7 +55,7 @@ GoWe supports multiple execution modes (compute) and storage backends (data). Th
 
 - **shock://**: Uploads to Shock data service. Used with BV-BRC for large file storage.
 
-- **ws://**: Uploads to BV-BRC Workspace service. This is the default storage backend for BV-BRC execution.
+- **ws://**: Uploads to BV-BRC Workspace service. This is the default storage backend for BV-BRC execution. **Supported**: verified end to end (streamed/size-verified upload, wildcard-glob output resolution, recursive `Directory` stage-in) by a gated hybrid round-trip test (`-tags=integration`, requires a live BV-BRC token) in `internal/executor/bvbrc_integration_test.go` — see [`docs/BVBRC-Workspace-Deep-Dive.md`](BVBRC-Workspace-Deep-Dive.md). Server-side pre/post-staging requires `--workspace-staging server --workspace-url <url>`.
 
 - **s3://**: Uploads to S3-compatible object storage (planned).
 
@@ -69,11 +69,15 @@ server-local        │  ✅   │    -    │    -    │    -     │   -   �
 server-distributed  │   -   │   ✅    │   ❌    │   ❌     │   -   │  ❌   │
 server-docker       │  ❌   │   ❌    │   ❌    │   ❌     │   -   │  ❌   │
 server-apptainer    │  ❌   │   ✅    │   ❌    │   ❌     │   -   │  ❌   │
-server-bvbrc        │   -   │    -    │    -    │   ❌     │  ❌   │   -   │
+server-bvbrc        │   -   │    -    │    -    │   ❌     │  ✅*  │   -   │
 ```
 
 Legend:
 - ✅ Tested in conformance suite
+- ✅* Verified against a live service by a gated integration test (`-tags=integration`,
+  requires a real credential) rather than the automated conformance suite — the promoting
+  PR attaches the round-trip run as evidence instead of a CI-green cell (`ws://` only; see
+  `docs/BVBRC-Workspace-Deep-Dive.md` §4)
 - ❌ Not tested (supported but no automated tests)
 - `-` Not applicable for this combination
 

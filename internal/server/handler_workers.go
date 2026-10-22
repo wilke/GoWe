@@ -38,6 +38,8 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		GPUEnabled bool              `json:"gpu_enabled"`
 		GPUDevice  string            `json:"gpu_device"`
 		Datasets   map[string]string `json:"datasets"`
+		MaxCPUs    *int              `json:"max_cpus"`
+		MaxMemMB   *int64            `json:"max_mem_mb"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -97,6 +99,19 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		LastSeen:     now,
 		RegisteredAt: now,
 	}
+	// Self-reported capacity; non-positive means "not reported" (legacy).
+	if req.MaxCPUs != nil && *req.MaxCPUs > 0 {
+		worker.MaxCPUs = req.MaxCPUs
+	}
+	if req.MaxMemMB != nil && *req.MaxMemMB > 0 {
+		worker.MaxMemMB = req.MaxMemMB
+	}
+	// Bind the worker to the registering key. "none" is the anonymous context
+	// used when worker auth is disabled; leave those rows unbound ('') so they
+	// are adopted if auth is enabled later.
+	if workerAuth != nil && !workerAuth.Anonymous {
+		worker.KeyID = workerAuth.KeyID
+	}
 	if worker.Labels == nil {
 		worker.Labels = map[string]string{}
 	}
@@ -110,7 +125,8 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets))
+	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets),
+		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB))
 	respondCreated(w, reqID, worker)
 }
 
@@ -120,14 +136,8 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	worker, err := s.store.GetWorker(r.Context(), id)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			model.NewInternalError(err.Error()))
-		return
-	}
-	if worker == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
+	worker, ok := s.authorizeWorker(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -188,14 +198,20 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	worker, err := s.store.GetWorker(r.Context(), id)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			model.NewInternalError(err.Error()))
+	worker, ok := s.authorizeWorker(w, r, id)
+	if !ok {
 		return
 	}
-	if worker == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
+
+	// A key whose groups were narrowed after registration must stop receiving
+	// tasks for the group it can no longer join.
+	if wa := WorkerAuthFromContext(r.Context()); wa != nil && !wa.CanJoinGroup(worker.Group) {
+		s.logger.Warn("worker checkout denied: key no longer allows group",
+			"worker_id", id, "key_id", wa.KeyID, "group", worker.Group)
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    model.ErrForbidden,
+			Message: "worker key does not allow group: " + worker.Group,
+		})
 		return
 	}
 
@@ -217,9 +233,21 @@ func (s *Server) handleWorkerCheckout(w http.ResponseWriter, r *http.Request) {
 
 // handleWorkerTaskStatus allows a worker to report task state updates.
 // PUT /api/v1/workers/{id}/tasks/{tid}/status
+//
+// Guards: the task must not already be terminal, the target state must be
+// non-terminal (terminal results go through /complete, which stamps
+// completed_at and outputs — this endpoint could otherwise terminalize with
+// neither, F-L), and the reporting worker must own the task (external_id).
+// The calling key must be the one bound to the worker id (authorizeWorker);
+// the task checks defend against stale or duplicate workers.
 func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
+	workerID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
+
+	if _, ok := s.authorizeWorker(w, r, workerID); !ok {
+		return
+	}
 
 	var req struct {
 		State string `json:"state"`
@@ -244,6 +272,30 @@ func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	newState := model.TaskState(req.State)
+	if task.State.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is already terminal (" + string(task.State) + ")",
+		})
+		return
+	}
+	if newState.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "terminal state " + req.State + " must be reported via the complete endpoint",
+		})
+		return
+	}
+	// Ownership: external_id = the assigned worker id after checkout, '' after
+	// a requeue, and the new worker's id after re-checkout — a late report
+	// from a previous owner is always distinguishable (F-K).
+	if task.ExternalID != workerID {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is not assigned to worker " + workerID,
+		})
+		return
+	}
 	if !task.State.CanTransitionTo(newState) {
 		respondError(w, reqID, http.StatusConflict, &model.APIError{
 			Code:    model.ErrConflict,
@@ -252,14 +304,23 @@ func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	task.State = newState
-	if err := s.store.UpdateTask(r.Context(), task); err != nil {
+	// State-column-only CAS: a full-row write here could clobber concurrent
+	// checkout/requeue writes (external_id, started_at — the F-J clobber class).
+	applied, err := s.store.CASTaskState(r.Context(), tid, task.State, newState)
+	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
 		return
 	}
+	if !applied {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " changed state concurrently",
+		})
+		return
+	}
 
-	respondOK(w, reqID, map[string]any{"task_id": task.ID, "state": task.State})
+	respondOK(w, reqID, map[string]any{"task_id": task.ID, "state": newState})
 }
 
 // handleWorkerTaskComplete allows a worker to report task completion.
@@ -269,12 +330,22 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	workerID := chi.URLParam(r, "id")
 	tid := chi.URLParam(r, "tid")
 
+	if _, ok := s.authorizeWorker(w, r, workerID); !ok {
+		return
+	}
+
 	var req struct {
-		State    string         `json:"state"`
-		ExitCode *int           `json:"exit_code"`
-		Stdout   string         `json:"stdout"`
-		Stderr   string         `json:"stderr"`
-		Outputs  map[string]any `json:"outputs"`
+		State      string         `json:"state"`
+		ExitCode   *int           `json:"exit_code"`
+		Stdout     string         `json:"stdout"`
+		Stderr     string         `json:"stderr"`
+		Outputs    map[string]any `json:"outputs"`
+		StageInMs  *int64         `json:"stage_in_ms"`
+		StageOutMs *int64         `json:"stage_out_ms"`
+		// Permanent (#273): the worker's execution error wrapped
+		// validate.ErrInputValidation. Absent (an older worker, or a normal
+		// failure) leaves retry behavior unchanged.
+		Permanent bool `json:"permanent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -295,6 +366,27 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The guards below defend against stale or duplicate workers — a requeued
+	// task re-reported by its former owner, or a double report after a retry.
+	// Key-to-worker binding is enforced by authorizeWorker above.
+	if task.State.IsTerminal() {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is already terminal (" + string(task.State) + ")",
+		})
+		return
+	}
+	// Ownership: external_id = the assigned worker id after checkout, '' after
+	// a requeue, and the new worker's id after re-checkout — a late report
+	// from a previous owner is always distinguishable (F-K).
+	if task.ExternalID != workerID {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " is not assigned to worker " + workerID,
+		})
+		return
+	}
+
 	newState := model.TaskState(req.State)
 	if newState == "" {
 		// Default to SUCCESS if exit code is 0, FAILED otherwise.
@@ -311,24 +403,60 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	task.Stdout = req.Stdout
 	task.Stderr = req.Stderr
 	task.CompletedAt = &now
+	// #273: the worker identified this failure as non-retryable (a bad
+	// input value fails identically on every retry) — apply the same
+	// MaxRetries=RetryCount idiom used by the synchronous executor path
+	// (scheduler/loop.go) to make the task terminal instead of consuming
+	// its retry budget.
+	if req.Permanent && newState == model.TaskStateFailed {
+		task.MaxRetries = task.RetryCount
+	}
 	if req.Outputs != nil {
 		task.Outputs = req.Outputs
 	}
+	// nil on an old worker (version skew: the field is simply absent from its
+	// JSON body) leaves the columns NULL, same as a worker attempt that never
+	// staged anything.
+	task.StageInMs = req.StageInMs
+	task.StageOutMs = req.StageOutMs
 
 	// The task has reached a terminal state via the worker report path (the only
-	// path a worker task terminalizes on). The injected provider token is no
-	// longer needed, so drop it before persisting rather than retaining it at
-	// rest — the scheduler's scrubTaskToken never fires for worker completions.
+	// path a worker task terminalizes on). The injected provider token and any
+	// delivered submission-time secrets are no longer needed, so scrub both
+	// before persisting rather than retaining them at rest — the scheduler's
+	// scrubTaskToken (loop.go) only fires for the local/docker/bvbrc dispatch
+	// paths, never for worker completions (#260 H2).
 	// (SPECIFICATION.md §13.5: the token is needed only while the task is in flight.)
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		task.RuntimeHints.StagerOverrides.HTTPCredential = nil
+	if task.RuntimeHints != nil {
+		task.RuntimeHints.ScrubSecrets()
 	}
 
-	if err := s.store.UpdateTask(r.Context(), task); err != nil {
+	// CAS write: refuse to overwrite a terminal state written between the read
+	// above and this write (e.g. a cancel fan-out that SKIPPED the task), so a
+	// double report is applied exactly once. A requeue + re-checkout landing in
+	// that same statements-wide window would still be accepted (the ownership
+	// check above covers the practical, tick-wide races — F-K).
+	applied, err := s.store.TerminalizeTask(r.Context(), task)
+	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
 		return
 	}
+	if !applied {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: "task " + tid + " reached a terminal state concurrently",
+		})
+		return
+	}
+
+	// This is the single observation point for a worker-reported terminal
+	// task: gated on the CAS write above actually applying, so a duplicate
+	// report (refused with 409 above) can never double-observe. reason
+	// "worker" only matters for a FAILED outcome (ObserveTaskTerminal
+	// ignores it for SUCCESS).
+	workflowName := s.workflowNameFor(r.Context(), task.SubmissionID)
+	s.metrics.ObserveTaskTerminal(task, workflowName, "worker")
 
 	// Clear worker's current_task.
 	worker, err := s.store.GetWorker(r.Context(), workerID)
@@ -360,6 +488,10 @@ func (s *Server) handleDeregisterWorker(w http.ResponseWriter, r *http.Request) 
 	reqID := RequestIDFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
+	if _, ok := s.authorizeWorker(w, r, id); !ok {
+		return
+	}
+
 	if err := s.store.DeleteWorker(r.Context(), id); err != nil {
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
 		return
@@ -374,7 +506,15 @@ func (s *Server) handleDeregisterWorker(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
-	workers, err := s.store.ListWorkers(r.Context())
+	// Worker-key callers see only the workers bound to their key. With worker
+	// auth disabled (anonymous context) the full list is returned.
+	var workers []*model.Worker
+	var err error
+	if wa := WorkerAuthFromContext(r.Context()); wa != nil && !wa.Anonymous {
+		workers, err = s.store.ListWorkersByKey(r.Context(), wa.KeyID)
+	} else {
+		workers, err = s.store.ListWorkers(r.Context())
+	}
 	if err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
@@ -409,4 +549,79 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 		Offset:  opts.Offset,
 		HasMore: end < total,
 	})
+}
+
+// authorizeWorker loads worker id and verifies the calling worker key is the
+// one bound to it. On failure it writes the response and returns ok=false.
+//
+//   - worker auth disabled (anonymous context): allowed, as before;
+//   - worker.KeyID == caller key id: allowed;
+//   - legacy row (KeyID == ""): the caller adopts it, but only if its key may
+//     join the worker's group (CAS, so exactly one adopter wins);
+//   - anything else: 403 (404 is returned for unknown ids, as before).
+func (s *Server) authorizeWorker(w http.ResponseWriter, r *http.Request, id string) (*model.Worker, bool) {
+	reqID := RequestIDFromContext(r.Context())
+
+	worker, err := s.store.GetWorker(r.Context(), id)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			model.NewInternalError(err.Error()))
+		return nil, false
+	}
+	if worker == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
+		return nil, false
+	}
+
+	wa := WorkerAuthFromContext(r.Context())
+	if wa == nil {
+		// Worker routes always sit behind workerAuthMiddleware; a missing
+		// context means a wiring bug, so fail closed.
+		respondError(w, reqID, http.StatusUnauthorized, &model.APIError{
+			Code:    model.ErrUnauthorized,
+			Message: "worker authentication required",
+		})
+		return nil, false
+	}
+	if wa.Anonymous {
+		return worker, true
+	}
+	if worker.KeyID == wa.KeyID {
+		return worker, true
+	}
+
+	if worker.KeyID == "" && wa.CanJoinGroup(worker.Group) {
+		adopted, err := s.store.AdoptWorkerKey(r.Context(), id, wa.KeyID)
+		if err != nil {
+			respondError(w, reqID, http.StatusInternalServerError,
+				model.NewInternalError(err.Error()))
+			return nil, false
+		}
+		if adopted {
+			worker.KeyID = wa.KeyID
+			s.logger.Info("legacy worker adopted by key",
+				"worker_id", id, "key_id", wa.KeyID, "group", worker.Group)
+			return worker, true
+		}
+		// Lost the race: re-read and compare against the winner.
+		if cur, err := s.store.GetWorker(r.Context(), id); err == nil && cur != nil && cur.KeyID == wa.KeyID {
+			return cur, true
+		}
+	}
+
+	s.logger.Warn("worker access denied: key not bound to worker",
+		"worker_id", id, "key_id", wa.KeyID, "bound_key_id", worker.KeyID, "group", worker.Group)
+	respondError(w, reqID, http.StatusForbidden, &model.APIError{
+		Code:    model.ErrForbidden,
+		Message: "worker key is not authorized for worker " + id,
+	})
+	return nil, false
+}
+
+// capLog renders an optional capacity for logging ("unreported" when nil).
+func capLog[T int | int64](p *T) any {
+	if p == nil {
+		return "unreported"
+	}
+	return *p
 }

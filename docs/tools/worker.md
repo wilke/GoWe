@@ -33,7 +33,10 @@ gowe-worker [flags]
 | `--server` | `http://localhost:8080` | GoWe server URL |
 | `--name` | hostname | Worker name for identification |
 | `--group` | `default` | Worker group for targeted scheduling |
-| `--worker-key` | `""` | Authentication key sent as `X-Worker-Key` — a per-worker key issued by an admin, or a shared static key |
+| `--worker-key-file` | `""` | File holding the authentication key sent as `X-Worker-Key` (regular file, mode 0600 or stricter, and not under `--workdir`/`--image-dir`/`--pre-stage-dir`/`--extra-bind`/`--dataset` paths, which tools can read) — a per-worker key issued by an admin, or a shared static key. Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
+| `--worker-key` | `""` | **Refused (any use, even with an empty value).** A key on argv is readable in `/proc/<pid>/cmdline`; the worker exits with an error pointing at `--worker-key-file` |
+| `--inherit-host-env` | `false` | Degraded: tools run directly on the host (`--runtime none`) inherit the worker's full environment instead of an allow-list. WARN at start; registered as label `inherit_host_env=true` |
+| `--apptainer-no-containall` | `false` | Degraded: run Apptainer without `--containall` (`--cleanenv` is kept). WARN at start; registered as label `apptainer_containall=false` |
 | `--runtime` | `none` | Container runtime(s), comma-separated: docker, apptainer, none |
 | `--workdir` | `$TMPDIR/gowe-worker` | Local working directory for task execution |
 | `--stage-out` | `local` | Output staging mode (local, file://, http://, https://) |
@@ -228,19 +231,19 @@ gowe-worker \
   --server http://gowe-server:8080 \
   --name "gpu-node-01" \
   --group "gpu-workers" \
-  --worker-key "secret-key-1"
+  --worker-key-file /etc/gowe/worker.key   # mode 0600
 
 # Join the default group
 gowe-worker \
   --server http://gowe-server:8080 \
-  --worker-key "secret-key-1"
+  --worker-key-file /etc/gowe/worker.key
 ```
 
 The server validates worker keys against its configuration (see server.md). Tasks can target specific groups, and workers only receive tasks matching their group.
 
 ### Worker keys
 
-A worker authenticates by sending its key in the `X-Worker-Key` header (via `--worker-key`). GoWe supports two kinds of keys, and validates against both:
+A worker authenticates by sending its key in the `X-Worker-Key` header (via `--worker-key-file`; argv and environment forms are refused). GoWe supports two kinds of keys, and validates against both:
 
 | Kind | Source | Lifecycle | At-rest storage |
 |------|--------|-----------|-----------------|
@@ -263,7 +266,9 @@ curl -s -X POST http://gowe-server:8080/api/v1/admin/worker-keys \
 Hand the returned `key` to exactly one worker:
 
 ```bash
-gowe-worker --server http://gowe-server:8080 --group esmfold --worker-key "gwk_XXXXXXXX..."
+# write the key to a 0600 file (never pass it on argv or in GOWE_WORKER_KEY: the worker refuses both)
+install -m 600 /dev/null /etc/gowe/worker.key && printf '%s' "gwk_XXXXXXXX..." > /etc/gowe/worker.key
+gowe-worker --server http://gowe-server:8080 --group esmfold --worker-key-file /etc/gowe/worker.key
 ```
 
 **Managing keys (admin):**
@@ -600,6 +605,7 @@ The `--http-upload-url` supports these placeholders:
 - `{taskID}` - The task ID
 - `{filename}` - Full filename with extension
 - `{basename}` - Filename without extension
+- `{relpath}` - Output path below the task root (e.g. `plots/a/f.js`); equals the filename for top-level outputs
 
 Example: `https://s3.example.com/bucket/{taskID}/{filename}`
 

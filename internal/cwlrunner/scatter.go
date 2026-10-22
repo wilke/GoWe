@@ -430,9 +430,6 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Use global semaphore for bounded parallelism across all steps and scatter iterations
-	sem := config.Semaphore
-
 	// Results storage (pre-allocated for order preservation)
 	results := make([]scatterResult, n)
 
@@ -445,12 +442,15 @@ func (r *Runner) executeScatterParallel(ctx context.Context, graph *cwl.GraphDoc
 		go func(idx int, inputsCopy map[string]any) {
 			defer wg.Done()
 
-			// Acquire semaphore slot from global semaphore
-			if !sem.Acquire(ctx) {
+			// Acquire semaphore slot(s) from the shared, run-wide semaphore(s).
+			// This is a leaf tool execution -- see the INVARIANT comment on
+			// Semaphore in semaphore.go.
+			coresWeight, ok := acquireExecutionSlot(ctx, config, tool, inputsCopy, eval)
+			if !ok {
 				results[idx] = scatterResult{index: idx, err: ctx.Err()}
 				return
 			}
-			defer sem.Release()
+			defer releaseExecutionSlot(config, coresWeight)
 
 			// Check if we should stop due to earlier error
 			select {
@@ -661,9 +661,6 @@ func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context,
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Use global semaphore for bounded parallelism
-	sem := config.Semaphore
-
 	// Results storage (pre-allocated for order preservation)
 	results := make([]scatterResultWithMetrics, n)
 
@@ -678,8 +675,11 @@ func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context,
 
 			iterStart := time.Now()
 
-			// Acquire semaphore slot from global semaphore
-			if !sem.Acquire(ctx) {
+			// Acquire semaphore slot(s) from the shared, run-wide semaphore(s).
+			// This is a leaf tool execution -- see the INVARIANT comment on
+			// Semaphore in semaphore.go.
+			coresWeight, ok := acquireExecutionSlot(ctx, config, tool, inputsCopy, eval)
+			if !ok {
 				results[idx] = scatterResultWithMetrics{
 					index: idx,
 					err:   ctx.Err(),
@@ -692,7 +692,7 @@ func (r *Runner) executeScatterParallelWithIterationMetrics(ctx context.Context,
 				}
 				return
 			}
-			defer sem.Release()
+			defer releaseExecutionSlot(config, coresWeight)
 
 			// Check if we should stop due to earlier error
 			select {

@@ -165,7 +165,11 @@ func (s *S3Stager) StageOut(ctx context.Context, srcPath string, taskID string, 
 
 	// Build key with prefix.
 	prefix := strings.ReplaceAll(s.config.StageOutPrefix, "{taskID}", taskID)
-	key := prefix + filepath.Base(srcPath)
+	relKey, err := StageOutRelSlash(srcPath, opts.RelPath)
+	if err != nil {
+		return "", fmt.Errorf("s3 stager: %w", err)
+	}
+	key := prefix + relKey
 
 	// Open source file.
 	f, err := os.Open(srcPath)

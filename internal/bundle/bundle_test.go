@@ -285,6 +285,194 @@ outputs: {}
 	}
 }
 
+// writeDeterminismFixture writes a multi-file workflow (3 separate tool
+// files + a workflow referencing all 3 via run:) into dir and returns the
+// workflow's path. stepsStyle selects map-style or array-style step
+// definitions, since the bundler normalizes both to the same internal
+// representation but the packed "steps" field itself passes through
+// unmodified from the source document.
+func writeDeterminismFixture(t *testing.T, dir string, arrayStyleSteps bool) string {
+	t.Helper()
+
+	toolTpl := `cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: [echo]
+inputs:
+  message:
+    type: string
+    inputBinding: { position: 1 }
+outputs:
+  out:
+    type: stdout
+`
+	toolsDir := filepath.Join(dir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	for _, name := range []string{"tool_alpha.cwl", "tool_beta.cwl", "tool_gamma.cwl", "tool_delta.cwl"} {
+		if err := os.WriteFile(filepath.Join(toolsDir, name), []byte(toolTpl), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	var stepsYAML string
+	if arrayStyleSteps {
+		stepsYAML = `steps:
+  - id: step_delta
+    run: tools/tool_delta.cwl
+    in:
+      - { id: message, source: msg }
+    out: [out]
+  - id: step_alpha
+    run: tools/tool_alpha.cwl
+    in:
+      - { id: message, source: msg }
+    out: [out]
+  - id: step_gamma
+    run: tools/tool_gamma.cwl
+    in:
+      - { id: message, source: msg }
+    out: [out]
+  - id: step_beta
+    run: tools/tool_beta.cwl
+    in:
+      - { id: message, source: msg }
+    out: [out]
+`
+	} else {
+		stepsYAML = `steps:
+  step_delta:
+    run: tools/tool_delta.cwl
+    in:
+      message: msg
+    out: [out]
+  step_alpha:
+    run: tools/tool_alpha.cwl
+    in:
+      message: msg
+    out: [out]
+  step_gamma:
+    run: tools/tool_gamma.cwl
+    in:
+      message: msg
+    out: [out]
+  step_beta:
+    run: tools/tool_beta.cwl
+    in:
+      message: msg
+    out: [out]
+`
+	}
+
+	wf := `cwlVersion: v1.2
+class: Workflow
+inputs:
+  msg: string
+` + stepsYAML + `outputs:
+  out_alpha:
+    type: File
+    outputSource: step_alpha/out
+  out_beta:
+    type: File
+    outputSource: step_beta/out
+  out_gamma:
+    type: File
+    outputSource: step_gamma/out
+  out_delta:
+    type: File
+    outputSource: step_delta/out
+`
+	wfPath := filepath.Join(dir, "workflow.cwl")
+	if err := os.WriteFile(wfPath, []byte(wf), 0644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	return wfPath
+}
+
+// TestBundle_Deterministic packs the same multi-file workflow (4 steps,
+// each referencing a separate tool file) 20 times in-process and asserts
+// every packed output is byte-identical. This pins the #201 fix:
+// resolveStepRuns previously ranged over the steps map (random Go
+// iteration order) while appending resolved tools to the $graph slice, so
+// identical input packed to different bytes across invocations, silently
+// defeating server-side content-hash dedup.
+func TestBundle_Deterministic(t *testing.T) {
+	cases := []struct {
+		name            string
+		arrayStyleSteps bool
+	}{
+		{"map-style steps", false},
+		{"array-style steps", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			wfPath := writeDeterminismFixture(t, dir, tc.arrayStyleSteps)
+
+			var first []byte
+			for i := 0; i < 20; i++ {
+				result, err := Bundle(wfPath)
+				if err != nil {
+					t.Fatalf("Bundle() iteration %d: %v", i, err)
+				}
+				if i == 0 {
+					first = result.Packed
+					continue
+				}
+				if string(result.Packed) != string(first) {
+					t.Fatalf("iteration %d produced different bytes than iteration 0\n--- iter 0 ---\n%s\n--- iter %d ---\n%s",
+						i, first, i, result.Packed)
+				}
+			}
+		})
+	}
+}
+
+// TestBundle_Deterministic_BareTool pins the bareTool output-ordering fix
+// (#201): bundleBareTool built its synthetic step's "out" list by ranging
+// over the tool's outputs map, which is also nondeterministic order. Uses a
+// tool with multiple outputs so ordering has something to scramble.
+func TestBundle_Deterministic_BareTool(t *testing.T) {
+	dir := t.TempDir()
+	tool := `cwlVersion: v1.2
+class: CommandLineTool
+baseCommand: ["true"]
+inputs:
+  message:
+    type: string
+outputs:
+  out_zeta:
+    type: stdout
+  out_alpha:
+    type: stdout
+  out_mu:
+    type: stdout
+  out_beta:
+    type: stdout
+`
+	toolPath := filepath.Join(dir, "multi_output_tool.cwl")
+	if err := os.WriteFile(toolPath, []byte(tool), 0644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+
+	var first []byte
+	for i := 0; i < 20; i++ {
+		result, err := Bundle(toolPath)
+		if err != nil {
+			t.Fatalf("Bundle() iteration %d: %v", i, err)
+		}
+		if i == 0 {
+			first = result.Packed
+			continue
+		}
+		if string(result.Packed) != string(first) {
+			t.Fatalf("iteration %d produced different bytes than iteration 0\n--- iter 0 ---\n%s\n--- iter %d ---\n%s",
+				i, first, i, result.Packed)
+		}
+	}
+}
+
 func TestNameFromPath(t *testing.T) {
 	tests := []struct {
 		input string

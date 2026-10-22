@@ -232,6 +232,84 @@ func TestDockerExecutor_Logs(t *testing.T) {
 	}
 }
 
+// TestDockerExecutor_SubmitWithCWLTool_DeliversSecretEnv is the H4
+// regression test for the docker executor's submitWithCWLTool path: before
+// the #260 fix round it built a cwltool.Config with no secret wiring at all,
+// so a task dispatched here silently ran without any secret_env-delivered
+// value. The test tool declares no DockerRequirement, so ExecuteTool runs it
+// via the local runtime internally (no Docker daemon needed) — the point is
+// to prove submitWithCWLTool's cfg reaches internal/cwltool.ApplySecrets,
+// which is runtime-agnostic.
+func TestDockerExecutor_SubmitWithCWLTool_DeliversSecretEnv(t *testing.T) {
+	e := NewDockerExecutor(t.TempDir(), newTestLogger())
+
+	const secretValue = "docker-executor-secret-0123456789"
+	task := &model.Task{
+		ID: "task_secret_env",
+		Tool: map[string]any{
+			"class":       "CommandLineTool",
+			"baseCommand": []any{"sh", "-c", "echo \"got: $MY_TASK_SECRET\""},
+		},
+		Job: map[string]any{},
+		RuntimeHints: &model.RuntimeHints{
+			Secrets:        map[string]string{"MY_TASK_SECRET": secretValue},
+			SecretEnvNames: []string{"MY_TASK_SECRET"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	if _, err := e.Submit(context.Background(), task); err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if !strings.Contains(task.Stdout, secretValue) {
+		t.Errorf("Stdout = %q, want it to contain the delivered secret value", task.Stdout)
+	}
+}
+
+// TestDockerExecutor_SubmitWithCWLTool_ReinjectsCwltoolSecretsInput mirrors
+// TestLocalExecutor_ReinjectsCwltoolSecretsInput for the docker executor.
+func TestDockerExecutor_SubmitWithCWLTool_ReinjectsCwltoolSecretsInput(t *testing.T) {
+	e := NewDockerExecutor(t.TempDir(), newTestLogger())
+
+	const realSecret = "docker-executor-reinjected-secret"
+	task := &model.Task{
+		ID: "task_secret_input",
+		Tool: map[string]any{
+			"class":       "CommandLineTool",
+			"baseCommand": []any{"cat", "config.txt"},
+			"inputs": map[string]any{
+				"pw": map[string]any{"type": "string"},
+			},
+			"requirements": map[string]any{
+				"InitialWorkDirRequirement": map[string]any{
+					"listing": []any{
+						map[string]any{
+							"entryname": "config.txt",
+							"entry":     "$(inputs.pw)",
+						},
+					},
+				},
+			},
+		},
+		Job: map[string]any{"pw": model.SecretInputPlaceholder},
+		RuntimeHints: &model.RuntimeHints{
+			Secrets:      map[string]string{"INPUT_PW": realSecret},
+			SecretInputs: []string{"pw=INPUT_PW"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	if _, err := e.Submit(context.Background(), task); err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if !strings.Contains(task.Stdout, realSecret) {
+		t.Errorf("Stdout = %q, want it to contain the re-injected secret value", task.Stdout)
+	}
+	if task.Job["pw"] != model.SecretInputPlaceholder {
+		t.Errorf("task.Job[\"pw\"] = %v, want it to remain the placeholder", task.Job["pw"])
+	}
+}
+
 func TestDockerExecutor_DirectoryFileSchemeMount(t *testing.T) {
 	runner := &mockRunner{
 		results: []mockResult{

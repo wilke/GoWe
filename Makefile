@@ -13,7 +13,7 @@
 
 GO           := go
 GOFLAGS      ?=
-VERSION      ?= $(shell git rev-parse HEAD 2>/dev/null || echo dev)
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS      ?= -X main.Version=$(VERSION)
 CGO_ENABLED  ?= 0
 

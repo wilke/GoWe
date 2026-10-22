@@ -140,6 +140,28 @@ var schema = []string{
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_keys_hash ON worker_keys(key_hash)`,
 
+	// Tool blessings: administrator decisions that a tool (by content hash)
+	// may receive the user's token. Rows are never deleted; revocation sets
+	// revoked_at. At most one active blessing per tool hash.
+	`CREATE TABLE IF NOT EXISTS blessed_tools (
+		id             TEXT PRIMARY KEY,
+		tool_hash      TEXT NOT NULL,
+		tool_name      TEXT NOT NULL DEFAULT '',
+		env_names      TEXT NOT NULL DEFAULT '[]',
+		worker_groups  TEXT NOT NULL DEFAULT '[]',
+		image_ref      TEXT NOT NULL DEFAULT '',
+		image_sha256s  TEXT NOT NULL DEFAULT '[]',
+		blessed_by     TEXT NOT NULL DEFAULT '',
+		blessed_at     TEXT NOT NULL,
+		note           TEXT NOT NULL DEFAULT '',
+		summary        TEXT NOT NULL DEFAULT '{}',
+		revoked_at     TEXT,
+		revoked_by     TEXT NOT NULL DEFAULT '',
+		revoke_reason  TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_blessed_tools_active ON blessed_tools(tool_hash) WHERE revoked_at IS NULL`,
+	`CREATE INDEX IF NOT EXISTS idx_blessed_tools_hash ON blessed_tools(tool_hash)`,
+
 	// Linked providers for multi-provider authentication
 	`CREATE TABLE IF NOT EXISTS linked_providers (
 		user_id   TEXT NOT NULL,
@@ -162,7 +184,16 @@ var alterStatements = []struct {
 		table:    "workflows",
 		column:   "content_hash",
 		alterSQL: "ALTER TABLE workflows ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
-		indexSQL: "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''",
+		// Non-unique (#201): a UNIQUE index here enforced "one row per
+		// content forever", which is incompatible with `register --force`
+		// (an explicit escape hatch that creates a new row with an
+		// identical parse/hash) and with PUT-publishes-new-version
+		// (handleUpdateWorkflow), whose fresh hash may legitimately match
+		// an older row's. GetWorkflowByHash resolves any duplicates to the
+		// newest via ORDER BY created_at DESC LIMIT 1. See the DROP INDEX
+		// at the top of migrate() below for the one-time migration off the
+		// old unique index on existing databases.
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workflows_content_hash ON workflows(content_hash) WHERE content_hash != ''",
 	},
 	{
 		table:    "workflows",
@@ -275,6 +306,24 @@ var alterStatements = []struct {
 		column:   "version",
 		alterSQL: "ALTER TABLE workers ADD COLUMN version TEXT NOT NULL DEFAULT ''",
 	},
+	// Worker key binding: id of the worker key that registered the worker
+	// ('' = legacy row, adopted on first authorized touch).
+	{
+		table:    "workers",
+		column:   "key_id",
+		alterSQL: "ALTER TABLE workers ADD COLUMN key_id TEXT NOT NULL DEFAULT ''",
+	},
+	// Worker-reported capacity (#324). NULL = legacy/undetected: no fit check.
+	{
+		table:    "workers",
+		column:   "max_cpus",
+		alterSQL: "ALTER TABLE workers ADD COLUMN max_cpus INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "max_mem_mb",
+		alterSQL: "ALTER TABLE workers ADD COLUMN max_mem_mb INTEGER",
+	},
 	// Output destination for workspace result uploads
 	{
 		table:    "submissions",
@@ -300,6 +349,94 @@ var alterStatements = []struct {
 		alterSQL: "ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
 		indexSQL: "CREATE INDEX IF NOT EXISTS idx_tasks_checkout ON tasks(state, executor_type, priority DESC, created_at)",
 	},
+	// Dispatch/staging attribution (#184 PR2). All nullable: NULL is
+	// load-bearing (never dispatched / no stage data / not yet staged), same
+	// as the base schema's started_at/completed_at.
+	{
+		table:    "tasks",
+		column:   "dispatched_at",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN dispatched_at TEXT",
+	},
+	{
+		table:    "tasks",
+		column:   "stage_in_ms",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN stage_in_ms INTEGER",
+	},
+	{
+		table:    "tasks",
+		column:   "stage_out_ms",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN stage_out_ms INTEGER",
+	},
+	{
+		table:    "submissions",
+		column:   "prestage_started_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN prestage_started_at TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "prestage_completed_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN prestage_completed_at TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "poststage_started_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN poststage_started_at TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "poststage_completed_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN poststage_completed_at TEXT",
+	},
+	// Step instance diagnostic message for dispatch/evaluation failures (#197).
+	// Nullable: NULL means no error was recorded (success, or a pre-#197 row).
+	{
+		table:    "step_instances",
+		column:   "error",
+		alterSQL: "ALTER TABLE step_instances ADD COLUMN error TEXT",
+	},
+	// Immutable as-submitted inputs snapshot (#239). Nullable: NULL means no
+	// snapshot was captured (pre-#239 row); written once by CreateSubmission,
+	// never updated afterward.
+	{
+		table:    "submissions",
+		column:   "submitted_inputs",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN submitted_inputs TEXT",
+	},
+	// Submission-time secrets (#260). secrets is the encrypted-at-rest JSON
+	// object of secret values (NULL when the submission has none, or after
+	// purge); secret_names is a plaintext JSON array kept for auditability
+	// even after purge; secrets_retention is the policy string
+	// (SecretsRetentionPolicy.String()); secrets_purged_at is nullable and set
+	// once the values are purged.
+	{
+		table:    "submissions",
+		column:   "secrets",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "secret_names",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secret_names TEXT",
+	},
+	{
+		table:    "submissions",
+		column:   "secrets_retention",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets_retention TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		table:    "submissions",
+		column:   "secrets_purged_at",
+		alterSQL: "ALTER TABLE submissions ADD COLUMN secrets_purged_at TEXT",
+	},
+	// Workflow input IDs declared secret via a top-level cwltool:Secrets
+	// hint (#260). Plaintext JSON array of input ids — never a value, so it
+	// carries no encryption requirement. NULL/empty means the workflow
+	// declares no secret inputs (the overwhelming majority).
+	{
+		table:    "workflows",
+		column:   "secret_inputs",
+		alterSQL: "ALTER TABLE workflows ADD COLUMN secret_inputs TEXT",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
@@ -308,6 +445,16 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+
+	// #201: existing databases may still carry the old UNIQUE index on
+	// workflows.content_hash. Drop it unconditionally (idempotent via IF
+	// EXISTS) before the alterStatements loop below recreates it
+	// non-unique — a UNIQUE constraint here blocks both `register --force`
+	// and PUT-publishes-new-version from ever inserting a row whose hash
+	// happens to match an existing row.
+	if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_workflows_content_hash`); err != nil {
+		return err
 	}
 
 	// Execute ALTER TABLE statements idempotently.

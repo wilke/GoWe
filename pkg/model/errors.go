@@ -1,6 +1,9 @@
 package model
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrorCode represents a structured API error code.
 type ErrorCode string
@@ -13,6 +16,16 @@ const (
 	ErrForbidden              ErrorCode = "FORBIDDEN"
 	ErrInternal               ErrorCode = "INTERNAL_ERROR"
 	ErrUnsupportedRequirement ErrorCode = "UNSUPPORTED_REQUIREMENT"
+	// ErrUnavailable marks a dependency outage (e.g. the provider-token
+	// key server is unreachable) that keeps authentication from being
+	// evaluated at all, as distinct from a token that was evaluated and
+	// rejected (ErrUnauthorized).
+	ErrUnavailable ErrorCode = "UNAVAILABLE"
+	// ErrPayloadTooLarge marks a request body that was refused for
+	// exceeding a size cap (http.MaxBytesReader) before it could even be
+	// decoded, as distinct from a body that decoded but failed validation
+	// (ErrValidation).
+	ErrPayloadTooLarge ErrorCode = "PAYLOAD_TOO_LARGE"
 )
 
 // APIError is a structured error returned by the GoWe API.
@@ -73,3 +86,10 @@ type InvalidTransitionError struct {
 func (e *InvalidTransitionError) Error() string {
 	return fmt.Sprintf("invalid %s state transition: %s → %s (entity %s)", e.Entity, e.From, e.To, e.ID)
 }
+
+// ErrUnblessedInject is returned by the store when asked to persist a
+// non-terminal task whose RuntimeHints request token injection
+// (InjectBVBRCToken) without a TokenBlessingID. Only the scheduler's
+// attachCredentials may set the flag, always together with the blessing id;
+// this is the belt-and-braces check behind it.
+var ErrUnblessedInject = errors.New("task has InjectBVBRCToken without TokenBlessingID")

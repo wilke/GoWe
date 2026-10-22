@@ -2,8 +2,11 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/me/gowe/internal/hostres"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +18,7 @@ import (
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/toolexec"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
@@ -35,6 +39,7 @@ type Worker struct {
 	containerRuntime  string                   // "docker", "apptainer", or "none"
 	gpu               GPUWorkerConfig          // GPU configuration
 	resources         ResourceWorkerConfig     // Resource limits
+	imageDigests      digestCache              // sha256 cache for blessed-image checks
 	imageDir          string                   // Base directory for resolving .sif image paths
 	dockerHostPathMap map[string]string        // Docker-in-Docker path mapping
 	dockerVolume      string                   // Named Docker volume shared with tool containers
@@ -46,6 +51,8 @@ type Worker struct {
 	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
 	active            *activeTaskSet           // In-flight tasks → per-task cancel funcs
 	keepTaskDirs      bool                     // Retain task working dirs after successful completion
+	inheritHostEnv    bool                     // Degraded: local/bare tools inherit the full worker env
+	noContainall      bool                     // Degraded: apptainer runs without --containall
 	logger            *slog.Logger
 }
 
@@ -111,6 +118,16 @@ type Config struct {
 	// FAILED tasks are always kept regardless of this setting.
 	KeepTaskDirs bool
 
+	// InheritHostEnv makes tools that run directly on the host (local and the
+	// legacy bare runtime) inherit the worker's full environment instead of
+	// the allow-list. Degraded mode; reported in the registration labels.
+	InheritHostEnv bool
+
+	// ApptainerNoContainall drops --containall (keeping --cleanenv) from
+	// apptainer invocations. Degraded mode; reported in the registration
+	// labels.
+	ApptainerNoContainall bool
+
 	// WorkspaceStager enables the ws:// workspace stager for BV-BRC.
 	WorkspaceStager bool
 
@@ -129,6 +146,14 @@ type ResourceWorkerConfig struct {
 	MaxCPUs          int   // Max CPUs for containers (0 = auto-detect)
 	MaxMemMB         int64 // Max memory in MiB for containers (0 = auto-detect)
 	ApptainerCgroups bool  // System supports cgroups v2 unified (detected at startup)
+	// CgroupCPU / CgroupMemory report whether the cpu / memory controllers are
+	// usable by this process (delegated to the user's systemd service when
+	// rootless). Apptainer --cpus / --memory fail at container creation when
+	// the matching controller is not delegated, so each flag is gated on its own.
+	CgroupCPU    bool
+	CgroupMemory bool
+	// ApptainerCgroupsMode is auto (detect), on or off (--apptainer-cgroups).
+	ApptainerCgroupsMode string
 }
 
 // New creates a Worker from configuration.
@@ -157,14 +182,24 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	if cfg.Resources.MaxCPUs == 0 {
 		cfg.Resources.MaxCPUs = runtime.NumCPU()
 	}
-	// Detect cgroups v2 unified mode for Apptainer resource limits.
-	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
-		cfg.Resources.ApptainerCgroups = true
+	// Decide which Apptainer resource limits (--cpus/--memory) can be enforced.
+	selfCgroup, _ := os.ReadFile("/proc/self/cgroup")
+	lim, err := detectCgroupLimits("/sys/fs/cgroup", os.Getuid(), cfg.Resources.ApptainerCgroupsMode, string(selfCgroup))
+	if err != nil {
+		return nil, err
+	}
+	cfg.Resources.ApptainerCgroups = lim.CPU || lim.Memory
+	cfg.Resources.CgroupCPU = lim.CPU
+	cfg.Resources.CgroupMemory = lim.Memory
+	for _, w := range lim.Warnings {
+		logger.Warn(w)
 	}
 	logger.Info("worker resource limits",
 		"max_cpus", cfg.Resources.MaxCPUs,
 		"max_mem_mb", cfg.Resources.MaxMemMB,
 		"apptainer_cgroups", cfg.Resources.ApptainerCgroups,
+		"cgroup_cpu", cfg.Resources.CgroupCPU,
+		"cgroup_memory", cfg.Resources.CgroupMemory,
 	)
 
 	// Build TLS config.
@@ -291,53 +326,9 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	}
 
 	// Build datasets map and extra binds from PreStageDir, Datasets, and ExtraBinds.
-	datasets := make(map[string]string)
-	var extraBinds []toolexec.ExtraBind
-
-	// Auto-discover datasets from PreStageDir.
-	if cfg.PreStageDir != "" {
-		absPreStage, err := filepath.Abs(cfg.PreStageDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve pre-stage-dir: %w", err)
-		}
-		entries, err := os.ReadDir(absPreStage)
-		if err != nil {
-			return nil, fmt.Errorf("scan pre-stage-dir %s: %w", absPreStage, err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				datasets[entry.Name()] = filepath.Join(absPreStage, entry.Name())
-			}
-		}
-		// Bind-mount the entire PreStageDir at the same path.
-		extraBinds = append(extraBinds, toolexec.ExtraBind{
-			HostPath:      absPreStage,
-			ContainerPath: absPreStage,
-		})
-		logger.Info("pre-stage-dir scanned", "path", absPreStage, "datasets", len(datasets))
-	}
-
-	// Merge explicit dataset aliases (additive).
-	for id, path := range cfg.Datasets {
-		absPath, err := filepath.Abs(path)
-		if err != nil {
-			logger.Warn("resolve dataset path", "id", id, "path", path, "error", err)
-			absPath = path
-		}
-		datasets[id] = absPath
-	}
-
-	// Build extra binds from ExtraBinds config (generic pass-through).
-	for _, p := range cfg.ExtraBinds {
-		absP, err := filepath.Abs(p)
-		if err != nil {
-			logger.Warn("resolve extra-bind path", "path", p, "error", err)
-			absP = p
-		}
-		extraBinds = append(extraBinds, toolexec.ExtraBind{
-			HostPath:      absP,
-			ContainerPath: absP,
-		})
+	datasets, extraBinds, err := hostres.ResolveBinds(logger, cfg.PreStageDir, cfg.Datasets, cfg.ExtraBinds)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(datasets) > 0 {
@@ -367,9 +358,27 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		secrets:           cfg.Secrets,
 		envVars:           cfg.EnvVars,
 		keepTaskDirs:      cfg.KeepTaskDirs,
+		inheritHostEnv:    cfg.InheritHostEnv,
+		noContainall:      cfg.ApptainerNoContainall,
 		active:            newActiveTaskSet(),
 		logger:            logger.With("component", "worker"),
 	}, nil
+}
+
+// degradedLabels returns the registration labels that flag a worker running
+// with reduced isolation, so the fleet roster/UI can flag it (see server handler_fleet.go). Nil when fully isolated.
+func degradedLabels(cfg Config) map[string]string {
+	var labels map[string]string
+	if cfg.InheritHostEnv {
+		labels = map[string]string{"inherit_host_env": "true"}
+	}
+	if cfg.ApptainerNoContainall {
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels["apptainer_containall"] = "false"
+	}
+	return labels
 }
 
 // Run starts the main work loop. It registers with the server, then
@@ -385,6 +394,9 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		GPUDevice:  w.gpu.DeviceID,
 		Version:    cfg.Version,
 		Datasets:   w.datasets,
+		Labels:     degradedLabels(cfg),
+		MaxCPUs:    w.resources.MaxCPUs,
+		MaxMemMB:   w.resources.MaxMemMB,
 	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
@@ -397,6 +409,8 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		"runtime", worker.Runtime,
 		"gpu", worker.GPUEnabled,
 		"gpu_device", worker.GPUDevice,
+		"max_cpus", w.resources.MaxCPUs,
+		"max_mem_mb", w.resources.MaxMemMB,
 	)
 
 	// Start heartbeat in a separate goroutine so it continues during task execution.
@@ -475,7 +489,12 @@ func (w *Worker) pollAndExecute(ctx context.Context) error {
 
 	// Execute the task (blocking). Heartbeat continues in background goroutine.
 	if err := w.executeTask(ctx, task); err != nil {
-		w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
+		if errors.Is(err, errReportDeclined) {
+			// The server deliberately dropped the report (stale ownership or
+			// already-terminal task); reportComplete logged it at Info.
+		} else {
+			w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
+		}
 	}
 
 	return nil
@@ -483,6 +502,11 @@ func (w *Worker) pollAndExecute(ctx context.Context) error {
 
 // executeTask runs a single task: stage-in → run → collect outputs → stage-out → report.
 func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
+	// The worker holds the submitter's credentials only for the lifetime of
+	// this task. Deferred first so it runs after every other deferred func and
+	// on every exit path: success, failure, cancellation and panic.
+	defer scrubTaskCredentials(task)
+
 	taskDir := filepath.Join(w.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return w.reportFailure(ctx, task, fmt.Errorf("create task dir: %w", err))
@@ -601,40 +625,131 @@ func outputsReferenceDir(v any, dir string) bool {
 	return walk(v)
 }
 
+// redactSecretsMinLength is the minimum secret value length eligible for
+// redaction, tied to model.MinSecretValueBytes (matching
+// toolexec.secretMaskMinLength) — submission secrets are validated to be at
+// least this long (model.ValidateSecrets, #260 fix round), so every real
+// secret is coverable.
+const redactSecretsMinLength = model.MinSecretValueBytes
+
 // redactSecrets replaces every non-trivial secret value in s with a placeholder,
 // so an injected credential a tool echoed into its output (e.g. via `env` or
-// `set -x`) is never transmitted to the server or shown in logs. Values shorter
-// than 6 bytes are skipped to avoid pathological over-redaction of common
-// substrings; real tokens are far longer.
+// `set -x`) is never transmitted to the server or shown in logs. Values
+// shorter than redactSecretsMinLength bytes are skipped to avoid
+// pathological over-redaction of common substrings; real tokens are far
+// longer.
 func redactSecrets(s string, secrets map[string]string) string {
 	if s == "" || len(secrets) == 0 {
 		return s
 	}
 	for _, v := range secrets {
-		if len(v) >= 6 {
+		if len(v) >= redactSecretsMinLength {
 			s = strings.ReplaceAll(s, v, "***REDACTED***")
 		}
 	}
 	return s
 }
 
+// mergeSecretsForRedaction unions a and b into one map for use with
+// redactSecrets, so callers can cover both cfg.SecretEnvVars (worker-level
+// --secret defaults, injected BVBRC_TOKEN/KB_AUTH_TOKEN, env-exposed task
+// secrets) and cfg.SecretValues (the full task secret set, including
+// job-only cwltool:Secrets values ApplySecrets never puts in SecretEnvVars)
+// in one redaction pass without either map having to be a superset of the
+// other.
+func mergeSecretsForRedaction(a, b map[string]string) map[string]string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	merged := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		merged[k] = v
+	}
+	for k, v := range b {
+		merged[k] = v
+	}
+	return merged
+}
+
+// reportRetryBackoff is the base delay between report attempts (attempt n
+// waits (n-1)×this). A variable so tests can shrink it.
+var reportRetryBackoff = 500 * time.Millisecond
+
+// errReportDeclined marks a report the server deliberately refused (HTTP 409):
+// the task is already terminal, or it is owned by another worker (it was
+// requeued and re-checked-out while this worker was still finishing). The
+// result is dropped and the task dir kept — callers skip cleanup on error —
+// and the report is never retried.
+var errReportDeclined = errors.New("server declined report")
+
 // reportComplete reports a final task result, detaching from ctx cancellation so a
 // cancelled or killed task can still be reported (bounded by a short timeout).
+// Transient failures (network errors, 5xx, 429, 408) are retried up to 3
+// attempts with a short backoff; a 409 is a deliberate server-side drop and
+// is never retried.
 func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskResult) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	return w.client.ReportComplete(rctx, taskID, result)
+
+	const attempts = 3
+	var lastErr error
+	for i := 1; i <= attempts; i++ {
+		if i > 1 {
+			select {
+			case <-time.After(time.Duration(i-1) * reportRetryBackoff):
+			case <-rctx.Done():
+				return lastErr
+			}
+		}
+		err := w.client.ReportComplete(rctx, taskID, result)
+		if err == nil {
+			return nil
+		}
+		var se *StatusError
+		if errors.As(err, &se) {
+			if se.StatusCode == http.StatusConflict {
+				// Deliberate drop: keep the task dir, drop the result.
+				w.logger.Info("server declined report: dropping result, keeping task dir",
+					"task_id", taskID, "detail", se.Body)
+				return fmt.Errorf("%w: %s", errReportDeclined, se.Body)
+			}
+			if se.StatusCode < 500 && se.StatusCode != http.StatusTooManyRequests && se.StatusCode != http.StatusRequestTimeout {
+				// Other 4xx (e.g. 404): retrying cannot help. 429 and 408 are
+				// transient (rate limiting, request timeout) and fall through
+				// to the retry below alongside network errors and 5xx.
+				return err
+			}
+		}
+		lastErr = err
+		if i < attempts {
+			w.logger.Warn("report failed, will retry", "task_id", taskID,
+				"attempt", i, "max_attempts", attempts, "error", err)
+		}
+	}
+	return lastErr
 }
 
 // reportCancelled reports a task as SKIPPED (the scheduler's terminal state for a
 // cancelled task), used when the server has cancelled the task mid-execution.
 func (w *Worker) reportCancelled(ctx context.Context, task *model.Task) error {
 	exitCode := -1
-	return w.reportComplete(ctx, task.ID, TaskResult{
+	err := w.reportComplete(ctx, task.ID, TaskResult{
 		State:    model.TaskStateSkipped,
 		ExitCode: &exitCode,
 		Stderr:   "task cancelled by server",
 	})
+	if errors.Is(err, errReportDeclined) {
+		// Routine after a cancel fan-out: the server's cancel already SKIPPED
+		// the task, so its 409 to our SKIPPED report is the expected outcome,
+		// not an error.
+		w.logger.Info("cancel report declined: task already terminal on server",
+			"task_id", task.ID)
+		return nil
+	}
+	return err
 }
 
 // handleExecCancellation reports the right terminal outcome when tool execution
@@ -671,28 +786,6 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		}
 	}
 
-	// Remap input paths if configured (host->container translation).
-	job := task.Job
-	if len(w.inputPathMap) > 0 {
-		job = cwltool.RemapInputPaths(job, w.inputPathMap)
-		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
-	}
-
-	// Stage-in remote files (worker owns this step).
-	stager := w.stager
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
-	}
-	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
-	}
-
-	// Parse tool from task.Tool map using the proper parser.
-	tool, err := w.parser.ParseToolFromMap(task.Tool)
-	if err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
-	}
-
 	// Build cwltool configuration.
 	cfg := cwltool.Config{
 		Logger:                w.logger,
@@ -703,45 +796,109 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		MaxCPUs:               w.resources.MaxCPUs,
 		MaxMemMB:              w.resources.MaxMemMB,
 		ApptainerCgroups:      w.resources.ApptainerCgroups,
+		CgroupCPU:             w.resources.CgroupCPU,
+		CgroupMemory:          w.resources.CgroupMemory,
 		ImageDir:              w.imageDir,
 		ResolveSecondary:      task.StepInstanceID == "",
 		RemoveDefaultListings: true,
 		ExtraBinds:            w.extraBinds,
 		SecretEnvVars:         w.secrets,
 		EnvVars:               w.envVars,
+		InheritHostEnv:        w.inheritHostEnv,
+		ApptainerNoContainall: w.noContainall,
 	}
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
-		// Inject BV-BRC token as env vars when a user token is available.
-		if task.RuntimeHints.StagerOverrides != nil &&
-			task.RuntimeHints.StagerOverrides.HTTPCredential != nil &&
-			task.RuntimeHints.StagerOverrides.HTTPCredential.Token != "" {
-			if cfg.SecretEnvVars == nil {
-				cfg.SecretEnvVars = make(map[string]string)
-			} else {
-				copied := make(map[string]string, len(cfg.SecretEnvVars)+1)
-				for k, v := range cfg.SecretEnvVars {
-					copied[k] = v
-				}
-				cfg.SecretEnvVars = copied
-			}
-			cfg.SecretEnvVars["BVBRC_TOKEN"] = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
-			cfg.SecretEnvVars["KB_AUTH_TOKEN"] = task.RuntimeHints.StagerOverrides.HTTPCredential.Token
-		}
+		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
 	}
+
+	// The delegated token is always part of the redaction mask for the
+	// reported stdout/stderr/outputs, even for staging-only tasks, and is
+	// captured before staging. On-disk task files are NOT rewritten.
+	stageToken := taskToken(task.RuntimeHints)
+	var tokenMask map[string]string
+	if len(stageToken) >= redactSecretsMinLength {
+		tokenMask = map[string]string{"_delegated_token": stageToken}
+	}
+
+	// Parse the tool up front: the image check below needs its image ref, and
+	// a malformed tool should fail before any data is staged.
+	tool, err := w.parser.ParseToolFromMap(task.Tool)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
+	}
+
+	// Token injection into the tool environment: only for a scheduler-blessed
+	// task whose image hashes to a blessed digest (verified here, before
+	// launch, and the same resolved path is what gets launched). Otherwise
+	// the token stays staging-only.
+	if wantsTokenInjection(task.RuntimeHints, w.logger, task.ID) {
+		if err := prepareTokenImage(&cfg, tool, task.RuntimeHints, &w.imageDigests); err != nil {
+			return w.reportFailure(ctx, task, err)
+		}
+		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
+	}
+
+	// Deliver the task's opted-in submission secrets (gowe:Execution
+	// secret_env/inject_secrets, limited to SecretEnvNames — M13) as
+	// container env vars, and re-inject cwltool:Secrets-declared inputs
+	// stripped from the persisted job at submission time into a COPY of
+	// task.Job (task.Job itself is never mutated) — this is the same
+	// internal/cwltool.ApplySecrets path local/docker executors now use
+	// (H4), so all three deliver secrets identically. Must happen before
+	// tool evaluation (parameter references, JS,
+	// InitialWorkDirRequirement) sees the job below.
+	job, err := cwltool.ApplySecrets(&cfg, task, w.logger)
+	if err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("apply secrets: %w", err))
+	}
+	// The delegated token also joins the in-execution mask set (redaction
+	// only; SecretValues is never delivered to the tool), so it is masked
+	// before toolexec cuts the stderr tail for an output-collection error.
+	// Redacting only afterwards would miss a token straddling that cut.
+	cfg.SecretValues = mergeSecretsForRedaction(cfg.SecretValues, tokenMask)
+
+	// Remap input paths if configured (host->container translation).
+	if len(w.inputPathMap) > 0 {
+		job = cwltool.RemapInputPaths(job, w.inputPathMap)
+		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
+	}
+
+	// Stage-in remote files (worker owns this step).
+	stager := w.stager
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
+	}
+	stageInStart := time.Now()
+	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
+		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
+	}
+	stageInMs := time.Since(stageInStart).Milliseconds()
 
 	// Execute the tool.
 	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
 
-	// Redact any injected secret values (e.g. BVBRC_TOKEN/KB_AUTH_TOKEN) a tool
-	// may have echoed into its captured stdout/stderr before those logs leave the
-	// worker for the server. The trust-boundary invariant (SPECIFICATION.md §13.2)
-	// requires injected secrets never be transmitted to or persisted by the server.
+	// Build the redaction mask now, then drop the config's references to the
+	// secret maps. Go strings cannot be zeroed; this releases the last
+	// references this function holds so the values become collectable.
+	maskSet := mergeSecretsForRedaction(mergeSecretsForRedaction(cfg.SecretEnvVars, cfg.SecretValues), tokenMask)
+	cfg.SecretEnvVars = nil
+	cfg.SecretValues = nil
+
+	// Redact any injected secret values (e.g. BVBRC_TOKEN/KB_AUTH_TOKEN, task
+	// secrets, and job-only cwltool:Secrets values) a tool may have echoed
+	// into its captured stdout/stderr before those logs leave the worker for
+	// the server. cfg.SecretValues (populated by ApplySecrets) is the full
+	// set in play, a superset of cfg.SecretEnvVars — using it here keeps
+	// redaction coverage exactly as broad as before M13 narrowed
+	// SecretEnvVars to the env-exposed subset. The trust-boundary invariant
+	// (SPECIFICATION.md §13.2) requires injected secrets never be
+	// transmitted to or persisted by the server.
 	if result != nil {
-		result.Stdout = redactSecrets(result.Stdout, cfg.SecretEnvVars)
-		result.Stderr = redactSecrets(result.Stderr, cfg.SecretEnvVars)
+		result.Stdout = redactSecrets(result.Stdout, maskSet)
+		result.Stderr = redactSecrets(result.Stderr, maskSet)
 	}
 
 	// Handle execution errors.
@@ -752,16 +909,20 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
 			return cerr
 		}
+		errText := redactSecrets(err.Error(), maskSet)
 		if result != nil {
+			// This attempt did stage in (we got as far as running the tool),
+			// so attach StageInMs to the report even though it's a failure.
 			return w.reportComplete(ctx, task.ID, TaskResult{
-				State:    model.TaskStateFailed,
-				ExitCode: &result.ExitCode,
-				Stdout:   result.Stdout,
-				Stderr:   result.Stderr + "\n" + err.Error(),
-				Outputs:  result.Outputs,
+				State:     model.TaskStateFailed,
+				ExitCode:  &result.ExitCode,
+				Stdout:    result.Stdout,
+				Stderr:    result.Stderr + "\n" + errText,
+				Outputs:   w.redactOutputsForReport(task.ID, result.Outputs, stageToken),
+				StageInMs: &stageInMs,
 			})
 		}
-		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", err))
+		return w.reportFailure(ctx, task, fmt.Errorf("execute: %w", newRedactedError(err, maskSet)))
 	}
 
 	// Stage out output files (worker owns this step).
@@ -772,23 +933,59 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		w.logger.Info("using per-task stager with overrides", "task_id", task.ID,
 			"has_ws_dest", task.RuntimeHints.OutputDestination != "")
 	}
+	stageOutStart := time.Now()
 	stagedOutputs := make(map[string]any)
+	walker := w.newOutputStager(ctx, task, outStager, taskDir)
 	for outputID, output := range result.Outputs {
 		w.logger.Debug("staging output", "task_id", task.ID, "output_id", outputID)
-		stagedOutputs[outputID] = w.stageOutputValue(ctx, output, task, outStager, "")
+		stagedOutputs[outputID] = walker.stage(output, "")
+	}
+	stageOutMs := time.Since(stageOutStart).Milliseconds()
+
+	// Two distinct sources mapping to one destination would silently
+	// overwrite each other; fail the task instead. The task dir is kept.
+	// The collision is a property of the tool's output layout, so a retry
+	// would fail identically: report it as permanent.
+	if stageErr := walker.err(); stageErr != nil {
+		return w.reportComplete(ctx, task.ID, TaskResult{
+			State:      model.TaskStateFailed,
+			ExitCode:   &result.ExitCode,
+			Stdout:     result.Stdout,
+			Stderr:     result.Stderr + "\n" + stageErr.Error(),
+			Outputs:    w.redactOutputsForReport(task.ID, stagedOutputs, stageToken),
+			StageInMs:  &stageInMs,
+			StageOutMs: &stageOutMs,
+			Permanent:  true,
+		})
 	}
 
 	if err := w.reportComplete(ctx, task.ID, TaskResult{
-		State:    model.TaskStateSuccess,
-		ExitCode: &result.ExitCode,
-		Stdout:   result.Stdout,
-		Stderr:   result.Stderr,
-		Outputs:  stagedOutputs,
+		State:      model.TaskStateSuccess,
+		ExitCode:   &result.ExitCode,
+		Stdout:     result.Stdout,
+		Stderr:     result.Stderr,
+		Outputs:    w.redactOutputsForReport(task.ID, stagedOutputs, stageToken),
+		StageInMs:  &stageInMs,
+		StageOutMs: &stageOutMs,
 	}); err != nil {
 		return err
 	}
 	w.cleanupTaskDir(task, stagedOutputs)
 	return nil
+}
+
+// redactOutputsForReport scans outputs for the exact delegated token and
+// replaces any occurrence with "***REDACTED***" before they leave the worker,
+// logging a WARN with the task id (never the value).
+func (w *Worker) redactOutputsForReport(taskID string, outputs map[string]any, token string) map[string]any {
+	if len(token) < redactSecretsMinLength {
+		return outputs
+	}
+	redacted, found := redactTokenInOutputs(outputs, token)
+	if found {
+		w.logger.Warn("delegated token found in task outputs; redacted before reporting", "task_id", taskID)
+	}
+	return redacted
 }
 
 // executeLegacy executes a task using the legacy _base_command approach.
@@ -827,6 +1024,18 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 			Enabled:  w.gpu.Enabled,
 			DeviceID: w.gpu.DeviceID,
 		},
+		InheritHostEnv:        w.inheritHostEnv,
+		ApptainerNoContainall: w.noContainall,
+	}
+
+	// Bare (host) execution: parity with executeLocal -- HOME is the task dir
+	// and TMPDIR a private sibling, since the allow-listed env has neither.
+	if _, bare := w.runtime.(*BareRuntime); bare {
+		tmpDir := taskDir + "_tmp"
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			return w.reportFailure(ctx, task, fmt.Errorf("create tmp dir: %w", err))
+		}
+		spec.Env = map[string]string{"HOME": taskDir, "TMPDIR": tmpDir}
 	}
 
 	w.logger.Debug("executing task (legacy)",
@@ -860,6 +1069,11 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 				m = abs
 			}
 			opts := execution.StageOptions{}
+			if absTaskDir, err := filepath.Abs(taskDir); err == nil {
+				if rel, err := filepath.Rel(absTaskDir, m); err == nil && rel != "." && filepath.IsLocal(rel) {
+					opts.RelPath = filepath.ToSlash(rel)
+				}
+			}
 			loc, err := w.stager.StageOut(ctx, m, task.ID, opts)
 			if err != nil {
 				// Report the local location instead of dropping the output:
@@ -899,103 +1113,22 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 	return nil
 }
 
-// stageOutputValue recursively stages File objects in output values.
-// The stager parameter allows per-task overrides (e.g., user token for ws:// uploads).
-// destSubPath tracks the relative directory path within a Directory output tree,
-// so that staged files preserve the original directory hierarchy.
-func (w *Worker) stageOutputValue(ctx context.Context, v any, task *model.Task, stager execution.Stager, destSubPath string) any {
-	switch val := v.(type) {
-	case map[string]any:
-		class, _ := val["class"].(string)
-		if class == "File" {
-			// Stage the file and update location.
-			if path, ok := val["path"].(string); ok {
-				opts := execution.StageOptions{}
-				if task.RuntimeHints != nil && task.RuntimeHints.OutputDestination != "" {
-					dest := task.RuntimeHints.OutputDestination
-					if destSubPath != "" {
-						dest = strings.TrimRight(dest, "/") + "/" + destSubPath
-					}
-					opts.Metadata = map[string]string{"destination": dest}
-					w.logger.Debug("staging file to ws", "file", filepath.Base(path), "dest", dest)
-				}
-				loc, err := stager.StageOut(ctx, path, task.ID, opts)
-				if err == nil {
-					w.logger.Debug("staged file", "file", filepath.Base(path), "location", loc)
-					val["location"] = loc
-					// If the output actually moved (not an in-place file://
-					// URI), drop the stale local path/dirname so server-side
-					// consumers (loadContents, local-executor steps) resolve
-					// via the staged location instead of a path inside a task
-					// dir that cleanupTaskDir may delete.
-					if loc != cwl.BuildLocation(cwl.SchemeFile, path) {
-						delete(val, "path")
-						delete(val, "dirname")
-					}
-				} else {
-					w.logger.Warn("stage-out failed", "path", path, "error", err)
-				}
-			}
-			// Also stage secondary files.
-			if secFiles, ok := val["secondaryFiles"].([]any); ok {
-				for i, sf := range secFiles {
-					secFiles[i] = w.stageOutputValue(ctx, sf, task, stager, destSubPath)
-				}
-			}
-			return val
-		}
-		if class == "Directory" {
-			// Recurse into listing, appending this directory's basename to the subpath.
-			childSubPath := destSubPath
-			if basename, ok := val["basename"].(string); ok && basename != "" {
-				if childSubPath != "" {
-					childSubPath = childSubPath + "/" + basename
-				} else {
-					childSubPath = basename
-				}
-			}
-			switch listing := val["listing"].(type) {
-			case []any:
-				for i, item := range listing {
-					listing[i] = w.stageOutputValue(ctx, item, task, stager, childSubPath)
-				}
-			case []map[string]any:
-				converted := make([]any, len(listing))
-				for i, item := range listing {
-					converted[i] = w.stageOutputValue(ctx, item, task, stager, childSubPath)
-				}
-				val["listing"] = converted
-			}
-			return val
-		}
-		// Recurse into other maps.
-		for k, v := range val {
-			val[k] = w.stageOutputValue(ctx, v, task, stager, destSubPath)
-		}
-		return val
-	case []any:
-		for i, item := range val {
-			val[i] = w.stageOutputValue(ctx, item, task, stager, destSubPath)
-		}
-		return val
-	case []map[string]any:
-		result := make([]any, len(val))
-		for i, item := range val {
-			result[i] = w.stageOutputValue(ctx, item, task, stager, destSubPath)
-		}
-		return result
-	default:
-		return v
-	}
-}
-
 // reportFailure sends a FAILED completion with the given error as stderr.
+// Permanent is set when execErr wraps validate.ErrInputValidation (#273): a
+// bad input value fails identically on every retry, so the server should
+// make this FAILED terminal instead of consuming the task's retry budget.
 func (w *Worker) reportFailure(ctx context.Context, task *model.Task, execErr error) error {
+	// The delegated token is unconditionally part of the mask for anything
+	// reported, whichever path failed.
+	if tok := taskToken(task.RuntimeHints); len(tok) >= redactSecretsMinLength {
+		execErr = newRedactedError(execErr, map[string]string{"_delegated_token": tok})
+	}
 	exitCode := -1
 	reportErr := w.reportComplete(ctx, task.ID, TaskResult{
-		State:    model.TaskStateFailed,
-		ExitCode: &exitCode,
-		Stderr:   execErr.Error(),
+		State:     model.TaskStateFailed,
+		ExitCode:  &exitCode,
+		Stderr:    execErr.Error(),
+		Permanent: validate.IsPermanent(execErr),
 	})
 	if reportErr != nil {
 		return fmt.Errorf("report failure: %w (original: %v)", reportErr, execErr)

@@ -12,6 +12,7 @@ import (
 var Version = "dev"
 
 func main() {
+	cli.SetBuildVersion(Version)
 	if err := cli.NewRootCmd().Execute(); err != nil {
 		var unsupported *cli.UnsupportedRequirementError
 		if errors.As(err, &unsupported) {

@@ -103,6 +103,64 @@ NUM_WORKERS=4 LOG_LEVEL=debug ./scripts/start-server.sh
 5. Writes PIDs to `$BASE_DIR/gowe/pids/`
 6. Logs to `$BASE_DIR/gowe/logs/`
 
+### Apptainer resource limits (`--apptainer-cgroups`)
+
+A task's `runtime.cores` / `runtime.ram` become Apptainer `--cpus` / `--memory` limits when the
+host can enforce them. With the default `--apptainer-cgroups=auto` the worker checks which cgroup v2
+controllers Apptainer can use: all controllers at the cgroup root when running as root, otherwise
+those delegated to the user's systemd manager, `user@<uid>.service/cgroup.controllers`. Rootless
+Apptainer creates its scopes under that service even when the worker itself runs in an ssh
+`session-N.scope`. Check a host with
+`cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`.
+A missing controller skips only its flag and logs one WARN at startup, e.g.
+`cpu limit not enforced: cpu controller not delegated to …`; tools still receive the core count
+through `runtime.cores` (for example `--cpu $(runtime.cores)`).
+
+Many distros delegate only `memory pids` to user services. To enforce CPU limits for rootless
+workers, an admin adds `Delegate=cpu cpuset io memory pids` to a `user@.service` drop-in. Use
+`--apptainer-cgroups=on` to force both flags, or `off` to never pass them. Hosts without a unified
+cgroup v2 hierarchy (v1 or hybrid) get no limits. With `systemd cgroups = no` in `apptainer.conf`,
+rootless limits fail regardless of delegation.
+
+## Server-side Workspace Pre-staging (`--workspace-staging server`)
+
+With `--workspace-staging server` (the production default via `start-server.sh`), the
+scheduler downloads every `ws://` input for a PENDING submission to a per-submission
+directory and rewrites the input to `file://` before the submission dispatches. This
+exists because workers dispatched a task never get the submitter's BV-BRC credential to
+stage `ws://` inputs themselves in this mode — `addUserToken` only embeds it when
+server-side staging is *not* configured (pure passthrough deployments, no
+`--workspace-staging` flag).
+
+**Fail-fast on pre-stage failure (#267).** If a `ws://` input cannot be staged (bad path,
+expired token, an unreachable Workspace service, or a workspace object the BV-BRC
+Workspace API cannot serve — see below), the scheduler retries for up to 10 consecutive
+scheduler ticks before giving up. Once it gives up, the submission is marked `FAILED` with
+`error.code = "PRESTAGE_FAILED"`, naming the exact `ws://` path that failed and the
+underlying Workspace error in `error.context`. No task is ever created for a submission
+whose pre-staging fails or is still in progress — dispatch is deferred until pre-staging
+either completes or fails outright. This replaces the pre-#267 behavior, which silently
+left the input as `ws://` and dispatched the submission anyway; since workers never have
+the credential to resolve it themselves in this mode, that always failed downstream with a
+confusing, worker-side "unsupported scheme" or authentication error instead of the true
+cause.
+
+**Retrying a `PRESTAGE_FAILED` submission** (`PUT /submissions/{id}/retry`) resets the
+pre-stage markers and error and routes the submission back through `PENDING` (not directly
+to `RUNNING`) so pre-staging runs again — e.g. after fixing the underlying file or renaming
+it. A submission that failed for an ordinary (non-pre-stage) reason, with inputs already
+fully staged to `file://`, retries exactly as before (straight to `RUNNING`).
+
+**Non-ASCII workspace paths are rejected at submission time.** A production incident
+(`sub_b189807d`) hit a BV-BRC Workspace service bug where a path containing U+2010 (a
+non-ASCII hyphen) made `Workspace.get_download_url` fail with `[-32603] Can't escape
+\x{2010}, try uri_escape_utf8() instead`. `POST /submissions` now rejects any `ws://`
+location (in an input, or `output_destination`) whose path contains a character above
+U+007F, with a 400 `VALIDATION_ERROR` naming the input (or `output_destination`), the
+offending code point, and the file's basename — before it ever reaches pre-staging. Valid
+ASCII workspace path characters (`#`, `%`, `?`) are never rejected; only non-ASCII code
+points are.
+
 ## Stopping the Server
 
 ```bash
@@ -118,6 +176,35 @@ curl -s http://localhost:8091/api/v1/health | python3 -m json.tool
 ```
 
 Returns executor availability, worker summary (online/offline counts, runtimes, groups), and uptime.
+
+## Metrics
+
+`gowe-server` can expose Prometheus metrics on a **second, unauthenticated HTTP listener** — separate from the main API/UI server, with no auth middleware, no request logging, and no route other than `/metrics`. It is off by default.
+
+```bash
+gowe-server ... --metrics-addr localhost:9090
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-addr` | `""` | Listen address for the metrics-only server. Empty disables metrics entirely (no registry is even constructed, so instrumentation is a true no-op). |
+| `--metrics-workflow-label` | `true` | Include the workflow name as a label. Set `false` on a shared/multi-tenant server if workflow names themselves are sensitive — every observation collapses to `workflow="_all"`. |
+| `--metrics-label-cap` | `200` | Cap on distinct values tracked per user-authored label (`workflow`, `step`); values beyond the cap collapse into `_other` so an unbounded set of workflow/step names can never blow up cardinality on a shared server. |
+
+**Bind guidance:** because this endpoint has no authentication of its own, bind `--metrics-addr` to `localhost` or a private/internal interface — never to a publicly routable address — and let your Prometheus server (or a reverse proxy in front of it) reach it over a private network, an SSH tunnel, or a scrape-side sidecar. Do **not** put `--metrics-addr` on the same address as `--addr`; they are intentionally two separate `http.Server`s so a metrics scrape can never touch the authenticated API surface (and vice versa).
+
+If the metrics listener fails to bind (e.g. `--metrics-addr` already in use), `gowe-server` logs the error and continues running with metrics disabled — the main API/UI server is never taken down by a metrics-port conflict.
+
+**Prometheus scrape config example:**
+
+```yaml
+scrape_configs:
+  - job_name: gowe-server
+    static_configs:
+      - targets: ["localhost:9090"]
+```
+
+Metrics cover task queue/run/staging durations, submission wall time, per-tick scheduler phase durations, retry/failure/skip counters, and live gauges for task/submission/worker counts and per-group queue depth. See `SPECIFICATION.md` §12 for the full metric catalog.
 
 ## TLS & Secure Cookies
 
@@ -178,6 +265,122 @@ location / {
 
 Running with `--secure-cookies` but neither native TLS nor `--behind-proxy` logs a warning: browsers will refuse to send `Secure` cookies over plain HTTP, breaking login.
 
+## Provider Token Verification
+
+`gowe-server` cryptographically verifies inbound BV-BRC provider token signatures (RSA
+PKCS#1 v1.5 over SHA-1) against a hard-pinned set of issuer keys before trusting the
+identity a token claims. This is **on by default**.
+
+**Pinned issuers.** Only a token whose `SigningSubject` field matches one of these four
+canonical BV-BRC key-server URLs is ever checked — the issuer is never taken from the
+token itself:
+
+- `https://user.patricbrc.org/public_key`
+- `https://user.bv-brc.org/public_key`
+- `https://user.alpha.patricbrc.org/public_key`
+- `https://user.beta.patricbrc.org/public_key`
+
+The verifying key for each is fetched over HTTPS, cached for 24h, and refetched (rate
+limited to once per minute per issuer) on a signature failure to accommodate key
+rotation.
+
+**Key-server outage semantics.** If a pinned key server is unreachable and no cached key
+is available, requests using that issuer fail with `503` (`UNAVAILABLE`) rather than
+`401` — this is a dependency outage, not a rejected credential, and is meant to be
+distinguishable from mass credential failure in monitoring. If a cached key exists but
+has passed its TTL and a refetch fails, the server logs a warning and verifies against
+the stale cached key rather than failing requests — a transient outage during the
+refetch window does not itself cause an outage of authentication.
+
+**Air-gapped / dev escape hatch.** Deployments with no outbound access to the BV-BRC key
+servers can disable verification:
+
+```bash
+gowe-server ... --insecure-skip-token-verify
+```
+
+This restores the previous behavior of trusting a token's `un=` field as claimed, with
+no signature check. Use only where the deployment cannot reach the pinned key servers,
+or for local/testing purposes.
+
+**Local denylist.** `--auth-denylist <file>` rejects specific usernames or provider
+token IDs immediately, independent of token expiry — useful for revoking access to a
+compromised account or token before its natural expiry:
+
+```bash
+gowe-server ... --auth-denylist /scout/wf/gowe/auth-denylist.txt
+```
+
+File format, one entry per line (`#` comments and blank lines ignored):
+
+```
+# Compromised account, revoked ahead of expiry
+user:alice@patricbrc.org
+tokenid:11111111-1111-1111-1111-111111111111
+```
+
+The denylist is checked after identity is established and applies whether or not the
+token's signature was verified.
+
+**MG-RAST gating.** The `X-MG-RAST-Token` header establishes identity with no signature
+check (MG-RAST does not currently offer a verifiable token format). When provider token
+verification is enabled (the default), that header is rejected with `401` unless
+explicitly re-enabled:
+
+```bash
+gowe-server ... --allow-unverified-mgrast
+```
+
+**Known limits, by design of the token format:**
+
+- **No revocation before expiry**, beyond the local `--auth-denylist`. BV-BRC tokens
+  carry no introspection or revocation endpoint; a compromised token remains valid at
+  the platform level until it expires unless you add it to the denylist.
+- **No audience claim.** A BV-BRC token is not scoped to GoWe specifically — the same
+  token is equally valid at any BV-BRC-integrated service. Verification here confirms
+  the token was issued by a pinned BV-BRC issuer and is unmodified, not that it was
+  issued for use with this server.
+
+## Browser Clients & CORS
+
+`/api/v1` accepts a bearer token via `Authorization`. GoWe's own web UI (mounted at `/`) is
+server-rendered and same-origin, so it never needs CORS — this section is only about a
+**separate** browser-based client (a standalone SPA, a third-party dashboard, etc.) that talks
+to `/api/v1` directly.
+
+**The intended story: a same-origin reverse proxy.** Never ship a bearer token to a browser.
+The token must live server-side; the browser calls the proxy's own origin, and the proxy
+injects `Authorization` (or the session mechanism of your choice) before forwarding to
+`gowe-server`. From the browser's point of view the API is same-origin, so no CORS
+configuration is needed at all — this is the deployment shape to prefer, and the one GoWe's
+own UI already follows. It also means a captured request/response body from the browser side
+never contains the token.
+
+**`--cors-origins` exists for deliberate cross-origin deployments, and is off by default.**
+Sometimes a same-origin proxy genuinely isn't practical (e.g. a client hosted on a different
+domain than the API, with its own separate auth flow that already keeps the token out of
+client-side JS via other means). For that case:
+
+```bash
+gowe-server ... --cors-origins https://app.example.com,https://staging.example.com
+```
+
+- Comma-separated **exact** origins (scheme + host + port); no wildcards, no suffix matching.
+- Empty (the default) disables CORS entirely: `/api/v1` emits no `Access-Control-*` headers,
+  and `OPTIONS` on any API route 405s — exactly as it always has.
+- When set, only listed origins get `Access-Control-Allow-Origin` (echoed verbatim, never `*`
+  — a token-bearing API cannot safely pair a wildcard origin with `Authorization`) plus
+  `Vary: Origin` on normal responses, and a full `OPTIONS` preflight response (204,
+  `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers: Authorization, Content-Type`,
+  `Access-Control-Max-Age`) for preflighted requests. Unlisted origins receive no CORS headers
+  at all and behave exactly like the disabled case.
+- Scoped to `/api/v1` only — the web UI and `/metrics` (a separate, unauthenticated listener;
+  see [Metrics](#metrics) above) are untouched either way.
+
+Treat `--cors-origins` the same way you'd treat any other widening of the API's reachable
+surface: only list origins you control, and prefer the reverse-proxy story above whenever it's
+an option.
+
 ## Secrets
 
 Worker secrets live in `/scout/wf/gowe/secrets.env` (mode `600`, never committed):
@@ -217,6 +420,67 @@ Behavior:
 
 Rotating the key requires decrypting with the old key and re-encrypting with the new one;
 there is no in-place multi-key support yet, so rotate during a maintenance window.
+
+### Submission-time secrets (#260)
+
+Distinct from the worker-level `--secret`/`--secret-file` env vars above (which every container
+that worker runs receives, regardless of submitter) and from the provider-token encryption above
+(which protects the submitter's *BV-BRC identity*): a submission may also carry its own
+application secrets — `secrets: {"NAME": "value"}` on `POST /api/v1/submissions` — scoped to that
+one submission and delivered only to steps that opt in (`gowe:Execution.secret_env`/
+`inject_secrets`, or a `cwltool:Secrets`-declared workflow input). Full lifecycle, delivery
+scoping, and the `cwltool:Secrets` extension: [`docs/cwl-hints.md`](cwl-hints.md) and
+[`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260).
+
+**`--secrets-retention <policy>`** sets the server-wide default automatic-purge policy for
+submission secret *values* once a submission is terminal (`secret_names` is always kept for
+auditability):
+
+```bash
+gowe-server ... --secrets-retention ttl:720h    # default: purge 30 days after terminal
+```
+
+| Policy | Behavior |
+|---|---|
+| `keep` | never purged automatically (reproducible-debugging tenants can request this per submission) |
+| `ttl:<duration>` | purged `<duration>` after the submission reaches a terminal state — **default: `ttl:720h`** |
+| `on_success` | purged on COMPLETED only; kept on FAILED/CANCELLED so a retry still has them |
+| `on_terminal` | purged as soon as the submission reaches any terminal state |
+
+A submission's own `secrets_retention` in the create request overrides this default; an operator
+never needs a per-tenant table for it (GoWe sees submitters, not tenants). The scheduler's
+retention sweep runs at most once per minute regardless of `--scheduler-poll`. Manual purge at any
+time: `DELETE /api/v1/submissions/{id}/secrets`.
+
+Uses the same `GOWE_TOKEN_KEY`/`--token-key-file` encryption key as provider tokens above — no
+separate key to manage. With no key configured, a submission carrying `secrets` is refused
+(fail-closed) unless `--allow-plaintext-tokens`, exactly like a delegated provider token.
+
+
+### Input type validation (`--input-validation`)
+
+**`--input-validation warn|enforce|off`** (env `GOWE_INPUT_VALIDATION`, flag wins; default
+`warn`) controls how the server treats input values that do not match their declared CWL
+type (#273). The server stamps the mode into every task, so workers follow it without a flag
+of their own; a task with no mode (created by an older server) behaves as `warn`.
+
+- `warn`: accept, return `warnings` on the create response, log the input ids (never values)
+  and count `gowe_input_validation_failures_total{workflow,input,mode}`.
+- `enforce`: reject submissions with `400`; a type mismatch detected just before a tool runs
+  fails that task once, without retries.
+- `off`: skip the new checks; the existing required/null checks still apply.
+
+Rollout: run `warn` first and watch the counter. Before switching, replay stored submissions
+against the new rules with the read-only report tool, on a **copy** of the database (it refuses
+to open the live file):
+
+```bash
+cp /scout/wf/gowe/gowe.db /tmp/gowe-copy.db
+go run ./cmd/validate-replay --db /tmp/gowe-copy.db
+```
+
+Switch to `enforce` once real traffic shows no warnings. `cwl-runner` enforces by default;
+`--no-input-validation` turns it off.
 
 ## GPU Assignment
 
@@ -355,3 +619,119 @@ apptainer exec --nv docker://nvidia/cuda:12.0-base nvidia-smi  # Test inside con
 
 **Database locked:**
 GoWe uses `max_open_conns=1` with WAL mode. If the database reports "locked", ensure only one server instance is running against the same `.db` file.
+
+## Reverse-proxy mount, worker keys, and fleet status (v0.19.0+)
+
+### Mounting the web UI under a path prefix
+
+`--base-path /some/prefix` (or `GOWE_BASE_PATH`) lets the UI live behind a **path-preserving** reverse proxy
+(nginx `proxy_pass http://backend;` with no URI part — do *not* strip the prefix, do not set `X-Forwarded-Prefix`).
+The server then:
+
+- answers **both** under the prefix and at the root, so workers, the CLI and existing API clients need no change;
+- emits every UI URL, redirect and form action under the prefix, and scopes the session cookie `Path` to it
+  (so it cannot leak to sibling applications on a shared gateway domain);
+- redirects a bare `<prefix>` to `<prefix>/`; a lookalike such as `<prefix>foo/...` is not treated as the prefix.
+
+Static assets are resolved relative to the **working directory** (`ui/assets`), so start the server from the
+repository/deploy root (see #255). Empty/unset `--base-path` is exactly the previous behavior.
+
+### Worker API authentication
+
+Without `--worker-keys`, the worker endpoints (`/api/v1/workers/*` — registration, task checkout, completion) accept
+**unauthenticated** requests from anything that can reach the listener; the server logs a WARN at startup in that
+state. Production deployments should configure it:
+
+```bash
+# server: a JSON file of static keys (0600). Keys can also be minted per worker via the admin API.
+gowe-server ... --worker-keys /path/worker-keys.json
+#   {"keys": {"<raw-key>": {"id": "prod-shared", "groups": [], "description": "..."}}}
+# every worker: the key is read from a 0600 file (preferred), NEVER from argv
+gowe-worker ... --worker-key-file /path/worker-key.raw
+```
+
+Key file only: `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are refused because both are readable by
+same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the
+host on every worker.
+
+`--worker-key-file` must name a regular file with mode 0600 or stricter, located outside `--workdir`, `--image-dir`,
+`--pre-stage-dir` and every `--extra-bind`/`--dataset` path (tools run as the worker uid and could read it); the
+worker refuses to start otherwise.
+A non-empty `--worker-key` on the command line is **refused with no override**: argv is readable by every local
+process through `/proc/<pid>/cmdline`, including tool containers and `--runtime none` tools. Check a host with
+`ps -eo args | grep gowe-worker` (no key must appear). `deploy/apptainer/start-worker.sh` takes
+`GOWE_WORKER_KEY_FILE` / `--worker-key-file` (the key file is the only accepted source; omit it only for a keyless dev server).
+
+### Provider-token policy flags (server)
+
+| Flag | Meaning |
+|---|---|
+| `--token-blessing enforce\|dev` | Default `enforce`: a tool gets the user's token in its environment only if it requests it AND an administrator blessed its exact content (`gowe admin bless`). `dev` also grants unblessed requesting tools; loud (WARN per grant, `token_blessing:"dev"` in `/api/v1/health`, UI banner, warning on submissions). Never use in production. |
+| `--dev-image-dir DIR` | Dev mode only: resolves relative `.sif` image refs to compute the image digest the worker verifies; without it an unblessed grant is denied. |
+| `--token-inject-groups` | Deprecated, staging-only (WARN at start): no longer injects; worker tasks get a staging credential by need. Remove it. |
+
+Upgrade notes: unblessed token requests are refused (`400 TOOL_NOT_BLESSED`), so bless the `bvbrc-*` helper
+tools before submitting `genome-analysis-pipeline`, but only AFTER every worker in the groups the blessing allows is
+running 0.22 (a 0.21 worker would inject the token on the old gate: no image digest check, no `--containall --cleanenv`,
+no env allow-list, no post-task scrub); otherwise restrict the blessing's `worker_groups` to groups already rolled.
+At startup the server (1) clears stale credentials from terminal
+task rows (raw JSON sweep, logged count) and (2) removes the token request (`inject_bvbrc_token`) from NON-terminal
+rows that have no blessing id (queued by a pre-policy server), logging a WARN with the count: those tasks run
+**without** the token rather than being injected unblessed. As a second layer, `CheckoutTask` never hands such a row to a
+worker, and the store refuses to write one. Requeue via the retry API, not SQL (SQL bypasses credential attachment).
+`--dev-image-dir` without `--token-blessing=dev` is a startup error (exit 2).
+
+### Tool isolation defaults and their opt-outs (v0.21.x → next release)
+
+- **Apptainer** tools run with `--containall --cleanenv`: private PID namespace (`cat /proc/1/cmdline` inside a task
+  shows `appinit`, the worker command line is unreadable), private `/tmp` and `/var/tmp`, no implicit `$HOME`/cwd
+  mounts, and no host environment. Everything a tool needs is still bound explicitly (`--home`, `--pwd`, `/tmp`,
+  inputs, `--pre-stage-dir`/`--extra-bind`, `--nv`), and secrets keep arriving via `APPTAINERENV_*`.
+  Hosts without PID/mount namespace support (some non-setuid HPC installs) can opt out of `--containall` only with
+  `--apptainer-no-containall` (`--cleanenv` is kept). The worker logs a WARN and registers the label
+  `apptainer_containall=false`. Run a `--nv` job after rolling a GPU worker.
+- **Local / `--runtime none` tools** (and the legacy `_base_command` bare runtime) get an allow-listed environment:
+  `PATH`, `LANG`, `LC_*`, `TZ`, `USER`, `LOGNAME`, `SHELL`, `TERM` (plus `NVIDIA_*`, `CUDA_*`, `LD_LIBRARY_PATH` with
+  `--gpu`), then `HOME`/`TMPDIR`, `EnvVarRequirement`, `--env` and `--secret` values. A tool that relied on other
+  worker environment variables must get them through `--env`/`--env-file` (or `--secret`/`--secret-file`).
+  `--inherit-host-env` restores the old behavior; the worker logs a WARN and registers the label
+  `inherit_host_env=true`.
+- Under `--containall` the container's `/tmp` is the per-task `<taskdir>_tmp` bind, but `/var/tmp` (and `/run`, `/dev/shm`)
+  are small in-memory session tmpfs mounts (about 64 MiB by default): tools that write large scratch files to
+  `/var/tmp` must use `$TMPDIR`/`/tmp` instead.
+- Both degraded flags show up as labels on the worker (`GET /api/v1/workers`) and as a "degraded" badge in the
+  admin fleet table (`GET /api/v1/fleet` carries the same labels).
+- `cwl-runner` (standalone) follows the same rule for tools run on the host: they no longer inherit the host
+  environment (PYTHONPATH, conda, proxies, ...). Pass variables with `--preserve-environment NAME` (repeatable),
+  `--preserve-entire-environment`, or an `EnvVarRequirement`.
+- The legacy `_base_command` bare runtime sets `HOME` to the task directory and `TMPDIR` to `<taskdir>_tmp`.
+
+- Key ids: workers are bound to the id of the key that registered them. Static keys SHOULD set `id`; otherwise the id is a 16-hex sha256 prefix of the secret, so rotating the secret of an id-less key (or adding an `id` to it) changes the key id and orphans its workers (403 on every route; workers do not re-register on 4xx) until they are restarted. `id` must be unique and not `none` (the server refuses to start otherwise).
+
+Once keys are on, `GET /api/v1/workers` requires a worker key too and lists only that key's workers. **UIs that show fleet status must use
+`GET /api/v1/fleet`** instead: user-authenticated (the normal provider token), read-only, a slim projection
+(`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no hostnames.
+Migrate UIs before or with enabling keys — otherwise their browser sessions receive 401 from `/workers`.
+At a public gateway, additionally deny `/api/v1/workers` outright (defense in depth).
+
+**Worker keys/groups and submission-time secrets (#260) are orthogonal controls.** A worker key
+authorizes a *worker process* to pull work at all, and a group scopes *which* tasks it may pull
+(`--group esmfold` / `gowe:Execution.worker_group`); neither has anything to do with *which
+submission's* secrets a task carries. A secret is bound to the submission that supplied it and
+delivered per-task only via that step's own `secret_env`/`inject_secrets`/`cwltool:Secrets` opt-in
+— a worker with a valid key serving the right group still only ever sees the secrets of the
+specific task it checks out, never another submission's, and grouping many submissions onto one
+shared worker group does not widen that. See
+[`docs/security/authentication.md`](security/authentication.md#8-submission-time-secrets-260).
+
+### Grafana link
+
+`--grafana-url` is rendered in the authenticated nav and may point at a proxied public Grafana. Grafana itself
+should then run with `GF_SERVER_ROOT_URL=<public url>` and `GF_SERVER_SERVE_FROM_SUB_PATH=true` rather than
+relying on proxy-side HTML rewriting.
+
+### Nothing here is boot-persistent by default
+
+The reference deployment launches the server and workers with `setsid nohup` from an idempotent start script and
+has no systemd/cron hook; after a host reboot an operator runs the start script(s) explicitly. If unattended
+recovery matters for your deployment, wrap the same invocations in a systemd unit or an `@reboot` cron entry.

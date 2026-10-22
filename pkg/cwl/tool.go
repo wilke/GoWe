@@ -84,6 +84,13 @@ type ToolInputParam struct {
 
 	// LoadListing controls directory listing behavior (for Directory types).
 	LoadListing string `json:"loadListing,omitempty"`
+
+	// TypeSchema is the canonical, JSON-safe normalized form of this input's
+	// raw CWL type (shorthand-expanded, named types inlined via
+	// SchemaDefRequirement). Populated by the parser from real CWL source;
+	// nil means "do not validate" (see internal/parser/typeschema.go). Also
+	// used for ExpressionTool inputs.
+	TypeSchema any `json:"typeSchema,omitempty"`
 }
 
 // ToolOutputParam is a CWL tool output parameter.
@@ -107,6 +114,12 @@ type ToolOutputParam struct {
 
 	// Streamable indicates if the file can be streamed.
 	Streamable bool `json:"streamable,omitempty"`
+
+	// TypeSchema is the canonical, JSON-safe normalized form of this
+	// output's raw CWL type (same format as ToolInputParam.TypeSchema).
+	// Populated by the parser; nil means "do not validate this output"
+	// (see validate.ToolOutputs, #279/#310).
+	TypeSchema any `json:"typeSchema,omitempty"`
 }
 
 // ExpressionTool is a typed representation of a CWL ExpressionTool.

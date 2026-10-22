@@ -11,17 +11,19 @@ import (
 	"time"
 
 	"github.com/me/gowe/internal/iwdr"
+	"github.com/me/gowe/pkg/model"
+	gort "github.com/me/gowe/pkg/runtime"
 	"github.com/me/gowe/pkg/staging"
 )
 
-// resolveApptainerImage resolves a DockerRequirement image name for Apptainer.
+// ResolveApptainerImage resolves a DockerRequirement image name for Apptainer.
 // If the image ends with ".sif", it is treated as a local SIF file:
 //   - Absolute paths are used as-is.
 //   - Relative paths are resolved against imageDir (from --image-dir flag).
 //   - If imageDir is empty, the relative path is passed through for Apptainer to resolve.
 //
 // Non-.sif images are prefixed with "docker://" for registry pulls.
-func resolveApptainerImage(dockerImage, imageDir string) string {
+func ResolveApptainerImage(dockerImage, imageDir string) string {
 	if strings.HasSuffix(dockerImage, ".sif") {
 		if filepath.IsAbs(dockerImage) {
 			return dockerImage
@@ -34,10 +36,114 @@ func resolveApptainerImage(dockerImage, imageDir string) string {
 	return "docker://" + dockerImage
 }
 
+// secretMaskMinLength is the minimum secret value length eligible for
+// masking, to avoid pathological over-redaction of common short substrings
+// (e.g. a 2-byte value matching part of an unrelated argument). Tied to
+// model.MinSecretValueBytes: submission secrets are validated to be at least
+// that long (model.ValidateSecrets, #260 fix round), so every real secret is
+// coverable; a worker-operator --secret shorter than this is a configuration
+// choice outside GoWe's control.
+const secretMaskMinLength = model.MinSecretValueBytes
+
+// MaskSecretValues returns a copy of args with every occurrence of a secret
+// value replaced by "***REDACTED***", for logging only. The real argv (args)
+// is never mutated — callers must keep using the original slice to actually
+// run the command. Values shorter than secretMaskMinLength bytes are
+// skipped.
+func MaskSecretValues(args []string, secrets map[string]string) []string {
+	if len(secrets) == 0 {
+		return args
+	}
+	masked := make([]string, len(args))
+	copy(masked, args)
+	for _, v := range secrets {
+		if len(v) < secretMaskMinLength {
+			continue
+		}
+		for i, a := range masked {
+			if strings.Contains(a, v) {
+				masked[i] = strings.ReplaceAll(a, v, "***REDACTED***")
+			}
+		}
+	}
+	return masked
+}
+
+// combinedMaskSecrets unions opts.MaskSecrets (the full secret-value set,
+// including job-only values that never reach the container env) with
+// opts.SecretEnvVars (env-exposed values), so every log-masking call site
+// covers both without every caller having to populate MaskSecrets — a
+// caller that only ever sets SecretEnvVars (e.g. existing tests, or a
+// worker-level --secret with no task involved) still gets full coverage of
+// what it set.
+func combinedMaskSecrets(opts *Options) map[string]string {
+	if len(opts.MaskSecrets) == 0 {
+		return opts.SecretEnvVars
+	}
+	if len(opts.SecretEnvVars) == 0 {
+		return opts.MaskSecrets
+	}
+	merged := make(map[string]string, len(opts.MaskSecrets)+len(opts.SecretEnvVars))
+	for k, v := range opts.SecretEnvVars {
+		merged[k] = v
+	}
+	for k, v := range opts.MaskSecrets {
+		merged[k] = v
+	}
+	return merged
+}
+
+// secretEnvAssignments returns "<prefix><NAME>=<value>" environment
+// assignments for every secret, meant to be appended to an exec.Cmd's Env so
+// the container runtime's CLI (docker, or Apptainer via the APPTAINERENV_
+// prefix) forwards the value from its own process environment rather than
+// having it appear on the child process's argv (H5). Order is
+// non-deterministic (map iteration) — callers that need to compare output in
+// tests should treat the result as a set.
+func secretEnvAssignments(secrets map[string]string, prefix string) []string {
+	if len(secrets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(secrets))
+	for name, value := range secrets {
+		out = append(out, prefix+name+"="+value)
+	}
+	return out
+}
+
+// baseToolEnv returns the base environment for a tool process that runs
+// directly on the host (no container boundary). Only an allow-list of host
+// variables is passed through (PATH, LANG, LC_*, TZ, USER, LOGNAME, SHELL,
+// TERM; plus NVIDIA_*, CUDA_* and LD_LIBRARY_PATH when GPU is enabled), so the
+// worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, ...)
+// never reach the tool. opts.InheritHostEnv restores the full os.Environ().
+func baseToolEnv(opts *Options) []string {
+	if opts.InheritHostEnv {
+		return os.Environ()
+	}
+	env := gort.BaseHostEnv(opts.GPU.Enabled)
+	for _, name := range opts.PreserveEnv {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
+
+// ApptainerIsolationArgs returns the isolation flags placed right after the
+// apptainer subcommand: "--containall --cleanenv" by default, or only
+// "--cleanenv" when noContainall is set (worker --apptainer-no-containall).
+func ApptainerIsolationArgs(noContainall bool) []string {
+	if noContainall {
+		return []string{"--cleanenv"}
+	}
+	return []string{"--containall", "--cleanenv"}
+}
+
 // executeLocal executes a tool locally without Docker in the specified work directory.
 func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
-	e.logger.Info("executing locally", "command", opts.Command.Command)
+	e.logger.Info("executing locally", "command", MaskSecretValues(opts.Command.Command, combinedMaskSecrets(opts)))
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -71,8 +177,10 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	cmd.Dir = workDir
 
 	// Set environment variables.
-	// Start with current environment, then override with CWL required vars.
-	cmd.Env = os.Environ()
+	// Start from an allow-listed base environment (never the full host
+	// environment, which can carry provider tokens and worker secrets), then
+	// add the CWL-required vars. --inherit-host-env restores the old behavior.
+	cmd.Env = baseToolEnv(opts)
 
 	// CWL spec requires HOME=$runtime.outdir and TMPDIR=$runtime.tmpdir
 	tmpDir := workDir + "_tmp"
@@ -83,7 +191,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	cmd.Env = append(cmd.Env, "TMPDIR="+tmpDir)
 
 	// Add environment variables from EnvVarRequirement.
-	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
+	envVars := extractEnvVars(tool, inputs, opts.JobRequirements, opts.Runtime)
 	for name, value := range envVars {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", name, value))
 	}
@@ -204,7 +312,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := e.CollectOutputs(tool, workDir, inputs, exitCode, opts.OutDir, opts.Namespaces)
 	if err != nil {
-		return nil, fmt.Errorf("collect outputs: %w", err)
+		return nil, collectOutputsError(err, stderrBuf.String(), combinedMaskSecrets(opts))
 	}
 
 	return &Result{
@@ -224,7 +332,7 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
 	dockerImage := opts.DockerImage
-	e.logger.Info("executing in Docker", "image", dockerImage, "command", opts.Command.Command)
+	e.logger.Info("executing in Docker", "image", dockerImage, "command", MaskSecretValues(opts.Command.Command, combinedMaskSecrets(opts)))
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -400,7 +508,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	}
 
 	// Set environment variables from EnvVarRequirement.
-	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
+	envVars := extractEnvVars(tool, inputs, opts.JobRequirements, opts.Runtime)
 	for name, value := range envVars {
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
@@ -409,8 +517,13 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	for name, value := range opts.EnvVars {
 		dockerArgs = append(dockerArgs, "-e", name+"="+value)
 	}
-	for name, value := range opts.SecretEnvVars {
-		dockerArgs = append(dockerArgs, "-e", name+"="+value)
+	// H5: secret values never go on the argv (readable for the lifetime of
+	// the container launch via `ps auxww` / `/proc/<pid>/cmdline` by any
+	// local user on the worker host) — pass "-e NAME" (name only) and let
+	// the docker CLI forward the value from its OWN process environment,
+	// which we set below via cmd.Env.
+	for name := range opts.SecretEnvVars {
+		dockerArgs = append(dockerArgs, "-e", name)
 	}
 
 	// Add image.
@@ -424,9 +537,14 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 		dockerArgs = append(dockerArgs, cmdResult.Command...)
 	}
 
-	e.logger.Debug("docker command", "args", dockerArgs)
+	e.logger.Debug("docker command", "args", MaskSecretValues(dockerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	// cmd.Env must start from the current environment (matching executeLocal)
+	// so nothing else breaks, plus one NAME=value assignment per secret for
+	// the bare "-e NAME" entries above — docker forwards the value from its
+	// own environment rather than ever seeing it on dockerArgs.
+	cmd.Env = append(os.Environ(), secretEnvAssignments(opts.SecretEnvVars, "")...)
 
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
@@ -520,7 +638,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := e.CollectOutputs(tool, workDir, inputs, exitCode, opts.OutDir, opts.Namespaces)
 	if err != nil {
-		return nil, fmt.Errorf("collect outputs: %w", err)
+		return nil, collectOutputsError(err, stderrBuf.String(), combinedMaskSecrets(opts))
 	}
 
 	return &Result{
@@ -540,7 +658,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Result, error) {
 	startTime := time.Now()
 	dockerImage := opts.DockerImage
-	e.logger.Info("executing in Apptainer", "image", dockerImage, "image_dir", opts.ImageDir, "command", opts.Command.Command)
+	e.logger.Info("executing in Apptainer", "image", dockerImage, "image_dir", opts.ImageDir, "command", MaskSecretValues(opts.Command.Command, combinedMaskSecrets(opts)))
 
 	tool := opts.Tool
 	workDir := opts.WorkDir
@@ -573,6 +691,12 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerSubcmd = "run"
 	}
 	apptainerArgs := []string{apptainerSubcmd}
+	// Isolation: --containall gives the container its own PID namespace, a
+	// private /tmp and /var/tmp and no implicit host mounts ($HOME, cwd);
+	// --cleanenv stops the host environment (worker secrets) leaking in.
+	// Everything the tool needs is bound explicitly below. Secrets are still
+	// delivered via APPTAINERENV_* in the process environment.
+	apptainerArgs = append(apptainerArgs, ApptainerIsolationArgs(opts.ApptainerNoContainall)...)
 
 	// Determine container working directory.
 	containerWorkDir := "/var/spool/cwl"
@@ -623,7 +747,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	apptainerArgs = append(apptainerArgs, "--env", "TMPDIR=/tmp")
 
 	// Set environment variables from EnvVarRequirement.
-	envVars := extractEnvVars(tool, inputs, opts.JobRequirements)
+	envVars := extractEnvVars(tool, inputs, opts.JobRequirements, opts.Runtime)
 	for name, value := range envVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
@@ -632,9 +756,11 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	for name, value := range opts.EnvVars {
 		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
 	}
-	for name, value := range opts.SecretEnvVars {
-		apptainerArgs = append(apptainerArgs, "--env", name+"="+value)
-	}
+	// H5: no --env for secrets at all (unlike Docker's "-e NAME" bare-name
+	// form, Apptainer's --env has no way to name-without-value). Instead set
+	// APPTAINERENV_<NAME>=<value> in cmd.Env below — Apptainer auto-injects
+	// any APPTAINERENV_* variable from its own process environment into the
+	// container, so the value never appears on apptainerArgs / `ps auxww`.
 
 	// GPU support: use --nv for NVIDIA GPU passthrough.
 	if opts.GPU.Enabled {
@@ -644,14 +770,16 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		}
 	}
 
-	// Resource limits for container execution.
-	// Apptainer --memory/--cpus require cgroups v2 unified mode.
-	// On systems without it (most HPC), skip these flags silently.
+	// Resource limits for container execution. Apptainer --memory/--cpus need
+	// cgroups v2 unified mode and, rootless, the matching controller delegated
+	// to the user's systemd manager. The worker detects both at startup
+	// (internal/worker/cgroup_delegation.go) and logs a WARN for each limit it
+	// cannot enforce; each flag is gated on its own controller.
 	if opts.Resources.ApptainerCgroups {
-		if opts.Resources.RamMB > 0 {
+		if opts.Resources.RamMB > 0 && opts.Resources.CgroupMemory {
 			apptainerArgs = append(apptainerArgs, "--memory", fmt.Sprintf("%dM", opts.Resources.RamMB))
 		}
-		if opts.Resources.Cores > 0 {
+		if opts.Resources.Cores > 0 && opts.Resources.CgroupCPU {
 			apptainerArgs = append(apptainerArgs, "--cpus", fmt.Sprintf("%d", opts.Resources.Cores))
 		}
 	}
@@ -665,7 +793,13 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	// Resolve image: local .sif files are used directly, others get docker:// prefix.
-	resolvedImage := resolveApptainerImage(dockerImage, opts.ImageDir)
+	// When the caller verified an image (token-bearing tasks: the worker hashed
+	// opts.ResolvedImage against the blessed digests), launch exactly that
+	// path rather than re-resolving, so the verified file is the one run.
+	resolvedImage := opts.ResolvedImage
+	if resolvedImage == "" {
+		resolvedImage = ResolveApptainerImage(dockerImage, opts.ImageDir)
+	}
 	e.logger.Debug("resolved apptainer image", "original", dockerImage, "resolved", resolvedImage)
 	apptainerArgs = append(apptainerArgs, resolvedImage)
 
@@ -677,9 +811,15 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 		apptainerArgs = append(apptainerArgs, cmdResult.Command...)
 	}
 
-	e.logger.Debug("apptainer command", "args", apptainerArgs)
+	e.logger.Debug("apptainer command", "args", MaskSecretValues(apptainerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
+	// The apptainer client process itself keeps the current environment (it
+	// needs HOME, PATH, APPTAINER_* settings); --cleanenv keeps all of it out of
+	// the container. One APPTAINERENV_NAME=value assignment per secret is the
+	// only way values enter the container — see the H5 note above the
+	// (removed) --env loop.
+	cmd.Env = append(os.Environ(), secretEnvAssignments(opts.SecretEnvVars, "APPTAINERENV_")...)
 
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
@@ -773,7 +913,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// Collect outputs (passing exit code for runtime.exitCode).
 	outputs, err := e.CollectOutputs(tool, workDir, inputs, exitCode, opts.OutDir, opts.Namespaces)
 	if err != nil {
-		return nil, fmt.Errorf("collect outputs: %w", err)
+		return nil, collectOutputsError(err, stderrBuf.String(), combinedMaskSecrets(opts))
 	}
 
 	return &Result{
@@ -818,45 +958,6 @@ func apptainerMount(src, dst, opts string) []string {
 
 func ResolveSymlinks(path string) string {
 	return staging.ResolveSymlinks(path)
-}
-
-// tailBuffer is an io.Writer that retains only roughly the last `limit` bytes
-// written, bounding memory even when a tool streams unbounded output to
-// stdout/stderr. The earlier `bytes.Buffer` + post-hoc tail slice buffered the
-// entire stream first, which could OOM the worker. Compaction is amortized:
-// the backing slice is allowed to grow to 2*limit before the oldest bytes are
-// dropped, so steady-state writes don't reallocate on every call. Not safe for
-// concurrent writers (os/exec copies each stream from a single goroutine).
-type tailBuffer struct {
-	limit     int
-	buf       []byte
-	truncated bool
-}
-
-func newTailBuffer(limit int) *tailBuffer { return &tailBuffer{limit: limit} }
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.limit {
-		t.truncated = true
-		if len(t.buf) > 2*t.limit {
-			t.buf = append([]byte(nil), t.buf[len(t.buf)-t.limit:]...)
-		}
-	}
-	return len(p), nil
-}
-
-// String returns the retained tail, prefixed with a truncation marker when
-// earlier output was dropped.
-func (t *tailBuffer) String() string {
-	b := t.buf
-	if len(b) > t.limit {
-		b = b[len(b)-t.limit:]
-	}
-	if t.truncated {
-		return "... [truncated] ...\n" + string(b)
-	}
-	return string(b)
 }
 
 // translateDockerPath translates a container path to the Docker host path.

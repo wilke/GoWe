@@ -49,7 +49,14 @@ func (m *mockStore) UpdateSubmission(context.Context, *model.Submission) error {
 func (m *mockStore) FinalizeSubmission(context.Context, *model.Submission) (bool, error) {
 	return true, nil
 }
-func (m *mockStore) ActivateSubmission(context.Context, string) (bool, error) { return true, nil }
+func (m *mockStore) ActivateSubmission(context.Context, string) (bool, error)        { return true, nil }
+func (m *mockStore) PurgeSubmissionSecrets(context.Context, string, time.Time) error { return nil }
+func (m *mockStore) ScrubTaskSecretsForSubmission(context.Context, string) (int, error) {
+	return 0, nil
+}
+func (m *mockStore) ListSubmissionsWithSecretsForRetention(context.Context) ([]*model.Submission, error) {
+	return nil, nil
+}
 func (m *mockStore) UpdateSubmissionIfState(context.Context, *model.Submission, model.SubmissionState, string) (bool, error) {
 	return true, nil
 }
@@ -61,6 +68,9 @@ func (m *mockStore) GetChildSubmissions(context.Context, string) ([]*model.Submi
 	return nil, nil
 }
 func (m *mockStore) CountSubmissionsByState(_ context.Context, _ time.Time, _ string) (map[string]int, error) {
+	return nil, nil
+}
+func (m *mockStore) GetSubmissionMeta(context.Context, string) (*model.SubmissionMeta, error) {
 	return nil, nil
 }
 
@@ -98,10 +108,18 @@ func (m *mockStore) ListTasksByStepInstance(context.Context, string) ([]*model.T
 }
 func (m *mockStore) UpdateTask(context.Context, *model.Task) error              { return nil }
 func (m *mockStore) TerminalizeTask(context.Context, *model.Task) (bool, error) { return true, nil }
+func (m *mockStore) TerminalizeTaskFrom(context.Context, *model.Task, model.TaskState) (bool, error) {
+	return true, nil
+}
 func (m *mockStore) CASTaskState(context.Context, string, model.TaskState, model.TaskState) (bool, error) {
 	return true, nil
 }
+func (m *mockStore) MarkTaskRunning(context.Context, string) (bool, error) { return true, nil }
+func (m *mockStore) UpdateTaskPriority(context.Context, string, int) error { return nil }
 func (m *mockStore) ListSubmissionsAwaitingOutputStaging(context.Context) ([]*model.Submission, error) {
+	return nil, nil
+}
+func (m *mockStore) ListSubmissionsAwaitingPrestage(context.Context) ([]*model.Submission, error) {
 	return nil, nil
 }
 func (m *mockStore) GetTasksByState(context.Context, model.TaskState) ([]*model.Task, error) {
@@ -116,6 +134,12 @@ func (m *mockStore) GetTaskSummaries(context.Context, []string) (map[string]mode
 }
 func (m *mockStore) ResetFailedTasks(context.Context, string) (int, error) { return 0, nil }
 func (m *mockStore) ResetFailedSteps(context.Context, string) (int, error) { return 0, nil }
+func (m *mockStore) CountTasksByState(context.Context) (map[string]int, error) {
+	return nil, nil
+}
+func (m *mockStore) CountTasksQueuedByGroup(context.Context) (map[string]int, error) {
+	return nil, nil
+}
 
 func (m *mockStore) CreateSession(context.Context, *model.Session) error           { return nil }
 func (m *mockStore) GetSession(context.Context, string) (*model.Session, error)    { return nil, nil }
@@ -123,12 +147,16 @@ func (m *mockStore) DeleteSession(context.Context, string) error                
 func (m *mockStore) DeleteExpiredSessions(context.Context) (int64, error)          { return 0, nil }
 func (m *mockStore) DeleteSessionsByUserID(context.Context, string) (int64, error) { return 0, nil }
 
-func (m *mockStore) CreateWorker(context.Context, *model.Worker) error        { return nil }
-func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error) { return nil, nil }
-func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error        { return nil }
-func (m *mockStore) DeleteWorker(context.Context, string) error               { return nil }
-func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)     { return nil, nil }
-func (m *mockStore) ListWorkerGroups(context.Context) ([]string, error)       { return nil, nil }
+func (m *mockStore) CreateWorker(context.Context, *model.Worker) error            { return nil }
+func (m *mockStore) GetWorker(context.Context, string) (*model.Worker, error)     { return nil, nil }
+func (m *mockStore) UpdateWorker(context.Context, *model.Worker) error            { return nil }
+func (m *mockStore) DeleteWorker(context.Context, string) error                   { return nil }
+func (m *mockStore) ListWorkers(context.Context) ([]*model.Worker, error)         { return nil, nil }
+func (m *mockStore) AdoptWorkerKey(context.Context, string, string) (bool, error) { return false, nil }
+func (m *mockStore) ListWorkersByKey(context.Context, string) ([]*model.Worker, error) {
+	return nil, nil
+}
+func (m *mockStore) ListWorkerGroups(context.Context) ([]string, error) { return nil, nil }
 func (m *mockStore) CheckoutTask(context.Context, string, string, model.ContainerRuntime) (*model.Task, error) {
 	return nil, nil
 }
@@ -150,11 +178,23 @@ func (m *mockStore) GetWorkerKeyByID(context.Context, string) (*model.WorkerKey,
 func (m *mockStore) GetWorkerKeyByHash(context.Context, string) (*model.WorkerKey, error) {
 	return nil, nil
 }
-func (m *mockStore) ListWorkerKeys(context.Context) ([]*model.WorkerKey, error) { return nil, nil }
-func (m *mockStore) UpdateWorkerKey(context.Context, *model.WorkerKey) error    { return nil }
-func (m *mockStore) DeleteWorkerKey(context.Context, string) error              { return nil }
-func (m *mockStore) CountWorkerKeys(context.Context) (int, error)               { return 0, nil }
-func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error    { return nil }
+func (m *mockStore) ListWorkerKeys(context.Context) ([]*model.WorkerKey, error)    { return nil, nil }
+func (m *mockStore) UpdateWorkerKey(context.Context, *model.WorkerKey) error       { return nil }
+func (m *mockStore) DeleteWorkerKey(context.Context, string) error                 { return nil }
+func (m *mockStore) CreateToolBlessing(context.Context, *model.ToolBlessing) error { return nil }
+func (m *mockStore) GetToolBlessing(context.Context, string) (*model.ToolBlessing, error) {
+	return nil, nil
+}
+func (m *mockStore) GetActiveToolBlessingByHash(context.Context, string) (*model.ToolBlessing, error) {
+	return nil, nil
+}
+func (m *mockStore) ListToolBlessings(context.Context, bool) ([]*model.ToolBlessing, error) {
+	return nil, nil
+}
+func (m *mockStore) RevokeToolBlessing(context.Context, string, string, string) error { return nil }
+func (m *mockStore) AddToolBlessingImageSHA256(context.Context, string, string) error { return nil }
+func (m *mockStore) CountWorkerKeys(context.Context) (int, error)                     { return 0, nil }
+func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error          { return nil }
 
 func (m *mockStore) GetUser(context.Context, string) (*model.User, error) { return nil, nil }
 func (m *mockStore) GetOrCreateUser(context.Context, string, model.AuthProvider) (*model.User, error) {

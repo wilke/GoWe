@@ -180,11 +180,17 @@ if [ "$REUSE_CONTAINERS" = false ]; then
     log_info "Starting docker-compose environment..."
 
     # Create a temporary override file for the port
+    # GOWE_INPUT_VALIDATION (read by cmd/server/main.go) enforces #273 input
+    # type validation for this run — set here via environment (which merges
+    # additively across docker-compose files) rather than by duplicating the
+    # base command: list, which the docker-compose.yml "command" key owns.
     cat > docker-compose.override.yml << EOF
 services:
   gowe-server:
     ports:
       - "${PORT}:8080"
+    environment:
+      - GOWE_INPUT_VALIDATION=enforce
 EOF
 
     docker-compose up -d --build

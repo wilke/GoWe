@@ -92,9 +92,15 @@ func (e *ApptainerExecutor) Submit(ctx context.Context, task *model.Task) (strin
 		}
 	}
 
-	args := []string{
-		"exec",
+	// Under --containall /tmp would be a small session tmpfs; bind a
+	// per-task directory instead (as toolexec does).
+	tmpDir := taskDir + "_tmp"
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return "", fmt.Errorf("task %s: create tmp dir: %w", task.ID, err)
+	}
+	args := []string{"exec", "--containall", "--cleanenv",
 		"--bind", taskDir + ":/work",
+		"--bind", tmpDir + ":/tmp",
 		"--pwd", "/work",
 	}
 	args = append(args, bindArgs...)

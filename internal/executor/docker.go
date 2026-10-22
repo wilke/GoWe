@@ -11,6 +11,7 @@ import (
 
 	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/parser"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
@@ -208,10 +209,21 @@ func (e *DockerExecutor) submitWithCWLTool(ctx context.Context, task *model.Task
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
 		cfg.CWLDir = task.RuntimeHints.CWLDir
+		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
+	}
+
+	// H4: deliver the task's opted-in submission secrets (gowe:Execution
+	// secret_env/inject_secrets) into cfg.SecretEnvVars and re-inject
+	// cwltool:Secrets-declared inputs into a COPY of task.Job — see
+	// internal/executor/local.go's identical wiring and
+	// internal/cwltool.ApplySecrets for the shared implementation.
+	job, err := cwltool.ApplySecrets(&cfg, task, e.logger)
+	if err != nil {
+		return taskDir, fmt.Errorf("task %s: apply secrets: %w", task.ID, err)
 	}
 
 	// Execute the tool.
-	result, err := cwltool.ExecuteTool(ctx, cfg, tool, task.Job, taskDir)
+	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
 	if err != nil {
 		return taskDir, fmt.Errorf("task %s: execute: %w", task.ID, err)
 	}

@@ -13,15 +13,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/logging"
+	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/server"
 	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/tokencrypt"
+	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
 	"github.com/me/gowe/pkg/staging"
 )
@@ -40,12 +44,16 @@ func main() {
 	forceExecutor := flag.String("force-executor", "", "Force all tasks to this executor, ignoring CWL hints (testing only)")
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 	debug := flag.Bool("debug", false, "Shorthand for --log-level=debug")
+	showVersion := flag.Bool("version", false, "Print the build version and exit")
 
 	// TLS / secure-cookie options.
 	flag.StringVar(&cfg.TLSCertFile, "tls-cert", cfg.TLSCertFile, "Path to PEM certificate; enables native HTTPS when set together with --tls-key")
 	flag.StringVar(&cfg.TLSKeyFile, "tls-key", cfg.TLSKeyFile, "Path to PEM private key; enables native HTTPS when set together with --tls-cert")
 	flag.BoolVar(&cfg.SecureCookies, "secure-cookies", cfg.SecureCookies, "Always set the Secure attribute on session cookies (implied by --tls-cert/--tls-key)")
 	flag.BoolVar(&cfg.BehindProxy, "behind-proxy", cfg.BehindProxy, "Server sits behind a trusted TLS-terminating proxy: force Secure cookies and emit HSTS (enable only when the public leg is HTTPS)")
+	flag.StringVar(&cfg.GrafanaURL, "grafana-url", cfg.GrafanaURL, "External Grafana URL, linked from the web UI nav (e.g. the GoWe Overview dashboard fed by --metrics-addr); empty hides the link")
+	corsOrigins := flag.String("cors-origins", "", "Comma-separated list of exact browser origins allowed to call /api/v1 cross-origin (e.g. https://app.example.com); empty disables CORS entirely (default: no CORS headers, OPTIONS 405s as before). Prefer a same-origin reverse proxy that injects the token server-side over this flag for browser clients — see docs/PRODUCTION.md")
+	basePath := flag.String("base-path", "", "Mount the web UI and API under this path prefix (e.g. /gowe) behind a path-preserving reverse proxy; also read from GOWE_BASE_PATH (flag wins). Must start with / and must not be exactly /; root paths keep working unchanged for workers/CLI/API clients")
 
 	// Scheduler options
 	schedulerPoll := flag.Duration("scheduler-poll", 2*time.Second, "Scheduler poll interval")
@@ -55,7 +63,14 @@ func main() {
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
-	tokenInjectGroups := flag.String("token-inject-groups", "", "Comma-separated worker groups whose tasks auto-receive the submitter's provider token without the per-tool inject_bvbrc_token opt-in (e.g. bvbrc,esmfold). Empty = opt-in only")
+	tokenInjectGroups := flag.String("token-inject-groups", "", "DEPRECATED, staging-only: comma-separated worker groups whose tasks receive the submitter's provider token as a staging credential. It no longer injects the token into any tool environment (that needs the tool to request it AND an administrator blessing); worker tasks now get the staging credential by need, so this flag is unnecessary")
+	tokenBlessing := flag.String("token-blessing", "enforce", "Provider-token policy: 'enforce' (default) injects the token into a tool's environment only if the tool requests it AND an administrator blessed its exact content (gowe admin bless); 'dev' ALSO grants it to unblessed tools (loud: WARN on every grant, banner in the UI, warning on submissions, token_blessing=dev in /api/v1/health) so development workflows run end to end")
+	devImageDir := flag.String("dev-image-dir", "", "Dev mode only: directory relative .sif images of unblessed token-requesting tools are resolved against to pin the image digest the worker verifies. Without it (or for non-.sif images) an unblessed grant is denied")
+
+	// Metrics options
+	metricsAddr := flag.String("metrics-addr", "", "Listen address for a second, unauthenticated HTTP server exposing only /metrics (Prometheus); empty disables metrics entirely. Bind to localhost or a private interface — this endpoint has no auth")
+	metricsWorkflowLabel := flag.Bool("metrics-workflow-label", true, "Include the (unbounded, user-authored) workflow name as a Prometheus label; false maps every observation to workflow=\"_all\" instead")
+	metricsLabelCap := flag.Int("metrics-label-cap", metrics.DefaultLabelCap, "Per-label distinct-value cap for the user-authored workflow/step Prometheus labels; values beyond the cap collapse into \"_other\"")
 
 	// Authentication options
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
@@ -63,6 +78,12 @@ func main() {
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
 	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
+	insecureSkipTokenVerify := flag.Bool("insecure-skip-token-verify", false, "Disable cryptographic verification of provider token signatures (testing/air-gapped only); identities are then trusted as claimed")
+	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
+	authDenylistFile := flag.String("auth-denylist", "", "Path to a file of denylisted users/tokens, one entry per line as 'user:<username>' or 'tokenid:<uuid>' ('#' comments allowed); empty disables the denylist")
+	secretsRetentionFlag := flag.String("secrets-retention", "", "Default secrets_retention policy for a submission that doesn't specify one: keep, ttl:<duration>, on_success, or on_terminal (also: GOWE_SECRETS_RETENTION env, flag wins; default ttl:720h)")
+	inputValidationFlag := flag.String("input-validation", "", "Input value/type validation mode: warn (default), enforce, or off (also: GOWE_INPUT_VALIDATION env, flag wins). Stamped into every task's RuntimeHints so workers follow the same policy")
+	recordValidationFlag := flag.String("record-validation", "", "Submit-time check of record shape, record field names, required record fields and enum values against each step's CWL: enforce (default), warn, or off (also: GOWE_RECORD_VALIDATION env, flag wins)")
 
 	// Provider-token encryption at rest
 	tokenKeyFile := flag.String("token-key-file", "", "Path to a file holding the token-encryption key (base64 or hex, 32 bytes); overrides GOWE_TOKEN_KEY")
@@ -95,6 +116,12 @@ func main() {
 
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println("gowe-server " + Version)
+		os.Exit(0)
+	}
+	cfg.Version = Version
+
 	if *debug {
 		cfg.LogLevel = "debug"
 	}
@@ -120,6 +147,38 @@ func main() {
 		// means browsers will refuse to send the cookie over plain HTTP,
 		// breaking sessions. Warn so misconfiguration is visible.
 		logger.Warn("--secure-cookies is set without native TLS or --behind-proxy; session cookies will not be sent over plain HTTP")
+	}
+
+	// --base-path (or GOWE_BASE_PATH) mounts the web UI/API under a path
+	// prefix behind a path-preserving reverse proxy. Empty (the default)
+	// preserves today's root-mounted behavior exactly.
+	rawBasePath := *basePath
+	if rawBasePath == "" {
+		rawBasePath = os.Getenv("GOWE_BASE_PATH")
+	}
+	normalizedBasePath, err := normalizeBasePath(rawBasePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--base-path: %v\n", err)
+		os.Exit(1)
+	}
+	if normalizedBasePath != "" {
+		logger.Info("web UI/API mounted under base path", "base_path", normalizedBasePath)
+	}
+
+	// CORS is opt-in: a token-issuing API must not become browser-reachable
+	// by accident. Empty (the default) leaves /api/v1 exactly as it always
+	// behaved. When set, only the listed exact origins get CORS headers.
+	if *corsOrigins != "" {
+		var origins []string
+		for _, o := range strings.Split(*corsOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		cfg.CORSOrigins = origins
+		if len(origins) > 0 {
+			logger.Info("CORS enabled for /api/v1", "origins", origins)
+		}
 	}
 
 	// Resolve database path.
@@ -179,6 +238,22 @@ func main() {
 		logger.Warn("no token-encryption key configured; delegated submissions carrying a provider token will be refused — set GOWE_TOKEN_KEY (or pass --allow-plaintext-tokens to allow plaintext)")
 	}
 
+	// F11 sweep: clear delegated credentials and delivered secrets left on
+	// terminal task rows by earlier versions. Runs on the raw stored JSON (no
+	// decryption, so rows encrypted under an old key are cleared too), after
+	// the plaintext re-encryption pass above; idempotent, log-and-continue.
+	if n, serr := st.ScrubTerminalTaskCredentialsRaw(context.Background()); serr != nil {
+		logger.Error("scrubbing credentials from terminal task rows failed (continuing)", "error", serr)
+	} else if n > 0 {
+		logger.Info("cleared stale credentials from terminal task rows", "rows", n)
+	}
+
+	if n, serr := st.ClearUnblessedInjectRaw(context.Background()); serr != nil {
+		logger.Error("clearing unblessed token requests from queued tasks failed (continuing)", "error", serr)
+	} else if n > 0 {
+		logger.Warn("pre-upgrade tasks had their unblessed token request cleared; they run without the token", "tasks", n)
+	}
+
 	// Create executor registry and register executors.
 	reg := executor.NewRegistry(logger)
 	localExec := executor.NewLocalExecutor("", logger)
@@ -204,6 +279,18 @@ func main() {
 	}
 	reg.Register(executor.NewWorkerExecutor(st, logger))
 
+	// Prometheus metrics registry. Constructing it unconditionally (nil only
+	// when --metrics-addr is left empty) keeps every instrumentation call
+	// site in server/scheduler guard-free — a nil *metrics.Registry no-ops
+	// every method — while the actual HTTP listener stays opt-in.
+	var metricsReg *metrics.Registry
+	if *metricsAddr != "" {
+		metricsReg = metrics.NewRegistry(metrics.Config{
+			LabelCap:             *metricsLabelCap,
+			DisableWorkflowLabel: !*metricsWorkflowLabel,
+		})
+	}
+
 	// Register BVBRCExecutor and create RPC callers if a token is available.
 	serverOpts := []server.Option{
 		server.WithExecutorRegistry(reg),
@@ -211,6 +298,8 @@ func main() {
 		// user (session token), never as the server's service account.
 		server.WithWorkspaceURL(*wsStagingURL),
 		server.WithUIUploadMaxSize(*uploadMaxSize),
+		server.WithMetrics(metricsReg),
+		server.WithBasePath(normalizedBasePath),
 	}
 
 	// Configure admin role assignment.
@@ -253,6 +342,83 @@ func main() {
 		logger.Info("anonymous access enabled", "allowed_executors", allowedExecutors)
 	}
 
+	// Default secrets_retention policy (#260): applied to any submission
+	// whose create request leaves secrets_retention empty. --secrets-retention
+	// wins over GOWE_SECRETS_RETENTION; an empty value from both defaults to
+	// "ttl:720h" (30 days after the submission reaches a terminal state).
+	secretsRetentionRaw := *secretsRetentionFlag
+	if secretsRetentionRaw == "" {
+		secretsRetentionRaw = os.Getenv("GOWE_SECRETS_RETENTION")
+	}
+	if secretsRetentionRaw == "" {
+		secretsRetentionRaw = "ttl:720h"
+	}
+	secretsRetentionPolicy, err := model.ParseSecretsRetention(secretsRetentionRaw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--secrets-retention: %v\n", err)
+		os.Exit(1)
+	}
+	serverOpts = append(serverOpts, server.WithSecretsRetention(secretsRetentionPolicy))
+	logger.Info("default secrets retention", "policy", secretsRetentionPolicy.String())
+
+	// Input validation mode (#273): --input-validation wins over
+	// GOWE_INPUT_VALIDATION; empty from both means warn (validate.ParseMode).
+	// Stamped into every task's RuntimeHints by the scheduler so a worker
+	// follows the same policy without its own flag.
+	inputValidationRaw := *inputValidationFlag
+	if inputValidationRaw == "" {
+		inputValidationRaw = os.Getenv("GOWE_INPUT_VALIDATION")
+	}
+	inputValidationMode, err := validate.ParseMode(inputValidationRaw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--input-validation: %v\n", err)
+		os.Exit(1)
+	}
+	serverOpts = append(serverOpts, server.WithInputValidation(inputValidationMode))
+	logger.Info("input validation mode", "mode", inputValidationMode)
+
+	recordValidationRaw := *recordValidationFlag
+	if recordValidationRaw == "" {
+		recordValidationRaw = os.Getenv("GOWE_RECORD_VALIDATION")
+	}
+	recordValidationMode := validate.ModeEnforce
+	if recordValidationRaw != "" {
+		recordValidationMode, err = validate.ParseMode(recordValidationRaw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "--record-validation: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	serverOpts = append(serverOpts, server.WithRecordValidation(recordValidationMode))
+	logger.Info("record validation mode", "mode", recordValidationMode)
+
+	// Configure provider token signature verification. On by default:
+	// inbound BV-BRC tokens are cryptographically verified against a
+	// hard-pinned set of issuer keys before any identity is trusted.
+	if *insecureSkipTokenVerify {
+		logger.Warn("provider token signature verification is DISABLED (--insecure-skip-token-verify); identities are trusted as claimed")
+	} else {
+		verifier := bvbrc.NewVerifier(bvbrc.WithLogger(logger))
+		serverOpts = append(serverOpts, server.WithTokenVerifier(verifier))
+	}
+	if *allowUnverifiedMGRAST {
+		serverOpts = append(serverOpts, server.WithAllowUnverifiedMGRAST(true))
+		logger.Warn("X-MG-RAST-Token authentication is unverified and enabled (--allow-unverified-mgrast)")
+	}
+
+	// Configure the local auth denylist.
+	if *authDenylistFile != "" {
+		denyUsers, denyTokenIDs, err := server.LoadAuthDenylistFile(*authDenylistFile)
+		if err != nil {
+			// Fail closed: a configured denylist we cannot load must not be
+			// silently skipped.
+			fmt.Fprintf(os.Stderr, "auth denylist configuration: %v\n", err)
+			os.Exit(1)
+		}
+		serverOpts = append(serverOpts, server.WithAuthDenylist(denyUsers, denyTokenIDs))
+		logger.Info("auth denylist loaded", "users", len(denyUsers), "tokenids", len(denyTokenIDs))
+	}
+
 	// Configure worker key authentication.
 	workerKeyConfig, err := server.LoadWorkerKeyConfig(*workerKeyFile)
 	if err != nil {
@@ -264,6 +430,8 @@ func main() {
 	if workerKeyConfig.IsEnabled() {
 		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
 		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
+	} else if workerAPIIsKeyless(context.Background(), st, workerKeyConfig) {
+		logger.Warn("worker API (/api/v1/workers) is running WITHOUT authentication: any client can register workers and receive task checkouts; set --worker-keys to require a worker key")
 	}
 
 	// Configure file upload proxy.
@@ -359,9 +527,28 @@ func main() {
 		}
 	}
 	if len(schedCfg.TokenInjectGroups) > 0 {
-		logger.Info("token auto-injection enabled for worker groups", "groups", schedCfg.TokenInjectGroups)
+		logger.Warn("--token-inject-groups is DEPRECATED and staging-only: it no longer injects the token into tool environments (requires the tool to request it and an administrator blessing); worker tasks receive the staging credential by need. Remove the flag.",
+			"groups", schedCfg.TokenInjectGroups)
+	}
+	switch *tokenBlessing {
+	case scheduler.TokenBlessingEnforce, scheduler.TokenBlessingDev:
+		schedCfg.TokenBlessing = *tokenBlessing
+	default:
+		fmt.Fprintf(os.Stderr, "invalid --token-blessing %q: want enforce or dev\n", *tokenBlessing)
+		os.Exit(2)
+	}
+	schedCfg.DevImageDir = *devImageDir
+	serverOpts = append(serverOpts, server.WithTokenBlessingMode(schedCfg.TokenBlessing))
+	if schedCfg.TokenBlessing == scheduler.TokenBlessingDev {
+		logger.Warn("DEV MODE: --token-blessing=dev: tools that request the user's provider token are granted it WITHOUT an administrator blessing. Never use this on a production server.",
+			"dev_image_dir", *devImageDir)
+	} else if *devImageDir != "" {
+		fmt.Fprintln(os.Stderr, "--dev-image-dir requires --token-blessing=dev")
+		os.Exit(2)
 	}
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
+	sched.SetMetrics(metricsReg)
+	sched.SetInputValidation(inputValidationMode)
 
 	// One Workspace stager serves both the scheduler (server-side pre/post
 	// staging, only in "server" mode) and the admin output verification /
@@ -380,6 +567,7 @@ func main() {
 	}
 	if *workspaceStaging == "server" {
 		sched.SetWorkspaceStager(wsStager)
+		serverOpts = append(serverOpts, server.WithServerSideStaging(true))
 		logger.Info("server-side workspace staging enabled")
 	}
 
@@ -410,6 +598,28 @@ func main() {
 	// Start scheduler and worker reaper in background.
 	srv.StartScheduler(ctx)
 	srv.StartWorkerReaper(ctx)
+
+	// Second, unauthenticated listener exposing ONLY /metrics — deliberately
+	// separate from the main API/UI server (no auth middleware, no request
+	// logging, no other routes) so a Prometheus scrape target never shares
+	// the main server's auth surface. Bind to localhost or a private
+	// interface; this endpoint has no access control of its own.
+	var metricsServer *http.Server
+	if metricsReg != nil {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.HandlerFor(metricsReg.Gatherer(), promhttp.HandlerOpts{}))
+		metricsServer = &http.Server{
+			Addr:              *metricsAddr,
+			Handler:           metricsMux,
+			ReadHeaderTimeout: 30 * time.Second,
+		}
+		go func() {
+			logger.Info("metrics server starting", "addr", *metricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("metrics server failed", "error", err)
+			}
+		}()
+	}
 
 	go func() {
 		if cfg.TLSEnabled() {
@@ -442,6 +652,12 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("metrics server shutdown error", "error", err)
+		}
+	}
+
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
 		os.Exit(1)
@@ -457,6 +673,46 @@ func withHSTS(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// normalizeBasePath validates and normalizes a --base-path/GOWE_BASE_PATH
+// value. Empty is unset (root-mounted, today's behavior). Otherwise the
+// value must start with "/"; any trailing "/" is trimmed; and the trimmed
+// result must not be exactly "/" (that's just the root, i.e. unset) — both
+// are rejected as configuration errors so a typo fails loudly at startup
+// rather than silently mis-mounting the UI.
+func normalizeBasePath(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("must start with \"/\", got %q", p)
+	}
+	trimmed := strings.TrimRight(p, "/")
+	if trimmed == "" {
+		return "", fmt.Errorf("must not be just \"/\" (omit --base-path/GOWE_BASE_PATH instead)")
+	}
+	return trimmed, nil
+}
+
+// workerAPIIsKeyless reports whether the worker API (/api/v1/workers/*, guarded
+// by workerAuthMiddleware) would run with no authentication: no static worker
+// keys (from --worker-keys/GOWE_WORKER_KEYS) and no DB-backed keys minted via
+// the admin API. Extracted for testability. A store lookup failure is treated
+// as "unknown" (not keyless) rather than triggering a possibly-wrong warning —
+// callers elsewhere already fail closed on genuine key-config load errors.
+func workerAPIIsKeyless(ctx context.Context, st store.Store, cfg *server.WorkerKeyConfig) bool {
+	if cfg.IsEnabled() {
+		return false
+	}
+	if st == nil {
+		return true
+	}
+	n, err := st.CountWorkerKeys(ctx)
+	if err != nil {
+		return false
+	}
+	return n == 0
 }
 
 // loadTokenCipher builds the at-rest token cipher from --token-key-file (if set)

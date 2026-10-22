@@ -190,7 +190,7 @@ func TestSetSessionCookie(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	SetSessionCookie(w, sess, false)
+	SetSessionCookie(w, sess, false, "")
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 {
@@ -214,7 +214,7 @@ func TestSetSessionCookie(t *testing.T) {
 
 func TestClearSessionCookie(t *testing.T) {
 	w := httptest.NewRecorder()
-	ClearSessionCookie(w)
+	ClearSessionCookie(w, "")
 
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 {

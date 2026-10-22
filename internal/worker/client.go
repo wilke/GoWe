@@ -56,6 +56,9 @@ type RegisterOptions struct {
 	GPUDevice  string
 	Version    string            // Build version (git commit hash)
 	Datasets   map[string]string // Dataset ID → host path
+	Labels     map[string]string // Registration labels (e.g. degraded-mode flags)
+	MaxCPUs    int               // Effective CPU capacity; 0 = not reported (#324)
+	MaxMemMB   int64             // Effective memory capacity in MiB; 0 = not reported
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -76,6 +79,15 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		}
 		if len(opts[0].Datasets) > 0 {
 			reg["datasets"] = opts[0].Datasets
+		}
+		if len(opts[0].Labels) > 0 {
+			reg["labels"] = opts[0].Labels
+		}
+		if opts[0].MaxCPUs > 0 {
+			reg["max_cpus"] = opts[0].MaxCPUs
+		}
+		if opts[0].MaxMemMB > 0 {
+			reg["max_mem_mb"] = opts[0].MaxMemMB
 		}
 	}
 	body, err := json.Marshal(reg)
@@ -174,6 +186,24 @@ type TaskResult struct {
 	Stdout   string          `json:"stdout"`
 	Stderr   string          `json:"stderr"`
 	Outputs  map[string]any  `json:"outputs"`
+
+	// StageInMs/StageOutMs are the measured input/output staging durations in
+	// milliseconds. Omitted (nil) when staging did not occur for this
+	// attempt. An older worker never sets these fields, so the server (once
+	// upgraded) simply persists NULL — version skew is safe in both
+	// directions: an old worker talking to a new server sends no field (JSON
+	// decodes it as nil), and a new worker talking to an old server has the
+	// field silently ignored by the old handler's decode struct.
+	StageInMs  *int64 `json:"stage_in_ms,omitempty"`
+	StageOutMs *int64 `json:"stage_out_ms,omitempty"`
+
+	// Permanent marks a FAILED result as non-retryable (#273): the
+	// execution error wrapped validate.ErrInputValidation, so retrying would
+	// fail identically every time (a bad input value never becomes valid on
+	// retry). The server applies its existing MaxRetries=RetryCount idiom
+	// when set. Omitted (false) preserves normal retry behavior, including
+	// for an older worker that never sets this field.
+	Permanent bool `json:"permanent,omitempty"`
 }
 
 // ReportComplete sends the final task result.
@@ -228,10 +258,23 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, respBody)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return resp, nil
+}
+
+// StatusError is the error doRequest returns for HTTP responses >= 400,
+// preserving the status code so callers can distinguish a deliberate refusal
+// (409 Conflict — e.g. a report for a task that is already terminal or owned
+// by another worker) from transient server errors (5xx).
+type StatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
 }
 
 // decodeResponseData extracts the data field from the API response envelope.

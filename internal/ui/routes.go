@@ -53,9 +53,11 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 				r.Delete("/", ui.HandleSubmissionDelete)
 				r.Post("/resume", ui.HandleSubmissionResume)
 				r.Post("/recompute-failed", ui.HandleRecomputeFailed)
+				r.Get("/timing-panel", ui.HandleSubmissionTimingPanel)
 				r.Route("/tasks/{tid}", func(r chi.Router) {
 					r.Get("/logs", ui.HandleTaskLogs)
 					r.Post("/recompute", ui.HandleTaskRecompute)
+					r.Get("/children", ui.HandleSubmissionTaskChildren)
 				})
 			})
 		})
@@ -77,6 +79,26 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Get("/labels", ui.HandleAdminLabels)
 			r.Post("/labels", ui.HandleAdminLabelCreate)
 			r.Delete("/labels/{id}", ui.HandleAdminLabelDelete)
+
+			// Worker fleet (full listing, unpaginated, admin-only).
+			r.Get("/fleet", ui.HandleAdminFleet)
+
+			// Worker keys.
+			r.Get("/worker-keys", ui.HandleAdminWorkerKeys)
+			r.Post("/worker-keys", ui.HandleAdminWorkerKeyCreate)
+			r.Delete("/worker-keys/{id}", ui.HandleAdminWorkerKeyRevoke)
+
+			// Tool blessings (recorded, not yet enforced).
+			r.Get("/tool-blessings", ui.HandleAdminToolBlessings)
+			r.Post("/tool-blessings", ui.HandleAdminToolBlessingCreate)
+			r.Post("/tool-blessings/inspect", ui.HandleAdminToolBlessingInspect)
+			r.Post("/tool-blessings/{id}/images", ui.HandleAdminToolBlessingAddImage)
+			r.Post("/tool-blessings/{id}/revoke", ui.HandleAdminToolBlessingRevoke)
+
+			// Output verification / redelivery.
+			r.Get("/outputs", ui.HandleAdminOutputs)
+			r.Post("/outputs/verify", ui.HandleAdminOutputsVerify)
+			r.Post("/outputs/redeliver", ui.HandleAdminOutputsRedeliver)
 		})
 	})
 }

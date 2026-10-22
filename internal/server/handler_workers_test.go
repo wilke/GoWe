@@ -1,14 +1,40 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/me/gowe/internal/metrics"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
+
+// runSecondsSampleCount sums gowe_task_run_seconds samples across every
+// label combination, via the public Gatherer — tests here only care about
+// exactly-once counting, not which labels won.
+func runSecondsSampleCount(t *testing.T, reg *metrics.Registry) uint64 {
+	t.Helper()
+	mfs, err := reg.Gatherer().Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gowe_task_run_seconds" {
+			continue
+		}
+		var total uint64
+		for _, m := range mf.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+		return total
+	}
+	return 0
+}
 
 func doPut(t *testing.T, srv *Server, path, body string) (*httptest.ResponseRecorder, envelope) {
 	t.Helper()
@@ -130,21 +156,60 @@ func TestWorkerCheckout_NotFound(t *testing.T) {
 	}
 }
 
+// seedQueuedWorkerTask creates a QUEUED worker-executor task directly in the
+// store (emulating scheduler dispatch, which sets external_id to the task's
+// own id via executor.Submit) so it can be checked out through the API.
+func seedQueuedWorkerTask(t *testing.T, srv *Server, subID, id string) string {
+	t.Helper()
+	task := &model.Task{
+		ID:           id,
+		SubmissionID: subID,
+		StepID:       "step1",
+		State:        model.TaskStateQueued,
+		ExecutorType: model.ExecutorTypeWorker,
+		ExternalID:   id,
+		Inputs:       map[string]any{},
+		Outputs:      map[string]any{},
+		Job:          map[string]any{},
+		ScatterIndex: -1,
+	}
+	if err := srv.store.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("seed queued worker task: %v", err)
+	}
+	return id
+}
+
+// checkoutTask checks out the next task for workerID through the API.
+func checkoutTask(t *testing.T, srv *Server, workerID string) *model.Task {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/api/v1/workers/"+workerID+"/work", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("checkout: status=%d, body=%s", w.Code, w.Body.String())
+	}
+	var env envelope
+	json.Unmarshal(w.Body.Bytes(), &env)
+	var task model.Task
+	if err := json.Unmarshal(env.Data, &task); err != nil {
+		t.Fatalf("decode checkout task: %v", err)
+	}
+	return &task
+}
+
 func TestWorkerTaskComplete(t *testing.T) {
 	srv := testServer()
 	workerID := registerTestWorker(t, srv)
 
-	// Create a workflow + submission with tasks.
-	_, subID := createTestSubmissionWithTasks(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_1")
 
-	// Get the task IDs.
-	env := doGet(t, srv, "/api/v1/submissions/"+subID+"/tasks/")
-	var tasks []map[string]any
-	json.Unmarshal(env.Data, &tasks)
-	if len(tasks) == 0 {
-		t.Fatal("no tasks found")
+	// The worker must own the task (checkout sets external_id) before its
+	// report is accepted.
+	checked := checkoutTask(t, srv, workerID)
+	if checked.ID != taskID {
+		t.Fatalf("checked out %s, want %s", checked.ID, taskID)
 	}
-	taskID := tasks[0]["id"].(string)
 
 	// Report completion.
 	body := `{"state":"SUCCESS","exit_code":0,"stdout":"output","stderr":"","outputs":{"result":"file:///tmp/out"}}`
@@ -161,6 +226,250 @@ func TestWorkerTaskComplete(t *testing.T) {
 	if data["state"] != "SUCCESS" {
 		t.Errorf("state = %v, want SUCCESS", data["state"])
 	}
+}
+
+// TestWorkerTaskComplete_AlreadyTerminal409: a duplicate report on a task that
+// already reached a terminal state is deliberately refused. Extended to
+// verify exactly-once metrics observation: checkoutTask stamps started_at
+// (seedQueuedWorkerTask alone does not), so the first report observes one
+// gowe_task_run_seconds sample and the refused duplicate observes none.
+func TestWorkerTaskComplete_AlreadyTerminal409(t *testing.T) {
+	reg := metrics.NewRegistry(metrics.Config{})
+	srv := testServer(WithMetrics(reg))
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_dup")
+	checkoutTask(t, srv, workerID)
+
+	body := `{"state":"SUCCESS","exit_code":0}`
+	if w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/complete", body); w.Code != http.StatusOK {
+		t.Fatalf("first report: status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	w, env := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/complete", body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate report: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrConflict {
+		t.Errorf("error = %+v, want CONFLICT", env.Error)
+	}
+	if n := runSecondsSampleCount(t, reg); n != 1 {
+		t.Errorf("gowe_task_run_seconds samples = %d, want 1 (exactly-once despite the duplicate report)", n)
+	}
+}
+
+// racyTerminalizeStore wraps a real store.Store and, on TerminalizeTask,
+// races the caller: it first flips the target row to FAILED via the
+// embedded store (a write that itself wins, since the row is not yet
+// terminal), then delegates the caller's original TerminalizeTask call —
+// which now loses its own CAS because the row is already terminal. This
+// models a task that reached a terminal state (e.g. a cancel fan-out
+// SKIPPED it, or another report raced this one) strictly between the
+// handler's earlier GetTask/IsTerminal pre-check and its TerminalizeTask
+// call, without needing real goroutines to hit the window.
+type racyTerminalizeStore struct {
+	store.Store
+}
+
+func (r *racyTerminalizeStore) TerminalizeTask(ctx context.Context, task *model.Task) (bool, error) {
+	racer := *task
+	racer.State = model.TaskStateFailed
+	now := time.Now().UTC()
+	racer.CompletedAt = &now
+	if _, err := r.Store.TerminalizeTask(ctx, &racer); err != nil {
+		return false, err
+	}
+	return r.Store.TerminalizeTask(ctx, task)
+}
+
+// TestWorkerTaskComplete_CASLoss_AppliedGate409NoObservation covers the
+// applied-gate on the complete handler's CAS write (internal/server/handler_workers.go
+// TerminalizeTask call around line 403): the pre-check task.State.IsTerminal()
+// passes (the task is RUNNING when read), but the CAS itself returns
+// applied=false because the row was terminalized concurrently. The handler
+// must respond 409 and must NOT observe a gowe_task_run_seconds sample for
+// the losing write — mutation-tested by temporarily moving the observation
+// into the !applied branch (see task notes); reverted after confirming that
+// mutation makes this test fail.
+func TestWorkerTaskComplete_CASLoss_AppliedGate409NoObservation(t *testing.T) {
+	reg := metrics.NewRegistry(metrics.Config{})
+	srv, realStore := testServerWithStore(WithMetrics(reg))
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_cas_loss")
+	checkoutTask(t, srv, workerID)
+
+	// Swap in the racing store only for the complete call: the pre-check
+	// GetTask still reads a RUNNING row through it, but TerminalizeTask
+	// loses its own CAS to the race it injects.
+	srv.store = &racyTerminalizeStore{Store: realStore}
+
+	w, env := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/complete",
+		`{"state":"SUCCESS","exit_code":0}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	if env.Error == nil || env.Error.Code != model.ErrConflict {
+		t.Errorf("error = %+v, want CONFLICT", env.Error)
+	}
+	if n := runSecondsSampleCount(t, reg); n != 0 {
+		t.Errorf("gowe_task_run_seconds samples = %d, want 0 (CAS loss must not observe)", n)
+	}
+
+	got, err := realStore.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.State != model.TaskStateFailed {
+		t.Errorf("task state = %s, want FAILED (the race's own write won)", got.State)
+	}
+}
+
+// TestWorkerTaskComplete_NotOwner409: a report from a worker that does not own
+// the task (external_id mismatch) is refused, and the task is untouched.
+func TestWorkerTaskComplete_NotOwner409(t *testing.T) {
+	srv := testServer()
+	ownerID := registerTestWorker(t, srv)
+	otherID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_owner")
+	checkoutTask(t, srv, ownerID)
+
+	w, _ := doPut(t, srv, "/api/v1/workers/"+otherID+"/tasks/"+taskID+"/complete",
+		`{"state":"FAILED","exit_code":1}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := srv.store.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.State != model.TaskStateRunning || got.ExternalID != ownerID {
+		t.Errorf("task = %s/%s, want RUNNING/%s (untouched by non-owner report)", got.State, got.ExternalID, ownerID)
+	}
+}
+
+// TestWorkerTaskComplete_RequeuedOwnership: after a requeue (external_id
+// cleared) the former owner's late report is refused; the worker that
+// re-checks the task out is accepted (F-K).
+func TestWorkerTaskComplete_RequeuedOwnership(t *testing.T) {
+	srv := testServer()
+	oldWorker := registerTestWorker(t, srv)
+	newWorker := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_wc_requeue")
+	checkoutTask(t, srv, oldWorker)
+
+	// Server-side requeue (e.g. the stale-worker reaper): external_id = ''.
+	if _, err := srv.store.RequeueWorkerTasks(context.Background(), oldWorker); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+
+	// The former owner's late report must be refused.
+	w, _ := doPut(t, srv, "/api/v1/workers/"+oldWorker+"/tasks/"+taskID+"/complete",
+		`{"state":"SUCCESS","exit_code":0}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale owner report: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	// The new owner checks it out and reports successfully.
+	checked := checkoutTask(t, srv, newWorker)
+	if checked.ID != taskID {
+		t.Fatalf("re-checkout got %s, want %s", checked.ID, taskID)
+	}
+	w, _ = doPut(t, srv, "/api/v1/workers/"+newWorker+"/tasks/"+taskID+"/complete",
+		`{"state":"SUCCESS","exit_code":0}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("new owner report: status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	// And the former owner is still refused (terminal now).
+	w, _ = doPut(t, srv, "/api/v1/workers/"+oldWorker+"/tasks/"+taskID+"/complete",
+		`{"state":"FAILED","exit_code":1}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale owner after terminal: status=%d, want 409, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkerTaskStatus_Guards: the status endpoint accepts only non-terminal
+// transitions on tasks the reporting worker owns (F-L + F-K).
+func TestWorkerTaskStatus_Guards(t *testing.T) {
+	srv := testServer()
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	ctx := context.Background()
+
+	t.Run("terminal current state refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_term")
+		task, _ := srv.store.GetTask(ctx, taskID)
+		task.State = model.TaskStateSuccess
+		if err := srv.store.UpdateTask(ctx, task); err != nil {
+			t.Fatalf("terminalize seed: %v", err)
+		}
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"RUNNING"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("terminal target refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_target")
+		checkoutTask(t, srv, workerID) // RUNNING, owned by workerID
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"SUCCESS"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+		got, _ := srv.store.GetTask(ctx, taskID)
+		if got.State != model.TaskStateRunning {
+			t.Errorf("state = %s, want RUNNING (terminalizing via /status must be refused)", got.State)
+		}
+	})
+
+	t.Run("non-owner refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_owner")
+		// Not checked out: external_id is the task's own id, not the worker's.
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"RUNNING"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+		got, _ := srv.store.GetTask(ctx, taskID)
+		if got.State != model.TaskStateQueued {
+			t.Errorf("state = %s, want QUEUED (untouched)", got.State)
+		}
+	})
+
+	t.Run("invalid transition refused", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_trans")
+		task, _ := srv.store.GetTask(ctx, taskID)
+		task.ExternalID = workerID // owner, still QUEUED
+		if err := srv.store.UpdateTask(ctx, task); err != nil {
+			t.Fatalf("set owner: %v", err)
+		}
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"PENDING"}`)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d, want 409, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("owner non-terminal transition accepted", func(t *testing.T) {
+		taskID := seedQueuedWorkerTask(t, srv, subID, "task_st_ok")
+		task, _ := srv.store.GetTask(ctx, taskID)
+		task.ExternalID = workerID // owner, still QUEUED
+		if err := srv.store.UpdateTask(ctx, task); err != nil {
+			t.Fatalf("set owner: %v", err)
+		}
+		w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+taskID+"/status", `{"state":"RUNNING"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+		}
+		got, _ := srv.store.GetTask(ctx, taskID)
+		if got.State != model.TaskStateRunning {
+			t.Errorf("state = %s, want RUNNING", got.State)
+		}
+		if got.ExternalID != workerID {
+			t.Errorf("external_id = %q, want %q (CAS write must not touch it)", got.ExternalID, workerID)
+		}
+	})
 }
 
 func TestWorkerTaskComplete_NotFound(t *testing.T) {
@@ -217,5 +526,85 @@ func TestListWorkers(t *testing.T) {
 	json.Unmarshal(env.Data, &workers)
 	if len(workers) != 1 {
 		t.Errorf("expected 1 worker, got %d", len(workers))
+	}
+}
+
+func TestRegisterWorker_Capacity(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantCPUs *float64
+		wantMem  *float64
+	}{
+		{"with caps", `{"name":"w","runtime":"none","max_cpus":16,"max_mem_mb":32000}`, f64(16), f64(32000)},
+		{"legacy body", `{"name":"w","runtime":"none"}`, nil, nil},
+		{"zero", `{"name":"w","runtime":"none","max_cpus":0,"max_mem_mb":0}`, nil, nil},
+		{"negative", `{"name":"w","runtime":"none","max_cpus":-4,"max_mem_mb":-1}`, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, st := testServerWithStore()
+			w, env := doPost(t, srv, "/api/v1/workers/", tt.body)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+			}
+			var data map[string]any
+			json.Unmarshal(env.Data, &data)
+			check := func(key string, want *float64) {
+				got, present := data[key]
+				if want == nil && present {
+					t.Errorf("response %s = %v, want absent", key, got)
+				}
+				if want != nil && got != *want {
+					t.Errorf("response %s = %v, want %v", key, got, *want)
+				}
+			}
+			check("max_cpus", tt.wantCPUs)
+			check("max_mem_mb", tt.wantMem)
+
+			stored, err := st.GetWorker(context.Background(), data["id"].(string))
+			if err != nil || stored == nil {
+				t.Fatalf("GetWorker: %v %v", stored, err)
+			}
+			if (stored.MaxCPUs != nil) != (tt.wantCPUs != nil) || (stored.MaxMemMB != nil) != (tt.wantMem != nil) {
+				t.Errorf("stored caps = %v/%v", stored.MaxCPUs, stored.MaxMemMB)
+			}
+		})
+	}
+}
+
+func f64(v float64) *float64 { return &v }
+
+func TestWorkerCheckout_RespectsCapacity(t *testing.T) {
+	srv := testServer()
+	_, subID := createTestSubmission(t, srv)
+
+	w, env := doPost(t, srv, "/api/v1/workers/", `{"name":"small","runtime":"none","max_cpus":4,"max_mem_mb":8000}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("register: %d %s", w.Code, w.Body.String())
+	}
+	var data map[string]any
+	json.Unmarshal(env.Data, &data)
+	workerID := data["id"].(string)
+
+	seedQueuedWorkerTask(t, srv, subID, "task_big")
+	big, _ := srv.store.GetTask(context.Background(), "task_big")
+	big.RuntimeHints = &model.RuntimeHints{Cores: 16}
+	if err := srv.store.UpdateTask(context.Background(), big); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/workers/"+workerID+"/work", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (task needs 16 cores, worker has 4), body=%s", rec.Code, rec.Body.String())
+	}
+
+	// A fitting task is still handed out.
+	seedQueuedWorkerTask(t, srv, subID, "task_ok")
+	got := checkoutTask(t, srv, workerID)
+	if got.ID != "task_ok" {
+		t.Errorf("checked out %s, want task_ok", got.ID)
 	}
 }

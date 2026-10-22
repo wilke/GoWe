@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,54 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// parseSchemaVersion is folded into the workflow content-hash (see
+// computeContentHash) alongside the packed CWL text. Bump this whenever a
+// parser change alters what internal/parser produces for otherwise-identical
+// CWL input (e.g. #199). Bumping it invalidates dedup against all
+// previously-registered rows, so the next registration of "unchanged"
+// content is guaranteed a fresh parse instead of risking a dedup hit that
+// resurrects a stale, pre-fix parse (#197/#201).
+const parseSchemaVersion = "2"
+
+// computeContentHash returns the dedup hash for a workflow registration:
+// sha256(version + "\n" + cwl). Including the parser schema version means a
+// server upgrade that changes parse semantics automatically misses old rows
+// and produces a fresh parse, without requiring any manual row cleanup.
+func computeContentHash(version, cwlText string) string {
+	hash := sha256.Sum256([]byte(version + "\n" + cwlText))
+	return hex.EncodeToString(hash[:])
+}
+
+// workflowCreateResponse wraps a workflow with a Deduplicated flag so
+// clients (e.g. `gowe register`) can distinguish "returned the existing row
+// because the content already exists" from "created a brand-new row",
+// which both currently look identical in the payload otherwise.
+type workflowCreateResponse struct {
+	*model.Workflow
+	Deduplicated bool `json:"deduplicated"`
+	// Warnings are non-fatal registration notes, e.g. a tool that requests
+	// the user's token but is not yet blessed.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// workflowUpdateResponse is a republished workflow plus registration warnings.
+type workflowUpdateResponse struct {
+	*model.Workflow
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// toModelErrorResponse maps a ToModel failure to an HTTP error: a
+// gowe:Execution under requirements is the author's mistake (400), anything
+// else stays an internal error.
+func toModelErrorResponse(w http.ResponseWriter, reqID string, err error) {
+	if errors.Is(err, parser.ErrExecutionUnderRequirements) {
+		respondError(w, reqID, http.StatusBadRequest, model.NewValidationError("CWL parse error: "+err.Error()))
+		return
+	}
+	respondError(w, reqID, http.StatusInternalServerError,
+		&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+}
+
 func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
@@ -23,6 +72,7 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		Description string            `json:"description"`
 		CWL         string            `json:"cwl"`
 		Labels      map[string]string `json:"labels"`
+		Force       bool              `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -79,8 +129,7 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	mw, err := s.parser.ToModel(graph, name)
 	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		toModelErrorResponse(w, reqID, err)
 		return
 	}
 
@@ -100,22 +149,27 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		mw.Labels = req.Labels
 	}
 
-	// Compute content hash for deduplication.
+	// Compute content hash for deduplication. The hash folds in
+	// parseSchemaVersion so a server upgrade that changes parse semantics
+	// automatically invalidates dedup against pre-upgrade rows (#201).
 	mw.RawCWL = req.CWL
-	hash := sha256.Sum256([]byte(req.CWL))
-	mw.ContentHash = hex.EncodeToString(hash[:])
+	mw.ContentHash = computeContentHash(parseSchemaVersion, req.CWL)
 
-	// Check for existing workflow with same content.
-	existing, err := s.store.GetWorkflowByHash(r.Context(), mw.ContentHash)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
-	}
-	if existing != nil {
-		s.logger.Info("workflow deduplicated", "id", existing.ID, "name", existing.Name, "hash", mw.ContentHash[:12])
-		respondOK(w, reqID, existing)
-		return
+	// Check for existing workflow with same content, unless the caller
+	// explicitly asked to bypass dedup (force: true) — an escape hatch
+	// that always produces a new row with a fresh parse.
+	if !req.Force {
+		existing, err := s.store.GetWorkflowByHash(r.Context(), mw.ContentHash)
+		if err != nil {
+			respondError(w, reqID, http.StatusInternalServerError,
+				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+			return
+		}
+		if existing != nil {
+			s.logger.Info("workflow deduplicated", "id", existing.ID, "name", existing.Name, "hash", mw.ContentHash[:12])
+			respondOK(w, reqID, &workflowCreateResponse{Workflow: existing, Deduplicated: true})
+			return
+		}
 	}
 
 	// Set ownership from authenticated user.
@@ -134,7 +188,11 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("workflow created", "id", mw.ID, "name", mw.Name, "steps", len(mw.Steps))
-	respondCreated(w, reqID, mw)
+	respondCreated(w, reqID, &workflowCreateResponse{
+		Workflow:     mw,
+		Deduplicated: false,
+		Warnings:     s.unblessedTokenToolWarnings(r.Context(), req.CWL),
+	})
 }
 
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +399,27 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If CWL is updated, re-parse and re-validate.
+	// If CWL is updated, re-parse, re-validate, and publish as a NEW row
+	// rather than mutating the existing one in place.
+	//
+	// BEHAVIOR CHANGE (#201): a PUT with a non-empty `cwl` field used to
+	// overwrite the row addressed by {id} in place — same id, new
+	// RawCWL/steps/inputs/outputs, and (bug) a never-recomputed
+	// ContentHash left silently stale. That violated the retrieval
+	// contract (by-ID must be immutable) two ways: (1) the scheduler
+	// re-reads workflows by id every tick, so mutating a workflow with
+	// RUNNING submissions changed the definition under them mid-flight;
+	// (2) the stale ContentHash corrupted dedup for that row going
+	// forward. Now: a PUT with `cwl` always creates a brand-new row (new
+	// "wf_" id, same name unless overridden, fresh parse, fresh content
+	// hash via computeContentHash) and returns it — i.e. it publishes a
+	// new version. The response's "id" therefore differs from the {id}
+	// in the URL; callers that want "latest" should resolve by name
+	// (GetWorkflowByName already returns newest-created-at). The
+	// original row at {id} is left untouched, so anything already
+	// pinned to it (e.g. a RUNNING submission's WorkflowID) keeps seeing
+	// its original definition. Metadata-only PUT (no `cwl`) is
+	// unaffected and still updates in place below.
 	if req.CWL != "" {
 		// Resolve gowe:// references before parsing.
 		resolvedCWL, err := resolveGoweRefs(r.Context(), s.store, req.CWL)
@@ -369,14 +447,16 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		updated, err := s.parser.ToModel(graph, name)
 		if err != nil {
-			respondError(w, reqID, http.StatusInternalServerError,
-				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+			toModelErrorResponse(w, reqID, err)
 			return
 		}
-		updated.ID = id
+		// New row: fresh id, fresh timestamps, fresh content hash.
+		updated.ID = "wf_" + uuid.New().String()
 		updated.RawCWL = req.CWL
-		updated.CreatedAt = existing.CreatedAt
-		updated.UpdatedAt = time.Now().UTC()
+		updated.ContentHash = computeContentHash(parseSchemaVersion, req.CWL)
+		now := time.Now().UTC()
+		updated.CreatedAt = now
+		updated.UpdatedAt = now
 		// Set the original CWL class from the new graph.
 		updated.Class = graph.OriginalClass
 		if updated.Class == "" {
@@ -384,19 +464,29 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Description != "" {
 			updated.Description = req.Description
+		} else {
+			updated.Description = existing.Description
 		}
 		if req.Labels != nil {
 			updated.Labels = req.Labels
 		} else {
 			updated.Labels = existing.Labels
 		}
+		// Ownership of the new row belongs to whoever published it.
+		if userCtx != nil {
+			updated.CreatedBy = userCtx.User.Username
+		}
 
-		if err := s.store.UpdateWorkflow(r.Context(), updated); err != nil {
+		if err := s.store.CreateWorkflow(r.Context(), updated); err != nil {
 			respondError(w, reqID, http.StatusInternalServerError,
 				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 			return
 		}
-		respondOK(w, reqID, updated)
+		s.logger.Info("workflow republished as new version", "old_id", id, "new_id", updated.ID, "name", updated.Name)
+		respondOK(w, reqID, &workflowUpdateResponse{
+			Workflow: updated,
+			Warnings: s.unblessedTokenToolWarnings(r.Context(), req.CWL),
+		})
 		return
 	}
 

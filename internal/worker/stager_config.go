@@ -78,7 +78,7 @@ type HTTPStagerConfig struct {
 	UploadMethod string
 
 	// UploadPath is the URL template for StageOut uploads.
-	// Supports placeholders: {taskID}, {filename}, {basename}
+	// Supports placeholders: {taskID}, {filename}, {basename}, {relpath}
 	// Example: "https://upload.example.com/files/{taskID}/{filename}"
 	UploadPath string
 }
