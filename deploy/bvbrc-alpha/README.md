@@ -47,11 +47,11 @@ Tested 2026-10-26 on a scratch server: all 30 registered, and every
 server runs; a plain `cp` of a WAL-mode database can be corrupt), runs
 `PRAGMA integrity_check`, gzips it (mode 600) and keeps the newest 14.
 `ecosystem.config.js` runs it daily at 02:30 as the pm2 app `gowe-backup`
-(it expects this repo cloned at `$GOWE_HOME/GoWe`; set `GOWE_BACKUP_DIR` to
-put backups elsewhere). It runs once immediately when pm2 starts it.
+into `/vol/bvbrc/db-backups/gowe` (it expects this repo cloned at
+`$GOWE_HOME/GoWe`; `GOWE_BACKUP_DIR` overrides the destination). It runs once immediately when pm2 starts it.
 
-- Put backups on a **different disk or host** than `gowe.db`
-  (`GOWE_BACKUP_DIR`, or rsync `$GOWE_HOME/backups` off the machine).
+- The backup folder must be writable by the account pm2 runs as, and should be
+  on a different disk than `gowe.db`.
 - Back up `token.key` **once, separately** (not next to the backups). A backup
   without it restores the job history but not the stored tokens.
 - Check: `pm2 logs gowe-backup` — each run prints workflows / submissions / size;
