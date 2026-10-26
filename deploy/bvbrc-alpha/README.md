@@ -14,7 +14,7 @@ Copilot uses. Built from branch `bvbrc-alpha`.
 ## Setup
 
 ```bash
-export GOWE_HOME=/path/to/gowe-alpha
+export GOWE_HOME=/disks/p3/GoWeServer
 mkdir -p $GOWE_HOME/{bin,logs,uploads,data} && chmod 700 $GOWE_HOME
 
 # 1. build (Go >= 1.24)

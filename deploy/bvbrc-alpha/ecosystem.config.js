@@ -1,6 +1,6 @@
 // pm2 config for the alpha production GoWe server. Set GOWE_HOME to the deployment
 // directory (bin/, token.key, gowe.db, uploads/, data/, logs/ live there).
-const H = process.env.GOWE_HOME || '/path/to/gowe-alpha';
+const H = process.env.GOWE_HOME || '/disks/p3/GoWeServer';
 
 module.exports = {
   apps: [{
