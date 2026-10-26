@@ -13,7 +13,7 @@ module.exports = {
       '--db', `${H}/gowe.db`,
       '--token-key-file', `${H}/token.key`,
       '--allow-anonymous',
-      // bvbrc only: local/docker/container anonymously lets anyone who reaches :12007 run code here
+      // bvbrc only: local/docker/container anonymously lets anyone who reaches the port run code here
       '--anonymous-executors', 'bvbrc',
       '--scheduler-poll', '100ms',
       '--upload-backend', 'local',
