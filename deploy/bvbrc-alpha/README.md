@@ -8,6 +8,7 @@ Copilot uses. Built from branch `bvbrc-alpha`.
 | `ecosystem.config.js` | pm2 app (same flags as dev's `~/GoWeServer/start_gowe_alpha.sh`) |
 | `cwl/*.cwl` | The CWL registered on dev, exported from its database on 2026-10-26 |
 | `workflows.json` | File → workflow name. The Copilot finds workflows **by name**, so names must match dev exactly |
+| `backup_db.py` | Online, integrity-checked, pruned database backup (see Backups) |
 | `register_workflows.py` | Registers `cwl/` under those names (`gowe register` would name them after the file) |
 
 ## Setup
@@ -39,6 +40,25 @@ GOWE_SERVER=http://localhost:12007 GOWE_TOKEN="$(cat ~/.patric_token)" \
 
 Tested 2026-10-26 on a scratch server: all 30 registered, and every
 `GET /api/v1/workflows/<name>/inputs` was identical to dev's.
+
+## Backups
+
+`backup_db.py` copies `gowe.db` with SQLite's online backup API (safe while the
+server runs; a plain `cp` of a WAL-mode database can be corrupt), runs
+`PRAGMA integrity_check`, gzips it (mode 600) and keeps the newest 14.
+`ecosystem.config.js` runs it daily at 02:30 as the pm2 app `gowe-backup`
+(it expects this repo cloned at `$GOWE_HOME/GoWe`; set `GOWE_BACKUP_DIR` to
+put backups elsewhere). It runs once immediately when pm2 starts it.
+
+- Put backups on a **different disk or host** than `gowe.db`
+  (`GOWE_BACKUP_DIR`, or rsync `$GOWE_HOME/backups` off the machine).
+- Back up `token.key` **once, separately** (not next to the backups). A backup
+  without it restores the job history but not the stored tokens.
+- Check: `pm2 logs gowe-backup` — each run prints workflows / submissions / size;
+  a failed run exits non-zero.
+- Restore: `pm2 stop gowe-server`, move `gowe.db`, `gowe.db-wal`, `gowe.db-shm`
+  aside, `gunzip -c backups/gowe-<stamp>.db.gz > gowe.db`, `pm2 start gowe-server`.
+- Without pm2: `30 2 * * * python3 $GOWE_HOME/GoWe/deploy/bvbrc-alpha/backup_db.py --db $GOWE_HOME/gowe.db --dest <dir>` in crontab.
 
 ## Afterwards
 

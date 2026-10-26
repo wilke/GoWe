@@ -33,5 +33,17 @@ module.exports = {
     out_file: `${H}/logs/gowe-server.out.log`,
     error_file: `${H}/logs/gowe-server.err.log`,
     time: true,
+  }, {
+    // Daily database backup at 02:30 (also runs once whenever pm2 starts it).
+    // autorestart:false + cron_restart = run, exit, wait for the next cron tick.
+    name: 'gowe-backup',
+    script: `${H}/GoWe/deploy/bvbrc-alpha/backup_db.py`,
+    interpreter: 'python3',
+    args: ['--db', `${H}/gowe.db`, '--dest', process.env.GOWE_BACKUP_DIR || `${H}/backups`, '--keep', '14'],
+    cron_restart: '30 2 * * *',
+    autorestart: false,
+    out_file: `${H}/logs/gowe-backup.log`,
+    error_file: `${H}/logs/gowe-backup.log`,
+    time: true,
   }],
 };
