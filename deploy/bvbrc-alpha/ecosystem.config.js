@@ -9,7 +9,7 @@ module.exports = {
     interpreter: 'none',
     cwd: H,
     args: [
-      '--addr', ':12007',
+      '--addr', '127.0.0.1:7000',   // elm only: the alpha gateway and orchestrator run on elm too
       '--db', `${H}/gowe.db`,
       '--token-key-file', `${H}/token.key`,
       '--allow-anonymous',

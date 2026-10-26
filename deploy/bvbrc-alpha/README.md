@@ -31,10 +31,10 @@ GOWE_HOME=$GOWE_HOME pm2 start deploy/bvbrc-alpha/ecosystem.config.js
 pm2 save
 pm2 startup            # run the sudo command it prints, so GoWe survives a reboot
 pm2 install pm2-logrotate
-curl -s http://localhost:12007/api/v1/health
+curl -s http://localhost:7000/api/v1/health
 
 # 4. register the 30 workflows (needs an admin's BV-BRC token)
-GOWE_SERVER=http://localhost:12007 GOWE_TOKEN="$(cat ~/.patric_token)" \
+GOWE_SERVER=http://localhost:7000 GOWE_TOKEN="$(cat ~/.patric_token)" \
   python3 deploy/bvbrc-alpha/register_workflows.py
 ```
 
@@ -62,7 +62,9 @@ into `/vol/bvbrc/db-backups/gowe` (it expects this repo cloned at
 
 ## Afterwards
 
-- Port 12007 only needs to be reachable from the alpha orchestrator and gateway hosts.
+- GoWe listens on `127.0.0.1:7000`, reachable only from elm. The alpha gateway
+  (`workflow_monitor.gowe_url`) and orchestrator (`gowe_url`) run on elm and use
+  `http://localhost:7000`. Nothing outside elm connects to GoWe.
 - The host must reach `https://user.patricbrc.org/public_key` (token verification); otherwise every call is 401.
 - Point the alpha Copilot at this server: `bvbrc-agents/shared/models.py` `gowe_url` and the gateway's `config.json` `gowe_url`.
 - Before replacing the binary: `pm2 stop gowe-server`, copy `gowe.db*` aside (startup migrates the schema), then `pm2 start gowe-server`.

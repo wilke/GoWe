@@ -5,13 +5,13 @@
 Copilot looks workflows up by the names dev uses (Bacterial Genome Tree), so this
 posts each file with the name from workflows.json.
 
-    GOWE_SERVER=http://localhost:12007 GOWE_TOKEN="$(cat ~/.patric_token)" ./register_workflows.py
+    GOWE_SERVER=http://localhost:7000 GOWE_TOKEN="$(cat ~/.patric_token)" ./register_workflows.py
 """
 import json, os, sys, urllib.request
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-server = os.environ.get("GOWE_SERVER", "http://localhost:12007").rstrip("/")
+server = os.environ.get("GOWE_SERVER", "http://localhost:7000").rstrip("/")
 token = os.environ.get("GOWE_TOKEN", "").strip()
 if not token:
     sys.exit("set GOWE_TOKEN to an admin's BV-BRC token")
