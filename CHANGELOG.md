@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/wilke/GoWe/compare/v0.28.1...v0.29.0) (2026-11-11)
+
+
+### Features
+
+* **cwl/apps:** port IWC generic viral variant calling and consensus ([#345](https://github.com/wilke/GoWe/issues/345)) ([7d2af81](https://github.com/wilke/GoWe/commit/7d2af8137a854e51986c96f372a5b6db402ad381))
+* **cwl/apps:** port IWC SARS-CoV-2 WGS paired-end variant calling ([#344](https://github.com/wilke/GoWe/issues/344)) ([799ee3c](https://github.com/wilke/GoWe/commit/799ee3c0649037358ca9c03b5ef45756e937fa8b))
+
+
+### Bug Fixes
+
+* **scripts:** exit non-zero when conformance tests fail ([#354](https://github.com/wilke/GoWe/issues/354)) ([3e9e68b](https://github.com/wilke/GoWe/commit/3e9e68b5e4da53dd312b20c0f0dfb1878cc9c800))
+
 ## [0.28.1](https://github.com/wilke/GoWe/compare/v0.28.0...v0.28.1) (2026-11-11)
 
 
