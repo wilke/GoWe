@@ -430,7 +430,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 		// Mount input files from outside the volume using path translation.
 		mounts := CollectInputMounts(inputs)
-		for hostPath, containerPath := range mounts {
+		for containerPath, hostPath := range mounts {
 			if strings.HasPrefix(hostPath, volumeMountPoint+"/") {
 				continue // Already accessible via the named volume.
 			}
@@ -484,7 +484,7 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 		// Mount input files that are outside working directory.
 		mounts := CollectInputMounts(inputs)
-		for hostPath, containerPath := range mounts {
+		for containerPath, hostPath := range mounts {
 			translatedPath := translateDockerPath(hostPath, opts.DockerHostPathMap)
 			dockerArgs = append(dockerArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s,readonly", translatedPath, containerPath))
 		}
@@ -728,7 +728,7 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// Mount input files that are outside working directory.
 	// Use --mount instead of --bind to handle colons in paths.
 	mounts := CollectInputMounts(inputs)
-	for hostPath, containerPath := range mounts {
+	for containerPath, hostPath := range mounts {
 		apptainerArgs = append(apptainerArgs, apptainerMount(hostPath, containerPath, "ro")...)
 	}
 
