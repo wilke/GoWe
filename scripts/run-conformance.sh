@@ -39,6 +39,12 @@ if ! command -v cwltest &> /dev/null; then
     echo -e "${YELLOW}cwltest not found. Installing...${NC}"
     pip install cwltest
 fi
+# A cwltest launcher whose Python package is missing (e.g. another HOME or
+# PYTHONUSERBASE) is found on PATH but fails on start; catch that here.
+if ! cwltest --help &> /dev/null; then
+    echo -e "${RED}cwltest is on PATH but does not run (try: cwltest --help)${NC}"
+    exit 1
+fi
 
 # Build cwl-runner if not present (requires go in PATH or apptainer)
 if [ ! -x "$RUNNER" ]; then
@@ -81,9 +87,10 @@ if [ -n "$TAGS" ]; then
 fi
 
 cwltest "${CWLTEST_ARGS[@]}" 2>&1 | tee "$REPORT"
+RESULT=${PIPESTATUS[0]}
 
 # Check result
-if [ ${PIPESTATUS[0]} -eq 0 ]; then
+if [ $RESULT -eq 0 ]; then
     echo ""
     echo -e "${GREEN}=== All $TAGS tests passed! ===${NC}"
 else
@@ -95,3 +102,4 @@ else
 fi
 echo ""
 echo "Report saved to: $REPORT"
+exit $RESULT

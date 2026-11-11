@@ -131,6 +131,10 @@ if ! command -v cwltest &> /dev/null; then
     log_error "cwltest not found. Install with: pip install cwltest"
     exit 1
 fi
+if ! cwltest --help &> /dev/null; then
+    log_error "cwltest is on PATH but does not run (try: cwltest --help)"
+    exit 1
+fi
 
 if [ ! -f testdata/cwl-v1.2/conformance_tests.yaml ]; then
     log_error "Conformance tests not found: testdata/cwl-v1.2/conformance_tests.yaml"
@@ -279,6 +283,7 @@ POLL_INTERVAL=30
 MAX_STALLS=$(( (STALL_TIMEOUT + POLL_INTERVAL - 1) / POLL_INTERVAL ))
 LAST_LINES=0
 STALL_COUNT=0
+ABORTED=false
 
 while kill -0 $CWLTEST_PID 2>/dev/null; do
     sleep $POLL_INTERVAL
@@ -301,6 +306,7 @@ print(' '.join(f'{k}={v}' for k,v in sorted(s.items())))
         log_warn "No progress (${STALL_COUNT}/${MAX_STALLS}, abort at ${STALL_TIMEOUT}s)"
         if [ "$STALL_COUNT" -ge "$MAX_STALLS" ]; then
             log_error "ABORTING: no progress for ${STALL_TIMEOUT}s"
+            ABORTED=true
             kill $CWLTEST_PID 2>/dev/null || true
             sleep 2
             kill -9 $CWLTEST_PID 2>/dev/null || true
@@ -312,7 +318,11 @@ print(' '.join(f'{k}={v}' for k,v in sorted(s.items())))
     LAST_LINES=$CURRENT_LINES
 done
 
-wait $CWLTEST_PID 2>/dev/null || true
+RESULT=0
+wait $CWLTEST_PID 2>/dev/null || RESULT=$?
+if [ "$ABORTED" = true ]; then
+    RESULT=1
+fi
 
 # --- Results ---
 
@@ -333,4 +343,6 @@ if [ -f "$REPORT" ]; then
     log_info "Server log:  $WORK_DIR/logs/server.log"
 else
     log_error "No report generated"
+    RESULT=1
 fi
+exit $RESULT

@@ -129,6 +129,10 @@ if ! command -v cwltest &> /dev/null; then
     log_error "cwltest not found. Install it with: pip install cwltest"
     exit 1
 fi
+if ! cwltest --help &> /dev/null; then
+    log_error "cwltest is on PATH but does not run (try: cwltest --help)"
+    exit 1
+fi
 
 # Check for conformance tests
 CONFORMANCE_DIR="testdata/cwl-v1.2"
@@ -251,3 +255,4 @@ else
 fi
 echo ""
 log_info "Report saved to: $REPORT"
+exit $RESULT
