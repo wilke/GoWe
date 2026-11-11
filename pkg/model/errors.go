@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"io"
 )
 
 // ErrorCode represents a structured API error code.
@@ -37,6 +38,21 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// WriteErrorDetails writes one line per FieldError carried by err, in the
+// form "  <field><path>: <message>". It is a no-op when err (or anything it
+// wraps) is not an *APIError or carries no Details. Error() deliberately
+// leaves the details out (it is used in API responses and logs), so a CLI
+// that prints only err loses them; both gowe and cwl-runner call this.
+func WriteErrorDetails(w io.Writer, err error) {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || len(apiErr.Details) == 0 {
+		return
+	}
+	for _, d := range apiErr.Details {
+		fmt.Fprintf(w, "  %s%s: %s\n", d.Field, d.Path, d.Message)
+	}
 }
 
 // FieldError describes a validation error on a specific field.

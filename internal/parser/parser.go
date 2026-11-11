@@ -461,8 +461,11 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string, defs *sch
 				if exprTools == nil {
 					exprTools = make(map[string]*cwl.ExpressionTool)
 				}
-				exprTools[exprTool.ID] = exprTool
-				p.logger.Debug("loaded external expression tool", "path", step.Run, "id", exprTool.ID)
+				// Key by file basename, not the declared id: step.Run stays
+				// "<name>.cwl" and every lookup (validateToolRefs, cwlrunner's
+				// stripHash) resolves it to the basename (#281).
+				exprTools[toolID] = exprTool
+				p.logger.Debug("loaded external expression tool", "path", step.Run, "key", toolID, "id", exprTool.ID)
 
 			case "Workflow":
 				// Recursively parse the subworkflow.
@@ -488,8 +491,8 @@ func (p *Parser) parseBareWorkflow(raw map[string]any, version string, defs *sch
 				if tool.ID == "" {
 					tool.ID = toolID
 				}
-				tools[tool.ID] = tool
-				p.logger.Debug("loaded external tool", "path", step.Run, "id", tool.ID)
+				tools[toolID] = tool // keyed by basename, see exprTools above (#281)
+				p.logger.Debug("loaded external tool", "path", step.Run, "key", toolID, "id", tool.ID)
 			}
 		}
 	}
