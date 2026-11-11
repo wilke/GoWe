@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +51,18 @@ type workflowCreateResponse struct {
 type workflowUpdateResponse struct {
 	*model.Workflow
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// registrationWarnings combines the validator's non-fatal findings about a
+// document (e.g. an undeclared, unused step input) with the token-blessing
+// warnings, as "<field>: <message>" strings for the warnings field of a
+// create/update response.
+func registrationWarnings(validatorWarns []model.FieldError, other []string) []string {
+	var out []string
+	for _, w := range validatorWarns {
+		out = append(out, fmt.Sprintf("%s: %s", w.Field, w.Message))
+	}
+	return append(out, other...)
 }
 
 // toModelErrorResponse maps a ToModel failure to an HTTP error: a
@@ -121,6 +134,7 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		respondError(w, reqID, http.StatusUnprocessableEntity, apiErr)
 		return
 	}
+	validatorWarns := s.validator.Warnings(graph)
 
 	// Convert to model.
 	name := req.Name
@@ -167,7 +181,11 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		if existing != nil {
 			s.logger.Info("workflow deduplicated", "id", existing.ID, "name", existing.Name, "hash", mw.ContentHash[:12])
-			respondOK(w, reqID, &workflowCreateResponse{Workflow: existing, Deduplicated: true})
+			respondOK(w, reqID, &workflowCreateResponse{
+				Workflow:     existing,
+				Deduplicated: true,
+				Warnings:     registrationWarnings(validatorWarns, nil),
+			})
 			return
 		}
 	}
@@ -191,7 +209,7 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	respondCreated(w, reqID, &workflowCreateResponse{
 		Workflow:     mw,
 		Deduplicated: false,
-		Warnings:     s.unblessedTokenToolWarnings(r.Context(), req.CWL),
+		Warnings:     registrationWarnings(validatorWarns, s.unblessedTokenToolWarnings(r.Context(), req.CWL)),
 	})
 }
 
@@ -386,6 +404,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 			respondError(w, reqID, http.StatusUnprocessableEntity, apiErr)
 			return
 		}
+		validatorWarns := s.validator.Warnings(graph)
 
 		name := req.Name
 		if name == "" {
@@ -431,7 +450,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("workflow republished as new version", "old_id", id, "new_id", updated.ID, "name", updated.Name)
 		respondOK(w, reqID, &workflowUpdateResponse{
 			Workflow: updated,
-			Warnings: s.unblessedTokenToolWarnings(r.Context(), req.CWL),
+			Warnings: registrationWarnings(validatorWarns, s.unblessedTokenToolWarnings(r.Context(), req.CWL)),
 		})
 		return
 	}
@@ -575,10 +594,14 @@ func (s *Server) handleValidateWorkflow(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	warnings := s.validator.Warnings(graph)
+	if warnings == nil {
+		warnings = []model.FieldError{}
+	}
 	respondOK(w, reqID, map[string]any{
 		"valid":    true,
 		"errors":   []any{},
-		"warnings": []any{},
+		"warnings": warnings,
 	})
 }
 

@@ -42,3 +42,21 @@ func printSubmissionWarnings(w io.Writer, data json.RawMessage) {
 		fmt.Fprintf(w, "  %s%s: %s\n", wn.Field, wn.Path, wn.Message)
 	}
 }
+
+// printRegistrationWarnings prints the "warnings" field of a workflow
+// create/update response — plain "<field>: <message>" strings such as an
+// undeclared, unused step input or a tool that asks for the token but is not
+// blessed — one per line after a "Warnings:" header. A no-op when there are
+// none or data does not parse.
+func printRegistrationWarnings(w io.Writer, data json.RawMessage) {
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil || len(resp.Warnings) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Warnings:")
+	for _, wn := range resp.Warnings {
+		fmt.Fprintf(w, "  %s\n", wn)
+	}
+}

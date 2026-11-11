@@ -27,6 +27,7 @@ import (
 	"github.com/me/gowe/internal/secondaryfiles"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/cwl"
+	"github.com/me/gowe/pkg/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -168,8 +169,17 @@ func (r *Runner) Validate(ctx context.Context, cwlPath string) error {
 	if err := v.Validate(graph); err != nil {
 		return err
 	}
+	printValidationWarnings(os.Stderr, v.Warnings(graph))
 
 	return nil
+}
+
+// printValidationWarnings writes the validator's non-fatal findings, one
+// "Warning: <field>: <message>" line each.
+func printValidationWarnings(w io.Writer, warns []model.FieldError) {
+	for _, wn := range warns {
+		fmt.Fprintf(w, "Warning: %s: %s\n", wn.Field, wn.Message)
+	}
 }
 
 // PrintDAG prints the workflow DAG as JSON.
@@ -265,6 +275,7 @@ func (r *Runner) Execute(ctx context.Context, cwlPath, jobPath string, w io.Writ
 	if err := v.Validate(graph); err != nil {
 		return err
 	}
+	printValidationWarnings(os.Stderr, v.Warnings(graph))
 
 	inputs, err := r.LoadInputs(jobPath)
 	if err != nil {
