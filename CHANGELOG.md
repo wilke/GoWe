@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.28.1](https://github.com/wilke/GoWe/compare/v0.28.0...v0.28.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **server:** give each local upload its own folder ([#350](https://github.com/wilke/GoWe/issues/350)) ([dc1b075](https://github.com/wilke/GoWe/commit/dc1b07542f3dd4ac8ce2415d7b3f49eef18f5409))
+* **server:** keep the original filename in S3 upload keys ([#352](https://github.com/wilke/GoWe/issues/352)) ([58b1114](https://github.com/wilke/GoWe/commit/58b1114a0cb7ff1a51f23c7cfd3dea348d638f63))
+* **worker:** stage secondaryFiles beside their primary file ([#353](https://github.com/wilke/GoWe/issues/353)) ([ab8b0ec](https://github.com/wilke/GoWe/commit/ab8b0ec73258944373d32ae0966c16f6ad7fed61))
+
 ## [0.28.0](https://github.com/wilke/GoWe/compare/v0.27.0...v0.28.0) (2026-11-11)
 
 
