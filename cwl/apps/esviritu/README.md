@@ -114,6 +114,13 @@ lineage labels matched the `dedup` run. Labels of lineages supported by few uniq
 between near-identical references are broken, so they can differ between modes; check `low_support` and
 `exemplar_ties.tsv` before reporting them.
 
+## Read-sharing threshold (`read_share_threshold`)
+
+EsViritu clusters references that share at least this fraction of their reads (of the reference with fewer aligned
+reads) and keeps the one with the most reads as the representative. EsViritu 1.3.6 made the fixed 0.33 an option
+(`--read-share-threshold`). The input is empty by default and only passed when set, so images before 1.3.6 still
+work; setting it with an older image fails with an unknown-argument error.
+
 ## Single sample (`esviritu`)
 
     gowe submit --workflow esviritu -i job.example.yml
