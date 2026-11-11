@@ -292,17 +292,26 @@ func (s *Server) uploadToLocal(ctx context.Context, tmpPath, filename string, cf
 		return "", fmt.Errorf("local upload directory not configured")
 	}
 
-	// Create unique subdirectory
-	subDir := time.Now().UTC().Format("20060102-150405")
-	destDir := filepath.Join(cfg.Local.Dir, subDir)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	// Each upload gets its own folder, created atomically, so concurrent
+	// uploads of the same file name never share a path (#349). The file keeps
+	// its name because CWL derives File.basename from the location.
+	if err := os.MkdirAll(cfg.Local.Dir, 0o755); err != nil {
 		return "", fmt.Errorf("create dir: %w", err)
+	}
+	destDir, err := os.MkdirTemp(cfg.Local.Dir, time.Now().UTC().Format("20060102-150405")+"-*")
+	if err != nil {
+		return "", fmt.Errorf("create dir: %w", err)
+	}
+	if err := os.Chmod(destDir, 0o755); err != nil { // MkdirTemp creates 0700
+		os.RemoveAll(destDir)
+		return "", fmt.Errorf("chmod dir: %w", err)
 	}
 
 	destPath := filepath.Join(destDir, filepath.Base(filename))
 
 	// Copy file
 	if err := staging.CopyFile(tmpPath, destPath); err != nil {
+		os.RemoveAll(destDir)
 		return "", fmt.Errorf("copy file: %w", err)
 	}
 
