@@ -50,6 +50,9 @@ inputs:
     type: int
     default: 50
     label: Unique fragments below which a reference is flagged low_support in virus_fragments.tsv
+  read_share_threshold:
+    type: float?
+    label: Minimum fraction of shared reads to cluster two references (empty = EsViritu default 0.33; needs EsViritu 1.3.6+)
   min_align_length:
     type: int
     default: 100
@@ -111,6 +114,7 @@ steps:
       dedup: dedup
       collapse_duplicates: collapse_duplicates
       min_fragments: min_fragments
+      read_share_threshold: read_share_threshold
       min_align_length: min_align_length
       species_threshold: species_threshold
       subspecies_threshold: subspecies_threshold

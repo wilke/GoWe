@@ -155,6 +155,8 @@ arguments:
     valueFrom: '$(inputs.dedup ? "True" : "False")'
   # passed only when on, so images without the option (stock EsViritu 1.3.4) still work
   - valueFrom: '$(inputs.collapse_duplicates ? ["--collapse-duplicates", "True"] : [])'
+  # passed only when set, so images before EsViritu 1.3.6 still work
+  - valueFrom: '$(inputs.read_share_threshold != null ? ["--read-share-threshold", String(inputs.read_share_threshold)] : [])'
   - prefix: --filter_seqs
     valueFrom: '$(inputs.filter_dir ? "True" : "False")'
 
@@ -217,6 +219,12 @@ inputs:
     label: Minimum ANI for subspecies-level classification
     inputBinding:
       prefix: --subspecies-threshold
+  read_share_threshold:
+    type: float?
+    label: Minimum fraction of shared reads to cluster two references (EsViritu default 0.33)
+    doc: >-
+      Fraction of the reference with fewer aligned reads. Empty uses the EsViritu default (0.33).
+      Needs EsViritu 1.3.6 or later (--read-share-threshold).
   min_align_length:
     type: int
     default: 100
