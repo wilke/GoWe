@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 
@@ -15,13 +14,7 @@ import (
 // "  inputs.chunk_method: expected one of [...]". It is a no-op when err is
 // not a *model.APIError or carries no Details.
 func printAPIErrorDetails(w io.Writer, err error) {
-	var apiErr *model.APIError
-	if !errors.As(err, &apiErr) || len(apiErr.Details) == 0 {
-		return
-	}
-	for _, d := range apiErr.Details {
-		fmt.Fprintf(w, "  %s%s: %s\n", d.Field, d.Path, d.Message)
-	}
+	model.WriteErrorDetails(w, err)
 }
 
 // submissionWarnings unmarshals just the "warnings" field of a successful
