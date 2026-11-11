@@ -105,6 +105,7 @@ Alternatively, use --workflow to reference an already-registered workflow by ID 
 				}
 				workflowID = id
 				fmt.Printf("Workflow registered: %s\n", workflowID)
+				printRegistrationWarnings(os.Stderr, wfResp.Data)
 			}
 
 			// Read inputs if provided.

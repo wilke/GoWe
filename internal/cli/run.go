@@ -202,6 +202,7 @@ func runCWL(cwlPath string, inputs map[string]any, outDir string, quiet bool, no
 	if !ok {
 		return fmt.Errorf("workflow response missing 'id' field")
 	}
+	printRegistrationWarnings(os.Stderr, wfResp.Data)
 
 	// 3. Create submission via API.
 	if !quiet {

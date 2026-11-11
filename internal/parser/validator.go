@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
@@ -258,10 +259,31 @@ func (v *Validator) validateToolRefs(graph *cwl.GraphDocument) []model.FieldErro
 	return errs
 }
 
-// validateStepInputs checks that step inputs match the tool's declared inputs.
-// CWL spec requires that step inputs correspond to inputs declared by the tool.
-func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldError {
-	var errs []model.FieldError
+// Warnings returns non-fatal findings about a graph that Validate accepts.
+// They never make a document invalid; callers show them to the author.
+//
+// Today: step inputs that the step's process does not declare and that no
+// valueFrom or when expression of the step reads (undeclaredStepInputs).
+func (v *Validator) Warnings(graph *cwl.GraphDocument) []model.FieldError {
+	warns := v.undeclaredStepInputs(graph)
+	sort.SliceStable(warns, func(i, j int) bool {
+		if warns[i].Field != warns[j].Field {
+			return warns[i].Field < warns[j].Field
+		}
+		return warns[i].Message < warns[j].Message
+	})
+	return warns
+}
+
+// undeclaredStepInputs reports step inputs that the run process does not
+// declare and that nothing in the step uses. Such an input is legal CWL — it
+// is dropped before the process runs, and other inputs' valueFrom (or the
+// step's when) may read it as inputs.<id> (conformance test
+// wf_step_connect_undeclared_param) — so this is a warning, not an error:
+// an unused, undeclared input is most often a misspelled one (e.g.
+// "treads: threads"), which silently leaves the process on its default.
+func (v *Validator) undeclaredStepInputs(graph *cwl.GraphDocument) []model.FieldError {
+	var warns []model.FieldError
 	if graph.Workflow == nil {
 		return nil
 	}
@@ -270,61 +292,71 @@ func (v *Validator) validateStepInputs(graph *cwl.GraphDocument) []model.FieldEr
 		if step.Run == "" {
 			continue // Already caught by validateSteps.
 		}
-
-		// Resolve the tool reference to get the tool's declared inputs.
-		ref := step.Run
-		if len(ref) > 0 && ref[0] == '#' {
-			ref = ref[1:]
+		declared, ok := processInputIDs(graph, step.Run)
+		if !ok {
+			continue // Unknown process: validateToolRefs reports it; inline processes are not resolved here.
 		}
 
-		// Get the tool's declared inputs (from CommandLineTool, ExpressionTool, or SubWorkflow).
-		var toolInputs map[string]cwl.ToolInputParam
-		var wfInputs map[string]cwl.InputParam
-		if tool, ok := graph.Tools[ref]; ok {
-			toolInputs = tool.Inputs
-		} else if exprTool, ok := graph.ExpressionTools[ref]; ok {
-			toolInputs = exprTool.Inputs
-		} else if subWf, ok := graph.SubWorkflows[ref]; ok && subWf.Workflow != nil {
-			wfInputs = subWf.Workflow.Inputs
-		} else if strings.HasSuffix(ref, ".cwl") {
-			// Try stripping .cwl extension (for external file references).
-			base := filepath.Base(ref)
-			strippedRef := strings.TrimSuffix(base, ".cwl")
-			if tool, ok := graph.Tools[strippedRef]; ok {
-				toolInputs = tool.Inputs
-			} else if exprTool, ok := graph.ExpressionTools[strippedRef]; ok {
-				toolInputs = exprTool.Inputs
-			} else if subWf, ok := graph.SubWorkflows[strippedRef]; ok && subWf.Workflow != nil {
-				wfInputs = subWf.Workflow.Inputs
-			}
-		}
-
-		if toolInputs == nil && wfInputs == nil {
-			// Tool not found - already reported by validateToolRefs.
-			continue
-		}
-
-		// Check each step input against the tool's declared inputs.
 		for inID := range step.In {
-			if toolInputs != nil {
-				if _, declared := toolInputs[inID]; !declared {
-					errs = append(errs, model.FieldError{
-						Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
-						Message: fmt.Sprintf("step %q input %q is not declared in the tool's inputs", stepID, inID),
-					})
-				}
-			} else if wfInputs != nil {
-				if _, declared := wfInputs[inID]; !declared {
-					errs = append(errs, model.FieldError{
-						Field:   fmt.Sprintf("steps.%s.in.%s", stepID, inID),
-						Message: fmt.Sprintf("step %q input %q is not declared in the subworkflow's inputs", stepID, inID),
-					})
-				}
+			if declared[inID] || stepReadsInput(step, inID) {
+				continue
 			}
+			warns = append(warns, model.FieldError{
+				Field: fmt.Sprintf("steps.%s.in.%s", stepID, inID),
+				Message: fmt.Sprintf("input %q is not declared by %s and no valueFrom or when of step %q reads it, so it is ignored (misspelled?)",
+					inID, step.Run, stepID),
+			})
 		}
 	}
+	return warns
+}
 
-	return errs
+// processInputIDs returns the input ids declared by the process a step runs,
+// resolving "#id" and "<path>/<name>.cwl" references the same way
+// validateToolRefs does. ok is false when the process is not in the graph.
+func processInputIDs(graph *cwl.GraphDocument, run string) (map[string]bool, bool) {
+	ref := strings.TrimPrefix(run, "#")
+	refs := []string{ref}
+	if strings.HasSuffix(ref, ".cwl") {
+		refs = append(refs, strings.TrimSuffix(filepath.Base(ref), ".cwl"))
+	}
+	for _, r := range refs {
+		ids := map[string]bool{}
+		if tool, ok := graph.Tools[r]; ok {
+			for id := range tool.Inputs {
+				ids[id] = true
+			}
+			return ids, true
+		}
+		if exprTool, ok := graph.ExpressionTools[r]; ok {
+			for id := range exprTool.Inputs {
+				ids[id] = true
+			}
+			return ids, true
+		}
+		if subWf, ok := graph.SubWorkflows[r]; ok && subWf.Workflow != nil {
+			for id := range subWf.Workflow.Inputs {
+				ids[id] = true
+			}
+			return ids, true
+		}
+	}
+	return nil, false
+}
+
+// stepReadsInput reports whether the step's when expression or another
+// input's valueFrom refers to inputs.<id> (or inputs["id"] / inputs['id']).
+func stepReadsInput(step cwl.Step, id string) bool {
+	re := regexp.MustCompile(`inputs\s*(\.\s*` + regexp.QuoteMeta(id) + `\b|\[\s*["']` + regexp.QuoteMeta(id) + `["']\s*\])`)
+	if re.MatchString(step.When) {
+		return true
+	}
+	for other, in := range step.In {
+		if other != id && re.MatchString(in.ValueFrom) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateOutputBindings checks every tool's output globs and outputEval

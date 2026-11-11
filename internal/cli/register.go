@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/me/gowe/internal/bundle"
 	"github.com/spf13/cobra"
@@ -59,6 +60,7 @@ func newRegisterCmd() *cobra.Command {
 				} else {
 					fmt.Printf("Registered: %s (%s) %s\n", wfName, wfClass, wfID)
 				}
+				printRegistrationWarnings(os.Stderr, wfResp.Data)
 			}
 			return nil
 		},
