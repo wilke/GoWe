@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -170,6 +172,86 @@ func TestHandleUploadFile_LocalBackend_SameNameConcurrent(t *testing.T) {
 		if info, err := os.Stat(filepath.Dir(p)); err == nil && info.Mode().Perm() != 0o755 {
 			t.Errorf("upload %d: dir mode = %v, want 0755", i, info.Mode().Perm())
 		}
+	}
+}
+
+// TestHandleUploadFile_S3Backend_KeepsFilename uploads to a fake S3 endpoint
+// and checks the object key: unique per upload and ending in the original file
+// name, not the server's temp-file name (#349).
+func TestHandleUploadFile_S3Backend_KeepsFilename(t *testing.T) {
+	var mu sync.Mutex
+	var puts []string // request paths of PutObject calls: /<bucket>/<key>
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		if r.Method == http.MethodPut {
+			mu.Lock()
+			puts = append(puts, r.URL.Path)
+			mu.Unlock()
+		}
+		w.Header().Set("ETag", `"d41d8cd98f00b204e9800998ecf8427e"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fake.Close()
+
+	tests := []struct {
+		name, prefix string
+		keyRe        string
+	}{
+		{"default prefix", "uploads/", `^/bkt/uploads/\d{8}-\d{6}-[0-9a-f]{16}/args\.py$`},
+		{"taskID prefix", "runs/{taskID}/", `^/bkt/runs/\d{8}-\d{6}-[0-9a-f]{16}/args\.py$`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mu.Lock()
+			puts = nil
+			mu.Unlock()
+			srv := testServer(WithFileUploadConfig(&FileUploadConfig{
+				Enabled: true,
+				Backend: "s3",
+				MaxSize: 1 << 30,
+				TempDir: t.TempDir(),
+				S3: S3UploadConfig{
+					Endpoint: fake.URL, Bucket: "bkt", Prefix: tt.prefix,
+					AccessKeyID: "test", SecretAccessKey: "test",
+					UsePathStyle: true, DisableSSL: true,
+				},
+			}))
+			var locations []string
+			for i := 0; i < 2; i++ {
+				body, contentType := buildMultipartUpload(t, "args.py", []byte("print(1)\n"))
+				req := httptest.NewRequest("POST", "/api/v1/files", body)
+				req.Header.Set("Content-Type", contentType)
+				w := httptest.NewRecorder()
+				srv.ServeHTTP(w, req)
+				if w.Code != http.StatusCreated {
+					t.Fatalf("upload %d: status=%d body=%s", i, w.Code, w.Body.String())
+				}
+				var env envelope
+				var data map[string]any
+				if json.Unmarshal(w.Body.Bytes(), &env) != nil || json.Unmarshal(env.Data, &data) != nil {
+					t.Fatalf("invalid response: %s", w.Body.String())
+				}
+				loc, _ := data["location"].(string)
+				if !strings.HasSuffix(loc, "/args.py") {
+					t.Errorf("upload %d: location %q does not end in /args.py", i, loc)
+				}
+				locations = append(locations, loc)
+			}
+			if locations[0] == locations[1] {
+				t.Errorf("two uploads share location %s", locations[0])
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(puts) != 2 {
+				t.Fatalf("PutObject calls = %d (%v), want 2", len(puts), puts)
+			}
+			re := regexp.MustCompile(tt.keyRe)
+			for _, p := range puts {
+				if !re.MatchString(p) {
+					t.Errorf("object path %q does not match %s", p, tt.keyRe)
+				}
+			}
+		})
 	}
 }
 

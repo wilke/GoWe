@@ -4,6 +4,22 @@ import (
 	"testing"
 )
 
+// The location StageOut returns must parse back to the exact key.
+func TestS3Location_RoundTrip(t *testing.T) {
+	for _, key := range []string{
+		"uploads/id/args.py",
+		"uploads/id/100%.txt",
+		"uploads/id/a%41.txt",
+		"uploads/id/my file.txt",
+		"uploads/id/%25.txt",
+	} {
+		bucket, got, err := parseS3URI(s3Location("bkt", key))
+		if err != nil || bucket != "bkt" || got != key {
+			t.Errorf("key %q: parsed bucket=%q key=%q err=%v", key, bucket, got, err)
+		}
+	}
+}
+
 func TestParseS3URI(t *testing.T) {
 	tests := []struct {
 		name       string

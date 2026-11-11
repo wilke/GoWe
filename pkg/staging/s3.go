@@ -212,7 +212,14 @@ func (s *S3Stager) StageOut(ctx context.Context, srcPath string, taskID string, 
 		return "", fmt.Errorf("s3 stager: upload %s/%s: %w", bucket, key, err)
 	}
 
-	return fmt.Sprintf("s3://%s/%s", bucket, key), nil
+	return s3Location(bucket, key), nil
+}
+
+// s3Location builds the s3:// URI for an object. parseS3URI path-unescapes the
+// key, so a literal '%' must be escaped to round-trip (e.g. an uploaded
+// "100%.txt"); other characters are left as before.
+func s3Location(bucket, key string) string {
+	return fmt.Sprintf("s3://%s/%s", bucket, strings.ReplaceAll(key, "%", "%25"))
 }
 
 // Supports returns true for s3 scheme.
