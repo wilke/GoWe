@@ -77,6 +77,31 @@ func TestStageRemoteInputs_ColocatesSecondaryFiles(t *testing.T) {
 	}
 }
 
+// The same secondary listed twice (two uploads of it) is linked once and both
+// entries point at the link.
+func TestStageRemoteInputs_DuplicateSecondary(t *testing.T) {
+	uploads := t.TempDir()
+	fasta := filepath.Join(uploads, "a", "ref.fasta")
+	fai1 := filepath.Join(uploads, "b", "ref.fasta.fai")
+	fai2 := filepath.Join(uploads, "c", "ref.fasta.fai")
+	writeFile(t, fasta, ">x\n")
+	writeFile(t, fai1, "x\n")
+	writeFile(t, fai2, "x\n")
+	primary := localFileObj(fasta)
+	s1, s2 := localFileObj(fai1), localFileObj(fai2)
+	primary["secondaryFiles"] = []any{s1, s2}
+
+	workDir := filepath.Join(t.TempDir(), "work")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := stageRemoteInputs(context.Background(), nil, map[string]any{"ref": primary}, workDir, logger); err != nil {
+		t.Fatalf("stageRemoteInputs: %v", err)
+	}
+	want := filepath.Join(filepath.Dir(primary["path"].(string)), "ref.fasta.fai")
+	if s1["path"] != want || s2["path"] != want {
+		t.Errorf("secondary paths = %v, %v; want both %s", s1["path"], s2["path"], want)
+	}
+}
+
 // Secondary files already beside the primary are left alone.
 func TestStageRemoteInputs_SecondaryAlreadyBeside(t *testing.T) {
 	dir := t.TempDir()

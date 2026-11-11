@@ -242,15 +242,17 @@ func colocateSecondaryFiles(obj map[string]any, secFiles []any, stagingDir strin
 	if err != nil {
 		return fmt.Errorf("create co-location dir: %w", err)
 	}
-	seen := map[string]bool{}
+	linked := map[string]bool{}
 	for _, e := range entries {
-		if seen[e.name] {
-			return fmt.Errorf("secondary file %q has the same basename as another file of the same input", e.name)
-		}
-		seen[e.name] = true
+		// The same secondary often appears twice (listed in the job and
+		// resolved from the tool's patterns, each uploaded separately): link
+		// the first and point the duplicates at it.
 		link := filepath.Join(dir, e.name)
-		if err := os.Symlink(e.path, link); err != nil {
-			return fmt.Errorf("link %s: %w", e.name, err)
+		if !linked[e.name] {
+			if err := os.Symlink(e.path, link); err != nil {
+				return fmt.Errorf("link %s: %w", e.name, err)
+			}
+			linked[e.name] = true
 		}
 		e.obj["path"] = link
 		e.obj["location"] = cwl.BuildLocation(cwl.SchemeFile, link)
