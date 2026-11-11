@@ -37,6 +37,8 @@ arguments:
   - position: 3
     valueFrom: REMOVE_DUPLICATES=true
   - position: 3
+    valueFrom: TAGGING_POLICY=All
+  - position: 3
     valueFrom: ASSUME_SORTED=true
   - position: 3
     valueFrom: DUPLICATE_SCORING_STRATEGY=SUM_OF_BASE_QUALITIES

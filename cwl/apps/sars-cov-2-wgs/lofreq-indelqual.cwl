@@ -4,7 +4,7 @@ id: lofreq-indelqual
 label: LoFreq indelqual - add Dindel indel qualities
 doc: |
   Galaxy IWC equivalent: lofreq_indelqual 2.1.5+galaxy1, strategy dindel.
-  Writes the BAM and its index (lofreq call needs the index).
+  Writes the BAM and its index; the index is for downstream users (lofreq call indexes its own copy).
 
 requirements:
   InlineJavascriptRequirement: {}

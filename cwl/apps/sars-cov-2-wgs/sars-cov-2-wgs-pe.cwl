@@ -54,6 +54,12 @@ outputs:
   final_bams:
     type: File[]
     outputSource: per_sample/final_bam
+  markdup_metrics:
+    type: File[]
+    outputSource: per_sample/markdup_metrics
+  mapped_reads_stats:
+    type: File[]
+    outputSource: per_sample/samtools_stats
   fastp_html_reports:
     type: File[]
     outputSource: per_sample/fastp_html

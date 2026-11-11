@@ -1,7 +1,7 @@
 # SARS-CoV-2 WGS paired-end variant calling (IWC port)
 
 CWL port of the Galaxy IWC workflow **"COVID-19: variation analysis on WGS PE data"**, release 0.2.7
-(MIT, author Wolfgang Maier;
+(MIT, author Wolfgang Maier; this folder keeps the MIT notice in [`LICENSE`](LICENSE);
 [iwc/workflows/sars-cov-2-variant-calling/sars-cov-2-pe-illumina-wgs-variant-calling](https://github.com/galaxyproject/iwc/tree/main/workflows/sars-cov-2-variant-calling/sars-cov-2-pe-illumina-wgs-variant-calling)).
 It is the first Galaxy-to-GoWe port, chosen to measure porting effort before the generic viral consensus workflow.
 
@@ -29,7 +29,8 @@ NC_045512.2 (snpEff uses its bundled NC_045512.2 database and chromosome names m
 
 Outputs: per sample `<name>.snpeff.vcf` (annotated; strand-biased records kept with FILTER `sb_fdr`),
 `<name>.lofreq.filtered.vcf`, `<name>.lofreq.vcf`, `<name>.indelqual.bam` (+ `.bai`), `<name>.fastp.html`,
-`<name>.snpeff.html`; plus `preprocessing_and_mapping_report.html` for all samples.
+`<name>.snpeff.html`, `<name>.markdup_metrics.txt` (Picard) and the samtools stats file; plus
+`preprocessing_and_mapping_report.html` for all samples.
 
 ## Validation against the IWC test
 
@@ -79,3 +80,5 @@ SIF needed). Digests at the time of the port:
 - Trimmed reads, the unfiltered BAM and intermediate BAMs are not workflow outputs (Galaxy keeps them in the
   history); only the final indelqual BAM is.
 - Inputs are a list of `{name, forward, reverse}` records instead of a Galaxy `list:paired` collection.
+- `samtools` and `lofreq viterbi` run with `--no-PG`, so BAM `@PG` header lines differ from Galaxy's; reads and
+  variant calls are unaffected.
