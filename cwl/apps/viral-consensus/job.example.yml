@@ -1,0 +1,15 @@
+# IWC test data: measles reference, GTF and primer scheme from the IWC repo test-data/, reads from
+# https://zenodo.org/records/16495208 (see README). Point the paths at local copies.
+reference: {class: File, location: /path/to/measles.fa}
+annotation_gtf: {class: File, location: /path/to/measles.gtf}
+samples:
+  - name: SRR30155677_region_filtered
+    forward: {class: File, location: /path/to/SRR30155677_region_filtered_R1.fq.gz}
+    reverse: {class: File, location: /path/to/SRR30155677_region_filtered_R2.fq.gz}
+  - name: SRR30155702_subsampled
+    forward: {class: File, location: /path/to/SRR30155702_subsampled_R1.fq.gz}
+    reverse: {class: File, location: /path/to/SRR30155702_subsampled_R2.fq.gz}
+# primer_scheme: {class: File, location: /path/to/measles_primer_scheme.bed}   # amplicon data only
+# min_freq: 0.25     # supporting read fraction to call a variant (0.05-0.25)
+# min_qual: 20
+threads: 4
