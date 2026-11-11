@@ -113,14 +113,18 @@ func TestHandleUploadFile_LocalBackend_SameNameConcurrent(t *testing.T) {
 	const n = 32
 	locations := make([]string, n)
 	errs := make([]string, n)
+	reqs := make([]*http.Request, n) // built here: the helper may call t.Fatalf
+	for i := range reqs {
+		body, contentType := buildMultipartUpload(t, "args.py", []byte(fmt.Sprintf("content %d\n", i)))
+		reqs[i] = httptest.NewRequest("POST", "/api/v1/files", body)
+		reqs[i].Header.Set("Content-Type", contentType)
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body, contentType := buildMultipartUpload(t, "args.py", []byte(fmt.Sprintf("content %d\n", i)))
-			req := httptest.NewRequest("POST", "/api/v1/files", body)
-			req.Header.Set("Content-Type", contentType)
+			req := reqs[i]
 			w := httptest.NewRecorder()
 			srv.ServeHTTP(w, req)
 			if w.Code != http.StatusCreated {

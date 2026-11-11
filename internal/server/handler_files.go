@@ -303,6 +303,7 @@ func (s *Server) uploadToLocal(ctx context.Context, tmpPath, filename string, cf
 		return "", fmt.Errorf("create dir: %w", err)
 	}
 	if err := os.Chmod(destDir, 0o755); err != nil { // MkdirTemp creates 0700
+		os.RemoveAll(destDir)
 		return "", fmt.Errorf("chmod dir: %w", err)
 	}
 
@@ -310,6 +311,7 @@ func (s *Server) uploadToLocal(ctx context.Context, tmpPath, filename string, cf
 
 	// Copy file
 	if err := staging.CopyFile(tmpPath, destPath); err != nil {
+		os.RemoveAll(destDir)
 		return "", fmt.Errorf("copy file: %w", err)
 	}
 
