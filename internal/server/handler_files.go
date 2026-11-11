@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -276,9 +278,20 @@ func (s *Server) uploadToS3(ctx context.Context, tmpPath, filename string, cfg *
 		return "", fmt.Errorf("create s3 stager: %w", err)
 	}
 
-	// Use timestamp + filename as key
-	taskID := time.Now().UTC().Format("20060102-150405")
-	location, err := stager.StageOut(ctx, tmpPath, taskID, staging.StageOptions{})
+	// Key the object <prefix><timestamp>-<random>/<filename>: unique per upload
+	// and ending in the original name, which CWL File.basename is derived from
+	// (#349). Without RelPath the stager would name it after the temp file.
+	// A prefix containing {taskID} already carries the unique part.
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", fmt.Errorf("upload id: %w", err)
+	}
+	uploadID := time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(rnd[:])
+	relPath := filepath.Base(filename)
+	if !strings.Contains(cfg.S3.Prefix, "{taskID}") {
+		relPath = uploadID + "/" + relPath
+	}
+	location, err := stager.StageOut(ctx, tmpPath, uploadID, staging.StageOptions{RelPath: relPath})
 	if err != nil {
 		return "", fmt.Errorf("s3 upload: %w", err)
 	}
