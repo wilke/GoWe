@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.0](https://github.com/wilke/GoWe/compare/v0.27.0...v0.28.0) (2026-11-11)
+
+
+### Features
+
+* **parser:** warn about undeclared, unused step inputs ([#347](https://github.com/wilke/GoWe/issues/347)) ([d698463](https://github.com/wilke/GoWe/commit/d698463476969ff733b7d293e6332fdc39038fd9))
+
+
+### Bug Fixes
+
+* **parser:** key external tools by file name and print validation details ([#346](https://github.com/wilke/GoWe/issues/346)) ([eb0610b](https://github.com/wilke/GoWe/commit/eb0610beeae2146517cfb1e6222c04bf775dd91d))
+
 ## [0.27.0](https://github.com/wilke/GoWe/compare/v0.26.1...v0.27.0) (2026-10-22)
 
 
