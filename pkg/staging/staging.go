@@ -394,7 +394,9 @@ func ResolveSymlinks(path string) string {
 }
 
 // CollectInputMounts collects input files that need to be mounted in containers.
-// Returns a map of hostPath -> containerPath.
+// Returns a map of containerPath -> hostPath, keyed by container path so one
+// host file can be mounted at several paths (e.g. in place for one input and
+// co-located with secondaryFiles for another).
 // Host paths have symlinks resolved for Docker mounting.
 // Container paths use the original path so commands work as expected.
 func CollectInputMounts(inputs map[string]any) map[string]string {
@@ -412,8 +414,7 @@ func collectInputMountsValue(v any, mounts map[string]string) {
 				if path, ok := val["path"].(string); ok && filepath.IsAbs(path) {
 					// Resolve symlinks for the host mount source,
 					// but use original path as container target so commands work.
-					resolved := ResolveSymlinks(path)
-					mounts[resolved] = path
+					mounts[path] = ResolveSymlinks(path)
 				}
 				// Also collect secondary files.
 				if secFiles, ok := val["secondaryFiles"].([]any); ok {

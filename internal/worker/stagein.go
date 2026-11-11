@@ -184,9 +184,87 @@ func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID 
 				}
 			}
 		}
+		if stagingDir != "" {
+			if err := colocateSecondaryFiles(obj, secFiles, stagingDir); err != nil {
+				return fmt.Errorf("%s: %w", inputID, err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// colocateSecondaryFiles makes a File's secondaryFiles sit beside it, as CWL
+// requires. Local inputs are used in place, so a primary and its secondaries
+// uploaded separately live in different folders (e.g. ref.fasta and
+// ref.fasta.fai in two upload folders). When any secondary is not in the
+// primary's folder under its basename, link the primary and all secondaries
+// into one fresh folder under stagingDir and point their paths there. Container
+// runtimes bind-mount each link target read-only at the link path; host
+// execution follows the links.
+func colocateSecondaryFiles(obj map[string]any, secFiles []any, stagingDir string) error {
+	primaryPath, _ := obj["path"].(string)
+	if primaryPath == "" || !filepath.IsAbs(primaryPath) {
+		return nil
+	}
+	primaryDir := filepath.Dir(primaryPath)
+
+	type entry struct {
+		obj  map[string]any
+		path string
+		name string
+	}
+	entries := []entry{{obj, primaryPath, cwlBasename(obj, primaryPath)}}
+	needed := false
+	for _, sf := range secFiles {
+		sfMap, ok := sf.(map[string]any)
+		if !ok {
+			continue
+		}
+		p, _ := sfMap["path"].(string)
+		if p == "" || !filepath.IsAbs(p) {
+			continue
+		}
+		name := cwlBasename(sfMap, p)
+		if filepath.Join(primaryDir, name) != p {
+			needed = true
+		}
+		entries = append(entries, entry{sfMap, p, name})
+	}
+	if !needed {
+		return nil
+	}
+
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return fmt.Errorf("create staging dir: %w", err)
+	}
+	dir, err := os.MkdirTemp(stagingDir, "stg")
+	if err != nil {
+		return fmt.Errorf("create co-location dir: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if seen[e.name] {
+			return fmt.Errorf("secondary file %q has the same basename as another file of the same input", e.name)
+		}
+		seen[e.name] = true
+		link := filepath.Join(dir, e.name)
+		if err := os.Symlink(e.path, link); err != nil {
+			return fmt.Errorf("link %s: %w", e.name, err)
+		}
+		e.obj["path"] = link
+		e.obj["location"] = cwl.BuildLocation(cwl.SchemeFile, link)
+		e.obj["dirname"] = dir
+	}
+	return nil
+}
+
+// cwlBasename is the File's CWL basename, falling back to its path's base.
+func cwlBasename(obj map[string]any, path string) string {
+	if b, _ := obj["basename"].(string); b != "" && b == filepath.Base(b) {
+		return b
+	}
+	return filepath.Base(path)
 }
 
 // reconstructDirectoryFromListing creates a directory at dirPath and populates it
