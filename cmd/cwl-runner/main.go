@@ -15,6 +15,7 @@ import (
 
 	"github.com/me/gowe/internal/cwlrunner"
 	"github.com/me/gowe/internal/validate"
+	"github.com/me/gowe/pkg/model"
 	"github.com/spf13/cobra"
 )
 
@@ -122,6 +123,9 @@ Examples:
 	rootCmd.AddCommand(printCmdCmd())
 
 	if err := rootCmd.Execute(); err != nil {
+		// Cobra has printed "Error: <code>: <message>"; add the field
+		// details a VALIDATION_ERROR carries (#282).
+		model.WriteErrorDetails(os.Stderr, err)
 		os.Exit(1)
 	}
 }

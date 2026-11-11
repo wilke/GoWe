@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/me/gowe/pkg/cwl"
@@ -42,6 +43,13 @@ func (v *Validator) Validate(graph *cwl.GraphDocument) *model.APIError {
 	if len(errs) == 0 {
 		return nil
 	}
+	// The checks walk Go maps; sort so the reported order is stable (#282).
+	sort.SliceStable(errs, func(i, j int) bool {
+		if errs[i].Field != errs[j].Field {
+			return errs[i].Field < errs[j].Field
+		}
+		return errs[i].Message < errs[j].Message
+	})
 	return model.NewValidationError("CWL validation failed", errs...)
 }
 
