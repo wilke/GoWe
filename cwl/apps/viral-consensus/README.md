@@ -23,7 +23,36 @@ and the Galaxy wrappers in tools-iuc / tools-devteam.
 
 This app is a derivative of an AGPL-3.0-or-later workflow and is distributed under the same license: see
 [`LICENSE`](LICENSE) in this folder. It applies to the files in `cwl/apps/viral-consensus/` only, not to the rest of
-GoWe. The embedded `ivar_variants_to_vcf.py` comes from galaxyproject/tools-iuc (MIT).
+GoWe.
+
+Original Galaxy workflow by Peter van Heusden (ORCID 0000-0001-6553-5274) and Wolfgang Maier
+(ORCID 0000-0002-9464-6640), Galaxy IWC; ported to CWL for GoWe in November 2026 (modified: see the differences below).
+
+The embedded `ivar_variants_to_vcf.py` comes unchanged from galaxyproject/tools-iuc and is under its MIT license:
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2014 galaxy-iuc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Run
 
@@ -81,7 +110,7 @@ BioContainers images matching the Galaxy tool versions, pulled as `docker://`. D
 
 ## Differences from the Galaxy workflow
 
-- 28 Galaxy steps become 16 CWL tools: parameter mapping, pick-value, collection flattening and the sed/cat/collapse
+- 23 Galaxy tool steps become 16 CWL tools: parameter mapping, pick-value, collection flattening and the sed/cat/collapse
   text steps are CWL features (`when`, `pickValue`, `valueFrom`) or folded into neighbouring tools.
 - The optional primer scheme maps to a CWL optional input; `ivar trim` runs only `when` it is given, and
   `pickValue: first_non_null` chooses the trimmed or the realigned BAM.
@@ -89,5 +118,4 @@ BioContainers images matching the Galaxy tool versions, pulled as `docker://`. D
   unchanged in `ivar-variants-to-vcf.cwl`.
 - QualiMap is a required step; the IWC workflow tolerates a failed QualiMap run ("Filter failed datasets").
 - The bwa image has no samtools, so mapping writes SAM and `samtools-sort-filter.cwl` does the sort.
-- Tool `id`s match file names: GoWe's validator rejects a workflow whose tool ids differ from their file names
-  (GoWe#281), without saying why (GoWe#282).
+- Sample names are sanitized like Galaxy does (characters other than letters, digits, `_` and `-` become `_`).

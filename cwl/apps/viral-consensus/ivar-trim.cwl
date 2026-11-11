@@ -37,10 +37,10 @@ inputs:
     secondaryFiles: [.bai]
     inputBinding: {position: 2}
   ivar_bed:
-    type: File?
+    type: File
     inputBinding: {position: 3}
   amplicon_info:
-    type: File?
+    type: File
     inputBinding: {position: 4}
   threads:
     type: int

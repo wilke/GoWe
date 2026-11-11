@@ -7,6 +7,8 @@ doc: |
   construction from paired end short read data of non-segmented viral
   genomes" (release 0.4, AGPL-3.0-or-later; github.com/galaxyproject/iwc,
   workflows/virology/generic-non-segmented-viral-variant-calling).
+  Original Galaxy workflow by Peter van Heusden and Wolfgang Maier (IWC);
+  ported to CWL for GoWe, 2026-11.
 
   For batches of Illumina paired-end sequenced viruses with a simple,
   stable genome (e.g. morbilliviruses such as measles): reads are trimmed

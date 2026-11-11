@@ -7,7 +7,8 @@ doc: |
   MAPQ/proper-pair filter -> LoFreq viterbi -> [iVar trim when a primer
   scheme is given] -> iVar variants (VCF, PASS only) -> SnpEff ->
   SnpSift table, and iVar consensus. samtools stats (sorted BAM) and
-  QualiMap (filtered BAM) feed the MultiQC report.
+  QualiMap (filtered BAM) feed the MultiQC report. Characters other than
+  letters, digits, _ and - in a sample name become _, as in Galaxy.
 
 requirements:
   InlineJavascriptRequirement: {}
@@ -67,7 +68,7 @@ steps:
   fastp:
     run: fastp.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       forward: {source: sample, valueFrom: $(self.forward)}
       reverse: {source: sample, valueFrom: $(self.reverse)}
       threads: threads
@@ -76,7 +77,7 @@ steps:
   map:
     run: bwa-mem.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       reference: reference
       forward: fastp/trimmed_forward
       reverse: fastp/trimmed_reverse
@@ -86,7 +87,7 @@ steps:
   sort_filter:
     run: samtools-sort-filter.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       alignments: map/sam
       threads: threads
     out: [sorted_bam, filtered_bam]
@@ -94,7 +95,7 @@ steps:
   stats:
     run: samtools-stats.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       reference: reference
       bam: sort_filter/sorted_bam
     out: [stats]
@@ -102,7 +103,7 @@ steps:
   qualimap:
     run: qualimap-bamqc.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       bam: sort_filter/filtered_bam
       threads: threads
     out: [report_dir]
@@ -110,7 +111,7 @@ steps:
   realign:
     run: lofreq-viterbi.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       reference: reference
       bam: sort_filter/filtered_bam
       threads: threads
@@ -120,7 +121,7 @@ steps:
     run: ivar-trim.cwl
     when: $(inputs.ivar_bed !== null)
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       bam: realign/realigned_bam
       ivar_bed: ivar_bed
       amplicon_info: amplicon_info
@@ -130,7 +131,7 @@ steps:
   variants:
     run: ivar-variants.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       reference: reference
       bam:
         source: [trim/trimmed_bam, realign/realigned_bam]
@@ -142,14 +143,14 @@ steps:
   to_vcf:
     run: ivar-variants-to-vcf.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       variants_tsv: variants/variants_tsv
     out: [vcf]
 
   snpeff:
     run: snpeff-eff.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       snpeff_db: snpeff_db
       vcf: to_vcf/vcf
     out: [annotated_vcf, stats_html]
@@ -157,14 +158,14 @@ steps:
   table:
     run: snpsift-extract.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       vcf: snpeff/annotated_vcf
     out: [table]
 
   consensus:
     run: ivar-consensus.cwl
     in:
-      sample_name: {source: sample, valueFrom: $(self.name)}
+      sample_name: {source: sample, valueFrom: '$(self.name.replace(/[^\w-]/g, "_"))'}
       bam:
         source: [trim/trimmed_bam, realign/realigned_bam]
         pickValue: first_non_null
