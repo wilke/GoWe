@@ -207,3 +207,44 @@ func TestWorkerHeartbeat_PreservesHostInventory(t *testing.T) {
 		t.Errorf("inventory after heartbeat = %v, want %v", got, fullTestInventory)
 	}
 }
+
+// TestRegisterWorker_InventoryBounds: out-of-range capacity is treated as not
+// reported and unusable GPU entries are dropped, so one buggy worker cannot
+// poison per-host sums or labels built on these values.
+func TestRegisterWorker_InventoryBounds(t *testing.T) {
+	srv, st := testServerWithStore()
+	id := registerWorkerID(t, srv, registerBody(t, map[string]any{
+		"host_cpus":   maxWorkerHostCPUs + 1,
+		"host_mem_mb": int64(maxWorkerHostMemMB) + 1,
+		"slots":       maxWorkerSlots + 1,
+		"gpus": []map[string]any{
+			{"index": 0, "uuid": "GPU-ok\n\x1b[31m", "name": "H200\tNVL", "mem_total_mb": 1024},
+			{"index": 1, "uuid": "GPU-negmem", "mem_total_mb": -5},
+			{"index": maxWorkerGPUIndex + 1, "uuid": "GPU-bigindex", "mem_total_mb": 1},
+			{"index": 2, "uuid": "\n\t", "mem_total_mb": 1},
+		},
+	}))
+
+	stored, err := st.GetWorker(context.Background(), id)
+	if err != nil || stored == nil {
+		t.Fatalf("GetWorker: %v %v", stored, err)
+	}
+	if stored.HostCPUs != nil || stored.HostMemMB != nil || stored.Slots != nil {
+		t.Errorf("out-of-range capacity stored: cpus=%v mem=%v slots=%v, want all nil",
+			stored.HostCPUs, stored.HostMemMB, stored.Slots)
+	}
+	if len(stored.GPUs) != 1 {
+		t.Fatalf("stored %d GPUs, want only the valid one: %+v", len(stored.GPUs), stored.GPUs)
+	}
+	if g := stored.GPUs[0]; g.UUID != "GPU-ok[31m" || g.Name != "H200NVL" {
+		t.Errorf("GPU strings not reduced to printable ASCII: uuid=%q name=%q", g.UUID, g.Name)
+	}
+}
+
+func TestRegisterWorker_BodyTooLarge(t *testing.T) {
+	srv, _ := testServerWithStore()
+	body := registerBody(t, map[string]any{"version": strings.Repeat("x", maxWorkerRegisterBody)})
+	if w, _ := doPost(t, srv, "/api/v1/workers/", body); w.Code != http.StatusBadRequest {
+		t.Fatalf("oversized body: status=%d, want 400", w.Code)
+	}
+}

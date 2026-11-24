@@ -3,6 +3,7 @@ package worker
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -93,5 +94,64 @@ func TestResolveHostID(t *testing.T) {
 				t.Errorf("host id = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseCPUList(t *testing.T) {
+	tests := []struct {
+		list string
+		want int
+	}{
+		{"0-383\n", 384},
+		{"0", 1},
+		{"0-3,8-11,16", 9},
+		{" 0-1 , 4 ", 3},
+		{"", 0},
+		{"abc", 0},
+		{"3-1", 0},
+		{"0-", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.list, func(t *testing.T) {
+			if got := parseCPUList(tt.list); got != tt.want {
+				t.Errorf("parseCPUList(%q) = %d, want %d", tt.list, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHostCPUCount(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "online")
+	if err := os.WriteFile(good, []byte("0-15\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "bad")
+	if err := os.WriteFile(bad, []byte("junk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostCPUCount(good, 4); got != 16 {
+		t.Errorf("online file: got %d, want 16", got)
+	}
+	if got := hostCPUCount(bad, 4); got != 4 {
+		t.Errorf("unparsable file: got %d, want fallback 4", got)
+	}
+	if got := hostCPUCount(filepath.Join(dir, "missing"), 4); got != 4 {
+		t.Errorf("missing file: got %d, want fallback 4", got)
+	}
+}
+
+func TestDeriveHostID_SkipsUninitializedMachineID(t *testing.T) {
+	dir := t.TempDir()
+	machine := filepath.Join(dir, "machine-id")
+	boot := filepath.Join(dir, "boot_id")
+	if err := os.WriteFile(machine, []byte("uninitialized\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(boot, []byte("boot-1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := deriveHostID(machine, boot, "h"), hashHostID("boot-1234"); got != want {
+		t.Errorf("deriveHostID = %q, want the boot_id hash %q", got, want)
 	}
 }

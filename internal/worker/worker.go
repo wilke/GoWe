@@ -226,7 +226,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	if cfg.GPU.Enabled {
 		gpuInventory = collectGPUInventory(context.Background(), logger, cfg.GPU.DeviceID)
 	}
-	hostCPUs, hostMemMB := runtime.NumCPU(), sysTotalMemMB()
+	hostCPUs, hostMemMB := hostCPUCount("/sys/devices/system/cpu/online", runtime.NumCPU()), sysTotalMemMB()
 	logger.Info("worker host inventory",
 		"host_id", hostID,
 		"host_cpus", hostCPUs,

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/me/gowe/pkg/model"
@@ -42,7 +43,9 @@ func deriveHostID(machineIDFile, bootIDFile, hostname string) string {
 		if err != nil {
 			continue
 		}
-		if s := strings.TrimSpace(string(data)); s != "" {
+		// systemd writes the literal "uninitialized" until first boot
+		// completes; it identifies nothing.
+		if s := strings.TrimSpace(string(data)); s != "" && s != "uninitialized" {
 			return hashHostID(s)
 		}
 	}
@@ -56,4 +59,41 @@ func deriveHostID(machineIDFile, bootIDFile, hostname string) string {
 func hashHostID(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:hostIDHexLen]
+}
+
+// hostCPUCount returns the number of online CPUs of the host from the kernel's
+// CPU list file (/sys/devices/system/cpu/online), falling back to fallback
+// when the file is missing or unparsable. runtime.NumCPU alone is not the host
+// total: it honours the process's affinity mask (taskset, cpusets), so two
+// workers on one host could report different values.
+func hostCPUCount(onlineFile string, fallback int) int {
+	data, err := os.ReadFile(onlineFile)
+	if err != nil {
+		return fallback
+	}
+	if n := parseCPUList(string(data)); n > 0 {
+		return n
+	}
+	return fallback
+}
+
+// parseCPUList counts the CPUs in a kernel CPU list such as "0-383" or
+// "0-3,8-11,16". Returns 0 if the list is empty or malformed.
+func parseCPUList(list string) int {
+	total := 0
+	for _, part := range strings.Split(strings.TrimSpace(list), ",") {
+		lo, hi, isRange := strings.Cut(strings.TrimSpace(part), "-")
+		first, err := strconv.Atoi(lo)
+		if err != nil || first < 0 {
+			return 0
+		}
+		last := first
+		if isRange {
+			if last, err = strconv.Atoi(hi); err != nil || last < first {
+				return 0
+			}
+		}
+		total += last - first + 1
+	}
+	return total
 }

@@ -50,6 +50,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		CgroupMemory *bool           `json:"cgroup_memory"`
 		GPUs         []model.GPUInfo `json:"gpus"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkerRegisterBody)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
 			Code:    model.ErrValidation,
@@ -128,13 +129,15 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	// Host identity and inventory (#323); non-positive numbers mean "not
 	// reported", like the capacity above.
 	worker.HostID = req.HostID
-	if req.HostCPUs != nil && *req.HostCPUs > 0 {
+	// Values outside a sane range are treated as not reported too, so one
+	// buggy worker cannot poison per-host sums built on them later.
+	if req.HostCPUs != nil && *req.HostCPUs > 0 && *req.HostCPUs <= maxWorkerHostCPUs {
 		worker.HostCPUs = req.HostCPUs
 	}
-	if req.HostMemMB != nil && *req.HostMemMB > 0 {
+	if req.HostMemMB != nil && *req.HostMemMB > 0 && *req.HostMemMB <= maxWorkerHostMemMB {
 		worker.HostMemMB = req.HostMemMB
 	}
-	if req.Slots != nil && *req.Slots > 0 {
+	if req.Slots != nil && *req.Slots > 0 && *req.Slots <= maxWorkerSlots {
 		worker.Slots = req.Slots
 	}
 	worker.CgroupCPU = req.CgroupCPU
@@ -176,7 +179,15 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 // never rejected: GPU metadata must not fail a registration.
 const (
 	maxWorkerGPUs     = 64
-	maxGPUFieldLength = 128
+	maxWorkerGPUIndex = 1023
+	// Upper bounds for self-reported host capacity; anything above is treated
+	// as not reported.
+	maxWorkerHostCPUs  = 16384
+	maxWorkerHostMemMB = 1 << 30 // 1 PiB
+	maxWorkerSlots     = 1024
+	// maxWorkerRegisterBody caps the registration request body.
+	maxWorkerRegisterBody = 1 << 20
+	maxGPUFieldLength     = 128
 )
 
 // sanitizeWorkerGPUs drops entries with a negative index or an empty uuid,
@@ -186,7 +197,10 @@ const (
 func sanitizeWorkerGPUs(in []model.GPUInfo) (out []model.GPUInfo, invalid, overflow int) {
 	out = make([]model.GPUInfo, 0, min(len(in), maxWorkerGPUs))
 	for _, g := range in {
-		if g.Index < 0 || g.UUID == "" {
+		g.UUID = printableASCII(g.UUID)
+		g.Name = printableASCII(g.Name)
+		if g.Index < 0 || g.Index > maxWorkerGPUIndex || g.UUID == "" ||
+			g.MemTotalMB < 0 || g.MemTotalMB > maxWorkerHostMemMB {
 			invalid++
 			continue
 		}
@@ -199,6 +213,17 @@ func sanitizeWorkerGPUs(in []model.GPUInfo) (out []model.GPUInfo, invalid, overf
 		out = append(out, g)
 	}
 	return out, invalid, overflow
+}
+
+// printableASCII drops every byte of s outside printable ASCII, so worker-
+// supplied GPU strings are safe to show in logs, the UI and metric labels.
+func printableASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // truncateUTF8 cuts s to at most n bytes without splitting a UTF-8 sequence.
