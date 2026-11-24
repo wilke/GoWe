@@ -764,8 +764,8 @@ func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task
 		return true, w.reportCancelled(runCtx, task)
 	case runCtx.Err() != nil:
 		// Context cancelled but not an explicit task cancel → the worker is
-		// shutting down. Leave the task non-terminal so the server reaper requeues
-		// it rather than marking it FAILED.
+		// shutting down. Leave the task non-terminal so deregistration (or the
+		// server reaper) requeues it rather than marking it FAILED.
 		w.logger.Info("worker shutting down mid-task, leaving for requeue", "task_id", task.ID)
 		return true, runCtx.Err()
 	default:
