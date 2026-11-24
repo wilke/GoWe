@@ -28,8 +28,10 @@ import (
 //
 // cmd.WaitDelay is deliberately left unset: it would also apply to commands
 // that exit normally and fail those that leave a background process holding
-// stdout/stderr. A process that left the group (setsid) and holds those pipes
-// can therefore still block Wait, as before.
+// stdout/stderr. Two cases can therefore still block Wait, as before: a
+// process that left the group (setsid) and holds those pipes, and a group
+// member that holds them after the direct child has already exited (os/exec
+// stops watching the context once the child is reaped, so Cancel never runs).
 func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -55,7 +57,12 @@ func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()
 		pid := cmd.Process.Pid
 		cancelled.Store(true)
 		if err := signalProcessGroup(pid, syscall.SIGTERM); err != nil {
-			return err
+			if errors.Is(err, os.ErrProcessDone) {
+				return err
+			}
+			// The group could not be signalled (e.g. EPERM): fall back to
+			// killing the direct child so Wait cannot block on it.
+			return cmd.Process.Kill()
 		}
 		go func() {
 			timer := time.NewTimer(grace)

@@ -43,8 +43,10 @@ func TestSetupProcessGroupCancel_KillsWholeGroup(t *testing.T) {
 		{
 			// The shell dies on SIGTERM and the survivor holds no pipe, so
 			// Wait returns at once; only release's final SIGKILL removes it.
+			// The PID is printed after the trap is set, so the cancel cannot
+			// arrive before SIGTERM is ignored.
 			name:   "release kills a SIGTERM-ignoring member left behind",
-			script: `(trap "" TERM; exec sleep 300) >/dev/null 2>&1 & echo $!; wait`,
+			script: `(trap "" TERM; sh -c 'echo $PPID'; exec sleep 300 >/dev/null 2>&1) & wait`,
 			grace:  processGroupGrace,
 		},
 	}

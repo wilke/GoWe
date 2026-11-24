@@ -284,7 +284,14 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 
 	// Run command and capture exit code.
 	var exitCode int
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	release()
+	if ctx.Err() != nil {
+		// Cancelled or timed out: never a success, whatever exit code the tool
+		// chose when it caught SIGTERM.
+		return nil, fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
+	if err := runErr; err != nil {
 		exitErr, ok := err.(*exec.ExitError)
 		if ok {
 			exitCode = exitErr.ExitCode()
@@ -621,7 +628,14 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 
 	// Run Docker command and capture exit code.
 	var exitCode int
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	release()
+	if ctx.Err() != nil {
+		// Cancelled or timed out: never a success, whatever exit code the tool
+		// chose when it caught SIGTERM.
+		return nil, fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
+	if err := runErr; err != nil {
 		exitErr, ok := err.(*exec.ExitError)
 		if ok {
 			exitCode = exitErr.ExitCode()
@@ -899,7 +913,14 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 
 	// Run Apptainer command and capture exit code.
 	var exitCode int
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	release()
+	if ctx.Err() != nil {
+		// Cancelled or timed out: never a success, whatever exit code the tool
+		// chose when it caught SIGTERM.
+		return nil, fmt.Errorf("command cancelled: %w", ctx.Err())
+	}
+	if err := runErr; err != nil {
 		exitErr, ok := err.(*exec.ExitError)
 		if ok {
 			exitCode = exitErr.ExitCode()
