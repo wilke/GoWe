@@ -678,7 +678,8 @@ Response (201):
 
 #### `GET /api/v1/workers`
 
-List all registered workers with state, group, runtime, GPU, and dataset info.
+List all registered workers with state, group, runtime, GPU, and dataset info, plus the latest heartbeat usage
+(`usage`, `usage_at`; see below).
 
 ```bash
 curl http://localhost:8080/api/v1/workers
@@ -692,6 +693,30 @@ Worker keep-alive. Updates `last_seen`. Workers are marked offline after 30s wit
 curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/heartbeat \
   -H "X-Worker-Key: secret-key-1"
 ```
+
+The optional JSON body lists the tasks the worker is running and, from #323 on, its latest usage sample (taken every
+15 s; `gpu_usage` only for a `--gpu` worker with a registered GPU inventory):
+
+```json
+{
+  "running_tasks": ["task_456"],
+  "host": {
+    "load1": 12.5, "load5": 10.1,
+    "mem_total_mb": 1547000, "mem_available_mb": 900000,
+    "psi_cpu_some_avg10": 1.23, "psi_mem_some_avg10": 0.0,
+    "sampled_at": "2026-11-24T10:00:00Z"
+  },
+  "gpu_usage": [
+    {"uuid": "GPU-1a2b3c4d-0000-1111-2222-333344445555", "mem_used_mb": 40960, "util_pct": 87}
+  ]
+}
+```
+
+Every field is optional. The body is capped at 64 KiB; an oversized or malformed body is answered with 400 (`last_seen`
+is still updated). Usage is telemetry and never fails a heartbeat: non-finite or negative numbers are dropped,
+`util_pct` is clamped to 100, and `gpu_usage` entries for GPUs not in the worker's registered inventory are dropped.
+The sanitised sample is stored and shown on the worker record as `usage` (`{"host": {...}, "gpus": [...]}`) with
+`usage_at`, the server's receive time; a heartbeat without usage keeps the previous sample.
 
 #### `GET /api/v1/workers/{id}/work`
 

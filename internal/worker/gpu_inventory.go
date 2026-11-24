@@ -23,7 +23,7 @@ var nvidiaSMIQueryArgs = []string{"--query-gpu=index,uuid,name,memory.total", "-
 // deviceIDs (--gpu-id). It never fails: problems are logged at WARN and an
 // empty, non-nil list is returned, so GPU metadata cannot block registration.
 func collectGPUInventory(ctx context.Context, logger *slog.Logger, deviceIDs string) []model.GPUInfo {
-	out, err := runNvidiaSMI(ctx)
+	out, err := runNvidiaSMI(ctx, nvidiaSMIQueryArgs...)
 	if err != nil {
 		logger.Warn("GPU inventory unavailable, registering without it", "error", err)
 		return []model.GPUInfo{}
@@ -35,11 +35,12 @@ func collectGPUInventory(ctx context.Context, logger *slog.Logger, deviceIDs str
 	return filterGPUsByID(gpus, deviceIDs)
 }
 
-// runNvidiaSMI runs the nvidia-smi inventory query with gpuInventoryTimeout.
-func runNvidiaSMI(ctx context.Context) ([]byte, error) {
+// runNvidiaSMI runs nvidia-smi with args (the inventory or the usage query)
+// and gpuInventoryTimeout.
+func runNvidiaSMI(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, gpuInventoryTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "nvidia-smi", nvidiaSMIQueryArgs...)
+	cmd := exec.CommandContext(ctx, "nvidia-smi", args...)
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {

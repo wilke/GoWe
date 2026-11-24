@@ -363,6 +363,19 @@ var alterStatements = []struct {
 		column:   "gpus",
 		alterSQL: "ALTER TABLE workers ADD COLUMN gpus TEXT",
 	},
+	// Live usage from the latest heartbeat that carried it (#323): a JSON
+	// object {"host":{...},"gpus":[...]} and the server's receive time.
+	// NULL = never reported.
+	{
+		table:    "workers",
+		column:   "host_usage",
+		alterSQL: "ALTER TABLE workers ADD COLUMN host_usage TEXT",
+	},
+	{
+		table:    "workers",
+		column:   "host_usage_at",
+		alterSQL: "ALTER TABLE workers ADD COLUMN host_usage_at TEXT",
+	},
 	// Output destination for workspace result uploads
 	{
 		table:    "submissions",

@@ -2473,9 +2473,14 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		return err
 	}
 
+	usageJSON, err := nullableUsageJSON(w.Usage)
+	if err != nil {
+		return err
+	}
+
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO workers (`+workerColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
@@ -2483,13 +2488,14 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
 		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
 		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON,
+		usageJSON, formatTimePtr(w.UsageAt),
 	)
 	return err
 }
 
 // workerColumns is the single column list for workers reads/inserts; its order
 // must match scanWorker and the CreateWorker argument list.
-const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus"
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2513,11 +2519,12 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 	var gpuEnabled int
 	var maxCPUs, maxMem sql.NullInt64
 	var hostCPUs, hostMem, slots, cgroupCPU, cgroupMem sql.NullInt64
-	var gpusJSON *string
+	var gpusJSON, usageJSON, usageAt *string
 	if err := sc.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
 		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
 		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem,
-		&w.HostID, &hostCPUs, &hostMem, &slots, &cgroupCPU, &cgroupMem, &gpusJSON); err != nil {
+		&w.HostID, &hostCPUs, &hostMem, &slots, &cgroupCPU, &cgroupMem, &gpusJSON,
+		&usageJSON, &usageAt); err != nil {
 		return nil, err
 	}
 	w.State = model.WorkerState(state)
@@ -2564,6 +2571,19 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 			return nil, &corruptWorkerRowError{w.ID, err}
 		}
 	}
+	// NULL = usage never reported (#323). Usage is telemetry: an undecodable
+	// value is dropped rather than making the row (and so every heartbeat of
+	// the worker) fail.
+	if usageJSON != nil {
+		var u model.WorkerUsage
+		if uerr := unmarshalJSON(*usageJSON, &u, "host_usage"); uerr != nil {
+			slog.Warn("ignoring corrupt worker usage", "id", w.ID, "error", uerr)
+		} else if at, terr := scanTimePtr(usageAt); terr != nil {
+			slog.Warn("ignoring corrupt worker usage time", "id", w.ID, "error", terr)
+		} else {
+			w.Usage, w.UsageAt = &u, at
+		}
+	}
 	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
 		return nil, &corruptWorkerRowError{w.ID, err}
 	}
@@ -2601,6 +2621,20 @@ func nullableGPUsJSON(gpus []model.GPUInfo) (*string, error) {
 	b, err := json.Marshal(gpus)
 	if err != nil {
 		return nil, fmt.Errorf("marshal gpus: %w", err)
+	}
+	s := string(b)
+	return &s, nil
+}
+
+// nullableUsageJSON maps nil usage (never reported) to SQL NULL and any
+// reported usage to its JSON encoding.
+func nullableUsageJSON(u *model.WorkerUsage) (*string, error) {
+	if u == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(u)
+	if err != nil {
+		return nil, fmt.Errorf("marshal host usage: %w", err)
 	}
 	s := string(b)
 	return &s, nil
@@ -2660,6 +2694,38 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("worker %s not found", w.ID)
+	}
+	return nil
+}
+
+// TouchWorker records a heartbeat in a single UPDATE: state and last_seen,
+// plus host_usage and host_usage_at (= lastSeen) only when usage is non-nil,
+// so a heartbeat without usage keeps the stored one. Unlike UpdateWorker it
+// never writes current_task, so it cannot clobber a concurrent CheckoutTask.
+func (s *SQLiteStore) TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, usage *model.WorkerUsage) error {
+	s.logger.Debug("sql", "op", "touch", "table", "workers", "id", id, "usage", usage != nil)
+
+	ts := lastSeen.Format(time.RFC3339Nano)
+	var result sql.Result
+	var err error
+	if usage == nil {
+		result, err = s.db.ExecContext(ctx,
+			`UPDATE workers SET state=?, last_seen=? WHERE id=?`, string(state), ts, id)
+	} else {
+		usageJSON, merr := nullableUsageJSON(usage)
+		if merr != nil {
+			return merr
+		}
+		result, err = s.db.ExecContext(ctx,
+			`UPDATE workers SET state=?, last_seen=?, host_usage=?, host_usage_at=? WHERE id=?`,
+			string(state), ts, usageJSON, ts, id)
+	}
+	if err != nil {
+		return fmt.Errorf("touch worker: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("worker %s not found", id)
 	}
 	return nil
 }

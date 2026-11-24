@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -188,6 +190,8 @@ const (
 	// maxWorkerRegisterBody caps the registration request body.
 	maxWorkerRegisterBody = 1 << 20
 	maxGPUFieldLength     = 128
+	// maxWorkerHeartbeatBody caps the heartbeat request body (#323).
+	maxWorkerHeartbeatBody = 64 << 10
 )
 
 // sanitizeWorkerGPUs drops entries with a negative index or an empty uuid,
@@ -237,7 +241,8 @@ func truncateUTF8(s string, n int) string {
 	return s[:n]
 }
 
-// handleWorkerHeartbeat updates a worker's last_seen timestamp.
+// handleWorkerHeartbeat updates a worker's last_seen timestamp and, when the
+// body carries it, its live usage (#323).
 // PUT /api/v1/workers/{id}/heartbeat
 func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
@@ -254,24 +259,38 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("worker back online after heartbeat", "id", worker.ID, "name", worker.Name)
 	}
 
+	// Parse the optional heartbeat body. An empty/missing body is valid and means
+	// the worker is reporting no in-flight tasks (backward compatible). An
+	// oversized or malformed body still counts as a heartbeat (last_seen is
+	// updated, as before) and is answered with 400 after the update.
+	var req heartbeatBody
+	var bodyErr error
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxWorkerHeartbeatBody)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			bodyErr = err
+		}
+	}
+	var usage *model.WorkerUsage
+	if bodyErr == nil {
+		usage = s.heartbeatUsage(worker, req)
+	}
+
+	// One targeted UPDATE of state, last_seen and (when sent) usage: a
+	// full-row UpdateWorker here races with CheckoutTask's current_task write.
 	worker.LastSeen = time.Now().UTC()
-	if err := s.store.UpdateWorker(r.Context(), worker); err != nil {
+	if err := s.store.TouchWorker(r.Context(), worker.ID, worker.State, worker.LastSeen, usage); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
 		return
 	}
 
-	// Parse the optional heartbeat body. An empty/missing body is valid and means
-	// the worker is reporting no in-flight tasks (backward compatible).
-	var req model.HeartbeatRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-			respondError(w, reqID, http.StatusBadRequest, &model.APIError{
-				Code:    model.ErrValidation,
-				Message: "invalid heartbeat body: " + err.Error(),
-			})
-			return
-		}
+	if bodyErr != nil {
+		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "invalid heartbeat body: " + bodyErr.Error(),
+		})
+		return
 	}
 
 	// Reconcile orphaned tasks: any task the DB still attributes to this worker
@@ -296,6 +315,147 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		State:       worker.State,
 		CancelTasks: cancelTasks,
 	})
+}
+
+// heartbeatBody is the server-side decode target for model.HeartbeatRequest.
+// The usage fields stay raw so that a malformed usage value is dropped by
+// heartbeatUsage instead of failing the heartbeat (#323); running_tasks is
+// decoded strictly, as before.
+type heartbeatBody struct {
+	RunningTasks []string        `json:"running_tasks"`
+	Host         json.RawMessage `json:"host"`
+	GPUs         json.RawMessage `json:"gpu_usage"`
+}
+
+// hostUsageWire and gpuUsageWire mirror model.HostUsage and model.GPUUsage
+// with numbers as json.Number, so a value out of float64 range (1e999) is
+// dropped by the sanitiser rather than failing the decode.
+type hostUsageWire struct {
+	Load1           json.Number `json:"load1"`
+	Load5           json.Number `json:"load5"`
+	MemTotalMB      json.Number `json:"mem_total_mb"`
+	MemAvailableMB  json.Number `json:"mem_available_mb"`
+	PSICPUSomeAvg10 json.Number `json:"psi_cpu_some_avg10"`
+	PSIMemSomeAvg10 json.Number `json:"psi_mem_some_avg10"`
+	SampledAt       string      `json:"sampled_at"`
+}
+
+type gpuUsageWire struct {
+	UUID      string      `json:"uuid"`
+	MemUsedMB json.Number `json:"mem_used_mb"`
+	UtilPct   json.Number `json:"util_pct"`
+}
+
+// heartbeatUsage decodes and sanitises the usage in a heartbeat body. It
+// returns nil when the body carries no usable usage, which leaves the stored
+// usage untouched. Usage is telemetry, so bad values never fail the
+// heartbeat: wrongly typed fields are ignored and sanitizeHostUsage /
+// sanitizeGPUUsage drop the rest. Details are logged at DEBUG only.
+func (s *Server) heartbeatUsage(worker *model.Worker, req heartbeatBody) *model.WorkerUsage {
+	var usage model.WorkerUsage
+	if isJSONKind(req.Host, '{') {
+		var hw hostUsageWire
+		if err := json.Unmarshal(req.Host, &hw); err != nil {
+			s.logger.Debug("heartbeat: ignoring undecodable host usage fields", "worker_id", worker.ID, "error", err)
+		}
+		usage.Host = sanitizeHostUsage(hw)
+	}
+	if isJSONKind(req.GPUs, '[') {
+		var gw []gpuUsageWire
+		if err := json.Unmarshal(req.GPUs, &gw); err != nil {
+			s.logger.Debug("heartbeat: ignoring undecodable GPU usage fields", "worker_id", worker.ID, "error", err)
+		}
+		gpus, dropped := sanitizeGPUUsage(gw, worker.GPUs)
+		if dropped > 0 {
+			s.logger.Debug("heartbeat: dropped GPU usage entries", "worker_id", worker.ID, "dropped", dropped)
+		}
+		usage.GPUs = gpus
+	}
+	if usage.Host == nil && len(usage.GPUs) == 0 {
+		return nil
+	}
+	return &usage
+}
+
+// isJSONKind reports whether raw is a JSON value starting with open ('{' for
+// an object, '[' for an array).
+func isJSONKind(raw json.RawMessage, open byte) bool {
+	raw = bytes.TrimLeft(raw, " \t\r\n")
+	return len(raw) > 0 && raw[0] == open
+}
+
+// sanitizeHostUsage converts a decoded host sample, leaving every absent,
+// non-finite, negative or out-of-range number at zero (nil for the optional
+// PSI values) and an unparsable sampled_at at the zero time.
+func sanitizeHostUsage(in hostUsageWire) *model.HostUsage {
+	h := &model.HostUsage{}
+	h.Load1, _ = usageFloat(in.Load1)
+	h.Load5, _ = usageFloat(in.Load5)
+	h.MemTotalMB, _ = usageInt(in.MemTotalMB, maxWorkerHostMemMB)
+	h.MemAvailableMB, _ = usageInt(in.MemAvailableMB, maxWorkerHostMemMB)
+	if v, ok := usageFloat(in.PSICPUSomeAvg10); ok {
+		h.PSICPUSomeAvg10 = &v
+	}
+	if v, ok := usageFloat(in.PSIMemSomeAvg10); ok {
+		h.PSIMemSomeAvg10 = &v
+	}
+	if t, err := time.Parse(time.RFC3339Nano, in.SampledAt); err == nil {
+		h.SampledAt = t.UTC()
+	}
+	return h
+}
+
+// sanitizeGPUUsage keeps the entries whose uuid (reduced to printable ASCII)
+// is in the worker's registered inventory, once per uuid and at most
+// len(inventory) entries. Invalid numbers make that field absent and
+// util_pct is clamped to 100. It returns the kept entries (nil if none) and
+// the number dropped.
+func sanitizeGPUUsage(in []gpuUsageWire, inventory []model.GPUInfo) (out []model.GPUUsage, dropped int) {
+	known := make(map[string]bool, len(inventory))
+	for _, g := range inventory {
+		known[g.UUID] = true
+	}
+	seen := make(map[string]bool, len(inventory))
+	for _, g := range in {
+		uuid := truncateUTF8(printableASCII(g.UUID), maxGPUFieldLength)
+		if !known[uuid] || seen[uuid] || len(out) >= len(inventory) {
+			dropped++
+			continue
+		}
+		seen[uuid] = true
+		u := model.GPUUsage{UUID: uuid}
+		if v, ok := usageInt(g.MemUsedMB, maxWorkerHostMemMB); ok {
+			u.MemUsedMB = &v
+		}
+		if v, ok := usageFloat(g.UtilPct); ok {
+			v = min(v, 100)
+			u.UtilPct = &v
+		}
+		out = append(out, u)
+	}
+	return out, dropped
+}
+
+// usageFloat parses a usage number, reporting false for an absent,
+// non-finite or negative value.
+func usageFloat(n json.Number) (float64, bool) {
+	if n == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(string(n), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// usageInt parses a usage integer in 0..limit, reporting false otherwise.
+func usageInt(n json.Number, limit int64) (int64, bool) {
+	v, err := strconv.ParseInt(string(n), 10, 64)
+	if err != nil || v < 0 || v > limit {
+		return 0, false
+	}
+	return v, true
 }
 
 // handleWorkerCheckout finds and assigns a QUEUED worker task to the worker.

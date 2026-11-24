@@ -48,6 +48,10 @@ type Worker struct {
 	// reported; an empty list means a GPU worker with no usable GPU
 	// metadata (#323).
 	GPUs []GPUInfo `json:"gpus,omitempty"`
+	// Usage is the latest sanitised usage the worker sent in a heartbeat and
+	// UsageAt the server time it was received. nil means never reported (#323).
+	Usage   *WorkerUsage `json:"usage,omitempty"`
+	UsageAt *time.Time   `json:"usage_at,omitempty"`
 	// KeyID is the id of the worker key that registered this worker. All
 	// /workers/{id}/* routes require the caller's key id to match. Empty on
 	// legacy rows (adopted on first authorized touch) and when worker auth is
@@ -61,6 +65,35 @@ type GPUInfo struct {
 	UUID       string `json:"uuid"`         // e.g. GPU-1a2b3c4d-...
 	Name       string `json:"name"`         // e.g. NVIDIA H200 NVL
 	MemTotalMB int64  `json:"mem_total_mb"` // Total device memory in MiB
+}
+
+// WorkerUsage is a worker's live usage sample as stored and exposed by the
+// server (#323).
+type WorkerUsage struct {
+	Host *HostUsage `json:"host,omitempty"`
+	GPUs []GPUUsage `json:"gpus,omitempty"`
+}
+
+// HostUsage is a sample of the load and memory of a worker's host (#323).
+// Memory is in MiB.
+type HostUsage struct {
+	Load1          float64 `json:"load1"`
+	Load5          float64 `json:"load5"`
+	MemTotalMB     int64   `json:"mem_total_mb"`
+	MemAvailableMB int64   `json:"mem_available_mb"`
+	// PSI "some" avg10 percentages from /proc/pressure; nil when unavailable.
+	PSICPUSomeAvg10 *float64 `json:"psi_cpu_some_avg10,omitempty"`
+	PSIMemSomeAvg10 *float64 `json:"psi_mem_some_avg10,omitempty"`
+	// SampledAt is the worker's (UTC) sampling time.
+	SampledAt time.Time `json:"sampled_at"`
+}
+
+// GPUUsage is a sample of one GPU's usage, identified by its UUID (#323). A
+// nil field means the value was not available.
+type GPUUsage struct {
+	UUID      string   `json:"uuid"`
+	MemUsedMB *int64   `json:"mem_used_mb,omitempty"`
+	UtilPct   *float64 `json:"util_pct,omitempty"`
 }
 
 // MaxHostIDLen is the maximum length of a worker host id (#323).
@@ -89,6 +122,10 @@ func ValidateHostID(id string) error {
 // (no running tasks) is valid and backward-compatible.
 type HeartbeatRequest struct {
 	RunningTasks []string `json:"running_tasks,omitempty"`
+	// Host and GPUs carry the worker's latest usage sample (#323). Both are
+	// optional: an older worker omits them and an older server ignores them.
+	Host *HostUsage `json:"host,omitempty"`
+	GPUs []GPUUsage `json:"gpu_usage,omitempty"`
 }
 
 // HeartbeatResponse is the server's reply to a heartbeat. CancelTasks lists task

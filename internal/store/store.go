@@ -162,6 +162,11 @@ type Store interface {
 	CreateWorker(ctx context.Context, w *model.Worker) error
 	GetWorker(ctx context.Context, id string) (*model.Worker, error)
 	UpdateWorker(ctx context.Context, w *model.Worker) error
+	// TouchWorker records a heartbeat in one UPDATE of state and last_seen,
+	// plus host_usage/host_usage_at (= lastSeen) only when usage is non-nil.
+	// It never writes current_task, so it cannot clobber a concurrent
+	// CheckoutTask the way a full-row UpdateWorker can.
+	TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, usage *model.WorkerUsage) error
 	// DeleteWorker removes the worker and requeues its RUNNING worker-executor tasks atomically.
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)

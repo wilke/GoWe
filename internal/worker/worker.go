@@ -43,6 +43,7 @@ type Worker struct {
 	hostCPUs          int                      // Physical host CPUs (0 = unknown)
 	hostMemMB         int64                    // Physical host memory in MiB (0 = unknown)
 	gpuInventory      []model.GPUInfo          // GPUs reported at registration (nil unless --gpu)
+	usage             *usageSampler            // Host/GPU usage for heartbeats (#323); nil until Run
 	imageDigests      digestCache              // sha256 cache for blessed-image checks
 	imageDir          string                   // Base directory for resolving .sif image paths
 	dockerHostPathMap map[string]string        // Docker-in-Docker path mapping
@@ -457,6 +458,11 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		"max_mem_mb", w.resources.MaxMemMB,
 	)
 
+	// Sample host/GPU usage in the background; heartbeats attach the latest
+	// sample without waiting for one (#323).
+	w.usage = newUsageSampler(w.logger, w.gpuInventory)
+	go w.usage.run(ctx)
+
 	// Start heartbeat in a separate goroutine so it continues during task execution.
 	go w.heartbeatLoop(ctx)
 
@@ -474,7 +480,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			resp, err := w.client.Heartbeat(ctx, w.active.ids())
+			resp, err := w.client.Heartbeat(ctx, w.active.ids(), w.usage.latest())
 			if err != nil {
 				w.logger.Warn("heartbeat failed", "error", err)
 				continue
