@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -40,6 +41,14 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Datasets   map[string]string `json:"datasets"`
 		MaxCPUs    *int              `json:"max_cpus"`
 		MaxMemMB   *int64            `json:"max_mem_mb"`
+		// Host identity and inventory (#323); all optional.
+		HostID       string          `json:"host_id"`
+		HostCPUs     *int            `json:"host_cpus"`
+		HostMemMB    *int64          `json:"host_mem_mb"`
+		Slots        *int            `json:"slots"`
+		CgroupCPU    *bool           `json:"cgroup_cpu"`
+		CgroupMemory *bool           `json:"cgroup_memory"`
+		GPUs         []model.GPUInfo `json:"gpus"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
@@ -83,6 +92,16 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	runtime := model.ContainerRuntime(runtimeStr)
 
+	// host_id is optional ("" = not reported) but must be well-formed if sent.
+	if req.HostID != "" {
+		if err := model.ValidateHostID(req.HostID); err != nil {
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(err.Error(),
+					model.FieldError{Field: "host_id", Message: err.Error()}))
+			return
+		}
+	}
+
 	now := time.Now().UTC()
 	worker := &model.Worker{
 		ID:           "wrk_" + uuid.New().String(),
@@ -106,6 +125,28 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	if req.MaxMemMB != nil && *req.MaxMemMB > 0 {
 		worker.MaxMemMB = req.MaxMemMB
 	}
+	// Host identity and inventory (#323); non-positive numbers mean "not
+	// reported", like the capacity above.
+	worker.HostID = req.HostID
+	if req.HostCPUs != nil && *req.HostCPUs > 0 {
+		worker.HostCPUs = req.HostCPUs
+	}
+	if req.HostMemMB != nil && *req.HostMemMB > 0 {
+		worker.HostMemMB = req.HostMemMB
+	}
+	if req.Slots != nil && *req.Slots > 0 {
+		worker.Slots = req.Slots
+	}
+	worker.CgroupCPU = req.CgroupCPU
+	worker.CgroupMemory = req.CgroupMemory
+	if req.GPUs != nil {
+		gpus, invalid, overflow := sanitizeWorkerGPUs(req.GPUs)
+		if invalid > 0 || overflow > 0 {
+			s.logger.Warn("worker registration: dropped GPU entries",
+				"name", req.Name, "invalid", invalid, "over_limit", overflow, "limit", maxWorkerGPUs)
+		}
+		worker.GPUs = gpus
+	}
 	// Bind the worker to the registering key. "none" is the anonymous context
 	// used when worker auth is disabled; leave those rows unbound ('') so they
 	// are adopted if auth is enabled later.
@@ -126,8 +167,49 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets),
-		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB))
+		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB),
+		"host_id", worker.HostID, "host_cpus", capLog(worker.HostCPUs), "host_mem_mb", capLog(worker.HostMemMB), "gpus", len(worker.GPUs))
 	respondCreated(w, reqID, worker)
+}
+
+// Limits on worker-reported GPU metadata (#323). Oversized input is trimmed,
+// never rejected: GPU metadata must not fail a registration.
+const (
+	maxWorkerGPUs     = 64
+	maxGPUFieldLength = 128
+)
+
+// sanitizeWorkerGPUs drops entries with a negative index or an empty uuid,
+// keeps at most maxWorkerGPUs of the rest and truncates their strings to
+// maxGPUFieldLength bytes. It returns the kept entries (never nil) and the
+// number dropped as invalid and as over the limit.
+func sanitizeWorkerGPUs(in []model.GPUInfo) (out []model.GPUInfo, invalid, overflow int) {
+	out = make([]model.GPUInfo, 0, min(len(in), maxWorkerGPUs))
+	for _, g := range in {
+		if g.Index < 0 || g.UUID == "" {
+			invalid++
+			continue
+		}
+		if len(out) == maxWorkerGPUs {
+			overflow++
+			continue
+		}
+		g.UUID = truncateUTF8(g.UUID, maxGPUFieldLength)
+		g.Name = truncateUTF8(g.Name, maxGPUFieldLength)
+		out = append(out, g)
+	}
+	return out, invalid, overflow
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a UTF-8 sequence.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // handleWorkerHeartbeat updates a worker's last_seen timestamp.

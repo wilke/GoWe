@@ -28,11 +28,59 @@ type Worker struct {
 	// for that dimension (#324).
 	MaxCPUs  *int   `json:"max_cpus,omitempty"`
 	MaxMemMB *int64 `json:"max_mem_mb,omitempty"`
+	// HostID is a stable, opaque identity of the physical host (a hash of
+	// its machine-id, or the worker's --host-id). Empty means not reported
+	// (#323).
+	HostID string `json:"host_id,omitempty"`
+	// HostCPUs and HostMemMB are the host's physical totals, reported even
+	// when --max-cpus / --max-mem cap the worker lower. nil means a legacy
+	// worker or an undetected value (#323).
+	HostCPUs  *int   `json:"host_cpus,omitempty"`
+	HostMemMB *int64 `json:"host_mem_mb,omitempty"`
+	// Slots is the number of tasks the worker runs concurrently (currently
+	// always 1). nil means not reported (#323).
+	Slots *int `json:"slots,omitempty"`
+	// CgroupCPU and CgroupMemory report whether the cpu / memory cgroup
+	// controllers are usable by the worker. nil means not reported (#323).
+	CgroupCPU    *bool `json:"cgroup_cpu,omitempty"`
+	CgroupMemory *bool `json:"cgroup_memory,omitempty"`
+	// GPUs is the GPU inventory reported by a --gpu worker. nil means not
+	// reported; an empty list means a GPU worker with no usable GPU
+	// metadata (#323).
+	GPUs []GPUInfo `json:"gpus,omitempty"`
 	// KeyID is the id of the worker key that registered this worker. All
 	// /workers/{id}/* routes require the caller's key id to match. Empty on
 	// legacy rows (adopted on first authorized touch) and when worker auth is
 	// disabled.
 	KeyID string `json:"key_id,omitempty"`
+}
+
+// GPUInfo describes one GPU of a worker's host, as reported by nvidia-smi.
+type GPUInfo struct {
+	Index      int    `json:"index"`        // nvidia-smi device index
+	UUID       string `json:"uuid"`         // e.g. GPU-1a2b3c4d-...
+	Name       string `json:"name"`         // e.g. NVIDIA H200 NVL
+	MemTotalMB int64  `json:"mem_total_mb"` // Total device memory in MiB
+}
+
+// MaxHostIDLen is the maximum length of a worker host id (#323).
+const MaxHostIDLen = 64
+
+// ValidateHostID checks that a worker host id is 1-MaxHostIDLen characters
+// of [A-Za-z0-9._-].
+func ValidateHostID(id string) error {
+	if id == "" || len(id) > MaxHostIDLen {
+		return fmt.Errorf("host id must be 1-%d characters, got %d", MaxHostIDLen, len(id))
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return fmt.Errorf("host id contains invalid character %q (allowed: A-Z a-z 0-9 . _ -)", c)
+		}
+	}
+	return nil
 }
 
 // HeartbeatRequest is the body a worker sends on each heartbeat. RunningTasks is

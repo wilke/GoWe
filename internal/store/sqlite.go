@@ -2468,21 +2468,28 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		gpuEnabled = 1
 	}
 
+	gpusJSON, err := nullableGPUsJSON(w.GPUs)
+	if err != nil {
+		return err
+	}
+
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO workers (`+workerColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
 		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version, w.KeyID,
 		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
+		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
+		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON,
 	)
 	return err
 }
 
 // workerColumns is the single column list for workers reads/inserts; its order
 // must match scanWorker and the CreateWorker argument list.
-const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb"
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2505,9 +2512,12 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
 	var gpuEnabled int
 	var maxCPUs, maxMem sql.NullInt64
+	var hostCPUs, hostMem, slots, cgroupCPU, cgroupMem sql.NullInt64
+	var gpusJSON *string
 	if err := sc.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
 		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
-		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem); err != nil {
+		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem,
+		&w.HostID, &hostCPUs, &hostMem, &slots, &cgroupCPU, &cgroupMem, &gpusJSON); err != nil {
 		return nil, err
 	}
 	w.State = model.WorkerState(state)
@@ -2521,12 +2531,38 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 		v := maxMem.Int64
 		w.MaxMemMB = &v
 	}
+	if hostCPUs.Valid {
+		v := int(hostCPUs.Int64)
+		w.HostCPUs = &v
+	}
+	if hostMem.Valid {
+		v := hostMem.Int64
+		w.HostMemMB = &v
+	}
+	if slots.Valid {
+		v := int(slots.Int64)
+		w.Slots = &v
+	}
+	if cgroupCPU.Valid {
+		v := cgroupCPU.Int64 != 0
+		w.CgroupCPU = &v
+	}
+	if cgroupMem.Valid {
+		v := cgroupMem.Int64 != 0
+		w.CgroupMemory = &v
+	}
 	var err error
 	if err = unmarshalJSON(labelsJSON, &w.Labels, "labels"); err != nil {
 		return nil, &corruptWorkerRowError{w.ID, err}
 	}
 	if err = unmarshalJSON(datasetsJSON, &w.Datasets, "datasets"); err != nil {
 		return nil, &corruptWorkerRowError{w.ID, err}
+	}
+	// NULL = not reported (nil); "[]" = reported, empty (#323).
+	if gpusJSON != nil {
+		if err = unmarshalJSON(*gpusJSON, &w.GPUs, "gpus"); err != nil {
+			return nil, &corruptWorkerRowError{w.ID, err}
+		}
 	}
 	if w.LastSeen, err = parseTimeOrZero(lastSeen); err != nil {
 		return nil, &corruptWorkerRowError{w.ID, err}
@@ -2543,6 +2579,31 @@ func nullableInt[T int | int64](p *T) any {
 		return nil
 	}
 	return int64(*p)
+}
+
+// nullableBool maps a nil flag to SQL NULL and true/false to 1/0.
+func nullableBool(p *bool) any {
+	if p == nil {
+		return nil
+	}
+	if *p {
+		return int64(1)
+	}
+	return int64(0)
+}
+
+// nullableGPUsJSON maps nil GPUs (not reported) to SQL NULL and any reported
+// list, including an empty one, to its JSON encoding.
+func nullableGPUsJSON(gpus []model.GPUInfo) (*string, error) {
+	if gpus == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(gpus)
+	if err != nil {
+		return nil, fmt.Errorf("marshal gpus: %w", err)
+	}
+	s := string(b)
+	return &s, nil
 }
 
 func (s *SQLiteStore) GetWorker(ctx context.Context, id string) (*model.Worker, error) {
@@ -2577,13 +2638,21 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 		gpuEnabled = 1
 	}
 
+	gpusJSON, err := nullableGPUsJSON(w.GPUs)
+	if err != nil {
+		return err
+	}
+
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
-		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=?, max_cpus=?, max_mem_mb=? WHERE id=?`,
+		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=?, max_cpus=?, max_mem_mb=?,
+		 host_id=?, host_cpus=?, host_mem_mb=?, slots=?, cgroup_cpu=?, cgroup_memory=?, gpus=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON),
-		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB), w.ID,
+		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
+		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
+		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON, w.ID,
 	)
 	if err != nil {
 		return err

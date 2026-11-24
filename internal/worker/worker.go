@@ -39,6 +39,10 @@ type Worker struct {
 	containerRuntime  string                   // "docker", "apptainer", or "none"
 	gpu               GPUWorkerConfig          // GPU configuration
 	resources         ResourceWorkerConfig     // Resource limits
+	hostID            string                   // Host identity reported at registration (#323)
+	hostCPUs          int                      // Physical host CPUs (0 = unknown)
+	hostMemMB         int64                    // Physical host memory in MiB (0 = unknown)
+	gpuInventory      []model.GPUInfo          // GPUs reported at registration (nil unless --gpu)
 	imageDigests      digestCache              // sha256 cache for blessed-image checks
 	imageDir          string                   // Base directory for resolving .sif image paths
 	dockerHostPathMap map[string]string        // Docker-in-Docker path mapping
@@ -112,6 +116,11 @@ type Config struct {
 
 	// Version is the build version (git commit hash), sent during registration.
 	Version string
+
+	// HostID overrides the derived host identity sent during registration
+	// (--host-id, 1-64 characters of [A-Za-z0-9._-]). Empty means derive it
+	// from /etc/machine-id, the boot id or the hostname (#323).
+	HostID string
 
 	// KeepTaskDirs retains task working directories after successful
 	// completion instead of deleting them (debugging aid). Directories of
@@ -200,6 +209,29 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		"apptainer_cgroups", cfg.Resources.ApptainerCgroups,
 		"cgroup_cpu", cfg.Resources.CgroupCPU,
 		"cgroup_memory", cfg.Resources.CgroupMemory,
+	)
+
+	// Host identity, physical capacity and GPU inventory, reported at
+	// registration only (#323). The physical totals are independent of the
+	// --max-cpus / --max-mem caps above.
+	hostname := cfg.Hostname
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
+	hostID, err := resolveHostID(cfg.HostID, machineIDPath, bootIDPath, hostname)
+	if err != nil {
+		return nil, err
+	}
+	var gpuInventory []model.GPUInfo
+	if cfg.GPU.Enabled {
+		gpuInventory = collectGPUInventory(context.Background(), logger, cfg.GPU.DeviceID)
+	}
+	hostCPUs, hostMemMB := runtime.NumCPU(), sysTotalMemMB()
+	logger.Info("worker host inventory",
+		"host_id", hostID,
+		"host_cpus", hostCPUs,
+		"host_mem_mb", hostMemMB,
+		"gpus", len(gpuInventory),
 	)
 
 	// Build TLS config.
@@ -349,6 +381,10 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		poll:              cfg.Poll,
 		gpu:               cfg.GPU,
 		resources:         cfg.Resources,
+		hostID:            hostID,
+		hostCPUs:          hostCPUs,
+		hostMemMB:         hostMemMB,
+		gpuInventory:      gpuInventory,
 		imageDir:          cfg.ImageDir,
 		dockerHostPathMap: cfg.DockerHostPathMap,
 		dockerVolume:      cfg.DockerVolume,
@@ -397,6 +433,14 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		Labels:     degradedLabels(cfg),
 		MaxCPUs:    w.resources.MaxCPUs,
 		MaxMemMB:   w.resources.MaxMemMB,
+		// Host identity and inventory (#323).
+		HostID:       w.hostID,
+		HostCPUs:     w.hostCPUs,
+		HostMemMB:    w.hostMemMB,
+		Slots:        1, // one task at a time until --concurrency exists
+		CgroupCPU:    &w.resources.CgroupCPU,
+		CgroupMemory: &w.resources.CgroupMemory,
+		GPUs:         w.gpuInventory,
 	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {

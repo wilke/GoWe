@@ -324,6 +324,45 @@ var alterStatements = []struct {
 		column:   "max_mem_mb",
 		alterSQL: "ALTER TABLE workers ADD COLUMN max_mem_mb INTEGER",
 	},
+	// Worker host identity, physical capacity and GPU inventory (#323).
+	// host_id '' and NULL elsewhere = legacy worker / not reported; gpus is a
+	// JSON array (an empty array is a GPU worker with no usable inventory).
+	{
+		table:    "workers",
+		column:   "host_id",
+		alterSQL: "ALTER TABLE workers ADD COLUMN host_id TEXT NOT NULL DEFAULT ''",
+		indexSQL: "CREATE INDEX IF NOT EXISTS idx_workers_host_id ON workers(host_id)",
+	},
+	{
+		table:    "workers",
+		column:   "host_cpus",
+		alterSQL: "ALTER TABLE workers ADD COLUMN host_cpus INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "host_mem_mb",
+		alterSQL: "ALTER TABLE workers ADD COLUMN host_mem_mb INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "slots",
+		alterSQL: "ALTER TABLE workers ADD COLUMN slots INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "cgroup_cpu",
+		alterSQL: "ALTER TABLE workers ADD COLUMN cgroup_cpu INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "cgroup_memory",
+		alterSQL: "ALTER TABLE workers ADD COLUMN cgroup_memory INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "gpus",
+		alterSQL: "ALTER TABLE workers ADD COLUMN gpus TEXT",
+	},
 	// Output destination for workspace result uploads
 	{
 		table:    "submissions",

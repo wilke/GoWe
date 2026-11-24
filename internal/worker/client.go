@@ -59,6 +59,14 @@ type RegisterOptions struct {
 	Labels     map[string]string // Registration labels (e.g. degraded-mode flags)
 	MaxCPUs    int               // Effective CPU capacity; 0 = not reported (#324)
 	MaxMemMB   int64             // Effective memory capacity in MiB; 0 = not reported
+	// Host identity and inventory (#323); zero values / nil are not reported.
+	HostID       string          // Host identity (hash of machine-id, or --host-id)
+	HostCPUs     int             // Physical host CPUs
+	HostMemMB    int64           // Physical host memory in MiB
+	Slots        int             // Concurrent task slots
+	CgroupCPU    *bool           // cpu cgroup controller usable
+	CgroupMemory *bool           // memory cgroup controller usable
+	GPUs         []model.GPUInfo // GPU inventory; non-nil (even empty) is sent
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -88,6 +96,27 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		}
 		if opts[0].MaxMemMB > 0 {
 			reg["max_mem_mb"] = opts[0].MaxMemMB
+		}
+		if opts[0].HostID != "" {
+			reg["host_id"] = opts[0].HostID
+		}
+		if opts[0].HostCPUs > 0 {
+			reg["host_cpus"] = opts[0].HostCPUs
+		}
+		if opts[0].HostMemMB > 0 {
+			reg["host_mem_mb"] = opts[0].HostMemMB
+		}
+		if opts[0].Slots > 0 {
+			reg["slots"] = opts[0].Slots
+		}
+		if opts[0].CgroupCPU != nil {
+			reg["cgroup_cpu"] = *opts[0].CgroupCPU
+		}
+		if opts[0].CgroupMemory != nil {
+			reg["cgroup_memory"] = *opts[0].CgroupMemory
+		}
+		if opts[0].GPUs != nil {
+			reg["gpus"] = opts[0].GPUs
 		}
 	}
 	body, err := json.Marshal(reg)

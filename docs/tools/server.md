@@ -632,9 +632,23 @@ curl -X POST http://localhost:8080/api/v1/workers \
     "datasets": {
       "boltz": "/local_databases/boltz",
       "alphafold": "/local_databases/alphafold"
-    }
+    },
+    "host_id": "3f2a9c1d8e7b6a50",
+    "host_cpus": 192,
+    "host_mem_mb": 1547000,
+    "slots": 1,
+    "cgroup_cpu": true,
+    "cgroup_memory": true,
+    "gpus": [
+      {"index": 0, "uuid": "GPU-1a2b3c4d-0000-1111-2222-333344445555", "name": "NVIDIA H200 NVL", "mem_total_mb": 143771}
+    ]
   }'
 ```
+
+`host_id`, `host_cpus`, `host_mem_mb`, `slots`, `cgroup_cpu`, `cgroup_memory` and `gpus` (#323) are optional and
+informational; a worker that omits them registers as before and they are absent from the record. `host_id` must be 1-64
+characters of `[A-Za-z0-9._-]` (400 otherwise); numbers `<= 0` count as not reported; `gpus` is capped at 64 entries
+(extra and invalid entries — negative index or empty uuid — are dropped) with strings truncated to 128 bytes.
 
 Response (201):
 
@@ -650,6 +664,13 @@ Response (201):
   "gpu_enabled": true,
   "gpu_device": "cuda:0",
   "datasets": { ... },
+  "host_id": "3f2a9c1d8e7b6a50",
+  "host_cpus": 192,
+  "host_mem_mb": 1547000,
+  "slots": 1,
+  "cgroup_cpu": true,
+  "cgroup_memory": true,
+  "gpus": [ ... ],
   "last_seen": "2026-03-28T12:34:56Z",
   "registered_at": "2026-03-28T12:34:56Z"
 }
