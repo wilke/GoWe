@@ -39,7 +39,12 @@ func (ui *UI) HandleAdminFleet(w http.ResponseWriter, r *http.Request) {
 		ui.renderError(w, "Failed to load running tasks", err)
 		return
 	}
-	hosts := model.AggregateHosts(workers, running, time.Now())
+	charged, err := ui.store.SumChargedByWorker(r.Context())
+	if err != nil {
+		ui.renderError(w, "Failed to load charged resources", err)
+		return
+	}
+	hosts := model.AggregateHosts(workers, running, charged, time.Now())
 
 	var online, offline, draining, gpu int
 	for _, wk := range workers {

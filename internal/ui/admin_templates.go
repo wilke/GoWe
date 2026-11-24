@@ -65,6 +65,7 @@ const adminFleetTemplate = `{{define "content"}}
                         <dd class="mt-1 text-sm {{if $cpuOver}}font-medium text-red-700{{else}}text-gray-900{{end}}">
                             {{.ClaimedCPUs}} / {{if .CPUs}}{{.CPUs}}{{else}}?{{end}}
                             {{if $cpuOver}}<span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" title="Workers on this host claim more CPUs than it has">over-claimed</span>{{end}}
+                            <div class="text-xs text-gray-500" title="Cores charged at checkout to running tasks">{{.ChargedCPUs}} charged</div>
                         </dd>
                     </div>
                     <div>
@@ -72,6 +73,7 @@ const adminFleetTemplate = `{{define "content"}}
                         <dd class="mt-1 text-sm {{if $memOver}}font-medium text-red-700{{else}}text-gray-900{{end}}">
                             {{fmtGiB .ClaimedMemMB}} / {{if .MemMB}}{{fmtGiB .MemMB}}{{else}}?{{end}} GiB
                             {{if $memOver}}<span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" title="Workers on this host claim more memory than it has">over-claimed</span>{{end}}
+                            <div class="text-xs text-gray-500" title="Memory charged at checkout to running tasks">{{fmtGiB .ChargedMemMB}} GiB charged</div>
                         </dd>
                     </div>
                     <div>

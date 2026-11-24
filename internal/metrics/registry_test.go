@@ -97,7 +97,7 @@ func TestNilRegistry_AllMethodsNoOp(t *testing.T) {
 	r.ObserveSubmissionWall(sub)
 	r.ObserveStaging("prestage", &now, &now)
 	r.ObserveTickPhase("1", time.Second)
-	r.RefreshGauges(nil, nil, nil, nil)
+	r.RefreshGauges(nil, nil, nil, nil, nil)
 	if g := r.Gatherer(); g != nil {
 		t.Errorf("Gatherer() on nil Registry = %v, want nil", g)
 	}
@@ -248,7 +248,7 @@ func TestObserveStaging_SkipsWhenStartedNil(t *testing.T) {
 
 func TestRefreshGauges_ZeroFillsEnumStates(t *testing.T) {
 	r := NewRegistry(Config{})
-	r.RefreshGauges(map[string]int{"RUNNING": 3}, map[string]int{"COMPLETED": 1}, nil, nil)
+	r.RefreshGauges(map[string]int{"RUNNING": 3}, map[string]int{"COMPLETED": 1}, nil, nil, nil)
 
 	if got := testutil.ToFloat64(r.tasksGauge.WithLabelValues("RUNNING")); got != 3 {
 		t.Errorf("tasks{state=RUNNING} = %v, want 3", got)
@@ -274,7 +274,7 @@ func TestRefreshGauges_WorkersAndQueueDepth(t *testing.T) {
 	// both keys at once; queueDepthGauge's own '' → 'default' mapping is
 	// defense in depth, exercised separately below.
 	queueDepth := map[string]int{"default": 4, "esmfold": 2}
-	r.RefreshGauges(nil, nil, workers, queueDepth)
+	r.RefreshGauges(nil, nil, workers, queueDepth, nil)
 
 	if got := testutil.ToFloat64(r.workersGauge.WithLabelValues("online", "default")); got != 3 {
 		t.Errorf("workers{state=online,group=default} = %v, want 3 (2 explicit + 1 empty-group)", got)
@@ -290,7 +290,7 @@ func TestRefreshGauges_WorkersAndQueueDepth(t *testing.T) {
 	}
 
 	// The defensive '' → 'default' mapping still applies on its own.
-	r.RefreshGauges(nil, nil, nil, map[string]int{"": 7})
+	r.RefreshGauges(nil, nil, nil, map[string]int{"": 7}, nil)
 	if got := testutil.ToFloat64(r.queueDepthGauge.WithLabelValues("default")); got != 7 {
 		t.Errorf("queue_depth{group=default} after empty-key refresh = %v, want 7", got)
 	}
@@ -313,7 +313,7 @@ func TestGatherer_ExposesRegisteredMetrics(t *testing.T) {
 	r.ObserveSubmissionWall(&model.Submission{State: model.SubmissionStateCompleted, CreatedAt: base, CompletedAt: timePtr(base.Add(time.Minute))})
 	r.ObserveStaging("prestage", timePtr(base), timePtr(base.Add(time.Second)))
 	r.ObserveTickPhase("total", time.Millisecond)
-	r.RefreshGauges(map[string]int{"RUNNING": 1}, map[string]int{"RUNNING": 1}, []*model.Worker{{State: model.WorkerStateOnline, Group: "default"}}, map[string]int{"default": 1})
+	r.RefreshGauges(map[string]int{"RUNNING": 1}, map[string]int{"RUNNING": 1}, []*model.Worker{{State: model.WorkerStateOnline, Group: "default"}}, map[string]int{"default": 1}, nil)
 
 	mfs, err := r.Gatherer().Gather()
 	if err != nil {

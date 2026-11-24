@@ -154,6 +154,10 @@ type Store interface {
 	// tasks per owning worker id (external_id; unowned rows excluded), a
 	// single GROUP BY query for the read-only per-host view (#323).
 	CountRunningTasksByWorker(ctx context.Context) (map[string]int, error)
+	// SumChargedByWorker returns the cores and RAM charged at checkout to the
+	// RUNNING worker-executor tasks per owning worker id (NULL charges count
+	// as 0), for the per-host view and the gowe_host_charged_* gauges.
+	SumChargedByWorker(ctx context.Context) (map[string]model.WorkerCharge, error)
 
 	// Session operations
 	CreateSession(ctx context.Context, sess *model.Session) error

@@ -650,6 +650,10 @@ informational; a worker that omits them registers as before and they are absent 
 characters of `[A-Za-z0-9._-]` (400 otherwise); numbers `<= 0` count as not reported; `gpus` is capped at 64 entries
 (extra and invalid entries — negative index or empty uuid — are dropped) with strings truncated to 128 bytes.
 
+`default_task_cores` and `default_task_ram_mb` are optional too: the charge applied at checkout to a task that requests
+no cores / no RAM (see [Capacity accounting at checkout](#capacity-accounting-at-checkout)). Numbers `<= 0` count as not
+reported; a value above `max_cpus` / `max_mem_mb` (when those are set) is rejected with 400.
+
 Response (201):
 
 ```json
@@ -797,7 +801,9 @@ curl -X DELETE http://localhost:8080/api/v1/workers/wrk_abc123 \
 
 Read-only per-host view of the fleet (#323): workers grouped by the `host_id` they reported at registration, sorted by
 `host_id`. Same authentication as `GET /api/v1/fleet` (any signed-in user via the normal provider token; no worker key).
-The numbers are the ones behind the `gowe_host_*` Prometheus gauges.
+The numbers are the ones behind the `gowe_host_*` Prometheus gauges (label `host`); the charged totals are exported as
+`gowe_host_charged_cpus` and `gowe_host_charged_mem_bytes`, next to `gowe_host_claimed_cpus` /
+`gowe_host_claimed_mem_bytes`.
 
 ```bash
 curl http://localhost:8080/api/v1/hosts -H "Authorization: $TOKEN"
@@ -815,6 +821,8 @@ Response (`data`):
       "mem_mb": 1547000,
       "claimed_cpus": 96,
       "claimed_mem_mb": 700000,
+      "charged_cpus": 8,
+      "charged_mem_mb": 32000,
       "usage": {"load1": 12.5, "load5": 10.1, "mem_total_mb": 1547000, "mem_available_mb": 900000, "sampled_at": "2026-11-24T10:00:00Z"},
       "usage_at": "2026-11-24T10:00:01Z",
       "gpus": [
@@ -835,8 +843,9 @@ Response (`data`):
 ```
 
 - A host is listed while it has any worker row, but `cpus`/`mem_mb` (physical, max over workers; omitted when unknown),
-  `claimed_cpus`/`claimed_mem_mb` (sum of `max_cpus`/`max_mem_mb`), `usage` and `gpus` come from its **online** workers
-  only; `workers` lists all of them, offline ones included.
+  `claimed_cpus`/`claimed_mem_mb` (sum of `max_cpus`/`max_mem_mb`), `charged_cpus`/`charged_mem_mb` (sum of the
+  charges of their running tasks, see [Capacity accounting at checkout](#capacity-accounting-at-checkout)), `usage` and
+  `gpus` come from its **online** workers only; `workers` lists all of them, offline ones included.
 - `usage` is the most recent host sample of an online worker, omitted when older than 2 minutes. `gpus` has one entry per
   distinct uuid (not deduplicated by index), sorted by `index` then `uuid`.
 - An absent `mem_used_mb` / `util_pct` means **unknown** (no sample in the last 2 minutes), not zero. `usage_at` on a GPU
@@ -852,6 +861,32 @@ Response (`data`):
 - The `hostnames` field is admin-only: for non-admin callers it is omitted and a legacy host's id becomes
   `legacy:<smallest worker id>`. Worker names default to the machine's hostname and are returned to every caller, exactly
   as on `/fleet`. Admins see everything (the admin fleet page shows the same view).
+- The charged totals are summed by `host_id` only. The checkout host gate below also groups by worker key, so workers
+  registered with different keys on one host show up together here but are gated separately.
+
+#### Capacity accounting at checkout
+
+When a worker checks out a task, the server charges the task against the worker and its host, per dimension (cores,
+RAM): the **charge** is the task's request (`ResourceRequirement` cores / ram), else the worker's default share
+(`default_task_cores` / `default_task_ram_mb`, optional at registration; a share above the worker's effective
+capacity is rejected with 400), else 0. The charge is stored on the task (`charged_cores`, `charged_ram_mb`) and
+cleared when the task is requeued (stale worker, heartbeat reconciliation, worker deletion).
+
+A task is only handed to a worker when its charge fits two gates:
+- **Worker gate:** `max_cpus` / `max_mem_mb` minus the charges of the worker's own RUNNING tasks.
+- **Host gate:** the host capacity (`host_cpus` / `host_mem_mb`) minus the charges of the RUNNING tasks of all workers
+  that are not offline with the same `host_id` **and** the same worker key. Workers without a `host_id`, or without a reported host
+  capacity, are only worker-gated.
+
+A request larger than the effective capacity (the smaller of `max_cpus` and `host_cpus`; same for memory) is never
+offered to that worker, and the scheduler uses the same effective capacity when it decides whether any worker could ever
+run a task. A task that charges nothing (no request, no default share) is never held back, even on an over-committed
+host. Running tasks of offline workers are not counted (the reaper requeues them), except the checking-out worker's own; a RUNNING task checked out by an older server has no charge and counts as 0.
+
+Known undercounts:
+- A cancelled task releases its charge as soon as the server marks it terminal, before the worker has actually stopped
+  its process.
+- Tasks already RUNNING when the server is upgraded have no charge until they are requeued and checked out again.
 
 ---
 

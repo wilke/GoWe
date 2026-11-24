@@ -46,6 +46,8 @@ func TestHandleListHosts(t *testing.T) {
 	w1 := registerWorkerID(t, srv, registerBody(t, map[string]any{
 		"name": "w1", "hostname": "node-1.internal", "max_cpus": 64, "max_mem_mb": 500000, "slots": 1,
 		"host_id": hostID, "host_cpus": 192, "host_mem_mb": 1547000, "gpus": testH200GPUs,
+		// The checked-out task requests nothing, so it is charged this share.
+		"default_task_cores": 4, "default_task_ram_mb": 8000,
 	}))
 	w2 := registerWorkerID(t, srv, registerBody(t, map[string]any{
 		"name": "w2", "hostname": "node-1.internal", "max_cpus": 32, "max_mem_mb": 200000,
@@ -94,6 +96,15 @@ func TestHandleListHosts(t *testing.T) {
 			}
 			if h.ClaimedCPUs != 96 || h.ClaimedMemMB != 700000 {
 				t.Errorf("claimed = %d cpus / %d MiB, want 96 / 700000", h.ClaimedCPUs, h.ClaimedMemMB)
+			}
+			if h.ChargedCPUs != 4 || h.ChargedMemMB != 8000 {
+				t.Errorf("charged = %d cpus / %d MiB, want 4 / 8000", h.ChargedCPUs, h.ChargedMemMB)
+			}
+			if l := hosts[1]; l.ChargedCPUs != 0 || l.ChargedMemMB != 0 {
+				t.Errorf("legacy host charged = %d cpus / %d MiB, want 0 / 0", l.ChargedCPUs, l.ChargedMemMB)
+			}
+			if !strings.Contains(body, `"charged_cpus":4`) || !strings.Contains(body, `"charged_mem_mb":8000`) {
+				t.Errorf("response lacks charged_cpus / charged_mem_mb: %s", body)
 			}
 			if h.Usage == nil || h.UsageAt == nil || h.Usage.Load1 != 1.5 || h.Usage.MemAvailableMB != 1024 {
 				t.Errorf("usage = %+v at %v, want load1 1.5, 1024 MiB available", h.Usage, h.UsageAt)

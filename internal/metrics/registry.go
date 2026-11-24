@@ -88,6 +88,8 @@ type Registry struct {
 	hostMemBytes        *prometheus.GaugeVec
 	hostClaimedCPUs     *prometheus.GaugeVec
 	hostClaimedMemBytes *prometheus.GaugeVec
+	hostChargedCPUs     *prometheus.GaugeVec
+	hostChargedMemBytes *prometheus.GaugeVec
 	hostLoad1           *prometheus.GaugeVec
 	hostMemAvailBytes   *prometheus.GaugeVec
 	hostGPUMemTotal     *prometheus.GaugeVec
@@ -208,6 +210,14 @@ func NewRegistry(cfg Config) *Registry {
 			Name: "gowe_host_claimed_mem_bytes",
 			Help: "Sum of max_mem over a host's online workers, in bytes.",
 		}, []string{"host"}),
+		hostChargedCPUs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_charged_cpus",
+			Help: "Sum of the cores charged at checkout to the running tasks of a host's online workers.",
+		}, []string{"host"}),
+		hostChargedMemBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_charged_mem_bytes",
+			Help: "Sum of the memory charged at checkout to the running tasks of a host's online workers, in bytes.",
+		}, []string{"host"}),
 		hostLoad1: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "gowe_host_load1",
 			Help: "1-minute load average of a host, from its online workers' most recent heartbeat usage (omitted when stale).",
@@ -239,6 +249,7 @@ func NewRegistry(cfg Config) *Registry {
 		r.taskRetries, r.taskFailures, r.tasksSkipped, r.inputValidationFailures, r.toolBlessingEvents, r.tokenGrants,
 		r.tasksGauge, r.submissionsGauge, r.workersGauge, r.queueDepthGauge,
 		r.hostCPUs, r.hostMemBytes, r.hostClaimedCPUs, r.hostClaimedMemBytes,
+		r.hostChargedCPUs, r.hostChargedMemBytes,
 		r.hostLoad1, r.hostMemAvailBytes, r.hostGPUMemTotal, r.hostGPUMemUsed,
 	)
 
@@ -484,8 +495,9 @@ var allSubmissionStates = []model.SubmissionState{
 // gowe_queue_depth and the per-host gowe_host_* gauges from a fresh per-tick
 // snapshot. taskCounts and subCounts key by the raw state string (as returned
 // by CountTasksByState / CountSubmissionsByState); queueDepth keys by worker
-// group (” meaning default, mapped here like every other worker_group label).
-func (r *Registry) RefreshGauges(taskCounts, subCounts map[string]int, workers []*model.Worker, queueDepth map[string]int) {
+// group (” meaning default, mapped here like every other worker_group label);
+// charged keys by worker id (as returned by SumChargedByWorker) and may be nil.
+func (r *Registry) RefreshGauges(taskCounts, subCounts map[string]int, workers []*model.Worker, queueDepth map[string]int, charged map[string]model.WorkerCharge) {
 	if r == nil {
 		return
 	}
@@ -513,7 +525,7 @@ func (r *Registry) RefreshGauges(taskCounts, subCounts map[string]int, workers [
 		r.queueDepthGauge.WithLabelValues(group).Set(float64(n))
 	}
 
-	r.refreshHostGauges(workers, time.Now())
+	r.refreshHostGauges(workers, charged, time.Now())
 }
 
 // bytesPerMiB converts the MiB values workers report to bytes.
@@ -529,18 +541,20 @@ func mibToBytes(mb int64) float64 { return float64(mb) * bytesPerMiB }
 // that disappeared drop out. Usage comes only from online workers whose last
 // usage is at most model.HostUsageMaxAge old at now; the most recent one
 // wins. When two GPUs of a host share an index, the one with the smaller uuid
-// is emitted.
-func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
+// is emitted. charged (per worker id, may be nil) feeds gowe_host_charged_*.
+func (r *Registry) refreshHostGauges(workers []*model.Worker, charged map[string]model.WorkerCharge, now time.Time) {
 	r.hostCPUs.Reset()
 	r.hostMemBytes.Reset()
 	r.hostClaimedCPUs.Reset()
 	r.hostClaimedMemBytes.Reset()
+	r.hostChargedCPUs.Reset()
+	r.hostChargedMemBytes.Reset()
 	r.hostLoad1.Reset()
 	r.hostMemAvailBytes.Reset()
 	r.hostGPUMemTotal.Reset()
 	r.hostGPUMemUsed.Reset()
 
-	for _, h := range model.AggregateHosts(workers, nil, now) {
+	for _, h := range model.AggregateHosts(workers, nil, charged, now) {
 		// Legacy hosts are keyed by hostname, not a reported host_id.
 		if h.Legacy || h.WorkersOnline == 0 {
 			continue
@@ -554,6 +568,8 @@ func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
 		}
 		r.hostClaimedCPUs.WithLabelValues(host).Set(float64(h.ClaimedCPUs))
 		r.hostClaimedMemBytes.WithLabelValues(host).Set(mibToBytes(h.ClaimedMemMB))
+		r.hostChargedCPUs.WithLabelValues(host).Set(float64(h.ChargedCPUs))
+		r.hostChargedMemBytes.WithLabelValues(host).Set(mibToBytes(h.ChargedMemMB))
 		if h.Usage != nil {
 			r.hostLoad1.WithLabelValues(host).Set(h.Usage.Load1)
 			// MemTotalMB 0 means the worker could not read its memory.

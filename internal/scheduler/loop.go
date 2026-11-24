@@ -533,7 +533,11 @@ func (l *Loop) refreshGauges(ctx context.Context) {
 	if err != nil {
 		l.logger.Error("refresh gauges: list workers", "error", err)
 	}
-	l.metrics.RefreshGauges(taskCounts, subCounts, workers, queueDepth)
+	charged, err := l.store.SumChargedByWorker(ctx)
+	if err != nil {
+		l.logger.Error("refresh gauges: sum charged by worker", "error", err)
+	}
+	l.metrics.RefreshGauges(taskCounts, subCounts, workers, queueDepth, charged)
 }
 
 // missingWorkflowFailThreshold is the number of consecutive ticks a
@@ -1850,17 +1854,20 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 			group = "default"
 		}
 		caps.Groups[group]++
-		if w.MaxCPUs != nil {
-			if *w.MaxCPUs > caps.MaxCoresByGroup[group] {
-				caps.MaxCoresByGroup[group] = *w.MaxCPUs
+		// Effective capacity: max_cpus / max_mem_mb bounded by the host's
+		// capacity, as CheckoutTask's host gate applies it.
+		maxCPUs, maxMemMB := w.EffectiveMaxCPUs(), w.EffectiveMaxMemMB()
+		if maxCPUs != nil {
+			if *maxCPUs > caps.MaxCoresByGroup[group] {
+				caps.MaxCoresByGroup[group] = *maxCPUs
 			}
 		}
-		if w.MaxMemMB != nil {
-			if *w.MaxMemMB > caps.MaxMemMBByGroup[group] {
-				caps.MaxMemMBByGroup[group] = *w.MaxMemMB
+		if maxMemMB != nil {
+			if *maxMemMB > caps.MaxMemMBByGroup[group] {
+				caps.MaxMemMBByGroup[group] = *maxMemMB
 			}
 		}
-		if w.MaxCPUs == nil || w.MaxMemMB == nil {
+		if maxCPUs == nil || maxMemMB == nil {
 			caps.UncappedByGroup[group]++
 		}
 		for dsID := range w.Datasets {
@@ -1879,7 +1886,8 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 //   - Worker group (gowe:Execution.worker_group)
 //   - Prestage datasets (gowe:ResourceData with mode=prestage)
 //   - Capacity: RuntimeHints.Cores / RamMB against each worker's self-reported
-//     max CPUs / memory (a worker that did not report a dimension fits, #324)
+//     max CPUs / memory bounded by its host's capacity (EffectiveMaxCPUs /
+//     EffectiveMaxMemMB; a worker that reports neither fits, #324)
 //
 // DockerRequirement (DockerImage) is NOT checked here because CWL treats it as
 // a hint — workers without container runtimes can still execute tools bare.
@@ -1928,11 +1936,12 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 				continue
 			}
 		}
-		// Check capacity; an unreported (nil) dimension fits.
-		if wantCores > 0 && w.MaxCPUs != nil && *w.MaxCPUs < wantCores {
+		// Check effective capacity (max bounded by the host's capacity, as
+		// CheckoutTask applies it); an unreported (nil) dimension fits.
+		if c := w.EffectiveMaxCPUs(); wantCores > 0 && c != nil && *c < wantCores {
 			continue
 		}
-		if wantRam > 0 && w.MaxMemMB != nil && *w.MaxMemMB < wantRam {
+		if m := w.EffectiveMaxMemMB(); wantRam > 0 && m != nil && *m < wantRam {
 			continue
 		}
 		// Check prestage datasets — worker must have ALL of them.

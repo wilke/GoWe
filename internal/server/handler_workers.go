@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -51,6 +52,9 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		CgroupCPU    *bool           `json:"cgroup_cpu"`
 		CgroupMemory *bool           `json:"cgroup_memory"`
 		GPUs         []model.GPUInfo `json:"gpus"`
+		// Charge for a task that requests no cores / no RAM; optional.
+		DefaultTaskCores *int   `json:"default_task_cores"`
+		DefaultTaskRamMB *int64 `json:"default_task_ram_mb"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxWorkerRegisterBody)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -143,6 +147,30 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	if req.Slots != nil && *req.Slots > 0 && *req.Slots <= maxWorkerSlots {
 		worker.Slots = req.Slots
 	}
+	// Default task share, charged at checkout to a task that requests no
+	// cores / no RAM. Same range rule as the capacity above; a share larger
+	// than the worker's effective capacity (its own max bounded by its
+	// host's) can never be honoured and is rejected.
+	if req.DefaultTaskCores != nil && *req.DefaultTaskCores > 0 && *req.DefaultTaskCores <= maxWorkerHostCPUs {
+		if eff := worker.EffectiveMaxCPUs(); eff != nil && *req.DefaultTaskCores > *eff {
+			msg := fmt.Sprintf("default_task_cores (%d) exceeds the worker's capacity (%d)", *req.DefaultTaskCores, *eff)
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(msg,
+					model.FieldError{Field: "default_task_cores", Message: msg}))
+			return
+		}
+		worker.DefaultTaskCores = req.DefaultTaskCores
+	}
+	if req.DefaultTaskRamMB != nil && *req.DefaultTaskRamMB > 0 && *req.DefaultTaskRamMB <= maxWorkerHostMemMB {
+		if eff := worker.EffectiveMaxMemMB(); eff != nil && *req.DefaultTaskRamMB > *eff {
+			msg := fmt.Sprintf("default_task_ram_mb (%d) exceeds the worker's capacity (%d)", *req.DefaultTaskRamMB, *eff)
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(msg,
+					model.FieldError{Field: "default_task_ram_mb", Message: msg}))
+			return
+		}
+		worker.DefaultTaskRamMB = req.DefaultTaskRamMB
+	}
 	worker.CgroupCPU = req.CgroupCPU
 	worker.CgroupMemory = req.CgroupMemory
 	if req.GPUs != nil {
@@ -174,6 +202,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets),
 		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB),
+		"default_task_cores", capLog(worker.DefaultTaskCores), "default_task_ram_mb", capLog(worker.DefaultTaskRamMB),
 		"host_id", worker.HostID, "host_cpus", capLog(worker.HostCPUs), "host_mem_mb", capLog(worker.HostMemMB), "gpus", len(worker.GPUs))
 	respondCreated(w, reqID, worker)
 }

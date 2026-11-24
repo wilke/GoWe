@@ -34,6 +34,10 @@ type Host struct {
 	// workers.
 	ClaimedCPUs  int   `json:"claimed_cpus"`
 	ClaimedMemMB int64 `json:"claimed_mem_mb"`
+	// ChargedCPUs and ChargedMemMB sum the resources charged at checkout to
+	// the running tasks of the online workers.
+	ChargedCPUs  int   `json:"charged_cpus"`
+	ChargedMemMB int64 `json:"charged_mem_mb"`
 	// Usage is the most recent host usage among the online workers, nil when
 	// none is at most HostUsageMaxAge old. UsageAt is its server receive time.
 	Usage   *HostUsage `json:"usage,omitempty"`
@@ -78,16 +82,24 @@ type HostWorker struct {
 	RunningTasks int              `json:"running_tasks"`
 }
 
+// WorkerCharge is the sum of the resources charged at checkout to one
+// worker's running tasks.
+type WorkerCharge struct {
+	Cores int
+	RamMB int64
+}
+
 // AggregateHosts groups workers by host id into the per-host view, sorted by
 // host id. Workers without a host id are grouped by hostname under
 // LegacyHostIDPrefix+hostname and flagged Legacy. A host is listed when it has
 // at least one worker, but only online workers count towards its capacity,
-// claimed totals, usage and GPUs; their usage counts only when it is at most
-// HostUsageMaxAge old at now, the most recent sample winning. GPUs are
-// deduplicated by uuid and sorted by (index, uuid); two uuids sharing an index
-// are both listed. runningByWorker maps a worker id to its running task
-// count and may be nil. The result is never nil.
-func AggregateHosts(workers []*Worker, runningByWorker map[string]int, now time.Time) []Host {
+// claimed and charged totals, usage and GPUs; their usage counts only when it
+// is at most HostUsageMaxAge old at now, the most recent sample winning. GPUs
+// are deduplicated by uuid and sorted by (index, uuid); two uuids sharing an
+// index are both listed. runningByWorker maps a worker id to its running task
+// count and chargedByWorker to its running tasks' charges; both may be nil.
+// The result is never nil.
+func AggregateHosts(workers []*Worker, runningByWorker map[string]int, chargedByWorker map[string]WorkerCharge, now time.Time) []Host {
 	type group struct {
 		legacy  bool
 		workers []*Worker
@@ -111,7 +123,7 @@ func AggregateHosts(workers []*Worker, runningByWorker map[string]int, now time.
 
 	hosts := make([]Host, 0, len(groups))
 	for id, g := range groups {
-		hosts = append(hosts, aggregateHost(id, g.legacy, g.workers, runningByWorker, now))
+		hosts = append(hosts, aggregateHost(id, g.legacy, g.workers, runningByWorker, chargedByWorker, now))
 	}
 	slices.SortFunc(hosts, func(a, b Host) int { return cmp.Compare(a.HostID, b.HostID) })
 	return hosts
@@ -127,7 +139,7 @@ type gpuSample struct {
 
 // aggregateHost builds one host from its workers (all non-nil, owned by the
 // caller and sorted here in place).
-func aggregateHost(id string, legacy bool, workers []*Worker, runningByWorker map[string]int, now time.Time) Host {
+func aggregateHost(id string, legacy bool, workers []*Worker, runningByWorker map[string]int, chargedByWorker map[string]WorkerCharge, now time.Time) Host {
 	// Sorting first makes the result independent of the input order, also
 	// for ties (equal usage times, the same GPU uuid on two workers).
 	slices.SortFunc(workers, func(a, b *Worker) int {
@@ -182,6 +194,9 @@ func aggregateHost(id string, legacy bool, workers []*Worker, runningByWorker ma
 		if w.MaxMemMB != nil {
 			h.ClaimedMemMB += *w.MaxMemMB
 		}
+		charged := chargedByWorker[w.ID]
+		h.ChargedCPUs += charged.Cores
+		h.ChargedMemMB += charged.RamMB
 		for _, g := range w.GPUs {
 			if _, ok := gpus[g.UUID]; !ok {
 				gpus[g.UUID] = g
