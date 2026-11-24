@@ -31,6 +31,7 @@ func main() {
 	flag.StringVar(&cfg.ServerURL, "server", "http://localhost:8080", "GoWe server URL")
 	flag.StringVar(&cfg.Name, "name", "", "Worker name (default: hostname)")
 	flag.StringVar(&cfg.Group, "group", "default", "Worker group for task scheduling")
+	flag.StringVar(&cfg.HostID, "host-id", "", "Host identity reported at registration, used verbatim (1-64 chars of [A-Za-z0-9._-]; default: hash of /etc/machine-id, boot id or hostname)")
 	var workerKeyArgv, workerKeyFile string
 	flag.StringVar(&workerKeyArgv, "worker-key", "", "REFUSED (any use, even empty): the key would be visible in /proc/<pid>/cmdline; use --worker-key-file")
 	flag.StringVar(&workerKeyFile, "worker-key-file", "", "File holding the worker authentication key sent as X-Worker-Key (regular file, mode 0600 or stricter, and not under --workdir/--image-dir/--pre-stage-dir/--extra-bind/--dataset paths, which tools can read). Key file only: --worker-key (argv) and "+workerKeyEnv+" (environment) are refused because both are readable by same-uid host processes (/proc/<pid>/cmdline, /proc/<pid>/environ), and tools without DockerRequirement run on the host on every worker")

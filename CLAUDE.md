@@ -187,6 +187,7 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--secret-file` | Load secrets from file (`NAME=value` per line) |
 | `--image-dir` | Base directory for resolving relative `.sif` image paths |
 | `--gpu` / `--gpu-id` | GPU passthrough |
+| `--host-id` | Host identity sent at registration, verbatim (1-64 chars `[A-Za-z0-9._-]`); default: first 16 hex of sha256 of `/etc/machine-id` → boot_id → hostname |
 | `--worker-key-file` | Worker auth key, key file only (regular file, mode 0600 or stricter). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are **refused**: both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
 | `--inherit-host-env` | Degraded: host-run tools (`--runtime none`) inherit the worker env instead of the allow-list (WARN; label `inherit_host_env=true`) |
 | `--apptainer-no-containall` | Degraded: Apptainer without `--containall`, `--cleanenv` kept (WARN; label `apptainer_containall=false`) |

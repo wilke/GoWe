@@ -69,6 +69,14 @@ When `--image-dir` is set and `DockerRequirement.dockerPull` ends with `.sif`, r
 | `--max-mem` | `0` | Maximum memory in MiB for containers (0 = auto-detect from system) |
 | `--max-cpus` | `0` | Maximum CPUs for containers (0 = auto-detect from system) |
 
+#### Host Identity
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host-id` | `""` | Host identity reported at registration, used verbatim (1-64 chars of `[A-Za-z0-9._-]`). Empty = first 16 hex chars of the sha256 of `/etc/machine-id`, falling back to the boot id, then the hostname (the raw machine-id is never sent) |
+
+At registration the worker also reports the host's physical CPU and memory totals (even when `--max-cpus` / `--max-mem` cap it lower), its task slots, whether the cpu / memory cgroup controllers are usable, and, with `--gpu`, the GPU inventory from `nvidia-smi` (filtered by `--gpu-id`). These are informational; they do not change scheduling.
+
 #### Reference Data Pre-staging
 
 | Flag | Default | Description |
