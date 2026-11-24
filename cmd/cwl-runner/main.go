@@ -288,7 +288,10 @@ func runExecute(cmd *cobra.Command, args []string) error {
 
 	// Handle signals.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Tools run in their own process groups, so the terminal's signals no
+	// longer reach them directly; every way the terminal can end this process
+	// must cancel the context instead.
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	go func() {
 		<-sigCh
 		logger.Info("received interrupt, cancelling...")
