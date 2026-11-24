@@ -18,6 +18,9 @@ func TestResolveResources(t *testing.T) {
 		ram     int64
 		want    toolexec.ResourceConfig
 		wantErr bool
+		// Runtime values seen by expressions afterwards; 0 = not checked.
+		wantRtCores int
+		wantRtRam   int64
 	}{
 		{name: "nothing declared, no caps", tool: &cwl.CommandLineTool{}, cores: 1, ram: 1024},
 		{name: "declared cores and ram", tool: &cwl.CommandLineTool{Requirements: rr(map[string]any{"coresMin": 2, "ramMin": 2048})},
@@ -29,6 +32,20 @@ func TestResolveResources(t *testing.T) {
 			cfg: Config{MaxCPUs: 4}, cores: 8, ram: 1024, wantErr: true},
 		{name: "ram exceeds worker max", tool: &cwl.CommandLineTool{Hints: rr(map[string]any{"ramMin": 4096})},
 			cfg: Config{MaxMemMB: 2048}, cores: 1, ram: 4096, wantErr: true},
+		{name: "default share applies when undeclared", tool: &cwl.CommandLineTool{},
+			cfg: Config{MaxCPUs: 16, MaxMemMB: 64000, DefaultCores: 4, DefaultRamMB: 16000}, cores: 1, ram: 1024,
+			want: toolexec.ResourceConfig{Cores: 4, RamMB: 16000}, wantRtCores: 4, wantRtRam: 16000},
+		{name: "declared request wins over default share", tool: &cwl.CommandLineTool{Requirements: rr(map[string]any{"coresMin": 2, "ramMin": 2048})},
+			cfg: Config{MaxCPUs: 16, MaxMemMB: 64000, DefaultCores: 4, DefaultRamMB: 16000}, cores: 2, ram: 2048,
+			want: toolexec.ResourceConfig{Cores: 2, RamMB: 2048}, wantRtCores: 2, wantRtRam: 2048},
+		{name: "default share only for the undeclared dimension", tool: &cwl.CommandLineTool{Requirements: rr(map[string]any{"ramMin": 2048})},
+			cfg: Config{MaxCPUs: 16, MaxMemMB: 64000, DefaultCores: 4, DefaultRamMB: 16000}, cores: 1, ram: 2048,
+			want: toolexec.ResourceConfig{Cores: 4, RamMB: 2048}, wantRtCores: 4, wantRtRam: 2048},
+		{name: "zero default share falls back to worker max", tool: &cwl.CommandLineTool{},
+			cfg: Config{MaxCPUs: 16, MaxMemMB: 64000}, cores: 1, ram: 1024,
+			want: toolexec.ResourceConfig{Cores: 16, RamMB: 64000}, wantRtCores: 16, wantRtRam: 64000},
+		{name: "request above max still rejected with a default share", tool: &cwl.CommandLineTool{Requirements: rr(map[string]any{"coresMin": 32})},
+			cfg: Config{MaxCPUs: 16, DefaultCores: 4}, cores: 32, ram: 1024, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,6 +58,12 @@ func TestResolveResources(t *testing.T) {
 			}
 			if err == nil && got != tt.want {
 				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+			if tt.wantRtCores != 0 && runtime.Cores != tt.wantRtCores {
+				t.Errorf("runtime.Cores = %d, want %d", runtime.Cores, tt.wantRtCores)
+			}
+			if tt.wantRtRam != 0 && runtime.Ram != tt.wantRtRam {
+				t.Errorf("runtime.Ram = %d, want %d", runtime.Ram, tt.wantRtRam)
 			}
 		})
 	}

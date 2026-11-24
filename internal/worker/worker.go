@@ -10,7 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/me/gowe/internal/cwltool"
@@ -55,6 +58,10 @@ type Worker struct {
 	envVars           map[string]string        // Non-secret env vars injected into containers
 	wsStager          *staging.WorkspaceStager // Workspace stager for ws:// URIs (nil if disabled)
 	active            *activeTaskSet           // In-flight tasks → per-task cancel funcs
+	concurrency       int                      // Max tasks run at once (--concurrency; 0 or 1 = one)
+	shareCores        int                      // Registered charge for a task requesting no cores (0 = not sent)
+	shareRamMB        int64                    // Registered charge for a task requesting no RAM (0 = not sent)
+	singleTask        atomic.Bool              // Server cannot account for several tasks: run one at a time
 	keepTaskDirs      bool                     // Retain task working dirs after successful completion
 	inheritHostEnv    bool                     // Degraded: local/bare tools inherit the full worker env
 	noContainall      bool                     // Degraded: apptainer runs without --containall
@@ -122,6 +129,17 @@ type Config struct {
 	// (--host-id, 1-64 characters of [A-Za-z0-9._-]). Empty means derive it
 	// from /etc/machine-id, the boot id or the hostname (#323).
 	HostID string
+
+	// Concurrency is the maximum number of tasks run at once (--concurrency).
+	// 0 means 1 (one task at a time).
+	Concurrency int
+
+	// DefaultTaskCores / DefaultTaskRamMB override the share charged to and
+	// given to a task that requests no cores / no RAM when Concurrency > 1
+	// (--default-task-cores, --default-task-ram). 0 means the effective
+	// capacity divided by Concurrency. Ignored at Concurrency 1.
+	DefaultTaskCores int
+	DefaultTaskRamMB int64
 
 	// KeepTaskDirs retains task working directories after successful
 	// completion instead of deleting them (debugging aid). Directories of
@@ -234,6 +252,23 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		"host_mem_mb", hostMemMB,
 		"gpus", len(gpuInventory),
 	)
+
+	// Concurrency and the default per-task share, validated against the
+	// effective capacity (max bounded by the host where known).
+	slots, shareCores, shareRamMB, err := resolveConcurrency(cfg, hostCPUs, hostMemMB)
+	if err != nil {
+		return nil, err
+	}
+	if slots == 1 && (cfg.DefaultTaskCores != 0 || cfg.DefaultTaskRamMB != 0) {
+		logger.Warn("--default-task-cores / --default-task-ram are ignored at --concurrency 1: a task that requests nothing gets the whole worker budget")
+	}
+	if slots > 1 {
+		logger.Info("worker concurrency",
+			"concurrency", slots,
+			"default_task_cores", shareCores,
+			"default_task_ram_mb", shareRamMB,
+		)
+	}
 
 	// Build TLS config.
 	tlsCfg, err := cfg.Stager.TLS.BuildTLSConfig()
@@ -398,8 +433,118 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		inheritHostEnv:    cfg.InheritHostEnv,
 		noContainall:      cfg.ApptainerNoContainall,
 		active:            newActiveTaskSet(),
+		concurrency:       slots,
+		shareCores:        shareCores,
+		shareRamMB:        shareRamMB,
 		logger:            logger.With("component", "worker"),
 	}, nil
+}
+
+// ValidateConcurrency checks --concurrency on its own: at least 1, and not
+// above 1 together with --gpu (every task would get the same GPU devices;
+// per-task GPU assignment does not exist yet).
+func ValidateConcurrency(n int, gpu bool) error {
+	if n < 1 {
+		return fmt.Errorf("--concurrency must be at least 1 (got %d)", n)
+	}
+	if n > 1 && gpu {
+		return fmt.Errorf("--concurrency %d cannot be combined with --gpu: every task would get the same GPU devices (per-task GPU assignment is not supported yet)", n)
+	}
+	return nil
+}
+
+// resolveConcurrency validates the concurrency settings against the worker's
+// effective capacity — its max CPUs / memory bounded by the host's where the
+// host value is known (> 0) — and returns the slot count and the default
+// share charged to and given to a task that requests no cores / no RAM. The
+// share is 0 at one slot (a task then gets the whole budget, as before
+// --concurrency existed); otherwise cores = max(1, CPUs/slots) and RAM =
+// memory/slots (0 when memory is unknown), replaced by the override flags.
+func resolveConcurrency(cfg Config, hostCPUs int, hostMemMB int64) (slots, shareCores int, shareRamMB int64, err error) {
+	slots = cfg.Concurrency
+	if slots == 0 {
+		slots = 1 // unset (library callers): one task at a time
+	}
+	if err := ValidateConcurrency(slots, cfg.GPU.Enabled); err != nil {
+		return 0, 0, 0, err
+	}
+	if cfg.DefaultTaskCores < 0 || cfg.DefaultTaskRamMB < 0 {
+		return 0, 0, 0, fmt.Errorf("--default-task-cores and --default-task-ram must not be negative")
+	}
+	if slots == 1 {
+		return 1, 0, 0, nil
+	}
+	effCPUs := minKnown(cfg.Resources.MaxCPUs, hostCPUs)
+	effMemMB := minKnown(cfg.Resources.MaxMemMB, hostMemMB)
+	if slots > effCPUs {
+		return 0, 0, 0, fmt.Errorf("--concurrency %d exceeds the worker's %d CPUs", slots, effCPUs)
+	}
+	shareCores = max(1, effCPUs/slots)
+	if effMemMB > 0 {
+		shareRamMB = effMemMB / int64(slots)
+	}
+	if cfg.DefaultTaskCores > 0 {
+		if cfg.DefaultTaskCores > effCPUs {
+			return 0, 0, 0, fmt.Errorf("--default-task-cores %d exceeds the worker's %d CPUs", cfg.DefaultTaskCores, effCPUs)
+		}
+		shareCores = cfg.DefaultTaskCores
+	}
+	if cfg.DefaultTaskRamMB > 0 {
+		if effMemMB > 0 && cfg.DefaultTaskRamMB > effMemMB {
+			return 0, 0, 0, fmt.Errorf("--default-task-ram %d MiB exceeds the worker's %d MiB", cfg.DefaultTaskRamMB, effMemMB)
+		}
+		shareRamMB = cfg.DefaultTaskRamMB
+	}
+	return slots, shareCores, shareRamMB, nil
+}
+
+// minKnown is the worker's max bounded by the host value when that is known
+// (> 0); an unset max (0) takes the host value.
+func minKnown[T int | int64](maxVal, host T) T {
+	if host > 0 && (maxVal <= 0 || host < maxVal) {
+		return host
+	}
+	return maxVal
+}
+
+// slotLimit is the number of tasks the worker may run at once right now: the
+// configured concurrency, or 1 once the server turned out unable to account
+// for several tasks (old server at registration, or a checkout without a
+// charge).
+func (w *Worker) slotLimit() int {
+	if w.concurrency <= 1 || w.singleTask.Load() {
+		return 1
+	}
+	return w.concurrency
+}
+
+// dropToSingleTask makes the worker run one task at a time for the rest of
+// the process; tasks already running continue. It logs the WARN only on the
+// first call.
+func (w *Worker) dropToSingleTask(msg string, args ...any) {
+	if w.concurrency > 1 && w.singleTask.CompareAndSwap(false, true) {
+		w.logger.Warn(msg, append(args, "concurrency", w.concurrency)...)
+	}
+}
+
+// taskShare is the per-task default given to a tool that requests no cores /
+// no RAM (cwltool.Config.DefaultCores / DefaultRamMB): what the server
+// charged for the task at checkout, so the worker grants exactly what was
+// accounted for. Zero (whole worker budget, as at concurrency 1) unless
+// several tasks may run at once and the server sent a positive charge.
+// executeLegacy tasks and tools run with --runtime none are charged the same
+// way but their limits are not enforced.
+func (w *Worker) taskShare(task *model.Task) (cores int, ramMB int64) {
+	if w.slotLimit() <= 1 {
+		return 0, 0
+	}
+	if task.ChargedCores != nil && *task.ChargedCores > 0 {
+		cores = *task.ChargedCores
+	}
+	if task.ChargedRamMB != nil && *task.ChargedRamMB > 0 {
+		ramMB = *task.ChargedRamMB
+	}
+	return cores, ramMB
 }
 
 // degradedLabels returns the registration labels that flag a worker running
@@ -438,14 +583,25 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		HostID:       w.hostID,
 		HostCPUs:     w.hostCPUs,
 		HostMemMB:    w.hostMemMB,
-		Slots:        1, // one task at a time until --concurrency exists
+		Slots:        max(1, w.concurrency),
 		CgroupCPU:    &w.resources.CgroupCPU,
 		CgroupMemory: &w.resources.CgroupMemory,
 		GPUs:         w.gpuInventory,
 	}
+	if w.concurrency > 1 {
+		// The charge for a task that requests nothing. Not sent at one slot,
+		// keeping the registration exactly as before --concurrency.
+		regOpts.DefaultTaskCores = w.shareCores
+		regOpts.DefaultTaskRamMB = w.shareRamMB
+	}
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
+	}
+	if w.concurrency > 1 && worker.DefaultTaskCores == nil {
+		// A server that does not echo the share does not charge tasks at
+		// checkout either, so it cannot keep several tasks within capacity.
+		w.dropToSingleTask("server does not account for concurrent tasks (no default_task_cores in its registration response): running one task at a time with the whole budget per task")
 	}
 	w.logger.Info("registered with server",
 		"worker_id", worker.ID,
@@ -456,6 +612,7 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		"gpu_device", worker.GPUDevice,
 		"max_cpus", w.resources.MaxCPUs,
 		"max_mem_mb", w.resources.MaxMemMB,
+		"concurrency", w.slotLimit(),
 	)
 
 	// Sample host/GPU usage in the background; heartbeats attach the latest
@@ -500,15 +657,33 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// taskLoop polls for tasks and executes them until context is cancelled.
+// shutdownTaskWait bounds how long shutdown waits for running tasks (whose
+// contexts are cancelled, so their tools are being terminated) before
+// deregistering anyway. A variable so tests can shrink it.
+var shutdownTaskWait = 60 * time.Second
+
+// taskLoop polls for tasks and runs up to slotLimit() of them at once until
+// the context is cancelled. On cancellation it stops polling, waits (bounded)
+// for the running tasks — their contexts derive from ctx, so their tools are
+// being terminated — and then deregisters.
 func (w *Worker) taskLoop(ctx context.Context) error {
 	ticker := time.NewTicker(w.poll)
 	defer ticker.Stop()
 
+	// slots holds one token per running task: acquired before checkout,
+	// released when the task goroutine returns. Only this goroutine acquires.
+	slots := make(chan struct{}, max(1, w.concurrency))
+	// freed wakes the loop when a task finishes so a free slot is refilled
+	// without waiting for the next tick.
+	freed := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+
 	for {
 		select {
 		case <-ctx.Done():
-			w.logger.Info("shutting down, deregistering...")
+			w.logger.Info("shutting down: waiting for running tasks", "task_ids", w.active.ids())
+			w.waitForTasks(&wg)
+			w.logger.Info("deregistering...")
 			// Use a fresh context for deregistration.
 			deregCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := w.client.Deregister(deregCtx)
@@ -519,61 +694,129 @@ func (w *Worker) taskLoop(ctx context.Context) error {
 			return nil
 
 		case <-ticker.C:
-			if err := w.pollAndExecute(ctx); err != nil {
-				w.logger.Error("poll error", "error", err)
+			w.fillSlots(ctx, slots, freed, &wg)
+		case <-freed:
+			w.fillSlots(ctx, slots, freed, &wg)
+		}
+	}
+}
+
+// waitForTasks waits for the task goroutines, at most shutdownTaskWait.
+func (w *Worker) waitForTasks(wg *sync.WaitGroup) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(shutdownTaskWait):
+		w.logger.Warn("tasks still running after the shutdown wait; deregistering anyway (the server requeues them)",
+			"task_ids", w.active.ids(), "waited", shutdownTaskWait)
+	}
+}
+
+// fillSlots checks out tasks while a slot is free, starting each on its own
+// goroutine. It stops at "no task", a checkout error or cancellation. At one
+// slot the next checkout happens only after the running task has reported
+// and its goroutine returned, as before --concurrency.
+func (w *Worker) fillSlots(ctx context.Context, slots chan struct{}, freed chan<- struct{}, wg *sync.WaitGroup) {
+	for ctx.Err() == nil {
+		// Task goroutines only release, so a free slot seen here stays free
+		// and the send below never blocks.
+		if len(slots) >= w.slotLimit() {
+			return
+		}
+		slots <- struct{}{}
+
+		task, err := w.client.Checkout(ctx)
+		if err != nil || task == nil {
+			<-slots
+			if err != nil && ctx.Err() == nil {
+				w.logger.Error("poll error", "error", fmt.Errorf("checkout: %w", err))
 			}
+			return
 		}
+
+		if w.active.has(task.ID) {
+			// The server requeued a task this worker is still running (its
+			// heartbeats were missed) and handed it back. The run in progress
+			// owns it again; a second run would share its task dir.
+			<-slots
+			w.logger.Warn("checked out a task this worker is already running; keeping the run in progress", "task_id", task.ID)
+			return
+		}
+
+		w.logger.Info("task received", "task_id", task.ID, "step_id", task.StepID)
+		if task.ChargedCores == nil {
+			// The server that handed out this task does not charge resources
+			// (e.g. rolled back under a running worker).
+			w.dropToSingleTask("checked-out task carries no resource charge: the server cannot account for concurrent tasks, running one task at a time from now on",
+				"task_id", task.ID)
+		}
+
+		// Register the task before its goroutine starts so the next
+		// heartbeat lists it and the in-flight count is exact.
+		runCtx, cancel := context.WithCancel(ctx)
+		w.active.add(task.ID, cancel)
+		wg.Add(1)
+		go func() {
+			defer func() {
+				<-slots
+				select {
+				case freed <- struct{}{}:
+				default:
+				}
+				wg.Done()
+			}()
+			defer func() {
+				if r := recover(); r != nil {
+					w.logger.Error("task panicked", "task_id", task.ID, "panic", r, "stack", string(debug.Stack()))
+					w.logTaskError(task, w.reportFailure(context.WithoutCancel(ctx), task, fmt.Errorf("worker panic: %v", r)))
+				}
+			}()
+			w.logTaskError(task, w.runTask(runCtx, cancel, task))
+		}()
 	}
 }
 
-// pollAndExecute checks for work and executes if available.
-// Heartbeat is handled by a separate goroutine, so this can block on task execution.
-func (w *Worker) pollAndExecute(ctx context.Context) error {
-	// Check for work.
-	task, err := w.client.Checkout(ctx)
-	if err != nil {
-		return fmt.Errorf("checkout: %w", err)
+// logTaskError logs a task's execution error.
+func (w *Worker) logTaskError(task *model.Task, err error) {
+	if err == nil || errors.Is(err, errReportDeclined) {
+		// errReportDeclined: the server deliberately dropped the report (stale
+		// ownership or already-terminal task); reportComplete logged it at Info.
+		return
 	}
-	if task == nil {
-		return nil // No work available
-	}
-
-	w.logger.Info("task received", "task_id", task.ID, "step_id", task.StepID)
-
-	// Execute the task (blocking). Heartbeat continues in background goroutine.
-	if err := w.executeTask(ctx, task); err != nil {
-		if errors.Is(err, errReportDeclined) {
-			// The server deliberately dropped the report (stale ownership or
-			// already-terminal task); reportComplete logged it at Info.
-		} else {
-			w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
-		}
-	}
-
-	return nil
+	w.logger.Error("task execution failed", "task_id", task.ID, "error", err)
 }
 
-// executeTask runs a single task: stage-in → run → collect outputs → stage-out → report.
+// executeTask registers task as active and runs it (see runTask).
 func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
-	// The worker holds the submitter's credentials only for the lifetime of
-	// this task. Deferred first so it runs after every other deferred func and
-	// on every exit path: success, failure, cancellation and panic.
-	defer scrubTaskCredentials(task)
-
-	taskDir := filepath.Join(w.workDir, task.ID)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("create task dir: %w", err))
-	}
-
 	// Per-task execution context so the heartbeat loop can cancel this specific
 	// task — killing its process and freeing resources (e.g. GPU) — without
 	// affecting the worker or other tasks.
 	runCtx, cancel := context.WithCancel(ctx)
 	w.active.add(task.ID, cancel)
+	return w.runTask(runCtx, cancel, task)
+}
+
+// runTask runs a single task already registered in w.active with cancel, the
+// cancel func of runCtx: stage-in → run → collect outputs → stage-out →
+// report. It removes the task from w.active and cancels runCtx on return.
+func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task *model.Task) error {
+	// The worker holds the submitter's credentials only for the lifetime of
+	// this task. Deferred first so it runs after every other deferred func and
+	// on every exit path: success, failure, cancellation and panic.
+	defer scrubTaskCredentials(task)
 	defer func() {
 		w.active.remove(task.ID)
 		cancel()
 	}()
+
+	taskDir := filepath.Join(w.workDir, task.ID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		return w.reportFailure(runCtx, task, fmt.Errorf("create task dir: %w", err))
+	}
 
 	// Check if task has Tool+Job (new format) or legacy _base_command.
 	if task.HasTool() {
@@ -607,7 +850,9 @@ func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 	if abs, err := filepath.Abs(taskDir); err == nil {
 		taskDir = abs
 	}
-	if outputsReferenceDir(outputs, taskDir) {
+	// The "_staging" sibling holds reconstructed input directories and file
+	// literals; a passthrough output may reference them in place.
+	if outputsReferenceDir(outputs, taskDir) || outputsReferenceDir(outputs, taskDir+"_staging") {
 		w.logger.Debug("keeping task dir: outputs are referenced in place", "task_id", taskID)
 		return
 	}
@@ -860,6 +1105,13 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		InheritHostEnv:        w.inheritHostEnv,
 		ApptainerNoContainall: w.noContainall,
 	}
+	// File literals go below the task's staging dir, not the shared
+	// $TMPDIR/cwl-literals: concurrent tasks may carry literals with the same
+	// basename and different contents.
+	cfg.LiteralDir = taskStagingDir(taskDir)
+	// With several tasks at once, a tool that requests no cores / no RAM
+	// gets what the server charged for it instead of the whole budget.
+	cfg.DefaultCores, cfg.DefaultRamMB = w.taskShare(task)
 	if task.RuntimeHints != nil {
 		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
 		cfg.Namespaces = task.RuntimeHints.Namespaces
@@ -926,6 +1178,11 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 	stageInStart := time.Now()
 	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
+		// Interrupted by a cancel: SKIPPED for a server cancel, left for
+		// requeue on worker shutdown — not a FAILED that consumes a retry.
+		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
+			return cerr
+		}
 		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
 	}
 	stageInMs := time.Since(stageInStart).Milliseconds()
@@ -995,6 +1252,16 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 	stageOutMs := time.Since(stageOutStart).Milliseconds()
 
+	// A cancel during stage-out leaves outputs at their local paths; never
+	// report that as SUCCESS. Same decision as a cancelled execution. A
+	// shutdown that lands after every output staged changes nothing: the
+	// finished task is reported below.
+	if walker.failed > 0 || w.active.wasCancelled(task.ID) {
+		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
+			return cerr
+		}
+	}
+
 	// Two distinct sources mapping to one destination would silently
 	// overwrite each other; fail the task instead. The task dir is kept.
 	// The collision is a property of the tool's output layout, so a retry
@@ -1042,6 +1309,8 @@ func (w *Worker) redactOutputsForReport(taskID string, outputs map[string]any, t
 }
 
 // executeLegacy executes a task using the legacy _base_command approach.
+// The server charges such a task like any other, but no cores/RAM limit is
+// applied to the command (as before --concurrency).
 func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir string) error {
 	// Extract reserved keys from task inputs.
 	command := extractBaseCommand(task.Inputs)
@@ -1109,6 +1378,7 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 
 	// Collect outputs via glob patterns.
 	outputs := make(map[string]any)
+	stageOutFailed := false
 	for outputID, pattern := range outputGlobs {
 		matches, err := filepath.Glob(filepath.Join(taskDir, pattern))
 		if err != nil {
@@ -1129,6 +1399,7 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 			}
 			loc, err := w.stager.StageOut(ctx, m, task.ID, opts)
 			if err != nil {
+				stageOutFailed = true
 				// Report the local location instead of dropping the output:
 				// the file in the task dir is the only copy, and referencing
 				// it keeps cleanupTaskDir from deleting it.
@@ -1142,6 +1413,16 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 			outputs[outputID] = staged[0]
 		} else if len(staged) > 1 {
 			outputs[outputID] = staged
+		}
+	}
+
+	// A cancel after the command finished (killed with a non-zero exit, or
+	// during stage-out, leaving local locations) must not be reported as
+	// FAILED or SUCCESS. Same decision as a cancelled run. A shutdown that
+	// lands after a clean exit and a complete stage-out changes nothing.
+	if result.ExitCode != 0 || stageOutFailed || w.active.wasCancelled(task.ID) {
+		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
+			return cerr
 		}
 	}
 

@@ -42,8 +42,8 @@ type Worker struct {
 	// worker or an undetected value (#323).
 	HostCPUs  *int   `json:"host_cpus,omitempty"`
 	HostMemMB *int64 `json:"host_mem_mb,omitempty"`
-	// Slots is the number of tasks the worker runs concurrently (currently
-	// always 1). nil means not reported (#323).
+	// Slots is the number of tasks the worker runs concurrently
+	// (--concurrency). nil means not reported (#323).
 	Slots *int `json:"slots,omitempty"`
 	// CgroupCPU and CgroupMemory report whether the cpu / memory cgroup
 	// controllers are usable by the worker. nil means not reported (#323).

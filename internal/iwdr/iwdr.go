@@ -21,6 +21,7 @@ type StageOptions struct {
 	CWLDir           string   // CWL file directory for relative paths
 	ExpressionLib    []string // JS from InlineJavascriptRequirement
 	InplaceUpdate    bool     // true if InplaceUpdateRequirement is enabled (don't copy writable files)
+	LiteralDir       string   // Base dir for file literals without a path (empty = shared $TMPDIR/cwl-literals)
 }
 
 // StageResult contains staging results.
@@ -71,7 +72,7 @@ func Stage(tool *cwl.CommandLineTool, inputs map[string]any, workDir string, opt
 		if item == nil {
 			continue
 		}
-		mounts, err := stageIWDItem(item, inputs, workDir, evaluator, opts.CWLDir, stagedPaths, opts.CopyForContainer, opts.InplaceUpdate, allowAbsoluteEntryname)
+		mounts, err := stageIWDItem(item, inputs, workDir, evaluator, opts.CWLDir, stagedPaths, opts.LiteralDir, opts.CopyForContainer, opts.InplaceUpdate, allowAbsoluteEntryname)
 		if err != nil {
 			return nil, err
 		}

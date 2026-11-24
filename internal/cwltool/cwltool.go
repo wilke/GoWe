@@ -75,6 +75,8 @@ type Config struct {
 	GPU                   toolexec.GPUConfig   // GPU configuration
 	MaxCPUs               int                  // Worker max CPUs (0 = no limit)
 	MaxMemMB              int64                // Worker max memory in MiB (0 = no limit)
+	DefaultCores          int                  // Cores for a tool that requests none (0 = MaxCPUs)
+	DefaultRamMB          int64                // RAM in MiB for a tool that requests none (0 = MaxMemMB)
 	ApptainerCgroups      bool                 // System supports cgroups v2 unified
 	CgroupCPU             bool                 // cpu controller usable (Apptainer --cpus)
 	CgroupMemory          bool                 // memory controller usable (Apptainer --memory)
@@ -90,6 +92,12 @@ type Config struct {
 	PreserveEnv           []string             // Host env var names local tools may inherit besides the allow-list
 	InheritHostEnv        bool                 // Local tools inherit the full host env (degraded; default is an allow-list)
 	ApptainerNoContainall bool                 // Drop --containall from apptainer (degraded; --cleanenv is kept)
+	// LiteralDir is where file literals without a path (tool defaults,
+	// InitialWorkDirRequirement entries) are written, under
+	// LiteralDir/cwl-literals. Empty means the shared $TMPDIR/cwl-literals;
+	// callers running several tools at once set a per-job directory so two
+	// literals with the same basename cannot overwrite each other.
+	LiteralDir string
 	// SecretValues is the full set of secret name->value pairs in play for
 	// this execution (env-exposed SecretEnvVars entries plus any job-only
 	// values re-injected by ApplySecrets, e.g. a cwltool:Secrets input
@@ -144,18 +152,26 @@ func ResolveResources(runtime *cwlexpr.RuntimeContext, cfg Config, tool *cwl.Com
 
 	var res toolexec.ResourceConfig
 
-	// Set effective cores: CWL requirement takes priority, then worker max.
+	// Set effective cores: CWL requirement takes priority, then the default
+	// share (a worker running several tasks), then worker max.
 	if hasCWLCores {
 		res.Cores = runtime.Cores
+	} else if cfg.DefaultCores > 0 {
+		res.Cores = cfg.DefaultCores
+		runtime.Cores = cfg.DefaultCores
 	} else if cfg.MaxCPUs > 0 {
 		res.Cores = cfg.MaxCPUs
 		runtime.Cores = cfg.MaxCPUs
 	}
 	// else: no limit, keep runtime default for expressions
 
-	// Set effective RAM: CWL requirement takes priority, then worker max.
+	// Set effective RAM: CWL requirement takes priority, then the default
+	// share, then worker max.
 	if hasCWLRam {
 		res.RamMB = runtime.Ram
+	} else if cfg.DefaultRamMB > 0 {
+		res.RamMB = cfg.DefaultRamMB
+		runtime.Ram = cfg.DefaultRamMB
 	} else if cfg.MaxMemMB > 0 {
 		res.RamMB = cfg.MaxMemMB
 		runtime.Ram = cfg.MaxMemMB
@@ -191,7 +207,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	}
 
 	// Merge tool input defaults with resolved inputs.
-	mergedInputs, err := MergeToolDefaults(tool, resolvedInputs, cfg.CWLDir)
+	mergedInputs, err := mergeToolDefaults(tool, resolvedInputs, cfg.CWLDir, cfg.LiteralDir)
 	if err != nil {
 		return nil, fmt.Errorf("process inputs: %w", err)
 	}
@@ -254,6 +270,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		CWLDir:           cfg.CWLDir,
 		ExpressionLib:    expressionLib,
 		InplaceUpdate:    inplaceUpdate,
+		LiteralDir:       cfg.LiteralDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("stage InitialWorkDirRequirement: %w", err)

@@ -39,6 +39,14 @@ func (a *activeTaskSet) remove(taskID string) {
 	delete(a.cancelled, taskID)
 }
 
+// has reports whether the task is currently registered as running.
+func (a *activeTaskSet) has(taskID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.m[taskID]
+	return ok
+}
+
 // ids returns the IDs of all currently-running tasks, sorted for stable output.
 func (a *activeTaskSet) ids() []string {
 	a.mu.Lock()
