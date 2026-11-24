@@ -65,6 +65,14 @@ type Task struct {
 	// an old worker never sends it, so it persists as NULL).
 	StageInMs  *int64 `json:"stage_in_ms,omitempty"`
 	StageOutMs *int64 `json:"stage_out_ms,omitempty"`
+
+	// ChargedCores/ChargedRamMB are the resources the server charged against
+	// the worker and host when the task was checked out. Nil when not running
+	// or checked out by an older server. Only checkout writes them and only
+	// the requeue paths clear them (a task that leaves RUNNING by another path
+	// keeps its last values, which are then no longer counted).
+	ChargedCores *int   `json:"charged_cores,omitempty"`
+	ChargedRamMB *int64 `json:"charged_ram_mb,omitempty"`
 }
 
 // DatasetRequirement describes a reference dataset needed by a CWL tool.

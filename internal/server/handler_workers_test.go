@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -589,6 +590,68 @@ func TestRegisterWorker_Capacity(t *testing.T) {
 			}
 			if (stored.MaxCPUs != nil) != (tt.wantCPUs != nil) || (stored.MaxMemMB != nil) != (tt.wantMem != nil) {
 				t.Errorf("stored caps = %v/%v", stored.MaxCPUs, stored.MaxMemMB)
+			}
+		})
+	}
+}
+
+func TestRegisterWorker_DefaultTaskShare(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCores  *float64
+		wantMem    *float64
+	}{
+		{"accepted", `{"name":"w","runtime":"none","max_cpus":16,"max_mem_mb":32000,"default_task_cores":2,"default_task_ram_mb":4096}`,
+			http.StatusCreated, f64(2), f64(4096)},
+		{"equal to capacity", `{"name":"w","runtime":"none","max_cpus":16,"max_mem_mb":32000,"default_task_cores":16,"default_task_ram_mb":32000}`,
+			http.StatusCreated, f64(16), f64(32000)},
+		{"no capacity to compare against", `{"name":"w","runtime":"none","default_task_cores":8,"default_task_ram_mb":1000}`,
+			http.StatusCreated, f64(8), f64(1000)},
+		{"absent", `{"name":"w","runtime":"none","max_cpus":16}`, http.StatusCreated, nil, nil},
+		{"zero", `{"name":"w","runtime":"none","default_task_cores":0,"default_task_ram_mb":0}`, http.StatusCreated, nil, nil},
+		{"negative", `{"name":"w","runtime":"none","default_task_cores":-1,"default_task_ram_mb":-1}`, http.StatusCreated, nil, nil},
+		{"above absolute maximum", fmt.Sprintf(`{"name":"w","runtime":"none","default_task_cores":%d,"default_task_ram_mb":%d}`,
+			maxWorkerHostCPUs+1, int64(maxWorkerHostMemMB)+1), http.StatusCreated, nil, nil},
+		{"cores above max_cpus", `{"name":"w","runtime":"none","max_cpus":4,"default_task_cores":8}`, http.StatusBadRequest, nil, nil},
+		{"cores above host capacity", `{"name":"w","runtime":"none","max_cpus":64,"host_id":"h1","host_cpus":16,"default_task_cores":32}`, http.StatusBadRequest, nil, nil},
+		{"ram above max_mem_mb", `{"name":"w","runtime":"none","max_mem_mb":4000,"default_task_ram_mb":8000}`, http.StatusBadRequest, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, st := testServerWithStore()
+			w, env := doPost(t, srv, "/api/v1/workers/", tt.body)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status=%d, want %d, body=%s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if tt.wantStatus != http.StatusCreated {
+				workers, err := st.ListWorkers(context.Background())
+				if err != nil || len(workers) != 0 {
+					t.Errorf("rejected registration stored workers = %d, err %v", len(workers), err)
+				}
+				return
+			}
+			var data map[string]any
+			json.Unmarshal(env.Data, &data)
+			check := func(key string, want *float64) {
+				got, present := data[key]
+				if want == nil && present {
+					t.Errorf("response %s = %v, want absent", key, got)
+				}
+				if want != nil && got != *want {
+					t.Errorf("response %s = %v, want %v", key, got, *want)
+				}
+			}
+			check("default_task_cores", tt.wantCores)
+			check("default_task_ram_mb", tt.wantMem)
+
+			stored, err := st.GetWorker(context.Background(), data["id"].(string))
+			if err != nil || stored == nil {
+				t.Fatalf("GetWorker: %v %v", stored, err)
+			}
+			if (stored.DefaultTaskCores != nil) != (tt.wantCores != nil) || (stored.DefaultTaskRamMB != nil) != (tt.wantMem != nil) {
+				t.Errorf("stored default share = %v/%v", stored.DefaultTaskCores, stored.DefaultTaskRamMB)
 			}
 		})
 	}

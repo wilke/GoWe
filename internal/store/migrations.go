@@ -489,6 +489,31 @@ var alterStatements = []struct {
 		column:   "secret_inputs",
 		alterSQL: "ALTER TABLE workflows ADD COLUMN secret_inputs TEXT",
 	},
+	// Capacity accounting at checkout. charged_* is what CheckoutTask
+	// charged against the worker and host (NULL = not checked out by a
+	// server that charges); on RUNNING rows written only by checkout, cleared by the
+	// requeue statements. default_task_* is the charge for a task that
+	// requests no cores / no RAM (NULL = such tasks are not charged).
+	{
+		table:    "tasks",
+		column:   "charged_cores",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN charged_cores INTEGER",
+	},
+	{
+		table:    "tasks",
+		column:   "charged_ram_mb",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN charged_ram_mb INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "default_task_cores",
+		alterSQL: "ALTER TABLE workers ADD COLUMN default_task_cores INTEGER",
+	},
+	{
+		table:    "workers",
+		column:   "default_task_ram_mb",
+		alterSQL: "ALTER TABLE workers ADD COLUMN default_task_ram_mb INTEGER",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

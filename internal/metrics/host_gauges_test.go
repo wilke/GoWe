@@ -78,8 +78,15 @@ func TestRefreshHostGauges(t *testing.T) {
 		{ID: "x1", State: model.WorkerStateOnline, HostCPUs: hostIntP(4), MaxCPUs: hostIntP(4)},
 	}
 
+	// Charges per worker id; the offline a3's charge never counts.
+	charged := map[string]model.WorkerCharge{
+		"a1": {Cores: 6, RamMB: 4000},
+		"a2": {Cores: 2, RamMB: 1000},
+		"a3": {Cores: 100, RamMB: 100000},
+	}
+
 	r := NewRegistry(Config{})
-	r.refreshHostGauges(workers, now)
+	r.refreshHostGauges(workers, charged, now)
 
 	// Series counts first: WithLabelValues below would create series.
 	counts := []struct {
@@ -89,6 +96,8 @@ func TestRefreshHostGauges(t *testing.T) {
 	}{
 		{"cpus: both hosts, none for the empty host id", r.hostCPUs, 2},
 		{"claimed cpus", r.hostClaimedCPUs, 2},
+		{"charged cpus", r.hostChargedCPUs, 2},
+		{"charged mem", r.hostChargedMemBytes, 2},
 		{"load1: stale host-b omitted", r.hostLoad1, 1},
 		{"mem available: stale host-b omitted", r.hostMemAvailBytes, 1},
 		{"gpu total: shared GPU-0 counted once", r.hostGPUMemTotal, 2},
@@ -115,6 +124,9 @@ func TestRefreshHostGauges(t *testing.T) {
 		{"claimed cpus sum online only", r.hostClaimedCPUs, []string{"host-a"}, 96},
 		{"claimed mem sum online only", r.hostClaimedMemBytes, []string{"host-a"}, 700000 * mib},
 		{"claimed cpus host-b", r.hostClaimedCPUs, []string{"host-b"}, 8},
+		{"charged cpus sum online only", r.hostChargedCPUs, []string{"host-a"}, 8},
+		{"charged mem sum online only", r.hostChargedMemBytes, []string{"host-a"}, 5000 * mib},
+		{"charged cpus host-b without charges", r.hostChargedCPUs, []string{"host-b"}, 0},
 		{"load1 from the freshest online usage", r.hostLoad1, []string{"host-a"}, 3.5},
 		{"mem available from the freshest online usage", r.hostMemAvailBytes, []string{"host-a"}, 400000 * mib},
 		{"gpu 0 total", r.hostGPUMemTotal, []string{"host-a", "0"}, 143771 * mib},
@@ -130,7 +142,7 @@ func TestRefreshHostGauges(t *testing.T) {
 	}
 
 	// A refresh without host-a drops its series (stale label sets reset).
-	r.refreshHostGauges(workers[3:4], now)
+	r.refreshHostGauges(workers[3:4], nil, now)
 	if got := testutil.CollectAndCount(r.hostCPUs); got != 1 {
 		t.Errorf("cpus series after host-a left = %d, want 1", got)
 	}
@@ -158,13 +170,15 @@ func TestRefreshHostGauges_OfflineOnlyHostEmitsNothing(t *testing.T) {
 	}}
 
 	r := NewRegistry(Config{})
-	r.refreshHostGauges(workers, now)
+	r.refreshHostGauges(workers, map[string]model.WorkerCharge{"gone1": {Cores: 4, RamMB: 100}}, now)
 
 	vecs := map[string]*prometheus.GaugeVec{
 		"cpus":          r.hostCPUs,
 		"mem":           r.hostMemBytes,
 		"claimed cpus":  r.hostClaimedCPUs,
 		"claimed mem":   r.hostClaimedMemBytes,
+		"charged cpus":  r.hostChargedCPUs,
+		"charged mem":   r.hostChargedMemBytes,
 		"load1":         r.hostLoad1,
 		"mem available": r.hostMemAvailBytes,
 		"gpu total":     r.hostGPUMemTotal,
@@ -197,7 +211,7 @@ func TestRefreshHostGauges_GPUsFromOnlineWorkersOnly(t *testing.T) {
 	}
 
 	r := NewRegistry(Config{})
-	r.refreshHostGauges(workers, now)
+	r.refreshHostGauges(workers, nil, now)
 
 	if got := testutil.CollectAndCount(r.hostGPUMemTotal); got != 1 {
 		t.Fatalf("gpu total series = %d, want 1 (the offline worker's GPU must not appear)", got)
@@ -231,7 +245,7 @@ func TestRefreshHostGauges_SharedGPUIndexIsDeterministic(t *testing.T) {
 	// Map iteration order is random, so repeat to make a regression likely to show.
 	for i := 0; i < 50; i++ {
 		r := NewRegistry(Config{})
-		r.refreshHostGauges(workers, now)
+		r.refreshHostGauges(workers, nil, now)
 
 		if got := testutil.CollectAndCount(r.hostGPUMemTotal); got != 2 {
 			t.Fatalf("run %d: gpu total series = %d, want 2 (index 0 and 1)", i, got)
@@ -252,15 +266,22 @@ func TestRefreshGauges_IncludesHostGauges(t *testing.T) {
 	r := NewRegistry(Config{})
 	at := time.Now().UTC()
 	w := &model.Worker{
+		ID:       "w",
 		State:    model.WorkerStateOnline,
 		HostID:   "h",
 		HostCPUs: hostIntP(4),
 		Usage:    &model.WorkerUsage{Host: &model.HostUsage{Load1: 0.5, MemTotalMB: 1024, MemAvailableMB: 512}},
 		UsageAt:  &at,
 	}
-	r.RefreshGauges(nil, nil, []*model.Worker{w}, nil)
+	r.RefreshGauges(nil, nil, []*model.Worker{w}, nil, map[string]model.WorkerCharge{"w": {Cores: 3, RamMB: 2}})
 	if got := testutil.ToFloat64(r.hostCPUs.WithLabelValues("h")); got != 4 {
 		t.Errorf("gowe_host_cpus{host=h} = %v, want 4", got)
+	}
+	if got := testutil.ToFloat64(r.hostChargedCPUs.WithLabelValues("h")); got != 3 {
+		t.Errorf("gowe_host_charged_cpus{host=h} = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(r.hostChargedMemBytes.WithLabelValues("h")); got != 2*bytesPerMiB {
+		t.Errorf("gowe_host_charged_mem_bytes{host=h} = %v, want %v", got, 2*bytesPerMiB)
 	}
 	if got := testutil.ToFloat64(r.hostLoad1.WithLabelValues("h")); got != 0.5 {
 		t.Errorf("gowe_host_load1{host=h} = %v, want 0.5", got)

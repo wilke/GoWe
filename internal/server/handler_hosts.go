@@ -43,7 +43,14 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hosts := model.AggregateHosts(workers, running, time.Now())
+	charged, err := s.store.SumChargedByWorker(r.Context())
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			model.NewInternalError(err.Error()))
+		return
+	}
+
+	hosts := model.AggregateHosts(workers, running, charged, time.Now())
 	if uc := UserFromContext(r.Context()); uc == nil || uc.User == nil || !uc.User.IsAdmin() {
 		hosts = redactHostnames(hosts)
 	}

@@ -29,6 +29,7 @@ func TestAggregateHosts(t *testing.T) {
 		name    string
 		workers []*Worker
 		running map[string]int
+		charged map[string]WorkerCharge
 		want    []Host
 	}{
 		{name: "nil input", workers: nil, want: []Host{}},
@@ -106,6 +107,13 @@ func TestAggregateHosts(t *testing.T) {
 				},
 			},
 			running: map[string]int{"a1": 2, "a3": 1, "b1": 1, "wrk_unknown": 5},
+			// The offline a3's charge never counts; b1 has none.
+			charged: map[string]WorkerCharge{
+				"a1":          {Cores: 6, RamMB: 4000},
+				"a2":          {Cores: 2, RamMB: 1000},
+				"a3":          {Cores: 100, RamMB: 100000},
+				"wrk_unknown": {Cores: 50, RamMB: 50},
+			},
 			want: []Host{
 				{
 					HostID:       "host-a",
@@ -114,6 +122,8 @@ func TestAggregateHosts(t *testing.T) {
 					MemMB:        1600000,
 					ClaimedCPUs:  96,
 					ClaimedMemMB: 700000,
+					ChargedCPUs:  8,
+					ChargedMemMB: 5000,
 					Usage:        &HostUsage{Load1: 3.5, MemTotalMB: 1547000, MemAvailableMB: 400000},
 					UsageAt:      &fresh,
 					GPUs: []HostGPU{
@@ -163,6 +173,7 @@ func TestAggregateHosts(t *testing.T) {
 				UsageAt: &now,
 			}},
 			running: map[string]int{"g1": 1},
+			charged: map[string]WorkerCharge{"g1": {Cores: 4, RamMB: 100}},
 			want: []Host{{
 				HostID: "host-gone",
 				Workers: []HostWorker{
@@ -268,7 +279,7 @@ func TestAggregateHosts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			want := hostsJSON(t, tt.want)
-			got := AggregateHosts(tt.workers, tt.running, now)
+			got := AggregateHosts(tt.workers, tt.running, tt.charged, now)
 			if got == nil {
 				t.Fatal("AggregateHosts returned nil, want a non-nil slice")
 			}
@@ -279,7 +290,7 @@ func TestAggregateHosts(t *testing.T) {
 			// The result must not depend on the input order.
 			reversed := slices.Clone(tt.workers)
 			slices.Reverse(reversed)
-			if g := hostsJSON(t, AggregateHosts(reversed, tt.running, now)); g != want {
+			if g := hostsJSON(t, AggregateHosts(reversed, tt.running, tt.charged, now)); g != want {
 				t.Errorf("hosts for reversed input =\n%s\nwant\n%s", g, want)
 			}
 		})

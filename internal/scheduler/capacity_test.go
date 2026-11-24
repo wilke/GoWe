@@ -117,6 +117,48 @@ func TestWorkerCapabilities_MaxByGroup(t *testing.T) {
 	}
 }
 
+// TestCanMatchTask_HostBoundsEffectiveCapacity verifies that a worker's
+// max_cpus / max_mem_mb are bounded by its host's capacity when it reports a
+// host id: a task with host_cpus < cores <= max_cpus can never pass
+// CheckoutTask's host gate, so it must be unsatisfiable here too.
+func TestCanMatchTask_HostBoundsEffectiveCapacity(t *testing.T) {
+	tests := []struct {
+		name       string
+		hostID     string
+		hints      *model.RuntimeHints
+		want       bool
+		wantReason string
+	}{
+		{"cores between host and worker max", "host-a", &model.RuntimeHints{Cores: 32}, false,
+			`group "default" has >= 32 cores (largest 16)`},
+		{"cores within host", "host-a", &model.RuntimeHints{Cores: 16}, true, ""},
+		{"ram between host and worker max", "host-a", &model.RuntimeHints{RamMB: 48000}, false,
+			`has >= 48000 MiB (largest 32000 MiB)`},
+		{"ram within host", "host-a", &model.RuntimeHints{RamMB: 32000}, true, ""},
+		{"host capacity ignored without host id", "", &model.RuntimeHints{Cores: 32, RamMB: 48000}, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sched, st := testSetup(t)
+			now := time.Now().UTC()
+			w := &model.Worker{ID: "w1", Name: "w1", Group: "default", State: model.WorkerStateOnline,
+				Runtime: model.RuntimeNone, Labels: map[string]string{}, LastSeen: now, RegisteredAt: now,
+				MaxCPUs: ip(64), MaxMemMB: i64(64000), HostID: tt.hostID, HostCPUs: ip(16), HostMemMB: i64(32000)}
+			if err := st.CreateWorker(context.Background(), w); err != nil {
+				t.Fatal(err)
+			}
+
+			ok, reason := canMatchTask(sched.workerCapabilities(), tt.hints)
+			if ok != tt.want {
+				t.Fatalf("ok = %v (reason %q), want %v", ok, reason, tt.want)
+			}
+			if tt.wantReason != "" && !strings.Contains(reason, tt.wantReason) {
+				t.Errorf("reason %q missing %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestRequirementKeyForTask_IncludesCapacity(t *testing.T) {
 	a := requirementKeyForTask(&model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: "g", Cores: 16, RamMB: 32000}})
 	b := requirementKeyForTask(&model.Task{RuntimeHints: &model.RuntimeHints{WorkerGroup: "g", Cores: 4, RamMB: 32000}})

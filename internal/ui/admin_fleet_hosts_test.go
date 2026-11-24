@@ -79,6 +79,8 @@ func TestHandleAdminFleet_HostsSection(t *testing.T) {
 				"0 running tasks",
 				tt.wantClaimed,
 				"8.0 / 16.0 GiB",
+				"0 charged",
+				"0.0 GiB charged",
 				"2.25",
 				"4.0 GiB",
 				"NVIDIA A100",

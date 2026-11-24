@@ -28,6 +28,11 @@ type Worker struct {
 	// for that dimension (#324).
 	MaxCPUs  *int   `json:"max_cpus,omitempty"`
 	MaxMemMB *int64 `json:"max_mem_mb,omitempty"`
+	// DefaultTaskCores and DefaultTaskRamMB are the charge CheckoutTask
+	// applies to a task that requests no cores / no RAM. nil means such
+	// tasks are not charged in that dimension.
+	DefaultTaskCores *int   `json:"default_task_cores,omitempty"`
+	DefaultTaskRamMB *int64 `json:"default_task_ram_mb,omitempty"`
 	// HostID is a stable, opaque identity of the physical host (a hash of
 	// its machine-id, or the worker's --host-id). Empty means not reported
 	// (#323).
@@ -57,6 +62,40 @@ type Worker struct {
 	// legacy rows (adopted on first authorized touch) and when worker auth is
 	// disabled.
 	KeyID string `json:"key_id,omitempty"`
+}
+
+// EffectiveMaxCPUs is the most cores one task can ever get on this worker:
+// MaxCPUs bounded by HostCPUs when the worker reports a host (non-empty
+// HostID and HostCPUs set). nil means no bound is known. CheckoutTask
+// computes the same value from the stored columns.
+func (w *Worker) EffectiveMaxCPUs() *int {
+	if w.HostID == "" {
+		return w.MaxCPUs
+	}
+	return minSetPtr(w.MaxCPUs, w.HostCPUs)
+}
+
+// EffectiveMaxMemMB is the memory counterpart of EffectiveMaxCPUs.
+func (w *Worker) EffectiveMaxMemMB() *int64 {
+	if w.HostID == "" {
+		return w.MaxMemMB
+	}
+	return minSetPtr(w.MaxMemMB, w.HostMemMB)
+}
+
+// minSetPtr returns the smaller of the non-nil values, or nil when both are
+// nil.
+func minSetPtr[T int | int64](a, b *T) *T {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case *b < *a:
+		return b
+	default:
+		return a
+	}
 }
 
 // GPUInfo describes one GPU of a worker's host, as reported by nvidia-smi.

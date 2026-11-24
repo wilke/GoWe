@@ -1605,7 +1605,8 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 const taskColumns = `id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
 	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
-	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms`
+	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms,
+	 charged_cores, charged_ram_mb`
 
 // checkInjectBlessed refuses to persist a non-terminal task that asks for the
 // user's token to be injected into the tool environment without naming the
@@ -1667,7 +1668,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO tasks (`+taskColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1676,6 +1677,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
+		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB),
 	)
 	return err
 }
@@ -2103,6 +2105,38 @@ func (s *SQLiteStore) CountRunningTasksByWorker(ctx context.Context) (map[string
 	return counts, nil
 }
 
+// SumChargedByWorker returns the resources charged at checkout to the
+// RUNNING worker-executor tasks of each owning worker id (a NULL charge, from
+// a task checked out by an older server, counts as 0). Used by the per-host
+// view and the host gauges; filtering by worker state is the caller's job.
+func (s *SQLiteStore) SumChargedByWorker(ctx context.Context) (map[string]model.WorkerCharge, error) {
+	s.logger.Debug("sql", "op", "sum_charged_by_worker", "table", "tasks")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT external_id, COALESCE(SUM(charged_cores), 0), COALESCE(SUM(charged_ram_mb), 0) FROM tasks
+		 WHERE state = ? AND executor_type = ? AND external_id != ''
+		 GROUP BY external_id`,
+		string(model.TaskStateRunning), string(model.ExecutorTypeWorker))
+	if err != nil {
+		return nil, fmt.Errorf("sum charged by worker: %w", err)
+	}
+	defer rows.Close()
+
+	charges := make(map[string]model.WorkerCharge)
+	for rows.Next() {
+		var workerID string
+		var c model.WorkerCharge
+		if err := rows.Scan(&workerID, &c.Cores, &c.RamMB); err != nil {
+			return nil, fmt.Errorf("sum charged by worker: scan: %w", err)
+		}
+		charges[workerID] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sum charged by worker: %w", err)
+	}
+	return charges, nil
+}
+
 func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "get_active_tasks")
 
@@ -2257,6 +2291,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
+		&task.ChargedCores, &task.ChargedRamMB,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2334,6 +2369,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
 			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
+			&task.ChargedCores, &task.ChargedRamMB,
 		); err != nil {
 			return nil, err
 		}
@@ -2512,7 +2548,7 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO workers (`+workerColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
@@ -2521,13 +2557,14 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
 		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON,
 		usageJSON, formatTimePtr(w.UsageAt),
+		nullableInt(w.DefaultTaskCores), nullableInt(w.DefaultTaskRamMB),
 	)
 	return err
 }
 
 // workerColumns is the single column list for workers reads/inserts; its order
 // must match scanWorker and the CreateWorker argument list.
-const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at"
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at, default_task_cores, default_task_ram_mb"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2551,12 +2588,13 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 	var gpuEnabled int
 	var maxCPUs, maxMem sql.NullInt64
 	var hostCPUs, hostMem, slots, cgroupCPU, cgroupMem sql.NullInt64
+	var defaultCores, defaultMem sql.NullInt64
 	var gpusJSON, usageJSON, usageAt *string
 	if err := sc.Scan(&w.ID, &w.Name, &w.Hostname, &w.Group, &state, &runtime,
 		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
 		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem,
 		&w.HostID, &hostCPUs, &hostMem, &slots, &cgroupCPU, &cgroupMem, &gpusJSON,
-		&usageJSON, &usageAt); err != nil {
+		&usageJSON, &usageAt, &defaultCores, &defaultMem); err != nil {
 		return nil, err
 	}
 	w.State = model.WorkerState(state)
@@ -2569,6 +2607,14 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 	if maxMem.Valid {
 		v := maxMem.Int64
 		w.MaxMemMB = &v
+	}
+	if defaultCores.Valid {
+		v := int(defaultCores.Int64)
+		w.DefaultTaskCores = &v
+	}
+	if defaultMem.Valid {
+		v := defaultMem.Int64
+		w.DefaultTaskRamMB = &v
 	}
 	if hostCPUs.Valid {
 		v := int(hostCPUs.Int64)
@@ -2712,13 +2758,15 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE workers SET name=?, hostname=?, worker_group=?, state=?, runtime=?, labels=?,
 		 last_seen=?, current_task=?, gpu_enabled=?, gpu_device=?, datasets=?, max_cpus=?, max_mem_mb=?,
-		 host_id=?, host_cpus=?, host_mem_mb=?, slots=?, cgroup_cpu=?, cgroup_memory=?, gpus=? WHERE id=?`,
+		 host_id=?, host_cpus=?, host_mem_mb=?, slots=?, cgroup_cpu=?, cgroup_memory=?, gpus=?,
+		 default_task_cores=?, default_task_ram_mb=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
 		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
 		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON),
 		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
 		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
-		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON, w.ID,
+		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON,
+		nullableInt(w.DefaultTaskCores), nullableInt(w.DefaultTaskRamMB), w.ID,
 	)
 	if err != nil {
 		return err
@@ -2785,7 +2833,8 @@ func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
+		     charged_cores = NULL, charged_ram_mb = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("requeue tasks: %w", err)
@@ -2883,6 +2932,12 @@ func (s *SQLiteStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 //   - Prestage datasets: task is skipped if worker lacks a required prestage dataset.
 //   - Cache datasets: among eligible tasks, prefer the one with the highest cache score
 //     (number of matching cache datasets). Ties are broken by creation order (oldest first).
+//   - Capacity: per dimension (cores, RAM) the request must fit the effective
+//     capacity (min of the worker's max and its host's capacity), and the
+//     task's charge (request, else the worker's default share, else 0) must
+//     fit what is free on the worker and on its host (host_id + key_id)
+//     after the charges of RUNNING tasks. A task that charges 0 always fits.
+//     The charge is recorded on the task (charged_cores, charged_ram_mb).
 func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "group", workerGroup, "runtime", runtime)
 
@@ -2900,8 +2955,14 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	var workerDatasets map[string]string
 	var workerGPUEnabled bool
 	var workerMaxCPUs, workerMaxMem sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT datasets, gpu_enabled, max_cpus, max_mem_mb FROM workers WHERE id = ?`, workerID).
-		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem); err != nil {
+	var workerHostID, workerKeyID string
+	var workerHostCPUs, workerHostMem, workerDefaultCores, workerDefaultMem sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT datasets, gpu_enabled, max_cpus, max_mem_mb, host_id, key_id,
+		        host_cpus, host_mem_mb, default_task_cores, default_task_ram_mb
+		 FROM workers WHERE id = ?`, workerID).
+		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem, &workerHostID, &workerKeyID,
+			&workerHostCPUs, &workerHostMem, &workerDefaultCores, &workerDefaultMem); err != nil {
 		if err != sql.ErrNoRows {
 			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
 		}
@@ -2910,28 +2971,90 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
 		workerDatasets = map[string]string{}
 	}
-	// A NULL capacity (legacy worker, or no such row) disables the fit check
-	// for that dimension; the SQL binds below are NULL in that case.
-	var capCPUs, capMem any
-	if workerMaxCPUs.Valid {
-		capCPUs = workerMaxCPUs.Int64
-	}
-	if workerMaxMem.Valid {
-		capMem = workerMaxMem.Int64
+
+	// Charges of the RUNNING tasks of this worker and of the workers sharing
+	// its host and key (the host gate). Offline workers are left out: their
+	// tasks are about to be requeued by the reaper. The worker's own tasks
+	// count whatever its state. A NULL charge (checked out by an older server) counts as 0.
+	var workerChargedCores, workerChargedMem, hostChargedCores, hostChargedMem int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT
+		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_cores END), 0),
+		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_ram_mb END), 0),
+		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_cores END), 0),
+		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0)
+		 FROM tasks t JOIN workers w ON w.id = t.external_id
+		 WHERE t.state = 'RUNNING' AND t.executor_type = 'worker'`,
+		workerID, workerID,
+		workerID, workerHostID, workerKeyID,
+		workerID, workerHostID, workerKeyID).
+		Scan(&workerChargedCores, &workerChargedMem, &hostChargedCores, &hostChargedMem); err != nil {
+		return nil, fmt.Errorf("sum charged resources: %w", err)
 	}
 
-	// Find oldest QUEUED task assigned to the worker executor.
-	rows, err := tx.QueryContext(ctx,
-		`SELECT `+taskColumns+`
+	// Per dimension: capCores/capMem bound what a single task may request,
+	// freeCores/freeMem what may still be charged. nil disables the check
+	// (legacy worker, or no such row); the SQL binds below are NULL then.
+	capCores, freeCores := checkoutBounds(workerHostID,
+		nullInt64Ptr(workerMaxCPUs), nullInt64Ptr(workerHostCPUs), workerChargedCores, hostChargedCores)
+	capMem, freeMem := checkoutBounds(workerHostID,
+		nullInt64Ptr(workerMaxMem), nullInt64Ptr(workerHostMem), workerChargedMem, hostChargedMem)
+	// A non-positive default share is treated as unset.
+	defaultCores, defaultMem := positiveInt64Ptr(workerDefaultCores), positiveInt64Ptr(workerDefaultMem)
+
+	// Find the oldest QUEUED worker tasks this worker can take. The capacity,
+	// group and GPU predicates are part of the query so a run of tasks this
+	// worker can never take cannot fill the LIMIT window and hide fitting
+	// tasks behind it; the Go loop below re-checks them (defence in depth).
+	hint := func(path string) string {
+		return `CASE WHEN json_valid(runtime_hints) THEN json_extract(runtime_hints,'$.` + path + `') END`
+	}
+	query := `SELECT ` + taskColumns + `
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
 		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
 		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
-		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)
-		   AND (? IS NULL OR COALESCE(CASE WHEN json_valid(runtime_hints)
-		         THEN json_extract(runtime_hints,'$.cores') END, 0) <= ?)
-		   AND (? IS NULL OR COALESCE(CASE WHEN json_valid(runtime_hints)
-		         THEN json_extract(runtime_hints,'$.ram_mb') END, 0) <= ?)
-		 ORDER BY priority DESC, created_at LIMIT 10`, capCPUs, capCPUs, capMem, capMem)
+		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)`
+	var args []any
+	for _, dim := range []struct {
+		path         string
+		total, free  *int64
+		defaultShare *int64
+	}{
+		{"cores", capCores, freeCores, defaultCores},
+		{"ram_mb", capMem, freeMem, defaultMem},
+	} {
+		request := `COALESCE(` + hint(dim.path) + `, 0)`
+		charge := `(CASE WHEN ` + request + ` > 0 THEN ` + hint(dim.path) + ` ELSE COALESCE(?, 0) END)`
+		// Total: the request must fit the effective capacity.
+		query += `
+		   AND (? IS NULL OR ` + request + ` <= ?)`
+		args = append(args, nullableInt(dim.total), nullableInt(dim.total))
+		// Free: a task that charges nothing always passes, even when free
+		// is negative (host over-committed).
+		query += `
+		   AND (? IS NULL OR ` + charge + ` = 0 OR ` + charge + ` <= ?)`
+		args = append(args, nullableInt(dim.free),
+			nullableInt(dim.defaultShare), nullableInt(dim.defaultShare), nullableInt(dim.free))
+	}
+	// Worker group, same semantics as the Go check below.
+	group := `COALESCE(` + hint("worker_group") + `, '')`
+	if workerGroup != "default" && workerGroup != "" {
+		query += `
+		   AND ` + group + ` = ?`
+		args = append(args, workerGroup)
+	} else {
+		query += `
+		   AND ` + group + ` IN ('', 'default')`
+	}
+	// GPU: a CPU-only worker skips tasks that require a GPU.
+	if !workerGPUEnabled {
+		query += `
+		   AND NOT COALESCE(` + hint("requires_gpu") + ` = 1, 0)`
+	}
+	query += `
+		 ORDER BY priority DESC, created_at LIMIT 10`
+
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2953,6 +3076,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
 			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
+			&task.ChargedCores, &task.ChargedRamMB,
 		); err != nil {
 			rows.Close()
 			return nil, err
@@ -3038,19 +3162,28 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	var eligible []scored
 
 	for _, task := range candidates {
-		// Check worker capacity (defence in depth: the candidate query
-		// already applies the same bounds).
-		if task.RuntimeHints != nil {
-			if workerMaxCPUs.Valid && int64(task.RuntimeHints.Cores) > workerMaxCPUs.Int64 {
-				s.logger.Debug("checkout skip: task exceeds worker cores", "task_id", task.ID, "worker_id", workerID,
-					"want", task.RuntimeHints.Cores, "max", workerMaxCPUs.Int64)
-				continue
-			}
-			if workerMaxMem.Valid && task.RuntimeHints.RamMB > workerMaxMem.Int64 {
-				s.logger.Debug("checkout skip: task exceeds worker memory", "task_id", task.ID, "worker_id", workerID,
-					"want_mb", task.RuntimeHints.RamMB, "max_mb", workerMaxMem.Int64)
-				continue
-			}
+		// Check effective capacity and free capacity (defence in depth: the
+		// candidate query already applies the same bounds).
+		reqCores, reqMem := taskRequest(task)
+		if capCores != nil && reqCores > *capCores {
+			s.logger.Debug("checkout skip: task exceeds worker cores", "task_id", task.ID, "worker_id", workerID,
+				"want", reqCores, "max", *capCores)
+			continue
+		}
+		if capMem != nil && reqMem > *capMem {
+			s.logger.Debug("checkout skip: task exceeds worker memory", "task_id", task.ID, "worker_id", workerID,
+				"want_mb", reqMem, "max_mb", *capMem)
+			continue
+		}
+		if c := taskCharge(reqCores, defaultCores); freeCores != nil && c != 0 && c > *freeCores {
+			s.logger.Debug("checkout skip: task exceeds free cores", "task_id", task.ID, "worker_id", workerID,
+				"charge", c, "free", *freeCores)
+			continue
+		}
+		if c := taskCharge(reqMem, defaultMem); freeMem != nil && c != 0 && c > *freeMem {
+			s.logger.Debug("checkout skip: task exceeds free memory", "task_id", task.ID, "worker_id", workerID,
+				"charge_mb", c, "free_mb", *freeMem)
+			continue
 		}
 
 		// Check container runtime capability.
@@ -3135,12 +3268,17 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		return nil, nil
 	}
 
-	// Transition to RUNNING and assign to worker.
+	// Transition to RUNNING, assign to worker and record the charge (always
+	// written, 0 included, so every task checked out here is accounted).
+	reqCores, reqMem := taskRequest(selected)
+	chargedCores := int(taskCharge(reqCores, defaultCores))
+	chargedMem := taskCharge(reqMem, defaultMem)
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
 	_, err = tx.ExecContext(ctx,
-		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ? WHERE id = ? AND state = 'QUEUED'`,
-		workerID, nowStr, selected.ID)
+		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ?, charged_cores = ?, charged_ram_mb = ?
+		 WHERE id = ? AND state = 'QUEUED'`,
+		workerID, nowStr, chargedCores, chargedMem, selected.ID)
 	if err != nil {
 		return nil, fmt.Errorf("update task state: %w", err)
 	}
@@ -3160,8 +3298,86 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	selected.State = model.TaskStateRunning
 	selected.ExternalID = workerID
 	selected.StartedAt = &now
+	selected.ChargedCores = &chargedCores
+	selected.ChargedRamMB = &chargedMem
 
 	return selected, nil
+}
+
+// taskRequest returns the cores and RAM (MiB) a task requests, 0 when it
+// requests none.
+func taskRequest(t *model.Task) (cores, ramMB int64) {
+	if t.RuntimeHints == nil {
+		return 0, 0
+	}
+	return int64(t.RuntimeHints.Cores), t.RuntimeHints.RamMB
+}
+
+// taskCharge is what checkout charges for one dimension of a task: its
+// request when positive, else the worker's default share when set, else 0.
+// CheckoutTask's candidate query computes the same value in SQL.
+func taskCharge(request int64, defaultShare *int64) int64 {
+	if request > 0 {
+		return request
+	}
+	if defaultShare != nil {
+		return *defaultShare
+	}
+	return 0
+}
+
+// checkoutBounds computes one resource dimension's checkout limits. total
+// bounds what a single task may request: the smaller of the worker's max and
+// the host's capacity. free is the smaller of the worker's max minus the
+// worker's charged and the host's capacity minus the host's charged; it may
+// be negative. The host terms count only when hostID is non-empty and
+// hostCap is set. nil means no limit.
+func checkoutBounds(hostID string, workerMax, hostCap *int64, workerCharged, hostCharged int64) (total, free *int64) {
+	if hostID == "" {
+		hostCap = nil
+	}
+	var workerFree, hostFree *int64
+	if workerMax != nil {
+		v := *workerMax - workerCharged
+		workerFree = &v
+	}
+	if hostCap != nil {
+		v := *hostCap - hostCharged
+		hostFree = &v
+	}
+	return minInt64Ptr(workerMax, hostCap), minInt64Ptr(workerFree, hostFree)
+}
+
+// minInt64Ptr returns the smaller of the non-nil values, nil when both are nil.
+func minInt64Ptr(a, b *int64) *int64 {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case *b < *a:
+		return b
+	default:
+		return a
+	}
+}
+
+// nullInt64Ptr maps a NULL column to nil.
+func nullInt64Ptr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}
+
+// positiveInt64Ptr maps a NULL or non-positive column to nil.
+func positiveInt64Ptr(n sql.NullInt64) *int64 {
+	if !n.Valid || n.Int64 <= 0 {
+		return nil
+	}
+	v := n.Int64
+	return &v
 }
 
 // MarkStaleWorkersOffline transitions workers to offline if their last_seen
@@ -3219,7 +3435,8 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 	s.logger.Debug("sql", "op", "requeue_worker_tasks", "worker_id", workerID)
 
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
+		     charged_cores = NULL, charged_ram_mb = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
 	if err != nil {
 		return 0, fmt.Errorf("requeue tasks: %w", err)
@@ -3292,7 +3509,8 @@ func (s *SQLiteStore) ReconcileWorkerTasks(ctx context.Context, workerID string,
 
 	for _, id := range orphans {
 		if _, err := s.db.ExecContext(ctx,
-			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
+			     charged_cores = NULL, charged_ram_mb = NULL
 			 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`,
 			id, workerID); err != nil {
 			return nil, fmt.Errorf("reconcile: requeue %s: %w", id, err)
