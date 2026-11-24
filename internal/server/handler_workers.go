@@ -121,11 +121,12 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		LastSeen:     now,
 		RegisteredAt: now,
 	}
-	// Self-reported capacity; non-positive means "not reported" (legacy).
-	if req.MaxCPUs != nil && *req.MaxCPUs > 0 {
+	// Self-reported capacity; non-positive or above the sane range means "not
+	// reported" (legacy), so per-host claimed sums cannot overflow.
+	if req.MaxCPUs != nil && *req.MaxCPUs > 0 && *req.MaxCPUs <= maxWorkerHostCPUs {
 		worker.MaxCPUs = req.MaxCPUs
 	}
-	if req.MaxMemMB != nil && *req.MaxMemMB > 0 {
+	if req.MaxMemMB != nil && *req.MaxMemMB > 0 && *req.MaxMemMB <= maxWorkerHostMemMB {
 		worker.MaxMemMB = req.MaxMemMB
 	}
 	// Host identity and inventory (#323); non-positive numbers mean "not

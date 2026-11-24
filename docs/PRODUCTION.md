@@ -710,7 +710,10 @@ worker, and the store refuses to write one. Requeue via the retry API, not SQL (
 
 Once keys are on, `GET /api/v1/workers` requires a worker key too and lists only that key's workers. **UIs that show fleet status must use
 `GET /api/v1/fleet`** instead: user-authenticated (the normal provider token), read-only, a slim projection
-(`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no hostnames.
+(`id, name, state, group, runtime, version, gpu_enabled, last_seen, current_task` + a `summary`), no `hostname` field (worker names default to the machine's hostname and are shown).
+`GET /api/v1/hosts` (per-host capacity, claimed totals, usage and GPUs; see [server.md](tools/server.md#get-apiv1hosts))
+uses the same auth; its `hostnames` field is admin-only, while worker names (which default to the hostname) are
+visible to every caller, as on `/fleet`.
 Migrate UIs before or with enabling keys — otherwise their browser sessions receive 401 from `/workers`.
 At a public gateway, additionally deny `/api/v1/workers` outright (defense in depth).
 

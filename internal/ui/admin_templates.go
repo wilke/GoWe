@@ -40,6 +40,79 @@ const adminFleetTemplate = `{{define "content"}}
         </p>
     </div>
 
+    {{if .Hosts}}
+    <div id="fleet-hosts" class="mb-8">
+        <h2 class="text-lg font-medium text-gray-900 mb-4">Hosts</h2>
+        <div class="space-y-4">
+            {{range .Hosts}}
+            {{$cpuOver := and .CPUs (gt .ClaimedCPUs .CPUs)}}
+            {{$memOver := and .MemMB (gt .ClaimedMemMB .MemMB)}}
+            <div class="bg-white shadow rounded-lg p-4">
+                <div class="flex flex-wrap items-baseline justify-between gap-2">
+                    <div>
+                        <span class="text-sm font-medium text-gray-900 font-mono" title="{{.HostID}}">{{truncate .HostID 16}}</span>
+                        {{if .Legacy}}<span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800" title="Workers without a reported host id, grouped by hostname">legacy</span>{{end}}
+                        {{if .Hostnames}}<span class="ml-2 text-sm text-gray-500">{{range $i, $n := .Hostnames}}{{if $i}}, {{end}}{{$n}}{{end}}</span>{{end}}
+                    </div>
+                    <div class="text-sm text-gray-500">
+                        {{.WorkersOnline}} / {{.WorkersTotal}} workers online
+                        &middot; {{.RunningTasks}} running task{{if ne .RunningTasks 1}}s{{end}}
+                    </div>
+                </div>
+                <dl class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
+                    <div>
+                        <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider">CPUs claimed / physical</dt>
+                        <dd class="mt-1 text-sm {{if $cpuOver}}font-medium text-red-700{{else}}text-gray-900{{end}}">
+                            {{.ClaimedCPUs}} / {{if .CPUs}}{{.CPUs}}{{else}}?{{end}}
+                            {{if $cpuOver}}<span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" title="Workers on this host claim more CPUs than it has">over-claimed</span>{{end}}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider">Memory claimed / physical</dt>
+                        <dd class="mt-1 text-sm {{if $memOver}}font-medium text-red-700{{else}}text-gray-900{{end}}">
+                            {{fmtGiB .ClaimedMemMB}} / {{if .MemMB}}{{fmtGiB .MemMB}}{{else}}?{{end}} GiB
+                            {{if $memOver}}<span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" title="Workers on this host claim more memory than it has">over-claimed</span>{{end}}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider">Load (1m)</dt>
+                        <dd class="mt-1 text-sm text-gray-900">{{with .Usage}}{{printf "%.2f" .Load1}}{{else}}-{{end}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider">Available memory</dt>
+                        <dd class="mt-1 text-sm text-gray-900">{{with .Usage}}{{if gt .MemTotalMB 0}}{{fmtGiB .MemAvailableMB}} GiB{{else}}-{{end}}{{else}}-{{end}}</dd>
+                    </div>
+                </dl>
+                {{if .GPUs}}
+                <div class="mt-3 table-responsive">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GPU</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Memory used / total (GiB)</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Util</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            {{range .GPUs}}
+                            <tr>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{{.Index}}</td>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900" title="{{.UUID}}">{{.Name}}</td>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{{with .MemUsedMB}}{{fmtGiB .}}{{else}}-{{end}} / {{fmtGiB .MemTotalMB}}</td>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{{with .UtilPct}}{{fmtPct .}}{{else}}-{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
     {{if .Workers}}
     <div class="bg-white shadow rounded-lg overflow-hidden table-responsive">
         <table class="min-w-full divide-y divide-gray-200">

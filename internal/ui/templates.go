@@ -368,6 +368,16 @@ var templateFuncs = template.FuncMap{
 		}
 		return fmt.Sprintf("%.1fs", *v)
 	},
+	// fmtGiB formats a MiB value as GiB with one decimal ("1.5"), for the
+	// fleet page's per-host view. A non-nil *int64 is dereferenced by the
+	// template engine, so `{{with .MemUsedMB}}{{fmtGiB .}}{{end}}` works.
+	"fmtGiB": func(mb int64) string {
+		return fmt.Sprintf("%.1f", float64(mb)/1024)
+	},
+	// fmtPct formats a percentage without decimals ("42%").
+	"fmtPct": func(v float64) string {
+		return fmt.Sprintf("%.0f%%", v)
+	},
 	"labelBorderColor": func(color string) string {
 		switch color {
 		case "blue":

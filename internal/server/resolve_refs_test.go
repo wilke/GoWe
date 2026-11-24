@@ -140,6 +140,9 @@ func (m *mockStore) CountTasksByState(context.Context) (map[string]int, error) {
 func (m *mockStore) CountTasksQueuedByGroup(context.Context) (map[string]int, error) {
 	return nil, nil
 }
+func (m *mockStore) CountRunningTasksByWorker(context.Context) (map[string]int, error) {
+	return nil, nil
+}
 
 func (m *mockStore) CreateSession(context.Context, *model.Session) error           { return nil }
 func (m *mockStore) GetSession(context.Context, string) (*model.Session, error)    { return nil, nil }

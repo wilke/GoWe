@@ -241,6 +241,40 @@ func TestRegisterWorker_InventoryBounds(t *testing.T) {
 	}
 }
 
+// TestRegisterWorker_ClaimedCapacityBounds: max_cpus / max_mem_mb above the
+// sane range are treated as not reported, those at the bound are kept.
+func TestRegisterWorker_ClaimedCapacityBounds(t *testing.T) {
+	srv, st := testServerWithStore()
+
+	over := registerWorkerID(t, srv, registerBody(t, map[string]any{
+		"name":       "w-over",
+		"max_cpus":   maxWorkerHostCPUs + 1,
+		"max_mem_mb": int64(maxWorkerHostMemMB) + 1,
+	}))
+	stored, err := st.GetWorker(context.Background(), over)
+	if err != nil || stored == nil {
+		t.Fatalf("GetWorker: %v %v", stored, err)
+	}
+	if stored.MaxCPUs != nil || stored.MaxMemMB != nil {
+		t.Errorf("out-of-range claimed capacity stored: cpus=%v mem=%v, want both nil", stored.MaxCPUs, stored.MaxMemMB)
+	}
+
+	atBound := registerWorkerID(t, srv, registerBody(t, map[string]any{
+		"name":       "w-at-bound",
+		"max_cpus":   maxWorkerHostCPUs,
+		"max_mem_mb": int64(maxWorkerHostMemMB),
+	}))
+	stored, err = st.GetWorker(context.Background(), atBound)
+	if err != nil || stored == nil {
+		t.Fatalf("GetWorker: %v %v", stored, err)
+	}
+	if stored.MaxCPUs == nil || *stored.MaxCPUs != maxWorkerHostCPUs ||
+		stored.MaxMemMB == nil || *stored.MaxMemMB != maxWorkerHostMemMB {
+		t.Errorf("claimed capacity at the bound = %v/%v, want %d/%d",
+			stored.MaxCPUs, stored.MaxMemMB, maxWorkerHostCPUs, int64(maxWorkerHostMemMB))
+	}
+}
+
 func TestRegisterWorker_BodyTooLarge(t *testing.T) {
 	srv, _ := testServerWithStore()
 	body := registerBody(t, map[string]any{"version": strings.Repeat("x", maxWorkerRegisterBody)})
