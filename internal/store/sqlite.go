@@ -3428,13 +3428,114 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 	return stale, nil
 }
 
+// ReapStaleWorkers marks online workers whose last_seen is older than timeout
+// offline and requeues their RUNNING worker-executor tasks (same reset as
+// RequeueWorkerTasks), in one transaction: a failure leaves the workers online
+// so the next pass retries, instead of offline with their tasks RUNNING
+// forever. The same pass requeues RUNNING worker tasks of workers that are
+// already offline and stale (stranded before this was atomic) and clears
+// current_task on every offline stale worker, none of which has a RUNNING
+// task left. Stale (last_seen older than timeout) keeps a worker that is
+// still offline but has just checked out a task (checkout bumps last_seen)
+// out of the stranded requeue. Returns the workers marked offline with their
+// requeued counts, and the number of stranded tasks requeued.
+func (s *SQLiteStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) ([]ReapedWorker, int, error) {
+	cutoff := time.Now().UTC().Add(-timeout).Format(time.RFC3339Nano)
+	s.logger.Debug("sql", "op", "reap_stale_workers", "cutoff", cutoff)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+workerColumns+` FROM workers WHERE state = 'online' AND last_seen < ?`, cutoff)
+	if err != nil {
+		return nil, 0, fmt.Errorf("select stale workers: %w", err)
+	}
+	var stale []*model.Worker
+	for rows.Next() {
+		w, err := scanWorker(rows)
+		if err != nil {
+			var corrupt *corruptWorkerRowError
+			if errors.As(err, &corrupt) {
+				// Still marked offline below; its tasks are requeued by the
+				// stranded requeue.
+				slog.Error("skipping corrupt worker row", "id", corrupt.id, "error", corrupt.err)
+				continue
+			}
+			rows.Close()
+			return nil, 0, err
+		}
+		stale = append(stale, w)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workers SET state = 'offline' WHERE state = 'online' AND last_seen < ?`, cutoff); err != nil {
+		return nil, 0, fmt.Errorf("mark workers offline: %w", err)
+	}
+
+	var reaped []ReapedWorker
+	for _, w := range stale {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
+			     charged_cores = NULL, charged_ram_mb = NULL
+			 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, w.ID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("requeue tasks of %s: %w", w.ID, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, 0, fmt.Errorf("requeue tasks of %s: rows affected: %w", w.ID, err)
+		}
+		w.State = model.WorkerStateOffline
+		w.CurrentTask = ""
+		reaped = append(reaped, ReapedWorker{Worker: w, Requeued: int(n)})
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
+		     charged_cores = NULL, charged_ram_mb = NULL
+		 WHERE state = 'RUNNING' AND executor_type = 'worker'
+		   AND external_id IN (SELECT id FROM workers WHERE state = 'offline' AND last_seen < ?)`, cutoff)
+	if err != nil {
+		return nil, 0, fmt.Errorf("requeue stranded tasks: %w", err)
+	}
+	stranded, err := res.RowsAffected()
+	if err != nil {
+		return nil, 0, fmt.Errorf("requeue stranded tasks: rows affected: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE workers SET current_task = ''
+		 WHERE state = 'offline' AND last_seen < ? AND current_task != ''`, cutoff); err != nil {
+		return nil, 0, fmt.Errorf("clear worker current_task: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, 0, fmt.Errorf("commit: %w", err)
+	}
+	return reaped, int(stranded), nil
+}
+
 // RequeueWorkerTasks resets RUNNING tasks assigned to the given worker back to
-// QUEUED so they can be picked up by another worker. Returns the count of
-// requeued tasks.
+// QUEUED so they can be picked up by another worker, and clears the worker's
+// current_task, in one transaction. Returns the count of requeued tasks.
 func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int, error) {
 	s.logger.Debug("sql", "op", "requeue_worker_tasks", "worker_id", workerID)
 
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 		     charged_cores = NULL, charged_ram_mb = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
@@ -3447,13 +3548,44 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 		return 0, fmt.Errorf("requeue tasks: rows affected: %w", err)
 	}
 
-	// Clear the worker's current_task.
-	if _, err := s.db.ExecContext(ctx,
+	// Clear the worker's current_task: it has no RUNNING task left.
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE workers SET current_task = '' WHERE id = ?`, workerID); err != nil {
-		return int(n), fmt.Errorf("clear worker current_task: %w", err)
+		return 0, fmt.Errorf("clear worker current_task: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
 	return int(n), nil
+}
+
+// releaseWorkerTaskSQL moves a worker's current_task off a task: if it is
+// that task, or a task the worker is no longer running (left behind when a
+// terminal report was refused), it becomes the worker's most recently started
+// other RUNNING worker task, or empty if none (the UI shows a worker with an
+// empty current_task as idle). Args: workerID, taskID, workerID, taskID,
+// workerID.
+const releaseWorkerTaskSQL = `UPDATE workers SET current_task = COALESCE(
+	    (SELECT id FROM tasks
+	     WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ? AND id != ?
+	     ORDER BY started_at DESC LIMIT 1), '')
+	 WHERE id = ? AND (current_task = ? OR current_task NOT IN
+	    (SELECT id FROM tasks
+	     WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?))`
+
+// ReleaseWorkerTask moves the worker's current_task off taskID (see
+// releaseWorkerTaskSQL) in one UPDATE that writes no other column, so it
+// cannot clobber a concurrent checkout, complete or heartbeat on the same
+// worker the way a full-row UpdateWorker can. An unknown worker, or a
+// current_task that is another RUNNING task of the worker, is a no-op.
+func (s *SQLiteStore) ReleaseWorkerTask(ctx context.Context, workerID, taskID string) error {
+	s.logger.Debug("sql", "op", "release_worker_task", "worker_id", workerID, "task_id", taskID)
+
+	if _, err := s.db.ExecContext(ctx, releaseWorkerTaskSQL, workerID, taskID, workerID, taskID, workerID); err != nil {
+		return fmt.Errorf("release worker task: %w", err)
+	}
+	return nil
 }
 
 // ReconcileWorkerTasks requeues tasks the database attributes to workerID
@@ -3463,7 +3595,7 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 // alone to avoid racing the checkout→first-heartbeat window (a freshly checked-out
 // task the worker has not yet had a chance to report). Returns the IDs requeued.
 //
-// This complements MarkStaleWorkersOffline+RequeueWorkerTasks (which only handles
+// This complements ReapStaleWorkers (which only handles
 // dead workers): it catches the alive-but-forgetful case where a worker keeps
 // heartbeating after a server restart but has dropped its in-flight task.
 func (s *SQLiteStore) ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error) {
@@ -3515,10 +3647,10 @@ func (s *SQLiteStore) ReconcileWorkerTasks(ctx context.Context, workerID string,
 			id, workerID); err != nil {
 			return nil, fmt.Errorf("reconcile: requeue %s: %w", id, err)
 		}
-		// Clear current_task only if it pointed at this orphaned task.
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE workers SET current_task = '' WHERE id = ? AND current_task = ?`,
-			workerID, id); err != nil {
+		// Move current_task off this orphaned task only if it pointed at it,
+		// onto another of the worker's RUNNING tasks if any remain.
+		if _, err := s.db.ExecContext(ctx, releaseWorkerTaskSQL,
+			workerID, id, workerID, id, workerID); err != nil {
 			return nil, fmt.Errorf("reconcile: clear current_task %s: %w", id, err)
 		}
 	}

@@ -768,12 +768,12 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	workflowName := s.workflowNameFor(r.Context(), task.SubmissionID)
 	s.metrics.ObserveTaskTerminal(task, workflowName, "worker")
 
-	// Clear worker's current_task.
-	worker, err := s.store.GetWorker(r.Context(), workerID)
-	if err == nil && worker != nil {
-		worker.CurrentTask = ""
-		worker.LastSeen = now
-		s.store.UpdateWorker(r.Context(), worker)
+	// Move the worker's current_task off this task (onto another of its
+	// RUNNING tasks, if any) in one targeted UPDATE: a full-row UpdateWorker
+	// here races concurrent completes and checkouts on the same worker.
+	if err := s.store.ReleaseWorkerTask(r.Context(), workerID, task.ID); err != nil {
+		s.logger.Error("task complete: release worker task",
+			"worker_id", workerID, "task_id", task.ID, "error", err)
 	}
 
 	// task.ExitCode is *int: log the value (or "<nil>") rather than the
