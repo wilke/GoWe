@@ -45,6 +45,10 @@ func ResolveApptainerImage(dockerImage, imageDir string) string {
 // choice outside GoWe's control.
 const secretMaskMinLength = model.MinSecretValueBytes
 
+// processGroupGrace is how long a cancelled tool's process group has between
+// SIGTERM and SIGKILL (see setupProcessGroupCancel).
+const processGroupGrace = 10 * time.Second
+
 // MaskSecretValues returns a copy of args with every occurrence of a secret
 // value replaced by "***REDACTED***", for logging only. The real argv (args)
 // is never mutated — callers must keep using the original slice to actually
@@ -174,6 +178,9 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 	} else {
 		cmd = exec.CommandContext(ctx, cmdResult.Command[0], cmdResult.Command[1:]...)
 	}
+	// On cancel, signal the whole process group, not just the direct child.
+	release := setupProcessGroupCancel(cmd, processGroupGrace)
+	defer release()
 	cmd.Dir = workDir
 
 	// Set environment variables.
@@ -540,6 +547,12 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	e.logger.Debug("docker command", "args", MaskSecretValues(dockerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	// On cancel, SIGTERM the docker CLI's process group; the CLI proxies it to
+	// the container (sig-proxy, on by default). Limitation: if the container
+	// ignores SIGTERM for longer than processGroupGrace, the CLI is SIGKILLed
+	// and the container may outlive it (no --cidfile / docker kill yet).
+	release := setupProcessGroupCancel(cmd, processGroupGrace)
+	defer release()
 	// cmd.Env must start from the current environment (matching executeLocal)
 	// so nothing else breaks, plus one NAME=value assignment per secret for
 	// the bare "-e NAME" entries above — docker forwards the value from its
@@ -814,6 +827,9 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	e.logger.Debug("apptainer command", "args", MaskSecretValues(apptainerArgs, combinedMaskSecrets(opts)))
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
+	// On cancel, signal the whole apptainer runtime tree, not just the client.
+	release := setupProcessGroupCancel(cmd, processGroupGrace)
+	defer release()
 	// The apptainer client process itself keeps the current environment (it
 	// needs HOME, PATH, APPTAINER_* settings); --cleanenv keeps all of it out of
 	// the container. One APPTAINERENV_NAME=value assignment per secret is the
