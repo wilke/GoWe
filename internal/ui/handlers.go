@@ -1380,9 +1380,24 @@ func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
 	ui.render(w, "workers", data)
 }
 
-// HandleWorkerDelete removes a single worker (HTMX).
+// HandleWorkerDelete removes a single worker (HTMX). Only an offline worker
+// can be deleted: deleting requeues the worker's running tasks, and a worker
+// that is still alive would keep executing them alongside whichever worker
+// picks them up next.
 func (ui *UI) HandleWorkerDelete(w http.ResponseWriter, r *http.Request) {
 	id := ui.pathParam(r, "id")
+
+	wk, err := ui.store.GetWorker(r.Context(), id)
+	if err != nil || wk == nil {
+		w.Header().Set("HX-Reswap", "none")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if wk.State != model.WorkerStateOffline {
+		w.Header().Set("HX-Reswap", "none")
+		http.Error(w, "worker is "+string(wk.State)+"; stop it first, it can be deleted once it is offline", http.StatusConflict)
+		return
+	}
 
 	if err := ui.store.DeleteWorker(r.Context(), id); err != nil {
 		w.Header().Set("HX-Reswap", "none")

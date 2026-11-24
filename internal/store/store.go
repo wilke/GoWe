@@ -162,6 +162,7 @@ type Store interface {
 	CreateWorker(ctx context.Context, w *model.Worker) error
 	GetWorker(ctx context.Context, id string) (*model.Worker, error)
 	UpdateWorker(ctx context.Context, w *model.Worker) error
+	// DeleteWorker removes the worker and requeues its RUNNING worker-executor tasks atomically.
 	DeleteWorker(ctx context.Context, id string) error
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	ListWorkerGroups(ctx context.Context) ([]string, error)

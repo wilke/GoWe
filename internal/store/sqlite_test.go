@@ -1224,6 +1224,99 @@ func TestDeleteWorker(t *testing.T) {
 	}
 }
 
+func TestDeleteWorker_RequeuesTasks(t *testing.T) {
+	type seed struct {
+		id       string
+		state    model.TaskState
+		external string
+	}
+	tests := []struct {
+		name        string
+		seeds       []seed
+		wantState   map[string]model.TaskState
+		wantRequeue map[string]bool // task IDs expected to be reset (empty external_id, nil started_at)
+	}{
+		{
+			name:        "running task of deleted worker is requeued",
+			seeds:       []seed{{"task_a", model.TaskStateRunning, "wrk_test-1"}},
+			wantState:   map[string]model.TaskState{"task_a": model.TaskStateQueued},
+			wantRequeue: map[string]bool{"task_a": true},
+		},
+		{
+			name:      "running task of another worker is untouched",
+			seeds:     []seed{{"task_a", model.TaskStateRunning, "wrk_other"}},
+			wantState: map[string]model.TaskState{"task_a": model.TaskStateRunning},
+		},
+		{
+			name:      "success task of deleted worker is untouched",
+			seeds:     []seed{{"task_a", model.TaskStateSuccess, "wrk_test-1"}},
+			wantState: map[string]model.TaskState{"task_a": model.TaskStateSuccess},
+		},
+		{
+			name:      "worker without tasks",
+			wantState: map[string]model.TaskState{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := testStore(t)
+			ctx := context.Background()
+
+			wf := sampleWorkflow()
+			st.CreateWorkflow(ctx, wf)
+			sub := sampleSubmission(wf.ID)
+			st.CreateSubmission(ctx, sub)
+
+			w := sampleWorker()
+			if err := st.CreateWorker(ctx, w); err != nil {
+				t.Fatalf("create worker: %v", err)
+			}
+
+			started := time.Now().UTC()
+			for _, s := range tt.seeds {
+				task := sampleTask(sub.ID)
+				task.ID = s.id
+				task.State = s.state
+				task.ExecutorType = model.ExecutorTypeWorker
+				task.ExternalID = s.external
+				task.StartedAt = &started
+				if err := st.CreateTask(ctx, task); err != nil {
+					t.Fatalf("create task %s: %v", s.id, err)
+				}
+			}
+
+			if err := st.DeleteWorker(ctx, w.ID); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+
+			if got, _ := st.GetWorker(ctx, w.ID); got != nil {
+				t.Error("worker still present after delete")
+			}
+
+			for id, wantState := range tt.wantState {
+				got, err := st.GetTask(ctx, id)
+				if err != nil || got == nil {
+					t.Fatalf("get task %s: %v (task=%v)", id, err, got)
+				}
+				if got.State != wantState {
+					t.Errorf("task %s state = %s, want %s", id, got.State, wantState)
+				}
+				if tt.wantRequeue[id] {
+					if got.ExternalID != "" {
+						t.Errorf("task %s external_id = %q, want empty", id, got.ExternalID)
+					}
+					if got.StartedAt != nil {
+						t.Errorf("task %s started_at = %v, want nil", id, got.StartedAt)
+					}
+				} else if got.StartedAt == nil {
+					t.Errorf("task %s started_at cleared, want untouched", id)
+				}
+			}
+		})
+	}
+}
+
 func TestDeleteWorker_NotFound(t *testing.T) {
 	st := testStore(t)
 	if err := st.DeleteWorker(context.Background(), "wrk_nonexistent"); err == nil {

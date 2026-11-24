@@ -501,6 +501,27 @@ func TestDeregisterWorker(t *testing.T) {
 	}
 }
 
+func TestDeregisterWorker_RequeuesRunningTask(t *testing.T) {
+	srv := testServer()
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	taskID := seedQueuedWorkerTask(t, srv, subID, "task_dereg_requeue")
+	checkoutTask(t, srv, workerID)
+
+	w := doDelete(t, srv, "/api/v1/workers/"+workerID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := srv.store.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.State != model.TaskStateQueued || got.ExternalID != "" {
+		t.Errorf("task = %s/%q, want QUEUED/empty after deregistration", got.State, got.ExternalID)
+	}
+}
+
 func TestDeregisterWorker_NotFound(t *testing.T) {
 	srv := testServer()
 	w := doDelete(t, srv, "/api/v1/workers/wrk_nonexistent")

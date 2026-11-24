@@ -2595,16 +2595,45 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 	return nil
 }
 
+// DeleteWorker removes the worker row and, in the same transaction, requeues
+// the worker's RUNNING worker-executor tasks (same reset as RequeueWorkerTasks)
+// so they are not orphaned against a deleted worker. Returns an error and
+// changes nothing if the worker does not exist.
 func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
 	s.logger.Debug("sql", "op", "delete", "table", "workers", "id", id)
 
-	result, err := s.db.ExecContext(ctx, `DELETE FROM workers WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM workers WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete worker: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("worker %s not found", id)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("requeue tasks: %w", err)
+	}
+	requeued, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("requeue tasks: rows affected: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	if requeued > 0 {
+		s.logger.Info("requeued tasks of deleted worker", "worker_id", id, "count", requeued)
 	}
 	return nil
 }
