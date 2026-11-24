@@ -9,6 +9,9 @@
 package metrics
 
 import (
+	"cmp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +84,16 @@ type Registry struct {
 	submissionsGauge *prometheus.GaugeVec
 	workersGauge     *prometheus.GaugeVec
 	queueDepthGauge  *prometheus.GaugeVec
+
+	// Per-host gauges (#323), label host = worker host_id (plus gpu).
+	hostCPUs            *prometheus.GaugeVec
+	hostMemBytes        *prometheus.GaugeVec
+	hostClaimedCPUs     *prometheus.GaugeVec
+	hostClaimedMemBytes *prometheus.GaugeVec
+	hostLoad1           *prometheus.GaugeVec
+	hostMemAvailBytes   *prometheus.GaugeVec
+	hostGPUMemTotal     *prometheus.GaugeVec
+	hostGPUMemUsed      *prometheus.GaugeVec
 
 	workflowLabelEnabled bool
 	labelCap             int
@@ -181,6 +194,39 @@ func NewRegistry(cfg Config) *Registry {
 			Help: "Current number of QUEUED worker tasks by worker group.",
 		}, []string{"group"}),
 
+		hostCPUs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_cpus",
+			Help: "Physical CPUs of a worker host (max reported by its workers).",
+		}, []string{"host"}),
+		hostMemBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_mem_bytes",
+			Help: "Physical memory of a worker host in bytes (max reported by its workers).",
+		}, []string{"host"}),
+		hostClaimedCPUs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_claimed_cpus",
+			Help: "Sum of max_cpus over a host's online workers.",
+		}, []string{"host"}),
+		hostClaimedMemBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_claimed_mem_bytes",
+			Help: "Sum of max_mem over a host's online workers, in bytes.",
+		}, []string{"host"}),
+		hostLoad1: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_load1",
+			Help: "1-minute load average of a host, from its online workers' most recent heartbeat usage (omitted when stale).",
+		}, []string{"host"}),
+		hostMemAvailBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_mem_available_bytes",
+			Help: "Available memory of a host in bytes, from its online workers' most recent heartbeat usage (omitted when stale).",
+		}, []string{"host"}),
+		hostGPUMemTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_gpu_mem_total_bytes",
+			Help: "Total memory of a host GPU in bytes, by GPU index.",
+		}, []string{"host", "gpu"}),
+		hostGPUMemUsed: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "gowe_host_gpu_mem_used_bytes",
+			Help: "Used memory of a host GPU in bytes, by GPU index, from heartbeat usage (omitted when unknown or stale).",
+		}, []string{"host", "gpu"}),
+
 		workflowLabelEnabled: !cfg.DisableWorkflowLabel,
 		labelCap:             labelCap,
 		workflowSeen:         make(map[string]struct{}),
@@ -194,6 +240,8 @@ func NewRegistry(cfg Config) *Registry {
 		r.submissionWallSeconds, r.stagingSeconds, r.tickSeconds,
 		r.taskRetries, r.taskFailures, r.tasksSkipped, r.inputValidationFailures, r.toolBlessingEvents, r.tokenGrants,
 		r.tasksGauge, r.submissionsGauge, r.workersGauge, r.queueDepthGauge,
+		r.hostCPUs, r.hostMemBytes, r.hostClaimedCPUs, r.hostClaimedMemBytes,
+		r.hostLoad1, r.hostMemAvailBytes, r.hostGPUMemTotal, r.hostGPUMemUsed,
 	)
 
 	return r
@@ -434,11 +482,11 @@ var allSubmissionStates = []model.SubmissionState{
 	model.SubmissionStateCancelled,
 }
 
-// RefreshGauges sets gowe_tasks, gowe_submissions, gowe_workers, and
-// gowe_queue_depth from a fresh per-tick snapshot. taskCounts and subCounts
-// key by the raw state string (as returned by CountTasksByState /
-// CountSubmissionsByState); queueDepth keys by worker group (” meaning
-// default, mapped here like every other worker_group label).
+// RefreshGauges sets gowe_tasks, gowe_submissions, gowe_workers,
+// gowe_queue_depth and the per-host gowe_host_* gauges from a fresh per-tick
+// snapshot. taskCounts and subCounts key by the raw state string (as returned
+// by CountTasksByState / CountSubmissionsByState); queueDepth keys by worker
+// group (” meaning default, mapped here like every other worker_group label).
 func (r *Registry) RefreshGauges(taskCounts, subCounts map[string]int, workers []*model.Worker, queueDepth map[string]int) {
 	if r == nil {
 		return
@@ -465,5 +513,131 @@ func (r *Registry) RefreshGauges(taskCounts, subCounts map[string]int, workers [
 			group = defaultWorkerGroup
 		}
 		r.queueDepthGauge.WithLabelValues(group).Set(float64(n))
+	}
+
+	r.refreshHostGauges(workers, time.Now())
+}
+
+// hostUsageMaxAge is how old (by server receive time) the most recent usage
+// of a host may be before its usage gauges are omitted (#323).
+const hostUsageMaxAge = 2 * time.Minute
+
+// bytesPerMiB converts the MiB values workers report to bytes.
+const bytesPerMiB = 1 << 20
+
+// mibToBytes converts MiB to bytes as a float64, which cannot overflow.
+func mibToBytes(mb int64) float64 { return float64(mb) * bytesPerMiB }
+
+// hostAgg accumulates one host's online workers for refreshHostGauges:
+// physical totals are the max over them (0 = unknown), claimed totals the
+// sums, gpus the inventory deduplicated by uuid and gpuUsed the freshest used
+// memory per uuid.
+type hostAgg struct {
+	cpus, memMB               int64
+	claimedCPUs, claimedMemMB int64
+	usage                     *model.HostUsage
+	usageAt                   time.Time
+	gpus                      map[string]model.GPUInfo
+	gpuUsed                   map[string]gpuUsedSample
+}
+
+type gpuUsedSample struct {
+	mb int64
+	at time.Time
+}
+
+// refreshHostGauges rebuilds the gowe_host_* gauges, labelled by host_id.
+// Only online workers with a host_id count, so a host with no online worker
+// emits no series. Like gowe_workers, every gauge is reset first so hosts and
+// GPUs that disappeared drop out. Usage comes only from workers whose last
+// usage is at most hostUsageMaxAge old at now; the most recent one wins. When
+// two GPUs of a host share an index, the one with the smaller uuid is emitted.
+func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
+	r.hostCPUs.Reset()
+	r.hostMemBytes.Reset()
+	r.hostClaimedCPUs.Reset()
+	r.hostClaimedMemBytes.Reset()
+	r.hostLoad1.Reset()
+	r.hostMemAvailBytes.Reset()
+	r.hostGPUMemTotal.Reset()
+	r.hostGPUMemUsed.Reset()
+
+	hosts := make(map[string]*hostAgg)
+	for _, w := range workers {
+		if w == nil || w.HostID == "" || w.State != model.WorkerStateOnline {
+			continue
+		}
+		h := hosts[w.HostID]
+		if h == nil {
+			h = &hostAgg{gpus: map[string]model.GPUInfo{}, gpuUsed: map[string]gpuUsedSample{}}
+			hosts[w.HostID] = h
+		}
+		if w.HostCPUs != nil {
+			h.cpus = max(h.cpus, int64(*w.HostCPUs))
+		}
+		if w.HostMemMB != nil {
+			h.memMB = max(h.memMB, *w.HostMemMB)
+		}
+		for _, g := range w.GPUs {
+			h.gpus[g.UUID] = g
+		}
+		if w.MaxCPUs != nil {
+			h.claimedCPUs += int64(*w.MaxCPUs)
+		}
+		if w.MaxMemMB != nil {
+			h.claimedMemMB += *w.MaxMemMB
+		}
+		if w.Usage == nil || w.UsageAt == nil || now.Sub(*w.UsageAt) > hostUsageMaxAge {
+			continue
+		}
+		at := *w.UsageAt
+		if w.Usage.Host != nil && (h.usage == nil || at.After(h.usageAt)) {
+			h.usage, h.usageAt = w.Usage.Host, at
+		}
+		for _, u := range w.Usage.GPUs {
+			if u.MemUsedMB == nil {
+				continue
+			}
+			if cur, ok := h.gpuUsed[u.UUID]; !ok || at.After(cur.at) {
+				h.gpuUsed[u.UUID] = gpuUsedSample{mb: *u.MemUsedMB, at: at}
+			}
+		}
+	}
+
+	for host, h := range hosts {
+		if h.cpus > 0 {
+			r.hostCPUs.WithLabelValues(host).Set(float64(h.cpus))
+		}
+		if h.memMB > 0 {
+			r.hostMemBytes.WithLabelValues(host).Set(mibToBytes(h.memMB))
+		}
+		r.hostClaimedCPUs.WithLabelValues(host).Set(float64(h.claimedCPUs))
+		r.hostClaimedMemBytes.WithLabelValues(host).Set(mibToBytes(h.claimedMemMB))
+		if h.usage != nil {
+			r.hostLoad1.WithLabelValues(host).Set(h.usage.Load1)
+			// MemTotalMB 0 means the worker could not read its memory.
+			if h.usage.MemTotalMB > 0 {
+				r.hostMemAvailBytes.WithLabelValues(host).Set(mibToBytes(h.usage.MemAvailableMB))
+			}
+		}
+		gpus := make([]model.GPUInfo, 0, len(h.gpus))
+		for _, g := range h.gpus {
+			gpus = append(gpus, g)
+		}
+		slices.SortFunc(gpus, func(a, b model.GPUInfo) int {
+			return cmp.Or(cmp.Compare(a.Index, b.Index), cmp.Compare(a.UUID, b.UUID))
+		})
+		emitted := make(map[int]bool, len(gpus))
+		for _, g := range gpus {
+			if emitted[g.Index] {
+				continue
+			}
+			emitted[g.Index] = true
+			gpu := strconv.Itoa(g.Index)
+			r.hostGPUMemTotal.WithLabelValues(host, gpu).Set(mibToBytes(g.MemTotalMB))
+			if u, ok := h.gpuUsed[g.UUID]; ok {
+				r.hostGPUMemUsed.WithLabelValues(host, gpu).Set(mibToBytes(u.mb))
+			}
+		}
 	}
 }

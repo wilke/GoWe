@@ -141,8 +141,14 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 // Heartbeat sends a heartbeat to update last_seen, reporting the worker's
 // currently-running task IDs. The server uses this to reconcile orphaned tasks
 // and returns any tasks the worker should cancel (their submission was cancelled).
-func (c *Client) Heartbeat(ctx context.Context, running []string) (*model.HeartbeatResponse, error) {
-	body, err := json.Marshal(model.HeartbeatRequest{RunningTasks: running})
+// usage, the latest host/GPU usage sample (#323), is attached when non-nil.
+func (c *Client) Heartbeat(ctx context.Context, running []string, usage *model.WorkerUsage) (*model.HeartbeatResponse, error) {
+	req := model.HeartbeatRequest{RunningTasks: running}
+	if usage != nil {
+		req.Host = usage.Host
+		req.GPUs = usage.GPUs
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: marshal: %w", err)
 	}
