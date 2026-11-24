@@ -144,3 +144,59 @@ func TestCountTasksQueuedByGroup(t *testing.T) {
 		t.Error(`counts contains raw "" key, want it normalized to "default" in SQL`)
 	}
 }
+
+// TestCountRunningTasksByWorker verifies the per-worker count behind the
+// per-host view (#323): only RUNNING worker-executor tasks with an owner.
+func TestCountRunningTasksByWorker(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	wf := sampleWorkflow()
+	if err := st.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	sub := sampleSubmission(wf.ID)
+	if err := st.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("create submission: %v", err)
+	}
+
+	mk := func(id string, state model.TaskState, executor model.ExecutorType, owner string) *model.Task {
+		task := sampleTask(sub.ID)
+		task.ID = id
+		task.State = state
+		task.ExecutorType = executor
+		task.ExternalID = owner
+		return task
+	}
+	tasks := []*model.Task{
+		mk("r1", model.TaskStateRunning, model.ExecutorTypeWorker, "wrk_a"),
+		mk("r2", model.TaskStateRunning, model.ExecutorTypeWorker, "wrk_a"),
+		mk("r3", model.TaskStateRunning, model.ExecutorTypeWorker, "wrk_b"),
+		// Excluded: no owner, not RUNNING, not a worker task.
+		mk("r4", model.TaskStateRunning, model.ExecutorTypeWorker, ""),
+		mk("q1", model.TaskStateQueued, model.ExecutorTypeWorker, "wrk_a"),
+		mk("s1", model.TaskStateSuccess, model.ExecutorTypeWorker, "wrk_b"),
+		mk("l1", model.TaskStateRunning, model.ExecutorTypeLocal, "wrk_a"),
+	}
+	for _, task := range tasks {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatalf("create task %s: %v", task.ID, err)
+		}
+	}
+
+	counts, err := st.CountRunningTasksByWorker(ctx)
+	if err != nil {
+		t.Fatalf("count running tasks by worker: %v", err)
+	}
+	want := map[string]int{"wrk_a": 2, "wrk_b": 1}
+	for id, n := range want {
+		t.Run(id, func(t *testing.T) {
+			if counts[id] != n {
+				t.Errorf("count = %d, want %d", counts[id], n)
+			}
+		})
+	}
+	if len(counts) != len(want) {
+		t.Errorf("counts = %v, want exactly %v", counts, want)
+	}
+}

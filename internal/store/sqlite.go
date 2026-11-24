@@ -2071,6 +2071,38 @@ func (s *SQLiteStore) CountTasksQueuedByGroup(ctx context.Context) (map[string]i
 	return counts, rows.Err()
 }
 
+// CountRunningTasksByWorker returns the number of RUNNING worker-executor
+// tasks per owning worker id (CheckoutTask stores the worker id in
+// external_id; rows without an owner are excluded), used by the read-only
+// per-host view (#323). The WHERE clause is served by idx_tasks_state_executor.
+func (s *SQLiteStore) CountRunningTasksByWorker(ctx context.Context) (map[string]int, error) {
+	s.logger.Debug("sql", "op", "count_running_by_worker", "table", "tasks")
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT external_id, COUNT(*) FROM tasks
+		 WHERE state = ? AND executor_type = ? AND external_id != ''
+		 GROUP BY external_id`,
+		string(model.TaskStateRunning), string(model.ExecutorTypeWorker))
+	if err != nil {
+		return nil, fmt.Errorf("count running tasks by worker: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var workerID string
+		var count int
+		if err := rows.Scan(&workerID, &count); err != nil {
+			return nil, fmt.Errorf("count running tasks by worker: scan: %w", err)
+		}
+		counts[workerID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count running tasks by worker: %w", err)
+	}
+	return counts, nil
+}
+
 func (s *SQLiteStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {
 	s.logger.Debug("sql", "op", "get_active_tasks")
 

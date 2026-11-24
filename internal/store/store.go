@@ -150,6 +150,10 @@ type Store interface {
 	// worker_group JSON field, '' normalized to "default"), used to refresh
 	// the gowe_queue_depth{group} gauge once per scheduler tick.
 	CountTasksQueuedByGroup(ctx context.Context) (map[string]int, error)
+	// CountRunningTasksByWorker returns the number of RUNNING worker-executor
+	// tasks per owning worker id (external_id; unowned rows excluded), a
+	// single GROUP BY query for the read-only per-host view (#323).
+	CountRunningTasksByWorker(ctx context.Context) (map[string]int, error)
 
 	// Session operations
 	CreateSession(ctx context.Context, sess *model.Session) error

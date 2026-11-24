@@ -791,6 +791,62 @@ curl -X DELETE http://localhost:8080/api/v1/workers/wrk_abc123 \
 
 ---
 
+### Hosts
+
+#### `GET /api/v1/hosts`
+
+Read-only per-host view of the fleet (#323): workers grouped by the `host_id` they reported at registration, sorted by
+`host_id`. Same authentication as `GET /api/v1/fleet` (any signed-in user via the normal provider token; no worker key).
+The numbers are the ones behind the `gowe_host_*` Prometheus gauges.
+
+```bash
+curl http://localhost:8080/api/v1/hosts -H "Authorization: $TOKEN"
+```
+
+Response (`data`):
+
+```json
+{
+  "hosts": [
+    {
+      "host_id": "3f2a9c1d8e7b6a50",
+      "hostnames": ["compute-01.example.com"],
+      "cpus": 192,
+      "mem_mb": 1547000,
+      "claimed_cpus": 96,
+      "claimed_mem_mb": 700000,
+      "usage": {"load1": 12.5, "load5": 10.1, "mem_total_mb": 1547000, "mem_available_mb": 900000, "sampled_at": "2026-11-24T10:00:00Z"},
+      "usage_at": "2026-11-24T10:00:01Z",
+      "gpus": [
+        {"index": 0, "uuid": "GPU-1a2b3c4d-0000-1111-2222-333344445555", "name": "NVIDIA H200 NVL", "mem_total_mb": 143771, "mem_used_mb": 40960, "util_pct": 87}
+      ],
+      "workers": [
+        {"id": "wrk_abc123", "name": "gpu-worker-01", "group": "esmfold", "state": "online", "runtime": "apptainer",
+         "slots": 1, "max_cpus": 64, "max_mem_mb": 500000, "version": "abc1234", "last_seen": "2026-11-24T10:00:01Z", "running_tasks": 1},
+        {"id": "wrk_def456", "name": "gpu-worker-02", "group": "esmfold", "state": "offline", "runtime": "apptainer",
+         "last_seen": "2026-11-23T08:00:00Z", "running_tasks": 0}
+      ],
+      "workers_online": 1,
+      "workers_total": 2,
+      "running_tasks": 1
+    }
+  ]
+}
+```
+
+- A host is listed while it has any worker row, but `cpus`/`mem_mb` (physical, max over workers; omitted when unknown),
+  `claimed_cpus`/`claimed_mem_mb` (sum of `max_cpus`/`max_mem_mb`), `usage` and `gpus` come from its **online** workers
+  only; `workers` lists all of them, offline ones included.
+- `usage` is the most recent host sample of an online worker, omitted when older than 2 minutes; `gpus` has one entry per
+  index (deduplicated by uuid), with `mem_used_mb`/`util_pct` omitted when unknown or stale.
+- `running_tasks` counts RUNNING worker tasks checked out by each worker.
+- Workers registered without a `host_id` (older workers) are grouped by hostname under `host_id` `hostname:<hostname>`
+  with `"legacy": true`; they get no `gowe_host_*` gauges.
+- Like `/fleet`, the endpoint shows no hostnames to non-admin callers: `hostnames` is omitted and a legacy host's id
+  becomes `legacy:<smallest worker id>`. Admins see both (the admin fleet page shows the same view).
+
+---
+
 ### File Upload & Download
 
 Requires `--upload-backend` to be configured. See [File Upload Proxy](#file-upload-proxy) flags.

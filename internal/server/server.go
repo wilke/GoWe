@@ -475,6 +475,8 @@ func (s *Server) routes() {
 			// (no worker key required). Distinct from GET /workers, which sits
 			// behind workerAuthMiddleware and returns the full record.
 			r.Get("/fleet", s.handleFleetRoster)
+			// Per-host view (#323): same auth and hostname policy as /fleet.
+			r.Get("/hosts", s.handleListHosts)
 
 			// Apps (BV-BRC proxy)
 			r.Route("/apps", func(r chi.Router) {

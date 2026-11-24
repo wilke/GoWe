@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/me/gowe/pkg/model"
 )
@@ -31,6 +32,15 @@ func (ui *UI) HandleAdminFleet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Per-host view (#323), the same aggregation as GET /api/v1/hosts. This
+	// page is admin-only, so hostnames are shown.
+	running, err := ui.store.CountRunningTasksByWorker(r.Context())
+	if err != nil {
+		ui.renderError(w, "Failed to load running tasks", err)
+		return
+	}
+	hosts := model.AggregateHosts(workers, running, time.Now())
+
 	var online, offline, draining, gpu int
 	for _, wk := range workers {
 		switch wk.State {
@@ -56,6 +66,7 @@ func (ui *UI) HandleAdminFleet(w http.ResponseWriter, r *http.Request) {
 		"DrainingCount":  draining,
 		"GPUCount":       gpu,
 		"TaskSubmission": taskSubmission,
+		"Hosts":          hosts,
 	}
 	ui.render(w, "admin/fleet", data)
 }
