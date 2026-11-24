@@ -314,20 +314,23 @@ func (s *Server) StartWorkerReaper(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				stale, err := s.store.MarkStaleWorkersOffline(ctx, defaultWorkerTimeout)
+				// One transaction: on failure nothing is marked offline,
+				// so the next tick retries.
+				reaped, stranded, err := s.store.ReapStaleWorkers(ctx, defaultWorkerTimeout)
 				if err != nil {
-					s.logger.Error("worker reaper: mark stale", "error", err)
+					s.logger.Error("worker reaper: reap stale workers", "error", err)
 					continue
 				}
-				for _, w := range stale {
+				for _, rw := range reaped {
+					w := rw.Worker
 					s.logger.Warn("worker marked offline (heartbeat timeout)",
 						"id", w.ID, "name", w.Name, "last_seen", w.LastSeen)
-					n, err := s.store.RequeueWorkerTasks(ctx, w.ID)
-					if err != nil {
-						s.logger.Error("worker reaper: requeue tasks", "worker_id", w.ID, "error", err)
-					} else if n > 0 {
-						s.logger.Info("requeued tasks from offline worker", "worker_id", w.ID, "count", n)
+					if rw.Requeued > 0 {
+						s.logger.Info("requeued tasks from offline worker", "worker_id", w.ID, "count", rw.Requeued)
 					}
+				}
+				if stranded > 0 {
+					s.logger.Warn("requeued tasks stranded on offline workers", "count", stranded)
 				}
 			}
 		}

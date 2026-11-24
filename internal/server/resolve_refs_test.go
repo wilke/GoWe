@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 	"gopkg.in/yaml.v3"
 )
@@ -172,10 +173,14 @@ func (m *mockStore) CheckoutTask(context.Context, string, string, model.Containe
 func (m *mockStore) MarkStaleWorkersOffline(_ context.Context, _ time.Duration) ([]*model.Worker, error) {
 	return nil, nil
 }
+func (m *mockStore) ReapStaleWorkers(context.Context, time.Duration) ([]store.ReapedWorker, int, error) {
+	return nil, 0, nil
+}
 func (m *mockStore) RequeueWorkerTasks(context.Context, string) (int, error) { return 0, nil }
 func (m *mockStore) ReconcileWorkerTasks(context.Context, string, []string, time.Duration) ([]string, error) {
 	return nil, nil
 }
+func (m *mockStore) ReleaseWorkerTask(context.Context, string, string) error { return nil }
 func (m *mockStore) CancelledTasksForWorker(context.Context, []string) ([]string, error) {
 	return nil, nil
 }

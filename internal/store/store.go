@@ -7,6 +7,13 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// ReapedWorker is a worker that ReapStaleWorkers marked offline, with the
+// number of its RUNNING tasks it requeued.
+type ReapedWorker struct {
+	Worker   *model.Worker
+	Requeued int
+}
+
 // Store defines the persistence layer for GoWe entities.
 type Store interface {
 	// Workflow CRUD
@@ -184,8 +191,21 @@ type Store interface {
 	ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error)
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
 	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
+	// ReapStaleWorkers marks online workers whose last_seen is older than
+	// timeout offline and requeues their RUNNING worker-executor tasks, in one
+	// transaction. It also requeues RUNNING worker tasks still attributed to
+	// workers that are offline and stale (stranded by an earlier failure).
+	// Returns the workers it marked offline, each with its requeued count,
+	// and the number of stranded tasks requeued.
+	ReapStaleWorkers(ctx context.Context, timeout time.Duration) ([]ReapedWorker, int, error)
 	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
 	ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error)
+	// ReleaseWorkerTask moves the worker's current_task off taskID in one
+	// UPDATE: if current_task is taskID it becomes the worker's most recently
+	// started other RUNNING worker task, or '' if none. Any other
+	// current_task, and every other column, is left unchanged. An unknown
+	// worker is not an error.
+	ReleaseWorkerTask(ctx context.Context, workerID, taskID string) error
 	CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error)
 
 	// Worker key operations (per-worker authentication, hashed at rest)

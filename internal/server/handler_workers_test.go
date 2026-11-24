@@ -392,6 +392,85 @@ func TestWorkerTaskComplete_RequeuedOwnership(t *testing.T) {
 	}
 }
 
+// concurrentWorkerWriteStore wraps a real store.Store and, after every
+// GetWorker read, changes the worker's state in the store (as a concurrent
+// heartbeat or admin drain would), so every worker snapshot the handler holds
+// is stale. A full-row worker write from such a snapshot reverts the state.
+type concurrentWorkerWriteStore struct {
+	store.Store
+	fullRowWrites int // UpdateWorker calls
+}
+
+func (c *concurrentWorkerWriteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
+	c.fullRowWrites++
+	return c.Store.UpdateWorker(ctx, w)
+}
+
+func (c *concurrentWorkerWriteStore) GetWorker(ctx context.Context, id string) (*model.Worker, error) {
+	w, err := c.Store.GetWorker(ctx, id)
+	if err != nil || w == nil {
+		return w, err
+	}
+	if err := c.Store.TouchWorker(ctx, id, model.WorkerStateDraining, w.LastSeen, nil); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+// TestWorkerTaskComplete_MultipleRunningTasks: completing one of a worker's
+// two RUNNING tasks leaves current_task on the other and writes no other
+// worker column, so a concurrent change to the worker row survives.
+func TestWorkerTaskComplete_MultipleRunningTasks(t *testing.T) {
+	tests := []struct {
+		name         string
+		completeLast bool // complete the task checked out last (current_task) or first
+	}{
+		{"complete the current task", true},
+		{"complete the other task", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, realStore := testServerWithStore()
+			workerID := registerTestWorker(t, srv)
+			_, subID := createTestSubmission(t, srv)
+			seedQueuedWorkerTask(t, srv, subID, "task_mc_a")
+			seedQueuedWorkerTask(t, srv, subID, "task_mc_b")
+			first := checkoutTask(t, srv, workerID).ID
+			second := checkoutTask(t, srv, workerID).ID
+			if first == second {
+				t.Fatalf("both checkouts returned %s", first)
+			}
+
+			done, other := first, second
+			if tt.completeLast {
+				done, other = second, first
+			}
+
+			wrapped := &concurrentWorkerWriteStore{Store: realStore}
+			srv.store = wrapped
+			w, _ := doPut(t, srv, "/api/v1/workers/"+workerID+"/tasks/"+done+"/complete",
+				`{"state":"SUCCESS","exit_code":0}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("complete: status=%d, body=%s", w.Code, w.Body.String())
+			}
+
+			got, err := realStore.GetWorker(context.Background(), workerID)
+			if err != nil || got == nil {
+				t.Fatalf("GetWorker = (%v, %v)", got, err)
+			}
+			if got.CurrentTask != other {
+				t.Errorf("current_task = %q, want %q (still RUNNING)", got.CurrentTask, other)
+			}
+			if wrapped.fullRowWrites != 0 {
+				t.Errorf("complete made %d full-row worker write(s), want 0", wrapped.fullRowWrites)
+			}
+			if got.State != model.WorkerStateDraining {
+				t.Errorf("state = %s, want draining (concurrent write must survive the complete)", got.State)
+			}
+		})
+	}
+}
+
 // TestWorkerTaskStatus_Guards: the status endpoint accepts only non-terminal
 // transitions on tasks the reporting worker owns (F-L + F-K).
 func TestWorkerTaskStatus_Guards(t *testing.T) {
