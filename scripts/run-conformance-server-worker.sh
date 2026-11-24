@@ -18,6 +18,7 @@
 #   -r, --runtime RUNTIMES   Worker runtime(s), comma-separated (default: none)
 #                            Examples: none, apptainer, none,apptainer
 #   -g, --gpu-ids IDS        Comma-separated GPU IDs (e.g., "6,7")
+#   -c, --concurrency N      Pass --concurrency N to each worker (default: not passed; not with -g)
 #   -j, --parallel N         Parallel cwltest jobs (default: 4)
 #   -t, --timeout SECS       Per-test timeout (default: 60)
 #   -s, --stall-timeout SECS Abort after this many seconds of no progress (default: 120)
@@ -46,6 +47,7 @@ PORT=8094
 NUM_WORKERS=2
 WORKER_RUNTIME="none,apptainer"
 GPU_IDS=""
+CONCURRENCY=""
 PARALLEL=4
 TEST_TIMEOUT=60
 STALL_TIMEOUT=120
@@ -66,7 +68,7 @@ log_error()  { echo -e "${RED}[ERROR]${NC} $1"; }
 log_header() { echo -e "\n${CYAN}=== $1 ===${NC}\n"; }
 
 usage() {
-    sed -n '2,32p' "$0" | sed 's/^# \?//'
+    sed -n '2,36p' "$0" | sed 's/^# \?//'
     exit 0
 }
 
@@ -77,6 +79,7 @@ while [[ $# -gt 0 ]]; do
         -w|--workers)    NUM_WORKERS="$2"; shift 2 ;;
         -r|--runtime)    WORKER_RUNTIME="$2"; shift 2 ;;
         -g|--gpu-ids)    GPU_IDS="$2"; shift 2 ;;
+        -c|--concurrency) CONCURRENCY="$2"; shift 2 ;;
         -j|--parallel)   PARALLEL="$2"; shift 2 ;;
         -t|--timeout)    TEST_TIMEOUT="$2"; shift 2 ;;
         -s|--stall-timeout) STALL_TIMEOUT="$2"; shift 2 ;;
@@ -96,6 +99,16 @@ REPORT="$PROJECT_DIR/conformance-results-server-worker-${TIMESTAMP}.txt"
 
 # Parse GPU IDs into array
 IFS=',' read -ra GPU_ARR <<< "${GPU_IDS:-}"
+
+# Workers refuse --gpu with --concurrency above 1.
+if [ -n "$CONCURRENCY" ] && [ -n "$GPU_IDS" ] && [ "$CONCURRENCY" -gt 1 ]; then
+    log_error "-c/--concurrency above 1 cannot be combined with -g/--gpu-ids"
+    exit 1
+fi
+CONCURRENCY_FLAGS=()
+if [ -n "$CONCURRENCY" ]; then
+    CONCURRENCY_FLAGS=(--concurrency "$CONCURRENCY")
+fi
 
 # Track PIDs for cleanup
 SERVER_PID=""
@@ -156,7 +169,7 @@ log_info "Git commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 log_info "Server:  bin/gowe-server ($(date -r bin/gowe-server '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
 log_info "Worker:  bin/gowe-worker ($(date -r bin/gowe-worker '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
 log_info "CLI:     bin/gowe ($(date -r bin/gowe '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown))"
-log_info "Port: ${PORT}, Workers: ${NUM_WORKERS}, Runtime: ${WORKER_RUNTIME}, GPUs: ${GPU_IDS:-none}"
+log_info "Port: ${PORT}, Workers: ${NUM_WORKERS}, Runtime: ${WORKER_RUNTIME}, GPUs: ${GPU_IDS:-none}, Concurrency: ${CONCURRENCY:-default}"
 log_info "Stall timeout: ${STALL_TIMEOUT}s"
 log_info "Report: ${REPORT}"
 
@@ -231,6 +244,7 @@ for i in $(seq 1 "$NUM_WORKERS"); do
         --poll 200ms \
         --log-level debug \
         $GPU_FLAGS \
+        ${CONCURRENCY_FLAGS[@]+"${CONCURRENCY_FLAGS[@]}"} \
         > "$WORK_DIR/logs/worker-${i}.log" 2>&1 &
     WORKER_PIDS+=($!)
     log_info "Worker-${i} PID: ${WORKER_PIDS[-1]} ${GPU_FLAGS:+(${GPU_FLAGS})}"

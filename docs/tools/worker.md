@@ -69,13 +69,31 @@ When `--image-dir` is set and `DockerRequirement.dockerPull` ends with `.sif`, r
 | `--max-mem` | `0` | Maximum memory in MiB for containers (0 = auto-detect from system) |
 | `--max-cpus` | `0` | Maximum CPUs for containers (0 = auto-detect from system) |
 
+#### Concurrency
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--concurrency` | `1` | Maximum number of tasks run at once. Must be at least 1 and not above the worker's effective CPUs |
+| `--default-task-cores` | `0` | Cores charged to and given to a task that requests none, when `--concurrency` > 1 (0 = effective CPUs / concurrency, at least 1) |
+| `--default-task-ram` | `0` | Memory in MiB charged to and given to a task that requests none, when `--concurrency` > 1 (0 = effective memory / concurrency) |
+
+`--concurrency 1` (the default) is the behaviour of earlier releases: one task at a time, the next checkout only after the previous task has reported, and a tool without a `ResourceRequirement` gets the worker's whole `--max-cpus` / `--max-mem` budget.
+
+With `--concurrency N` (N > 1) the worker checks out tasks while it has a free slot and runs them side by side; the server hands out a task only if its charge fits what is still free on the worker and its host. The **effective capacity** is `--max-cpus` / `--max-mem` (or the auto-detected values) bounded by the host's physical totals where known. A task that requests no cores / no RAM is charged a **default share**: `max(1, CPUs / N)` cores and `memory / N` MiB, or `--default-task-cores` / `--default-task-ram` when set. The share is sent at registration (`default_task_cores`, `default_task_ram_mb`); each checked-out task carries what the server charged for it (`charged_cores`, `charged_ram_mb`), and the worker gives the tool exactly that instead of the whole budget. A tool's own request is used as before. Charging is the same for legacy `_base_command` tasks and for tools run with `--runtime none`, but their limits are not enforced (as at concurrency 1); Docker applies `--cpus` / `--memory`, Apptainer only where `--apptainer-cgroups` allows it.
+
+Startup errors: `--concurrency` below 1; `--concurrency` above the effective CPUs; `--default-task-cores` / `--default-task-ram` above the effective capacity; `--gpu` together with `--concurrency` above 1 (every task would get the same GPU devices; per-task GPU assignment does not exist yet). The share flags are ignored, with a WARN, at `--concurrency 1`.
+
+**Older server.** A server that does not echo `default_task_cores` in the registration response cannot account for several tasks: the worker logs a WARN and runs with concurrency 1 and the whole budget per task. Likewise, if a checked-out task arrives without `charged_cores` (a server rolled back under a running worker), the worker logs a WARN once and runs one task at a time for the rest of the process; tasks already running continue.
+
+**Shutdown** (SIGINT/SIGTERM). The worker stops polling and cancels the running tasks: their tools get SIGTERM on the process group, then SIGKILL after 10 s. It waits up to 60 s for the task goroutines (logging a WARN with the ids of tasks still running when that expires), then deregisters; the server requeues the worker's RUNNING tasks. A task interrupted while staging in, running or staging out is not reported and is requeued; a task that had already finished and staged all its outputs is still reported. A task cancelled by the server in any of those phases is reported SKIPPED. A second signal ends the worker immediately. There is no drain mode.
+
 #### Host Identity
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--host-id` | `""` | Host identity reported at registration, used verbatim (1-64 chars of `[A-Za-z0-9._-]`). Empty = first 16 hex chars of the sha256 of `/etc/machine-id`, falling back to the boot id, then the hostname (the raw machine-id is never sent) |
 
-At registration the worker also reports the host's physical CPU and memory totals (even when `--max-cpus` / `--max-mem` cap it lower), its task slots, whether the cpu / memory cgroup controllers are usable, and, with `--gpu`, the GPU inventory from `nvidia-smi` (filtered by `--gpu-id`). These are informational; they do not change scheduling.
+At registration the worker also reports the host's physical CPU and memory totals (even when `--max-cpus` / `--max-mem` cap it lower), its task slots, whether the cpu / memory cgroup controllers are usable, and, with `--gpu`, the GPU inventory from `nvidia-smi` (filtered by `--gpu-id`). The server uses the capacity figures when it hands out tasks (see [Concurrency](#concurrency) and the server's capacity accounting); the GPU inventory is informational.
 
 #### Reference Data Pre-staging
 

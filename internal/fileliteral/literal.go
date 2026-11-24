@@ -64,6 +64,15 @@ func MaterializeInDir(contents string, basename string, baseDir string) (string,
 // "contents" but no "path" or "location". Returns true if the object was
 // modified (file literal was materialized).
 func MaterializeFileObject(obj map[string]any) (bool, error) {
+	return MaterializeFileObjectIn(obj, "")
+}
+
+// MaterializeFileObjectIn is MaterializeFileObject writing the file under
+// baseDir/cwl-literals instead of the shared $TMPDIR/cwl-literals. Callers that
+// run several jobs at once (the worker) pass a job-private baseDir so two
+// literals with the same basename and different contents cannot overwrite each
+// other. An empty baseDir is MaterializeFileObject.
+func MaterializeFileObjectIn(obj map[string]any, baseDir string) (bool, error) {
 	contents, hasContents := obj["contents"].(string)
 	if !hasContents {
 		return false, nil
@@ -81,7 +90,13 @@ func MaterializeFileObject(obj map[string]any) (bool, error) {
 		basename = b
 	}
 
-	tempFile, err := Materialize(contents, basename)
+	var tempFile string
+	var err error
+	if baseDir != "" {
+		tempFile, err = MaterializeInDir(contents, basename, baseDir)
+	} else {
+		tempFile, err = Materialize(contents, basename)
+	}
 	if err != nil {
 		return false, err
 	}

@@ -20,6 +20,13 @@ import (
 // Only inputs declared in the tool's inputs are included; undeclared inputs are ignored.
 // Also processes loadContents for File inputs (with 64KB limit).
 func MergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir string) (map[string]any, error) {
+	return mergeToolDefaults(tool, inputs, cwlDir, "")
+}
+
+// mergeToolDefaults is MergeToolDefaults materializing file-literal defaults
+// under literalDir (empty = the shared $TMPDIR/cwl-literals, see
+// Config.LiteralDir).
+func mergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir, literalDir string) (map[string]any, error) {
 	merged := make(map[string]any)
 
 	// First pass: Merge all input values without validation.
@@ -28,7 +35,7 @@ func MergeToolDefaults(tool *cwl.CommandLineTool, inputs map[string]any, cwlDir 
 		if v, exists := inputs[inputID]; exists && v != nil {
 			val = v
 		} else if inputDef.Default != nil {
-			val = ResolveDefaultValue(inputDef.Default, cwlDir)
+			val = resolveDefaultValue(inputDef.Default, cwlDir, literalDir)
 		} else if v, exists := inputs[inputID]; exists {
 			// Explicitly provided null with no default - keep null.
 			val = v
@@ -122,22 +129,26 @@ func populateDerivedProps(v any) {
 
 // ResolveDefaultValue resolves a default value, handling File objects specially.
 func ResolveDefaultValue(v any, cwlDir string) any {
+	return resolveDefaultValue(v, cwlDir, "")
+}
+
+func resolveDefaultValue(v any, cwlDir, literalDir string) any {
 	switch val := v.(type) {
 	case map[string]any:
 		if class, ok := val["class"].(string); ok {
 			if class == "File" || class == "Directory" {
-				return ResolveFileObject(val, cwlDir)
+				return resolveFileObject(val, cwlDir, literalDir)
 			}
 		}
 		resolved := make(map[string]any)
 		for k, v := range val {
-			resolved[k] = ResolveDefaultValue(v, cwlDir)
+			resolved[k] = resolveDefaultValue(v, cwlDir, literalDir)
 		}
 		return resolved
 	case []any:
 		resolved := make([]any, len(val))
 		for i, item := range val {
-			resolved[i] = ResolveDefaultValue(item, cwlDir)
+			resolved[i] = resolveDefaultValue(item, cwlDir, literalDir)
 		}
 		return resolved
 	default:
@@ -147,13 +158,19 @@ func ResolveDefaultValue(v any, cwlDir string) any {
 
 // ResolveFileObject resolves a File or Directory path.
 func ResolveFileObject(obj map[string]any, baseDir string) map[string]any {
+	return resolveFileObject(obj, baseDir, "")
+}
+
+// resolveFileObject is ResolveFileObject materializing file literals under
+// literalDir (empty = the shared $TMPDIR/cwl-literals).
+func resolveFileObject(obj map[string]any, baseDir, literalDir string) map[string]any {
 	resolved := make(map[string]any)
 	for k, v := range obj {
 		resolved[k] = v
 	}
 
 	// Handle file literals: File objects with "contents" but no path/location.
-	if _, err := fileliteral.MaterializeFileObject(resolved); err != nil {
+	if _, err := fileliteral.MaterializeFileObjectIn(resolved, literalDir); err != nil {
 		_ = err
 	}
 
@@ -230,7 +247,7 @@ func ResolveFileObject(obj map[string]any, baseDir string) map[string]any {
 		resolvedListing := make([]any, len(listing))
 		for i, item := range listing {
 			if itemMap, ok := item.(map[string]any); ok {
-				resolvedListing[i] = ResolveFileObject(itemMap, dirPath)
+				resolvedListing[i] = resolveFileObject(itemMap, dirPath, literalDir)
 			} else {
 				resolvedListing[i] = item
 			}
@@ -243,7 +260,7 @@ func ResolveFileObject(obj map[string]any, baseDir string) map[string]any {
 		resolvedSecFiles := make([]any, len(secFiles))
 		for i, item := range secFiles {
 			if itemMap, ok := item.(map[string]any); ok {
-				resolvedSecFiles[i] = ResolveFileObject(itemMap, baseDir)
+				resolvedSecFiles[i] = resolveFileObject(itemMap, baseDir, literalDir)
 			} else {
 				resolvedSecFiles[i] = item
 			}

@@ -70,6 +70,11 @@ func main() {
 	flag.IntVar(&cfg.Resources.MaxCPUs, "max-cpus", 0, "Maximum CPUs for containers (0 = auto-detect from system)")
 	flag.StringVar(&cfg.Resources.ApptainerCgroupsMode, "apptainer-cgroups", "auto", "Apptainer --cpus/--memory limits: auto (only for cgroup controllers delegated to the user's systemd service, or all when root), on (always), off (never)")
 
+	// Concurrency flags.
+	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "Maximum number of tasks run at once (not above the worker's CPUs; refused with --gpu above 1)")
+	flag.IntVar(&cfg.DefaultTaskCores, "default-task-cores", 0, "Cores charged to and given to a task that requests none, when --concurrency > 1 (0 = max CPUs / concurrency)")
+	flag.Int64Var(&cfg.DefaultTaskRamMB, "default-task-ram", 0, "Memory in MiB charged to and given to a task that requests none, when --concurrency > 1 (0 = max memory / concurrency)")
+
 	// Image directory for local SIF files.
 	flag.StringVar(&cfg.ImageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
 
@@ -187,6 +192,13 @@ func main() {
 	}
 	if cfg.ApptainerNoContainall {
 		logger.Warn("--apptainer-no-containall is set: Apptainer containers share the host PID namespace and /tmp; only --cleanenv remains")
+	}
+
+	// Validate --concurrency (the capacity checks follow in worker.New, after
+	// CPU/memory auto-detection).
+	if err := worker.ValidateConcurrency(cfg.Concurrency, cfg.GPU.Enabled); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
 	}
 
 	// Validate runtime flag.
@@ -379,6 +391,12 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// After the first signal restore the default handling, so a second
+	// signal ends the process instead of waiting out the shutdown.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	logger.Info("starting worker",
 		"server", cfg.ServerURL,
@@ -389,6 +407,7 @@ func main() {
 		"gpu_id", cfg.GPU.DeviceID,
 		"max_cpus", cfg.Resources.MaxCPUs,
 		"max_mem_mb", cfg.Resources.MaxMemMB,
+		"concurrency", cfg.Concurrency,
 		"image_dir", cfg.ImageDir,
 	)
 

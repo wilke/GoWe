@@ -24,11 +24,68 @@ func stageRemoteInputs(ctx context.Context, stager execution.Stager, inputs map[
 	// Use a staging directory OUTSIDE the workDir for top-level directory reconstruction.
 	// This prevents staging artifacts (like _inputs/) from polluting the tool's
 	// working directory and appearing in `find .` or `ls` output.
-	stagingDir := filepath.Join(filepath.Dir(workDir), filepath.Base(workDir)+"_staging")
+	stagingDir := taskStagingDir(workDir)
+
+	// File literals are written below the task's own staging dir, never the
+	// shared $TMPDIR/cwl-literals: with --concurrency two tasks may carry
+	// literals with the same basename and different contents.
+	for inputID, v := range inputs {
+		if err := materializeLiterals(inputID, v, stagingDir); err != nil {
+			return fmt.Errorf("input %s: %w", inputID, err)
+		}
+	}
 
 	for inputID, v := range inputs {
 		if err := stageInputValue(ctx, stager, inputID, v, workDir, stagingDir, logger); err != nil {
 			return fmt.Errorf("input %s: %w", inputID, err)
+		}
+	}
+	return nil
+}
+
+// taskStagingDir is the absolute "<taskDir>_staging" sibling of a task dir:
+// task-private, outside the tool's working directory, removed by
+// cleanupTaskDir.
+func taskStagingDir(taskDir string) string {
+	if abs, err := filepath.Abs(taskDir); err == nil {
+		taskDir = abs
+	}
+	return taskDir + "_staging"
+}
+
+// materializeLiterals writes every file literal (a File with "contents" but no
+// path or location) in v to baseDir/cwl-literals, walking the same values
+// stageInputValue does (records, arrays, Directory listings, secondaryFiles).
+func materializeLiterals(inputID string, v any, baseDir string) error {
+	switch val := v.(type) {
+	case map[string]any:
+		class, _ := val["class"].(string)
+		if class != "File" && class != "Directory" {
+			for k, nested := range val {
+				if err := materializeLiterals(inputID+"."+k, nested, baseDir); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if class == "File" {
+			if _, err := fileliteral.MaterializeFileObjectIn(val, baseDir); err != nil {
+				return fmt.Errorf("materialize file literal for %s: %w", inputID, err)
+			}
+		}
+		for _, key := range []string{"listing", "secondaryFiles"} {
+			items, _ := val[key].([]any)
+			for i, item := range items {
+				if err := materializeLiterals(fmt.Sprintf("%s.%s[%d]", inputID, key, i), item, baseDir); err != nil {
+					return err
+				}
+			}
+		}
+	case []any:
+		for i, item := range val {
+			if err := materializeLiterals(fmt.Sprintf("%s[%d]", inputID, i), item, baseDir); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -62,11 +119,7 @@ func stageInputValue(ctx context.Context, stager execution.Stager, inputID strin
 // stagingDir, when non-empty, is used for top-level directory reconstruction
 // (kept outside workDir to avoid polluting the tool's working directory).
 func stageFileOrDirectory(ctx context.Context, stager execution.Stager, inputID string, obj map[string]any, workDir, stagingDir string, logger *slog.Logger) error {
-	// Handle file literals.
-	if _, err := fileliteral.MaterializeFileObject(obj); err != nil {
-		return fmt.Errorf("materialize file literal for %s: %w", inputID, err)
-	}
-
+	// File literals were materialized by stageRemoteInputs (materializeLiterals).
 	location := ""
 	if loc, ok := obj["location"].(string); ok {
 		location = loc
@@ -329,12 +382,8 @@ func reconstructDirectoryFromListing(ctx context.Context, stager execution.Stage
 			continue
 		}
 
-		// File entry — stage it, then copy/link into the directory.
-		// Handle file literals first.
-		if _, err := fileliteral.MaterializeFileObject(itemMap); err != nil {
-			return fmt.Errorf("materialize file literal for %s: %w", childID, err)
-		}
-
+		// File entry — stage it, then copy/link into the directory (file
+		// literals were already materialized by stageRemoteInputs).
 		itemLoc := ""
 		if l, ok := itemMap["path"].(string); ok {
 			itemLoc = l

@@ -67,6 +67,10 @@ type RegisterOptions struct {
 	CgroupCPU    *bool           // cpu cgroup controller usable
 	CgroupMemory *bool           // memory cgroup controller usable
 	GPUs         []model.GPUInfo // GPU inventory; non-nil (even empty) is sent
+	// Charge for a task that requests no cores / no RAM (--concurrency > 1);
+	// 0 = not sent.
+	DefaultTaskCores int
+	DefaultTaskRamMB int64
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -117,6 +121,12 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		}
 		if opts[0].GPUs != nil {
 			reg["gpus"] = opts[0].GPUs
+		}
+		if opts[0].DefaultTaskCores > 0 {
+			reg["default_task_cores"] = opts[0].DefaultTaskCores
+		}
+		if opts[0].DefaultTaskRamMB > 0 {
+			reg["default_task_ram_mb"] = opts[0].DefaultTaskRamMB
 		}
 	}
 	body, err := json.Marshal(reg)

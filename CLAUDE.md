@@ -187,6 +187,7 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--secret-file` | Load secrets from file (`NAME=value` per line) |
 | `--image-dir` | Base directory for resolving relative `.sif` image paths |
 | `--gpu` / `--gpu-id` | GPU passthrough |
+| `--concurrency N` | Max tasks run at once (default 1 = one at a time; ≤ effective CPUs; refused with `--gpu` above 1). A task requesting no cores/RAM gets the share the server charged (`max(1, CPUs/N)` cores, `mem/N` MiB, or `--default-task-cores` / `--default-task-ram`); an older server (no `default_task_cores` echoed, or a task without `charged_cores`) drops the worker to 1 with a WARN. Shutdown cancels running tasks, waits ≤ 60 s, then deregisters (no drain) |
 | `--host-id` | Host identity sent at registration, verbatim (1-64 chars `[A-Za-z0-9._-]`); default: first 16 hex of sha256 of `/etc/machine-id` → boot_id → hostname |
 | `--worker-key-file` | Worker auth key, key file only (regular file, mode 0600 or stricter). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are **refused**: both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
 | `--inherit-host-env` | Degraded: host-run tools (`--runtime none`) inherit the worker env instead of the allow-list (WARN; label `inherit_host_env=true`) |
