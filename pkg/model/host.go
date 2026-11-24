@@ -38,7 +38,8 @@ type Host struct {
 	// none is at most HostUsageMaxAge old. UsageAt is its server receive time.
 	Usage   *HostUsage `json:"usage,omitempty"`
 	UsageAt *time.Time `json:"usage_at,omitempty"`
-	// GPUs is the inventory of the online workers, one entry per index.
+	// GPUs is the inventory of the online workers, one entry per distinct uuid,
+	// sorted by index then uuid.
 	GPUs          []HostGPU    `json:"gpus,omitempty"`
 	Workers       []HostWorker `json:"workers"`
 	WorkersOnline int          `json:"workers_online"`
@@ -47,14 +48,17 @@ type Host struct {
 }
 
 // HostGPU is one GPU of a host with its freshest usage. MemUsedMB and UtilPct
-// are nil when unknown or stale.
+// are nil when unknown or stale. UsageAt is the server receive time of the
+// worker usage that supplied MemUsedMB (UtilPct when there is no MemUsedMB),
+// nil when the GPU has no fresh sample.
 type HostGPU struct {
-	Index      int      `json:"index"`
-	UUID       string   `json:"uuid"`
-	Name       string   `json:"name"`
-	MemTotalMB int64    `json:"mem_total_mb"`
-	MemUsedMB  *int64   `json:"mem_used_mb,omitempty"`
-	UtilPct    *float64 `json:"util_pct,omitempty"`
+	Index      int        `json:"index"`
+	UUID       string     `json:"uuid"`
+	Name       string     `json:"name"`
+	MemTotalMB int64      `json:"mem_total_mb"`
+	MemUsedMB  *int64     `json:"mem_used_mb,omitempty"`
+	UtilPct    *float64   `json:"util_pct,omitempty"`
+	UsageAt    *time.Time `json:"usage_at,omitempty"`
 }
 
 // HostWorker is the slim projection of a worker listed under its host.
@@ -67,6 +71,8 @@ type HostWorker struct {
 	Slots        *int             `json:"slots,omitempty"`
 	MaxCPUs      *int             `json:"max_cpus,omitempty"`
 	MaxMemMB     *int64           `json:"max_mem_mb,omitempty"`
+	GPUEnabled   bool             `json:"gpu_enabled,omitempty"`
+	GPUDevice    string           `json:"gpu_device,omitempty"`
 	Version      string           `json:"version,omitempty"`
 	LastSeen     time.Time        `json:"last_seen"`
 	RunningTasks int              `json:"running_tasks"`
@@ -78,8 +84,8 @@ type HostWorker struct {
 // at least one worker, but only online workers count towards its capacity,
 // claimed totals, usage and GPUs; their usage counts only when it is at most
 // HostUsageMaxAge old at now, the most recent sample winning. GPUs are
-// deduplicated by uuid and, when two uuids share an index, the first by
-// (index, uuid) wins. runningByWorker maps a worker id to its running task
+// deduplicated by uuid and sorted by (index, uuid); two uuids sharing an index
+// are both listed. runningByWorker maps a worker id to its running task
 // count and may be nil. The result is never nil.
 func AggregateHosts(workers []*Worker, runningByWorker map[string]int, now time.Time) []Host {
 	type group struct {
@@ -150,6 +156,8 @@ func aggregateHost(id string, legacy bool, workers []*Worker, runningByWorker ma
 			Slots:        w.Slots,
 			MaxCPUs:      w.MaxCPUs,
 			MaxMemMB:     w.MaxMemMB,
+			GPUEnabled:   w.GPUEnabled,
+			GPUDevice:    w.GPUDevice,
 			Version:      w.Version,
 			LastSeen:     w.LastSeen,
 			RunningTasks: running,
@@ -217,13 +225,18 @@ func aggregateHost(id string, legacy bool, workers []*Worker, runningByWorker ma
 	slices.SortFunc(inventory, func(a, b GPUInfo) int {
 		return cmp.Or(cmp.Compare(a.Index, b.Index), cmp.Compare(a.UUID, b.UUID))
 	})
-	for i, g := range inventory {
-		if i > 0 && inventory[i-1].Index == g.Index {
-			continue // the first by (index, uuid) wins a shared index
-		}
+	for _, g := range inventory {
 		hg := HostGPU{Index: g.Index, UUID: g.UUID, Name: g.Name, MemTotalMB: g.MemTotalMB}
 		if s := samples[g.UUID]; s != nil {
 			hg.MemUsedMB, hg.UtilPct = s.memUsedMB, s.utilPct
+			switch {
+			case s.memUsedMB != nil:
+				at := s.memAt
+				hg.UsageAt = &at
+			case s.utilPct != nil:
+				at := s.utilAt
+				hg.UsageAt = &at
+			}
 		}
 		h.GPUs = append(h.GPUs, hg)
 	}

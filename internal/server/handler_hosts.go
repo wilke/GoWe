@@ -22,8 +22,9 @@ const legacyHostRedactedPrefix = "legacy:"
 // by host id with capacity, claimed totals, usage and GPUs, computed by
 // model.AggregateHosts exactly like the gowe_host_* gauges. Like
 // handleFleetRoster it sits behind apiAuthMiddleware (any signed-in user, no
-// worker key), and like /fleet it shows no hostnames to non-admin callers
-// (see redactHostnames).
+// worker key). The hostnames field is admin-only (see redactHostnames); worker
+// names, which default to the machine's hostname, are returned to everyone, as
+// on /fleet.
 //
 // GET /api/v1/hosts
 func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
@@ -49,10 +50,10 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, reqID, hostsData{Hosts: hosts})
 }
 
-// redactHostnames applies the /fleet policy (no hostnames for a user-facing
-// status view) to the per-host view: it drops every host's hostnames and
-// replaces the id of a legacy host, which embeds its hostname, with
-// "legacy:" plus the smallest id of its workers. Hosts are re-sorted by id.
+// redactHostnames drops every host's hostnames field for non-admin callers and
+// replaces the id of a legacy host, which embeds its hostname, with "legacy:"
+// plus the smallest id of its workers. Worker names are left as they are.
+// Hosts are re-sorted by id.
 func redactHostnames(hosts []model.Host) []model.Host {
 	for i := range hosts {
 		h := &hosts[i]

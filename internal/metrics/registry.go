@@ -561,7 +561,14 @@ func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
 				r.hostMemAvailBytes.WithLabelValues(host).Set(mibToBytes(h.Usage.MemAvailableMB))
 			}
 		}
+		// Series are labelled by index, so only the first GPU per index is
+		// emitted (h.GPUs is sorted by index, then uuid).
+		emitted := make(map[int]struct{}, len(h.GPUs))
 		for _, g := range h.GPUs {
+			if _, dup := emitted[g.Index]; dup {
+				continue
+			}
+			emitted[g.Index] = struct{}{}
 			gpu := strconv.Itoa(g.Index)
 			r.hostGPUMemTotal.WithLabelValues(host, gpu).Set(mibToBytes(g.MemTotalMB))
 			if g.MemUsedMB != nil {

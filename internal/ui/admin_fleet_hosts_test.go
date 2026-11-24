@@ -95,3 +95,118 @@ func TestHandleAdminFleet_HostsSection(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleAdminFleet_HostsUnknownValues verifies the fleet page renders
+// hosts with missing usage, a GPU without a usage sample, and only offline
+// workers, showing a placeholder ("-" or "?") instead of a fabricated zero.
+func TestHandleAdminFleet_HostsUnknownValues(t *testing.T) {
+	now := time.Now().UTC()
+	cpus, memMB, maxCPUs, maxMemMB := 8, int64(16384), 2, int64(2048)
+	gpus := []model.GPUInfo{{Index: 0, UUID: "GPU-test-0", Name: "NVIDIA A100", MemTotalMB: 40960}}
+
+	tests := []struct {
+		name    string
+		worker  *model.Worker
+		want    []string
+		wantNot []string
+	}{
+		{
+			name: "host without usage and with unknown physical capacity",
+			worker: &model.Worker{
+				ID:       "wrk_nousage",
+				Name:     "nousage",
+				State:    model.WorkerStateOnline,
+				HostID:   "aaaaaaaaaaaaaaaa",
+				MaxCPUs:  &maxCPUs,
+				MaxMemMB: &maxMemMB,
+			},
+			want: []string{
+				"aaaaaaaaaaaaaaaa",
+				"1 / 1 workers online",
+				"2 / ?",
+				"2.0 / ? GiB",
+				// Load (1m) and available memory.
+				`text-gray-900">-</dd>`,
+			},
+			wantNot: []string{`text-gray-900">0.00</dd>`, `text-gray-900">0.0 GiB</dd>`, "NVIDIA"},
+		},
+		{
+			name: "GPU without a usage sample",
+			worker: &model.Worker{
+				ID:        "wrk_nogpusample",
+				Name:      "nogpusample",
+				State:     model.WorkerStateOnline,
+				HostID:    "bbbbbbbbbbbbbbbb",
+				HostCPUs:  &cpus,
+				HostMemMB: &memMB,
+				GPUs:      gpus,
+				Usage:     &model.WorkerUsage{Host: &model.HostUsage{Load1: 1.5, MemTotalMB: 16384, MemAvailableMB: 4096}},
+				UsageAt:   &now,
+			},
+			want: []string{
+				"bbbbbbbbbbbbbbbb",
+				"NVIDIA A100",
+				"1.50",
+				"- / 40.0",
+				`text-gray-500">-</td>`,
+			},
+			wantNot: []string{`text-gray-500">0%</td>`, "0.0 / 40.0"},
+		},
+		{
+			name: "host whose workers are all offline",
+			worker: &model.Worker{
+				ID:        "wrk_offline",
+				Name:      "offline",
+				State:     model.WorkerStateOffline,
+				HostID:    "cccccccccccccccc",
+				HostCPUs:  &cpus,
+				HostMemMB: &memMB,
+				GPUs:      gpus,
+				Usage:     &model.WorkerUsage{Host: &model.HostUsage{Load1: 9.5, MemTotalMB: 16384, MemAvailableMB: 4096}},
+				UsageAt:   &now,
+			},
+			want: []string{
+				"cccccccccccccccc",
+				"0 / 1 workers online",
+				"0 / ?",
+				"0.0 / ? GiB",
+				`text-gray-900">-</dd>`,
+			},
+			wantNot: []string{"NVIDIA", "9.50"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := setupTestStore(t)
+			defer st.Close()
+			u := New(st, slog.Default(), Config{})
+
+			tt.worker.Group = "default"
+			tt.worker.Runtime = model.RuntimeApptainer
+			tt.worker.LastSeen = now
+			tt.worker.RegisteredAt = now
+			if err := st.CreateWorker(context.Background(), tt.worker); err != nil {
+				t.Fatalf("create worker: %v", err)
+			}
+
+			adminSess := &model.Session{ID: "s", Username: "boss", Role: string(model.RoleAdmin)}
+			req := withSession(httptest.NewRequest(http.MethodGet, "/admin/fleet", nil), adminSess)
+			rec := httptest.NewRecorder()
+			u.HandleAdminFleet(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			for _, want := range tt.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("body lacks %q", want)
+				}
+			}
+			for _, wantNot := range tt.wantNot {
+				if strings.Contains(body, wantNot) {
+					t.Errorf("body contains %q", wantNot)
+				}
+			}
+		})
+	}
+}

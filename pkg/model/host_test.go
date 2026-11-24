@@ -56,7 +56,9 @@ func TestAggregateHosts(t *testing.T) {
 						Host: &HostUsage{Load1: 3.5, MemTotalMB: 1547000, MemAvailableMB: 400000},
 						GPUs: []GPUUsage{{UUID: "GPU-0", MemUsedMB: hostTestPtr[int64](1000), UtilPct: hostTestPtr(50.0)}},
 					},
-					UsageAt: &fresh,
+					UsageAt:    &fresh,
+					GPUEnabled: true,
+					GPUDevice:  "0,1",
 				},
 				{
 					// Same hostname as a1 (listed once) and same name (ordered by id).
@@ -115,12 +117,12 @@ func TestAggregateHosts(t *testing.T) {
 					Usage:        &HostUsage{Load1: 3.5, MemTotalMB: 1547000, MemAvailableMB: 400000},
 					UsageAt:      &fresh,
 					GPUs: []HostGPU{
-						{Index: 0, UUID: "GPU-0", Name: "NVIDIA H200 NVL", MemTotalMB: 143771, MemUsedMB: hostTestPtr[int64](1000), UtilPct: hostTestPtr(50.0)},
+						{Index: 0, UUID: "GPU-0", Name: "NVIDIA H200 NVL", MemTotalMB: 143771, MemUsedMB: hostTestPtr[int64](1000), UtilPct: hostTestPtr(50.0), UsageAt: &fresh},
 						{Index: 1, UUID: "GPU-1", Name: "NVIDIA H200 NVL", MemTotalMB: 143771},
 					},
 					Workers: []HostWorker{
 						{ID: "a3", Name: "w-0", State: WorkerStateOffline, MaxCPUs: hostTestPtr(16), MaxMemMB: hostTestPtr[int64](1000), RunningTasks: 1},
-						{ID: "a1", Name: "w-a", Group: "gpu", State: WorkerStateOnline, Runtime: RuntimeApptainer, Slots: hostTestPtr(1), MaxCPUs: hostTestPtr(64), MaxMemMB: hostTestPtr[int64](500000), Version: "v1", LastSeen: fresh, RunningTasks: 2},
+						{ID: "a1", Name: "w-a", Group: "gpu", State: WorkerStateOnline, Runtime: RuntimeApptainer, Slots: hostTestPtr(1), MaxCPUs: hostTestPtr(64), MaxMemMB: hostTestPtr[int64](500000), GPUEnabled: true, GPUDevice: "0,1", Version: "v1", LastSeen: fresh, RunningTasks: 2},
 						{ID: "a2", Name: "w-a", State: WorkerStateOnline, MaxCPUs: hostTestPtr(32), MaxMemMB: hostTestPtr[int64](200000)},
 					},
 					WorkersOnline: 2,
@@ -193,7 +195,7 @@ func TestAggregateHosts(t *testing.T) {
 			}},
 		},
 		{
-			name: "two uuids sharing an index: first by (index, uuid) wins",
+			name: "two uuids sharing an index are both listed in (index, uuid) order",
 			workers: []*Worker{{
 				ID:     "w1",
 				Name:   "w",
@@ -213,7 +215,8 @@ func TestAggregateHosts(t *testing.T) {
 			want: []Host{{
 				HostID: "host-a",
 				GPUs: []HostGPU{
-					{Index: 0, UUID: "GPU-a", MemTotalMB: 100, MemUsedMB: hostTestPtr[int64](10)},
+					{Index: 0, UUID: "GPU-a", MemTotalMB: 100, MemUsedMB: hostTestPtr[int64](10), UsageAt: &now},
+					{Index: 0, UUID: "GPU-b", MemTotalMB: 200, MemUsedMB: hostTestPtr[int64](20), UsageAt: &now},
 					{Index: 1, UUID: "GPU-c", MemTotalMB: 300},
 				},
 				Workers:       []HostWorker{{ID: "w1", Name: "w", State: WorkerStateOnline}},
