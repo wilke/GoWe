@@ -51,8 +51,8 @@ func TestRefreshHostGauges(t *testing.T) {
 			UsageAt: &older,
 		},
 		{
-			// Offline: counts for the physical totals only, never for the
-			// claimed sums or usage, even with the freshest usage.
+			// Offline: never counts for totals, claimed sums, GPUs or usage,
+			// even with the freshest usage.
 			ID:       "a3",
 			State:    model.WorkerStateOffline,
 			HostID:   "host-a",
@@ -136,6 +136,115 @@ func TestRefreshHostGauges(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(r.hostGPUMemTotal); got != 0 {
 		t.Errorf("gpu total series after host-a left = %d, want 0", got)
+	}
+}
+
+func TestRefreshHostGauges_OfflineOnlyHostEmitsNothing(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	workers := []*model.Worker{{
+		ID:        "gone1",
+		State:     model.WorkerStateOffline,
+		HostID:    "host-gone",
+		HostCPUs:  hostIntP(64),
+		HostMemMB: hostInt64P(256000),
+		MaxCPUs:   hostIntP(32),
+		MaxMemMB:  hostInt64P(100000),
+		GPUs:      []model.GPUInfo{{Index: 0, UUID: "GPU-0", MemTotalMB: 81920}},
+		Usage: &model.WorkerUsage{
+			Host: &model.HostUsage{Load1: 1, MemTotalMB: 256000, MemAvailableMB: 1},
+			GPUs: []model.GPUUsage{{UUID: "GPU-0", MemUsedMB: hostInt64P(5)}},
+		},
+		UsageAt: &now,
+	}}
+
+	r := NewRegistry(Config{})
+	r.refreshHostGauges(workers, now)
+
+	vecs := map[string]*prometheus.GaugeVec{
+		"cpus":          r.hostCPUs,
+		"mem":           r.hostMemBytes,
+		"claimed cpus":  r.hostClaimedCPUs,
+		"claimed mem":   r.hostClaimedMemBytes,
+		"load1":         r.hostLoad1,
+		"mem available": r.hostMemAvailBytes,
+		"gpu total":     r.hostGPUMemTotal,
+		"gpu used":      r.hostGPUMemUsed,
+	}
+	for name, vec := range vecs {
+		if got := testutil.CollectAndCount(vec); got != 0 {
+			t.Errorf("%s series for a host with only offline workers = %d, want 0", name, got)
+		}
+	}
+}
+
+func TestRefreshHostGauges_GPUsFromOnlineWorkersOnly(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	workers := []*model.Worker{
+		{
+			ID:       "on",
+			State:    model.WorkerStateOnline,
+			HostID:   "host-a",
+			HostCPUs: hostIntP(8),
+			GPUs:     []model.GPUInfo{{Index: 0, UUID: "GPU-0", MemTotalMB: 1000}},
+		},
+		{
+			ID:       "off",
+			State:    model.WorkerStateOffline,
+			HostID:   "host-a",
+			HostCPUs: hostIntP(256),
+			GPUs:     []model.GPUInfo{{Index: 1, UUID: "GPU-1", MemTotalMB: 2000}},
+		},
+	}
+
+	r := NewRegistry(Config{})
+	r.refreshHostGauges(workers, now)
+
+	if got := testutil.CollectAndCount(r.hostGPUMemTotal); got != 1 {
+		t.Fatalf("gpu total series = %d, want 1 (the offline worker's GPU must not appear)", got)
+	}
+	if got := testutil.ToFloat64(r.hostGPUMemTotal.WithLabelValues("host-a", "0")); got != 1000*bytesPerMiB {
+		t.Errorf("gpu 0 total = %v, want %v", got, 1000*bytesPerMiB)
+	}
+	if got := testutil.ToFloat64(r.hostCPUs.WithLabelValues("host-a")); got != 8 {
+		t.Errorf("cpus = %v, want 8 (offline worker's 256 must not count)", got)
+	}
+}
+
+func TestRefreshHostGauges_SharedGPUIndexIsDeterministic(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	workers := []*model.Worker{{
+		ID:     "w1",
+		State:  model.WorkerStateOnline,
+		HostID: "host-a",
+		GPUs: []model.GPUInfo{
+			{Index: 0, UUID: "GPU-b", MemTotalMB: 200},
+			{Index: 0, UUID: "GPU-a", MemTotalMB: 100},
+			{Index: 1, UUID: "GPU-c", MemTotalMB: 300},
+		},
+		Usage: &model.WorkerUsage{GPUs: []model.GPUUsage{
+			{UUID: "GPU-b", MemUsedMB: hostInt64P(20)},
+			{UUID: "GPU-a", MemUsedMB: hostInt64P(10)},
+		}},
+		UsageAt: &now,
+	}}
+
+	// Map iteration order is random, so repeat to make a regression likely to show.
+	for i := 0; i < 50; i++ {
+		r := NewRegistry(Config{})
+		r.refreshHostGauges(workers, now)
+
+		if got := testutil.CollectAndCount(r.hostGPUMemTotal); got != 2 {
+			t.Fatalf("run %d: gpu total series = %d, want 2 (index 0 and 1)", i, got)
+		}
+		if got := testutil.CollectAndCount(r.hostGPUMemUsed); got != 1 {
+			t.Fatalf("run %d: gpu used series = %d, want 1", i, got)
+		}
+		if got := testutil.ToFloat64(r.hostGPUMemTotal.WithLabelValues("host-a", "0")); got != 100*bytesPerMiB {
+			t.Fatalf("run %d: gpu 0 total = %v, want the smaller uuid's %v", i, got, 100*bytesPerMiB)
+		}
+		if got := testutil.ToFloat64(r.hostGPUMemUsed.WithLabelValues("host-a", "0")); got != 10*bytesPerMiB {
+			t.Fatalf("run %d: gpu 0 used = %v, want the smaller uuid's %v", i, got, 10*bytesPerMiB)
+		}
 	}
 }
 

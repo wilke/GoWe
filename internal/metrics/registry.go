@@ -9,6 +9,8 @@
 package metrics
 
 import (
+	"cmp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -526,10 +528,10 @@ const bytesPerMiB = 1 << 20
 // mibToBytes converts MiB to bytes as a float64, which cannot overflow.
 func mibToBytes(mb int64) float64 { return float64(mb) * bytesPerMiB }
 
-// hostAgg accumulates one host's workers for refreshHostGauges: physical
-// totals are the max over all its workers (0 = unknown), claimed totals the
-// sums over its online workers, gpus its inventory deduplicated by uuid and
-// gpuUsed the freshest used memory per uuid.
+// hostAgg accumulates one host's online workers for refreshHostGauges:
+// physical totals are the max over them (0 = unknown), claimed totals the
+// sums, gpus the inventory deduplicated by uuid and gpuUsed the freshest used
+// memory per uuid.
 type hostAgg struct {
 	cpus, memMB               int64
 	claimedCPUs, claimedMemMB int64
@@ -544,11 +546,12 @@ type gpuUsedSample struct {
 	at time.Time
 }
 
-// refreshHostGauges rebuilds the gowe_host_* gauges, labelled by host_id
-// (workers without one are skipped). Like gowe_workers, every gauge is reset
-// first so hosts and GPUs that disappeared drop out. Usage comes only from
-// online workers whose last usage is at most hostUsageMaxAge old at now; the
-// most recent one wins.
+// refreshHostGauges rebuilds the gowe_host_* gauges, labelled by host_id.
+// Only online workers with a host_id count, so a host with no online worker
+// emits no series. Like gowe_workers, every gauge is reset first so hosts and
+// GPUs that disappeared drop out. Usage comes only from workers whose last
+// usage is at most hostUsageMaxAge old at now; the most recent one wins. When
+// two GPUs of a host share an index, the one with the smaller uuid is emitted.
 func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
 	r.hostCPUs.Reset()
 	r.hostMemBytes.Reset()
@@ -561,7 +564,7 @@ func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
 
 	hosts := make(map[string]*hostAgg)
 	for _, w := range workers {
-		if w == nil || w.HostID == "" {
+		if w == nil || w.HostID == "" || w.State != model.WorkerStateOnline {
 			continue
 		}
 		h := hosts[w.HostID]
@@ -577,10 +580,6 @@ func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
 		}
 		for _, g := range w.GPUs {
 			h.gpus[g.UUID] = g
-		}
-
-		if w.State != model.WorkerStateOnline {
-			continue
 		}
 		if w.MaxCPUs != nil {
 			h.claimedCPUs += int64(*w.MaxCPUs)
@@ -621,10 +620,22 @@ func (r *Registry) refreshHostGauges(workers []*model.Worker, now time.Time) {
 				r.hostMemAvailBytes.WithLabelValues(host).Set(mibToBytes(h.usage.MemAvailableMB))
 			}
 		}
-		for uuid, g := range h.gpus {
+		gpus := make([]model.GPUInfo, 0, len(h.gpus))
+		for _, g := range h.gpus {
+			gpus = append(gpus, g)
+		}
+		slices.SortFunc(gpus, func(a, b model.GPUInfo) int {
+			return cmp.Or(cmp.Compare(a.Index, b.Index), cmp.Compare(a.UUID, b.UUID))
+		})
+		emitted := make(map[int]bool, len(gpus))
+		for _, g := range gpus {
+			if emitted[g.Index] {
+				continue
+			}
+			emitted[g.Index] = true
 			gpu := strconv.Itoa(g.Index)
 			r.hostGPUMemTotal.WithLabelValues(host, gpu).Set(mibToBytes(g.MemTotalMB))
-			if u, ok := h.gpuUsed[uuid]; ok {
+			if u, ok := h.gpuUsed[g.UUID]; ok {
 				r.hostGPUMemUsed.WithLabelValues(host, gpu).Set(mibToBytes(u.mb))
 			}
 		}

@@ -386,21 +386,34 @@ func isJSONKind(raw json.RawMessage, open byte) bool {
 
 // sanitizeHostUsage converts a decoded host sample, leaving every absent,
 // non-finite, negative or out-of-range number at zero (nil for the optional
-// PSI values) and an unparsable sampled_at at the zero time.
+// PSI values). It returns nil when sampled_at is missing or unparsable or when
+// no number could be parsed, so a malformed host object never replaces a good
+// stored sample.
 func sanitizeHostUsage(in hostUsageWire) *model.HostUsage {
-	h := &model.HostUsage{}
-	h.Load1, _ = usageFloat(in.Load1)
-	h.Load5, _ = usageFloat(in.Load5)
-	h.MemTotalMB, _ = usageInt(in.MemTotalMB, maxWorkerHostMemMB)
-	h.MemAvailableMB, _ = usageInt(in.MemAvailableMB, maxWorkerHostMemMB)
+	sampledAt, err := time.Parse(time.RFC3339Nano, in.SampledAt)
+	if err != nil {
+		return nil
+	}
+	h := &model.HostUsage{SampledAt: sampledAt.UTC()}
+	var ok, parsed bool
+	h.Load1, ok = usageFloat(in.Load1)
+	parsed = parsed || ok
+	h.Load5, ok = usageFloat(in.Load5)
+	parsed = parsed || ok
+	h.MemTotalMB, ok = usageInt(in.MemTotalMB, maxWorkerHostMemMB)
+	parsed = parsed || ok
+	h.MemAvailableMB, ok = usageInt(in.MemAvailableMB, maxWorkerHostMemMB)
+	parsed = parsed || ok
 	if v, ok := usageFloat(in.PSICPUSomeAvg10); ok {
 		h.PSICPUSomeAvg10 = &v
+		parsed = true
 	}
 	if v, ok := usageFloat(in.PSIMemSomeAvg10); ok {
 		h.PSIMemSomeAvg10 = &v
+		parsed = true
 	}
-	if t, err := time.Parse(time.RFC3339Nano, in.SampledAt); err == nil {
-		h.SampledAt = t.UTC()
+	if !parsed {
+		return nil
 	}
 	return h
 }

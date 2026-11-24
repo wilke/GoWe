@@ -475,16 +475,19 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.poll)
 	defer ticker.Stop()
 
+	var sentUsage usageSendTracker
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			resp, err := w.client.Heartbeat(ctx, w.active.ids(), w.usage.latest())
+			usage := sentUsage.pending(w.usage.latest())
+			resp, err := w.client.Heartbeat(ctx, w.active.ids(), usage)
 			if err != nil {
 				w.logger.Warn("heartbeat failed", "error", err)
 				continue
 			}
+			sentUsage.sent(usage)
 			// Cancel any tasks the server reports as cancelled. Cancelling the
 			// task's execution context kills the underlying process and frees
 			// resources (e.g. GPU) without waiting for the tool to finish.

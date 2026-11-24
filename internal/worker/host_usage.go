@@ -111,6 +111,30 @@ func (s *usageSampler) latest() *model.WorkerUsage {
 	return s.sample
 }
 
+// usageSendTracker remembers the last sample a heartbeat delivered so that each
+// published sample is sent once: the server stamps usage_at with its receive
+// time, so a re-sent sample would look fresh forever. It is used only by the
+// heartbeat loop.
+type usageSendTracker struct {
+	lastSent *model.WorkerUsage
+}
+
+// pending returns latest if it has not been sent yet, otherwise nil.
+func (t *usageSendTracker) pending(latest *model.WorkerUsage) *model.WorkerUsage {
+	if latest == t.lastSent {
+		return nil
+	}
+	return latest
+}
+
+// sent records that a heartbeat carrying u (as returned by pending) completed
+// without error. A nil u leaves the marker unchanged.
+func (t *usageSendTracker) sent(u *model.WorkerUsage) {
+	if u != nil {
+		t.lastSent = u
+	}
+}
+
 // sampleGPUs runs the nvidia-smi usage query. On failure it returns nil and
 // logs a WARN at most once per gpuUsageWarnInterval.
 func (s *usageSampler) sampleGPUs(ctx context.Context) []model.GPUUsage {

@@ -272,6 +272,45 @@ func TestNilUsageSampler_Latest(t *testing.T) {
 	}
 }
 
+func TestUsageSendTracker(t *testing.T) {
+	s := &usageSampler{now: time.Now}
+	var tr usageSendTracker
+
+	if got := tr.pending(s.latest()); got != nil {
+		t.Fatalf("pending before any sample = %v, want nil", got)
+	}
+
+	s.sampleOnce(context.Background())
+	first := s.latest()
+	got := tr.pending(s.latest())
+	if got != first || got == nil {
+		t.Fatalf("first pending = %p, want the first sample %p", got, first)
+	}
+
+	// A failed heartbeat does not call sent, so the same sample is offered again.
+	if got := tr.pending(s.latest()); got != first {
+		t.Fatalf("pending after failed send = %p, want the first sample %p", got, first)
+	}
+
+	tr.sent(got)
+	if got := tr.pending(s.latest()); got != nil {
+		t.Fatalf("pending after successful send = %v, want nil", got)
+	}
+	tr.sent(nil)
+	if got := tr.pending(s.latest()); got != nil {
+		t.Fatalf("pending after sent(nil) = %v, want nil", got)
+	}
+
+	s.sampleOnce(context.Background())
+	second := s.latest()
+	if second == first {
+		t.Fatal("a new sampling pass must publish a new sample")
+	}
+	if got := tr.pending(s.latest()); got != second {
+		t.Fatalf("pending after new sample = %p, want %p", got, second)
+	}
+}
+
 func TestClientHeartbeat_Usage(t *testing.T) {
 	host := &model.HostUsage{Load1: 1, Load5: 2, MemTotalMB: 4096, MemAvailableMB: 1024,
 		SampledAt: time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)}

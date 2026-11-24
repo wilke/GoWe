@@ -66,16 +66,20 @@ func TestWorkerHeartbeat_Usage(t *testing.T) {
 			// Overflowing, negative and mistyped numbers are dropped; unknown
 			// and repeated uuids are dropped; util_pct is clamped; control
 			// characters are stripped from the uuid.
-			fmt.Sprintf(`{"host":{"load1":1e999,"load5":-1,"mem_total_mb":-5,"psi_mem_some_avg10":-3,"sampled_at":"yesterday","mem_available_mb":"x"},`+
+			fmt.Sprintf(`{"host":{"load1":1e999,"load5":0.25,"mem_total_mb":-5,"psi_mem_some_avg10":-3,"sampled_at":"2026-11-24T10:00:00Z","mem_available_mb":"x"},`+
 				`"gpu_usage":[{"uuid":"GPU-unknown","mem_used_mb":1},{"uuid":%q,"mem_used_mb":-1,"util_pct":150},{"uuid":%q,"mem_used_mb":7},{"uuid":"%s\n","util_pct":1e999,"mem_used_mb":10}]}`,
 				gpu0, gpu0, gpu1),
 			&model.WorkerUsage{
-				Host: &model.HostUsage{},
+				Host: &model.HostUsage{Load5: 0.25, SampledAt: sampledAt},
 				GPUs: []model.GPUUsage{
 					{UUID: gpu0, UtilPct: ptrTo(100.0)},
 					{UUID: gpu1, MemUsedMB: ptrTo[int64](10)},
 				},
 			}},
+		{"host without any valid number dropped",
+			fmt.Sprintf(`{"host":{"load1":-1,"sampled_at":"2026-11-24T10:00:00Z"},"gpu_usage":[{"uuid":%q,"mem_used_mb":5}]}`, gpu0),
+			&model.WorkerUsage{GPUs: []model.GPUUsage{{UUID: gpu0, MemUsedMB: ptrTo[int64](5)}}}},
+		{"host without sampled_at dropped", `{"host":{"load1":1,"mem_total_mb":4096}}`, nil},
 		{"wrongly typed usage ignored", `{"host":"busy","gpu_usage":{"uuid":"x"}}`, nil},
 		{"only unknown gpus", `{"gpu_usage":[{"uuid":"GPU-unknown","mem_used_mb":1}]}`, nil},
 	}
@@ -123,7 +127,12 @@ func TestWorkerHeartbeat_WithoutUsageKeepsUsage(t *testing.T) {
 		t.Fatalf("usage not stored: %+v %v", before, err)
 	}
 
-	for _, body := range []string{`{}`, ``, `{"running_tasks":["task_x"]}`} {
+	bodies := []string{
+		`{}`, ``, `{"running_tasks":["task_x"]}`,
+		`{"host":{}}`, `{"host":{"load1":"abc"}}`, `{"host":{"load1":1,"mem_total_mb":4096}}`,
+		`{"host":{},"gpu_usage":[]}`,
+	}
+	for _, body := range bodies {
 		t.Run(fmt.Sprintf("body %q", body), func(t *testing.T) {
 			if w, _ := doPut(t, srv, "/api/v1/workers/"+id+"/heartbeat", body); w.Code != http.StatusOK {
 				t.Fatalf("heartbeat: status=%d, body=%s", w.Code, w.Body.String())
@@ -224,9 +233,16 @@ func TestWorkerHeartbeat_KeepsCheckedOutCurrentTask(t *testing.T) {
 }
 
 func TestSanitizeUsage_NonFiniteAndCap(t *testing.T) {
-	h := sanitizeHostUsage(hostUsageWire{Load1: "NaN", Load5: "+Inf", MemTotalMB: "1.5", MemAvailableMB: "-1", PSICPUSomeAvg10: "NaN", PSIMemSomeAvg10: "-Inf"})
-	if got, want := workerUsageJSON(t, &model.WorkerUsage{Host: h}), workerUsageJSON(t, &model.WorkerUsage{Host: &model.HostUsage{}}); got != want {
-		t.Errorf("host = %s, want %s", got, want)
+	const sampledAt = "2026-11-24T10:00:00Z"
+	h := sanitizeHostUsage(hostUsageWire{Load1: "NaN", Load5: "+Inf", MemTotalMB: "1.5", MemAvailableMB: "-1", PSICPUSomeAvg10: "NaN", PSIMemSomeAvg10: "-Inf", SampledAt: sampledAt})
+	if h != nil {
+		t.Errorf("host with no valid number = %+v, want nil", h)
+	}
+	if h := sanitizeHostUsage(hostUsageWire{Load1: "1", SampledAt: "yesterday"}); h != nil {
+		t.Errorf("host with unparsable sampled_at = %+v, want nil", h)
+	}
+	if h := sanitizeHostUsage(hostUsageWire{MemTotalMB: "0", SampledAt: sampledAt}); h == nil {
+		t.Error("host with a zero but valid number = nil, want kept")
 	}
 
 	inventory := []model.GPUInfo{{Index: 0, UUID: "GPU-a"}}
