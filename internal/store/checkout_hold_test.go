@@ -16,13 +16,13 @@ func ago(d time.Duration) time.Time {
 
 // checkoutID checks out for workerID (default group, no container runtime)
 // and returns the task id, "" when nothing is checked out.
-func checkoutID(t *testing.T, st *SQLiteStore, workerID string) string {
+func checkoutID(t *testing.T, st *SQLStore, workerID string) string {
 	t.Helper()
 	return checkoutGroupID(t, st, workerID, "")
 }
 
 // checkoutGroupID is checkoutID for the given worker group.
-func checkoutGroupID(t *testing.T, st *SQLiteStore, workerID, group string) string {
+func checkoutGroupID(t *testing.T, st *SQLStore, workerID, group string) string {
 	t.Helper()
 	got, err := st.CheckoutTask(context.Background(), workerID, group, model.RuntimeNone)
 	if err != nil {
@@ -36,7 +36,7 @@ func checkoutGroupID(t *testing.T, st *SQLiteStore, workerID, group string) stri
 
 // holdStore returns a store with the hold rule at hold and worker wrk_a
 // (8 cores / 8000 MiB, then mod applied).
-func holdStore(t *testing.T, hold time.Duration, mod func(w *model.Worker)) *SQLiteStore {
+func holdStore(t *testing.T, hold time.Duration, mod func(w *model.Worker)) *SQLStore {
 	t.Helper()
 	st := testStore(t)
 	st.SetCheckoutHoldAfter(hold)

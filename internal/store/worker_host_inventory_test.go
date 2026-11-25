@@ -149,15 +149,11 @@ func TestMigrate_WorkerHostInventoryColumnsIdempotent(t *testing.T) {
 		}
 	}
 	for _, col := range []string{"host_id", "host_cpus", "host_mem_mb", "slots", "cgroup_cpu", "cgroup_memory", "gpus"} {
-		var n int
-		if err := st.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM pragma_table_info('workers') WHERE name = ?`, col).Scan(&n); err != nil || n != 1 {
-			t.Errorf("column %s count = %d, err %v", col, n, err)
+		if !hasColumn(t, st, "workers", col) {
+			t.Errorf("column %s missing", col)
 		}
 	}
-	var n int
-	if err := st.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_workers_host_id'`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("idx_workers_host_id count = %d, err %v", n, err)
+	if !hasIndex(t, st, "idx_workers_host_id") {
+		t.Errorf("index idx_workers_host_id missing")
 	}
 }

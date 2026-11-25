@@ -1,30 +1,14 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/me/gowe/pkg/model"
 )
-
-func testStore(t *testing.T) *SQLiteStore {
-	t.Helper()
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
-	st, err := NewSQLiteStore(":memory:", logger)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if err := st.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
-}
 
 func sampleWorkflow() *model.Workflow {
 	now := time.Now().UTC().Truncate(time.Millisecond)

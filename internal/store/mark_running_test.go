@@ -10,7 +10,7 @@ import (
 
 // markRunningFixture creates a workflow + submission and returns the store and
 // submission for task seeding.
-func markRunningFixture(t *testing.T) (*SQLiteStore, *model.Submission) {
+func markRunningFixture(t *testing.T) (*SQLStore, *model.Submission) {
 	t.Helper()
 	ctx := context.Background()
 	st := testStore(t)

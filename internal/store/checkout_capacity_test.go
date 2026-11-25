@@ -169,10 +169,8 @@ func TestMigrate_WorkerCapacityColumnsIdempotent(t *testing.T) {
 		}
 	}
 	for _, col := range []string{"max_cpus", "max_mem_mb"} {
-		var n int
-		if err := st.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM pragma_table_info('workers') WHERE name = ?`, col).Scan(&n); err != nil || n != 1 {
-			t.Errorf("column %s count = %d, err %v", col, n, err)
+		if !hasColumn(t, st, "workers", col) {
+			t.Errorf("column %s missing", col)
 		}
 	}
 }

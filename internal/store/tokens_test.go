@@ -57,7 +57,7 @@ func tokenTask(id, token string) *model.Task {
 	}
 }
 
-func rawSubmissionToken(t *testing.T, st *SQLiteStore, id string) string {
+func rawSubmissionToken(t *testing.T, st *SQLStore, id string) string {
 	t.Helper()
 	var tok string
 	if err := st.db.QueryRowContext(context.Background(),
@@ -67,7 +67,7 @@ func rawSubmissionToken(t *testing.T, st *SQLiteStore, id string) string {
 	return tok
 }
 
-func rawTaskHints(t *testing.T, st *SQLiteStore, id string) string {
+func rawTaskHints(t *testing.T, st *SQLStore, id string) string {
 	t.Helper()
 	var h string
 	if err := st.db.QueryRowContext(context.Background(),

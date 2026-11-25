@@ -95,9 +95,19 @@ func TestScrubTerminalRaw_ClearsStaleRows_IncludingUndecryptable_Idempotent(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET runtime_hints=json_set(runtime_hints,'$.stager_overrides.http_credential.token',?) WHERE id='t_oldkey'`, enc); err != nil {
-		t.Fatal(err)
-	}
+	editRuntimeHints(t, st, "t_oldkey", func(h map[string]any) {
+		so, _ := h["stager_overrides"].(map[string]any)
+		if so == nil {
+			so = map[string]any{}
+			h["stager_overrides"] = so
+		}
+		cred, _ := so["http_credential"].(map[string]any)
+		if cred == nil {
+			cred = map[string]any{}
+			so["http_credential"] = cred
+		}
+		cred["token"] = enc
+	})
 	st.ConfigureTokenEncryption(testTokenCipher(t), true)
 	if _, err := st.GetTask(ctx, "t_oldkey"); err == nil {
 		t.Log("note: GetTask decrypted an old-key row; sweep is still raw")

@@ -21,7 +21,7 @@ func chargeWorker(id string, mod func(w *model.Worker)) *model.Worker {
 
 // seedRunning inserts a RUNNING worker task owned by workerID with the given
 // charge (nil = NULL, as for a task checked out by an older server).
-func seedRunning(t *testing.T, st *SQLiteStore, id, workerID string, cores *int, ramMB *int64) {
+func seedRunning(t *testing.T, st *SQLStore, id, workerID string, cores *int, ramMB *int64) {
 	t.Helper()
 	tk := capTask(id, 0, 0, 2*time.Hour)
 	tk.State = model.TaskStateRunning
@@ -34,14 +34,14 @@ func seedRunning(t *testing.T, st *SQLiteStore, id, workerID string, cores *int,
 	}
 }
 
-func mustCreateWorker(t *testing.T, st *SQLiteStore, w *model.Worker) {
+func mustCreateWorker(t *testing.T, st *SQLStore, w *model.Worker) {
 	t.Helper()
 	if err := st.CreateWorker(context.Background(), w); err != nil {
 		t.Fatalf("create worker %s: %v", w.ID, err)
 	}
 }
 
-func mustCreateTask(t *testing.T, st *SQLiteStore, tk *model.Task) {
+func mustCreateTask(t *testing.T, st *SQLStore, tk *model.Task) {
 	t.Helper()
 	if err := st.CreateTask(context.Background(), tk); err != nil {
 		t.Fatalf("create task %s: %v", tk.ID, err)
@@ -256,21 +256,21 @@ func TestCheckoutTask_EffectiveCapBoundedByHost(t *testing.T) {
 func TestCheckoutTask_RequeueClearsCharge(t *testing.T) {
 	tests := []struct {
 		name    string
-		requeue func(t *testing.T, st *SQLiteStore)
+		requeue func(t *testing.T, st *SQLStore)
 		// worker that checks out after the requeue
 		next string
 	}{
-		{"RequeueWorkerTasks", func(t *testing.T, st *SQLiteStore) {
+		{"RequeueWorkerTasks", func(t *testing.T, st *SQLStore) {
 			if _, err := st.RequeueWorkerTasks(context.Background(), "wrk_a"); err != nil {
 				t.Fatal(err)
 			}
 		}, "wrk_a"},
-		{"ReconcileWorkerTasks", func(t *testing.T, st *SQLiteStore) {
+		{"ReconcileWorkerTasks", func(t *testing.T, st *SQLStore) {
 			if _, err := st.ReconcileWorkerTasks(context.Background(), "wrk_a", nil, 0); err != nil {
 				t.Fatal(err)
 			}
 		}, "wrk_a"},
-		{"DeleteWorker", func(t *testing.T, st *SQLiteStore) {
+		{"DeleteWorker", func(t *testing.T, st *SQLStore) {
 			if err := st.DeleteWorker(context.Background(), "wrk_a"); err != nil {
 				t.Fatal(err)
 			}
@@ -349,7 +349,7 @@ func TestCheckoutTask_GroupFilterInSQL(t *testing.T) {
 		tk.RuntimeHints.WorkerGroup = group
 		return tk
 	}
-	setHints := func(t *testing.T, st *SQLiteStore, id, raw string) {
+	setHints := func(t *testing.T, st *SQLStore, id, raw string) {
 		t.Helper()
 		if _, err := st.db.ExecContext(context.Background(),
 			`UPDATE tasks SET runtime_hints = ? WHERE id = ?`, raw, id); err != nil {
@@ -565,10 +565,8 @@ func TestMigrate_ChargeColumnsIdempotent(t *testing.T) {
 		{"workers", "default_task_cores"},
 		{"workers", "default_task_ram_mb"},
 	} {
-		var n int
-		if err := st.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM pragma_table_info('`+c.table+`') WHERE name = ?`, c.col).Scan(&n); err != nil || n != 1 {
-			t.Errorf("column %s.%s count = %d, err %v", c.table, c.col, n, err)
+		if !hasColumn(t, st, c.table, c.col) {
+			t.Errorf("column %s.%s missing", c.table, c.col)
 		}
 	}
 }

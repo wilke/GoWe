@@ -14,7 +14,7 @@ import (
 
 // dispatchFixture creates a workflow, submission, and a READY step instance,
 // returning the store and the step instance.
-func dispatchFixture(t *testing.T) (*SQLiteStore, *model.StepInstance) {
+func dispatchFixture(t *testing.T) (*SQLStore, *model.StepInstance) {
 	t.Helper()
 	st := testStore(t)
 	ctx := context.Background()
