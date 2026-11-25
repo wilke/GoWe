@@ -1651,7 +1651,7 @@ const taskColumns = `id, submission_id, step_id, step_instance_id, state, execut
 	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
 	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms,
-	 charged_cores, charged_ram_mb`
+	 charged_cores, charged_ram_mb, charged_gpus`
 
 // checkInjectBlessed refuses to persist a non-terminal task that asks for the
 // user's token to be injected into the tool environment without naming the
@@ -1713,7 +1713,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO tasks (`+taskColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1722,7 +1722,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
-		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB),
+		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB), nullableInt(task.ChargedGPUs),
 	)
 	return err
 }
@@ -2336,7 +2336,7 @@ func (s *SQLiteStore) scanTask(row scanner) (*model.Task, error) {
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
-		&task.ChargedCores, &task.ChargedRamMB,
+		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2414,7 +2414,7 @@ func (s *SQLiteStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&createdAt, &startedAt, &completedAt,
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
 			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
-			&task.ChargedCores, &task.ChargedRamMB,
+			&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
 		); err != nil {
 			return nil, err
 		}
@@ -2879,7 +2879,7 @@ func (s *SQLiteStore) DeleteWorker(ctx context.Context, id string) error {
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
-		     charged_cores = NULL, charged_ram_mb = NULL
+		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("requeue tasks: %w", err)
@@ -2983,6 +2983,11 @@ func (s *SQLiteStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 //     fit what is free on the worker and on its host (host_id + key_id)
 //     after the charges of RUNNING tasks. A task that charges 0 always fits.
 //     The charge is recorded on the task (charged_cores, charged_ram_mb).
+//   - GPUs (worker level only): a task needing k = GPUCount GPUs is offered
+//     to a GPU worker whose capacity (model.Worker.GPUCapacity) is known
+//     when k fits it and, for k > 0, fits what the worker's RUNNING tasks
+//     leave free; to a GPU worker of unknown capacity only when k <= 1, with
+//     no free gate; never to a CPU-only worker when k > 0. charged_gpus = k.
 //   - Hold (only with SetCheckoutHoldAfter > 0): when the first task in queue
 //     order that this worker could take but for the free capacity on its own
 //     worker gate has waited longer than the hold-after duration, and would
@@ -3009,12 +3014,13 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	var workerMaxCPUs, workerMaxMem sql.NullInt64
 	var workerHostID, workerKeyID string
 	var workerHostCPUs, workerHostMem, workerDefaultCores, workerDefaultMem sql.NullInt64
+	var workerGPUsJSON sql.NullString
 	if err := tx.QueryRowContext(ctx,
 		`SELECT datasets, gpu_enabled, max_cpus, max_mem_mb, host_id, key_id,
-		        host_cpus, host_mem_mb, default_task_cores, default_task_ram_mb
+		        host_cpus, host_mem_mb, default_task_cores, default_task_ram_mb, gpus
 		 FROM workers WHERE id = ?`, workerID).
 		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem, &workerHostID, &workerKeyID,
-			&workerHostCPUs, &workerHostMem, &workerDefaultCores, &workerDefaultMem); err != nil {
+			&workerHostCPUs, &workerHostMem, &workerDefaultCores, &workerDefaultMem, &workerGPUsJSON); err != nil {
 		if err != sql.ErrNoRows {
 			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
 		}
@@ -3023,24 +3029,37 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
 		workerDatasets = map[string]string{}
 	}
+	// GPU capacity: model.Worker.GPUCapacity on the stored columns. An
+	// undecodable inventory is an unknown capacity.
+	var workerGPUs []model.GPUInfo
+	if workerGPUsJSON.Valid && workerGPUsJSON.String != "" {
+		if err := json.Unmarshal([]byte(workerGPUsJSON.String), &workerGPUs); err != nil {
+			s.logger.Warn("sql", "op", "checkout_task_parse_worker_gpus", "worker_id", workerID, "error", err)
+			workerGPUs = nil
+		}
+	}
+	workerGPUCap := (&model.Worker{GPUEnabled: workerGPUEnabled, GPUs: workerGPUs}).GPUCapacity()
 
 	// Charges of the RUNNING tasks of this worker and of the workers sharing
 	// its host and key (the host gate). Offline workers are left out: their
 	// tasks are about to be requeued by the reaper. The worker's own tasks
 	// count whatever its state. A NULL charge (checked out by an older server) counts as 0.
-	var workerChargedCores, workerChargedMem, hostChargedCores, hostChargedMem int64
+	// GPUs are counted on this worker only (no host term).
+	var workerChargedCores, workerChargedMem, hostChargedCores, hostChargedMem, workerChargedGPUs int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT
 		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_cores END), 0),
 		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_ram_mb END), 0),
 		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_cores END), 0),
-		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0)
+		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0),
+		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_gpus END), 0)
 		 FROM tasks t JOIN workers w ON w.id = t.external_id
 		 WHERE t.state = 'RUNNING' AND t.executor_type = 'worker'`,
 		workerID, workerID,
 		workerID, workerHostID, workerKeyID,
-		workerID, workerHostID, workerKeyID).
-		Scan(&workerChargedCores, &workerChargedMem, &hostChargedCores, &hostChargedMem); err != nil {
+		workerID, workerHostID, workerKeyID,
+		workerID).
+		Scan(&workerChargedCores, &workerChargedMem, &hostChargedCores, &hostChargedMem, &workerChargedGPUs); err != nil {
 		return nil, fmt.Errorf("sum charged resources: %w", err)
 	}
 
@@ -3059,6 +3078,25 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	_, ownFreeMem := checkoutBounds("", nullInt64Ptr(workerMaxMem), nil, workerChargedMem, 0)
 	_, drainCores := checkoutBounds(workerHostID, nil, nullInt64Ptr(workerHostCPUs), 0, hostChargedCores-workerChargedCores)
 	_, drainMem := checkoutBounds(workerHostID, nil, nullInt64Ptr(workerHostMem), 0, hostChargedMem-workerChargedMem)
+	// GPUs, worker level only (no host term, no default share): a CPU-only
+	// worker takes no task that needs a GPU (total 0); a GPU worker with an
+	// unknown capacity takes tasks needing at most one GPU, with no free gate
+	// and no hold; a known capacity bounds the request and, minus the GPUs
+	// charged to this worker's RUNNING tasks, the charge (also its own gate
+	// for the hold rule).
+	var capGPUs, freeGPUs *int64
+	switch {
+	case !workerGPUEnabled:
+		v := int64(0)
+		capGPUs = &v
+	case workerGPUCap == nil:
+		v := int64(1)
+		capGPUs = &v
+	default:
+		c, f := int64(*workerGPUCap), int64(*workerGPUCap)-workerChargedGPUs
+		capGPUs, freeGPUs = &c, &f
+	}
+	ownFreeGPUs := freeGPUs
 	// A non-positive default share is treated as unset.
 	defaultCores, defaultMem := positiveInt64Ptr(workerDefaultCores), positiveInt64Ptr(workerDefaultMem)
 	// A task whose last dispatch (else creation) is before holdCutoff has
@@ -3077,14 +3115,21 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	charge := func(path string) string {
 		return `(CASE WHEN COALESCE(` + hint(path) + `, 0) > 0 THEN ` + hint(path) + ` ELSE COALESCE(?, 0) END)`
 	}
+	// gpuRequest is model.RuntimeHints.GPUCount in SQL (no binds). It is both
+	// the request and the charge of the GPU dimension.
+	gpuRequest := `(CASE WHEN COALESCE(` + hint("gpus") + `, 0) > 0 THEN ` + hint("gpus") +
+		` WHEN COALESCE(` + hint("requires_gpu") + ` = 1, 0) THEN 1 ELSE 0 END)`
+	// Per dimension: request and charge are SQL expressions; every
+	// occurrence of charge binds chargeArgs.
 	dims := []struct {
-		path         string
-		total, free  *int64
-		ownFree      *int64
-		defaultShare *int64
+		request, charge string
+		chargeArgs      []any
+		total, free     *int64
+		ownFree         *int64
 	}{
-		{"cores", capCores, freeCores, ownFreeCores, defaultCores},
-		{"ram_mb", capMem, freeMem, ownFreeMem, defaultMem},
+		{`COALESCE(` + hint("cores") + `, 0)`, charge("cores"), []any{nullableInt(defaultCores)}, capCores, freeCores, ownFreeCores},
+		{`COALESCE(` + hint("ram_mb") + `, 0)`, charge("ram_mb"), []any{nullableInt(defaultMem)}, capMem, freeMem, ownFreeMem},
+		{gpuRequest, gpuRequest, nil, capGPUs, freeGPUs, ownFreeGPUs},
 	}
 	// candidateQuery builds a query for the QUEUED worker tasks this worker
 	// can take, in queue order: the aged predicate when aged (first: cheap
@@ -3105,18 +3150,19 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
 		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)`
 		for _, dim := range dims {
-			request := `COALESCE(` + hint(dim.path) + `, 0)`
 			// Total: the request must fit the effective capacity.
 			query += `
-		   AND (? IS NULL OR ` + request + ` <= ?)`
+		   AND (? IS NULL OR ` + dim.request + ` <= ?)`
 			args = append(args, nullableInt(dim.total), nullableInt(dim.total))
 			if withFree {
 				// Free: a task that charges nothing always passes, even when
 				// free is negative (host over-committed).
 				query += `
-		   AND (? IS NULL OR ` + charge(dim.path) + ` = 0 OR ` + charge(dim.path) + ` <= ?)`
-				args = append(args, nullableInt(dim.free),
-					nullableInt(dim.defaultShare), nullableInt(dim.defaultShare), nullableInt(dim.free))
+		   AND (? IS NULL OR ` + dim.charge + ` = 0 OR ` + dim.charge + ` <= ?)`
+				args = append(args, nullableInt(dim.free))
+				args = append(args, dim.chargeArgs...)
+				args = append(args, dim.chargeArgs...)
+				args = append(args, nullableInt(dim.free))
 			}
 		}
 		// Worker group, same semantics as the Go check below.
@@ -3172,9 +3218,15 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			return 0, false
 		}
 
-		// Check GPU requirement: CPU-only workers skip GPU tasks.
-		taskWantsGPU := task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU
-		if taskWantsGPU && !workerGPUEnabled {
+		// Check GPU requirement: CPU-only workers skip GPU tasks, and the
+		// GPU count must fit the worker's GPU capacity (capGPUs).
+		reqGPUs := int64(task.RuntimeHints.GPUCount())
+		if reqGPUs > 0 && !workerGPUEnabled {
+			return 0, false
+		}
+		if capGPUs != nil && reqGPUs > *capGPUs {
+			s.logger.Debug("checkout skip: task exceeds worker GPUs", "task_id", task.ID, "worker_id", workerID,
+				"want", reqGPUs, "max", *capGPUs)
 			return 0, false
 		}
 
@@ -3216,10 +3268,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		return cacheScore, true
 	}
 
-	// chargeOf is what this worker would charge the task, per dimension.
-	chargeOf := func(task *model.Task) (cores, ramMB int64) {
+	// chargeOf is what this worker would charge the task, per dimension (the
+	// GPU charge is the GPU count: no default share).
+	chargeOf := func(task *model.Task) (cores, ramMB, gpus int64) {
 		reqCores, reqMem := taskRequest(task)
-		return taskCharge(reqCores, defaultCores), taskCharge(reqMem, defaultMem)
+		return taskCharge(reqCores, defaultCores), taskCharge(reqMem, defaultMem), int64(task.RuntimeHints.GPUCount())
 	}
 
 	// An eligible task, scored by affinity.
@@ -3266,7 +3319,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			}
 			// Check free capacity (defence in depth: the candidate query already
 			// applies the same bounds).
-			chargeCores, chargeMem := chargeOf(task)
+			chargeCores, chargeMem, chargeGPUs := chargeOf(task)
 			if freeCores != nil && chargeCores != 0 && chargeCores > *freeCores {
 				s.logger.Debug("checkout skip: task exceeds free cores", "task_id", task.ID, "worker_id", workerID,
 					"charge", chargeCores, "free", *freeCores)
@@ -3277,12 +3330,17 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 					"charge_mb", chargeMem, "free_mb", *freeMem)
 				continue
 			}
-			anyCharged = anyCharged || chargeCores != 0 || chargeMem != 0
+			if freeGPUs != nil && chargeGPUs != 0 && chargeGPUs > *freeGPUs {
+				s.logger.Debug("checkout skip: task exceeds free GPUs", "task_id", task.ID, "worker_id", workerID,
+					"charge", chargeGPUs, "free", *freeGPUs)
+				continue
+			}
+			anyCharged = anyCharged || chargeCores != 0 || chargeMem != 0 || chargeGPUs != 0
 
 			eligible = append(eligible, scored{
 				task:       task,
 				cacheScore: cacheScore,
-				gpuMatch:   task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU && workerGPUEnabled,
+				gpuMatch:   chargeGPUs > 0 && workerGPUEnabled,
 			})
 		}
 		return eligible, anyCharged, nil
@@ -3303,28 +3361,32 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// the host gate if this worker's own running tasks finished (drain). The
 	// host gate alone never makes a task short: it is shared with workers
 	// that may never see the holder, so holding for it could idle this
-	// worker without helping. Only the first checkoutHoldScan rows matching
+	// worker without helping. GPUs have no host term: a task short on GPUs
+	// (only with a known GPU capacity) always fits once this worker's own
+	// tasks finish. Only the first checkoutHoldScan rows matching
 	// in SQL are examined; if none of them qualifies there is no holder. Rows
 	// that cannot be scanned, decoded or decrypted are never holders.
-	findHolder := func() (*model.Task, bool, bool, error) {
+	findHolder := func() (*model.Task, bool, bool, bool, error) {
 		var short []string
 		var extraArgs []any
 		for _, dim := range dims {
 			if dim.ownFree == nil {
 				continue
 			}
-			short = append(short, `(`+charge(dim.path)+` > 0 AND `+charge(dim.path)+` > ?)`)
-			extraArgs = append(extraArgs, nullableInt(dim.defaultShare), nullableInt(dim.defaultShare), *dim.ownFree)
+			short = append(short, `(`+dim.charge+` > 0 AND `+dim.charge+` > ?)`)
+			extraArgs = append(extraArgs, dim.chargeArgs...)
+			extraArgs = append(extraArgs, dim.chargeArgs...)
+			extraArgs = append(extraArgs, *dim.ownFree)
 		}
 		if len(short) == 0 {
-			return nil, false, false, nil // no worker max: no task is short
+			return nil, false, false, false, nil // no worker max: no task is short
 		}
 		extra := `
 		   AND (` + strings.Join(short, ` OR `) + `)`
 		query, args := candidateQuery(false, true, extra, extraArgs, checkoutHoldScan)
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("find checkout holder: %w", err)
+			return nil, false, false, false, fmt.Errorf("find checkout holder: %w", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
@@ -3339,21 +3401,22 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			if _, ok := checkEligible(task); !ok {
 				continue
 			}
-			c, m := chargeOf(task)
+			c, m, g := chargeOf(task)
 			shortCores := ownFreeCores != nil && c > 0 && c > *ownFreeCores
 			shortMem := ownFreeMem != nil && m > 0 && m > *ownFreeMem
-			if !shortCores && !shortMem {
+			shortGPUs := ownFreeGPUs != nil && g > 0 && g > *ownFreeGPUs
+			if !shortCores && !shortMem && !shortGPUs {
 				continue
 			}
 			if (shortCores && drainCores != nil && c > *drainCores) || (shortMem && drainMem != nil && m > *drainMem) {
 				continue
 			}
-			return task, shortCores, shortMem, nil
+			return task, shortCores, shortMem, shortGPUs, nil
 		}
 		if err := rows.Err(); err != nil {
-			return nil, false, false, fmt.Errorf("find checkout holder: %w", err)
+			return nil, false, false, false, fmt.Errorf("find checkout holder: %w", err)
 		}
-		return nil, false, false, nil
+		return nil, false, false, false, nil
 	}
 
 	// Hold rule: leave out the tasks behind the holder in queue order that
@@ -3364,15 +3427,15 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// capacity (nothing to hold; the recorded holder is then kept so a hold
 	// over an otherwise empty queue is not logged again).
 	var holder *model.Task
-	var shortCores, shortMem bool
+	var shortCores, shortMem, shortGPUs bool
 	var protectedID string // the task this worker's previous checkout held for
 	if s.checkoutHoldAfter > 0 {
 		protectedID = s.heldFor(workerID)
 		switch {
-		case workerChargedCores == 0 && workerChargedMem == 0:
+		case workerChargedCores == 0 && workerChargedMem == 0 && workerChargedGPUs == 0:
 			s.noteHolder(workerID, "")
 		case anyCharged:
-			if holder, shortCores, shortMem, err = findHolder(); err != nil {
+			if holder, shortCores, shortMem, shortGPUs, err = findHolder(); err != nil {
 				return nil, err
 			}
 			if holder == nil {
@@ -3384,7 +3447,8 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		// Re-run the candidate query without the held tasks, so they cannot
 		// fill the LIMIT window and hide the tasks behind them (the bind order
 		// follows the predicate: priority, priority, created_at, then one
-		// default share per charge expression).
+		// default share per cores / RAM charge expression; the GPU charge
+		// binds nothing).
 		var short, charged []string
 		extraArgs := []any{holder.Priority, holder.Priority, holder.CreatedAt.Format(time.RFC3339Nano)}
 		if shortCores {
@@ -3397,6 +3461,10 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			charged = append(charged, charge("ram_mb")+` != 0`)
 			extraArgs = append(extraArgs, nullableInt(defaultMem))
 		}
+		if shortGPUs {
+			short = append(short, "gpus")
+			charged = append(charged, gpuRequest+` != 0`)
+		}
 		extra := `
 		   AND NOT ((priority < ? OR (priority = ? AND created_at >= ?)) AND (` + strings.Join(charged, ` OR `) + `))`
 		if eligible, _, err = loadEligible(extra, extraArgs); err != nil {
@@ -3407,8 +3475,8 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		for _, e := range eligible {
 			behind := e.task.Priority < holder.Priority ||
 				(e.task.Priority == holder.Priority && !e.task.CreatedAt.Before(holder.CreatedAt))
-			c, m := chargeOf(e.task)
-			if behind && ((shortCores && c != 0) || (shortMem && m != 0)) {
+			c, m, g := chargeOf(e.task)
+			if behind && ((shortCores && c != 0) || (shortMem && m != 0) || (shortGPUs && g != 0)) {
 				continue
 			}
 			kept = append(kept, e)
@@ -3417,13 +3485,16 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 
 		s.logger.Debug("checkout hold", "worker_id", workerID, "holder_task_id", holder.ID, "short", strings.Join(short, ","))
 		if s.noteHolder(workerID, holder.ID) {
-			c, m := chargeOf(holder)
+			c, m, g := chargeOf(holder)
 			attrs := []any{"worker_id", workerID, "holder_task_id", holder.ID, "short", strings.Join(short, ",")}
 			if shortCores {
 				attrs = append(attrs, "charge_cores", c, "free_cores", *ownFreeCores)
 			}
 			if shortMem {
 				attrs = append(attrs, "charge_ram_mb", m, "free_ram_mb", *ownFreeMem)
+			}
+			if shortGPUs {
+				attrs = append(attrs, "charge_gpus", g, "free_gpus", *ownFreeGPUs)
 			}
 			s.logger.Info("checkout hold: worker stops taking later tasks that need the capacity a waiting task is short of", attrs...)
 		}
@@ -3471,12 +3542,13 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	reqCores, reqMem := taskRequest(selected)
 	chargedCores := int(taskCharge(reqCores, defaultCores))
 	chargedMem := taskCharge(reqMem, defaultMem)
+	chargedGPUs := selected.RuntimeHints.GPUCount()
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339Nano)
 	_, err = tx.ExecContext(ctx,
-		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ?, charged_cores = ?, charged_ram_mb = ?
+		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ?, charged_cores = ?, charged_ram_mb = ?, charged_gpus = ?
 		 WHERE id = ? AND state = 'QUEUED'`,
-		workerID, nowStr, chargedCores, chargedMem, selected.ID)
+		workerID, nowStr, chargedCores, chargedMem, chargedGPUs, selected.ID)
 	if err != nil {
 		return nil, fmt.Errorf("update task state: %w", err)
 	}
@@ -3498,6 +3570,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	selected.StartedAt = &now
 	selected.ChargedCores = &chargedCores
 	selected.ChargedRamMB = &chargedMem
+	selected.ChargedGPUs = &chargedGPUs
 
 	return selected, nil
 }
@@ -3528,7 +3601,7 @@ func (s *SQLiteStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 		&createdAt, &startedAt, &completedAt,
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
-		&task.ChargedCores, &task.ChargedRamMB,
+		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
 	); err != nil {
 		return nil, err
 	}
@@ -3776,7 +3849,7 @@ func (s *SQLiteStore) ReapStaleWorkers(ctx context.Context, timeout time.Duratio
 	for _, w := range stale {
 		res, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
-			     charged_cores = NULL, charged_ram_mb = NULL
+			     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
 			 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, w.ID)
 		if err != nil {
 			return nil, 0, fmt.Errorf("requeue tasks of %s: %w", w.ID, err)
@@ -3792,7 +3865,7 @@ func (s *SQLiteStore) ReapStaleWorkers(ctx context.Context, timeout time.Duratio
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
-		     charged_cores = NULL, charged_ram_mb = NULL
+		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker'
 		   AND external_id IN (SELECT id FROM workers WHERE state = 'offline' AND last_seen < ?)`, cutoff)
 	if err != nil {
@@ -3829,7 +3902,7 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
-		     charged_cores = NULL, charged_ram_mb = NULL
+		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
 	if err != nil {
 		return 0, fmt.Errorf("requeue tasks: %w", err)
@@ -3934,7 +4007,7 @@ func (s *SQLiteStore) ReconcileWorkerTasks(ctx context.Context, workerID string,
 	for _, id := range orphans {
 		if _, err := s.db.ExecContext(ctx,
 			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
-			     charged_cores = NULL, charged_ram_mb = NULL
+			     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
 			 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`,
 			id, workerID); err != nil {
 			return nil, fmt.Errorf("reconcile: requeue %s: %w", id, err)

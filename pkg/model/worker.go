@@ -83,6 +83,22 @@ func (w *Worker) EffectiveMaxMemMB() *int64 {
 	return minSetPtr(w.MaxMemMB, w.HostMemMB)
 }
 
+// GPUCapacity is the number of GPUs CheckoutTask may charge on this worker:
+// the number of entries of its registered inventory, when the worker is
+// GPU-enabled and reported a non-empty inventory. nil means no known
+// capacity: either the worker is not GPU-enabled (it takes no GPU task) or it
+// is a GPU worker that reported no inventory (legacy) or an empty one
+// (nvidia-smi failed), which is offered tasks needing at most one GPU with no
+// free-GPU gate. Callers tell the two nil cases apart with GPUEnabled.
+// CheckoutTask computes the same value from the stored columns.
+func (w *Worker) GPUCapacity() *int {
+	if !w.GPUEnabled || len(w.GPUs) == 0 {
+		return nil
+	}
+	n := len(w.GPUs)
+	return &n
+}
+
 // minSetPtr returns the smaller of the non-nil values, or nil when both are
 // nil.
 func minSetPtr[T int | int64](a, b *T) *T {

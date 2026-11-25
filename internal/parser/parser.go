@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1797,7 +1798,7 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 
 		// Resolve inline tool from graph.
 		if tool, ok := graph.Tools[toolRef]; ok {
-			inlineTool, err := convertTool(tool)
+			inlineTool, err := convertTool(tool, graph.Namespaces)
 			if err != nil {
 				return nil, fmt.Errorf("step %s: %w", stepID, err)
 			}
@@ -1811,7 +1812,10 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 
 		// Extract GoWe hints from the step and the resolved tool and merge
 		// them field-wise (mergeStepHints): the step may route, never inject.
-		stepHints, err := extractStepHints(step.Hints, nil)
+		// The step's requirements are read for the GPU count only
+		// (CUDARequirement); its other requirements do not route.
+		stepHints, err := extractStepHintsNS(step.Hints,
+			cudaRequirementsOnly(step.Requirements, graph.Namespaces), graph.Namespaces)
 		if err != nil {
 			return nil, fmt.Errorf("step %s: %w", stepID, err)
 		}
@@ -1833,8 +1837,9 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 	return mw, nil
 }
 
-// convertTool converts a cwl.CommandLineTool to a model.Tool.
-func convertTool(ct *cwl.CommandLineTool) (*model.Tool, error) {
+// convertTool converts a cwl.CommandLineTool to a model.Tool. namespaces are
+// the document's $namespaces (for extension prefixes in hints/requirements).
+func convertTool(ct *cwl.CommandLineTool, namespaces map[string]string) (*model.Tool, error) {
 	t := &model.Tool{
 		ID:    ct.ID,
 		Class: ct.Class,
@@ -1896,7 +1901,7 @@ func convertTool(ct *cwl.CommandLineTool) (*model.Tool, error) {
 	}
 
 	// Extract tool hints (check both hints and requirements for DockerRequirement).
-	hints, err := extractStepHints(ct.Hints, ct.Requirements)
+	hints, err := extractStepHintsNS(ct.Hints, ct.Requirements, namespaces)
 	if err != nil {
 		return nil, fmt.Errorf("tool %s: %w", ct.ID, err)
 	}
@@ -2080,13 +2085,108 @@ const cwltoolNamespaceURI = "http://commonwl.org/cwltool#"
 // "cwltool:" prefix, the fully-expanded URI form, and any other prefix the
 // document's own $namespaces maps to cwltoolNamespaceURI.
 func cwltoolSecretsKeys(namespaces map[string]string) []string {
-	keys := []string{"cwltool:Secrets", cwltoolNamespaceURI + "Secrets"}
+	return cwltoolClassKeys(namespaces, "Secrets")
+}
+
+// cwltoolClassKeys returns every hints/requirements key that could spell the
+// cwltool extension class name in a given document (see cwltoolSecretsKeys).
+// Prefixes other than "cwltool" are appended in sorted order (deterministic).
+func cwltoolClassKeys(namespaces map[string]string, name string) []string {
+	keys := []string{"cwltool:" + name, cwltoolNamespaceURI + name}
+	var prefixes []string
 	for prefix, uri := range namespaces {
 		if uri == cwltoolNamespaceURI && prefix != "cwltool" {
-			keys = append(keys, prefix+":Secrets")
+			prefixes = append(prefixes, prefix)
 		}
 	}
+	sort.Strings(prefixes)
+	for _, prefix := range prefixes {
+		keys = append(keys, prefix+":"+name)
+	}
 	return keys
+}
+
+// positiveIntValue returns v as an int when it is an integer >= 1 (YAML
+// decodes integers as int, JSON as float64). Anything else, including a CWL
+// expression string, is an error.
+func positiveIntValue(v any) (int, error) {
+	var n int64
+	switch x := v.(type) {
+	case int:
+		n = int64(x)
+	case int64:
+		n = x
+	case uint64:
+		if x > math.MaxInt32 {
+			return 0, fmt.Errorf("%v is too large", x)
+		}
+		n = int64(x)
+	case float64:
+		if x != math.Trunc(x) || x > math.MaxInt32 || x < math.MinInt32 {
+			return 0, fmt.Errorf("%v is not an integer", x)
+		}
+		n = int64(x)
+	case string:
+		return 0, fmt.Errorf("%q is not an integer (CWL expressions are not supported here)", x)
+	default:
+		return 0, fmt.Errorf("%v (%T) is not an integer", v, v)
+	}
+	if n < 1 || n > math.MaxInt32 {
+		return 0, fmt.Errorf("%d is out of range (must be >= 1)", n)
+	}
+	return int(n), nil
+}
+
+// cudaDeviceCount returns the GPU count a CUDARequirement (cwltool
+// extension, any spelling cwltoolClassKeys accepts) asks for:
+// cudaDeviceCountMin, 1 when absent; 0 when there is no CUDARequirement. A
+// declaration under requirements wins over one under hints; every
+// declaration found is validated. cudaDeviceCountMax, cudaVersionMin and
+// cudaComputeCapability are accepted and ignored.
+func cudaDeviceCount(hints, requirements map[string]any, namespaces map[string]string) (int, error) {
+	keys := cwltoolClassKeys(namespaces, "CUDARequirement")
+	count := 0
+	for _, m := range []map[string]any{requirements, hints} {
+		for _, key := range keys {
+			raw, ok := m[key]
+			if !ok {
+				continue
+			}
+			n := 1
+			switch body := raw.(type) {
+			case nil:
+			case map[string]any:
+				if v, ok := body["cudaDeviceCountMin"]; ok {
+					var err error
+					if n, err = positiveIntValue(v); err != nil {
+						return 0, fmt.Errorf("%s.cudaDeviceCountMin must be an integer >= 1: %w", key, err)
+					}
+				}
+			default:
+				return 0, fmt.Errorf("%s must be a mapping, got %T", key, raw)
+			}
+			if count == 0 {
+				count = n
+			}
+		}
+	}
+	return count, nil
+}
+
+// cudaRequirementsOnly returns the CUDARequirement entries of a
+// requirements map (nil when there are none). A workflow step's
+// requirements are read for the GPU count only.
+func cudaRequirementsOnly(requirements map[string]any, namespaces map[string]string) map[string]any {
+	var out map[string]any
+	for _, key := range cwltoolClassKeys(namespaces, "CUDARequirement") {
+		if v, ok := requirements[key]; ok {
+			if out == nil {
+				out = map[string]any{}
+			}
+			out[key] = v
+		}
+	}
+	return out
 }
 
 // ExtractSecretInputs is the exported form of extractSecretInputs, for
@@ -2184,9 +2284,11 @@ func rejectExecutionUnderRequirements(where string, requirements map[string]any)
 //     request the user's token.
 //   - DockerImage: the tool wins when both set one (the blessing covers the
 //     tool's image; a step must not swap it).
-//   - ExecutorType, WorkerGroup, BVBRCAppID, RequiresGPU, RequiredDatasets
-//     and the #260 secret opt-ins: the step wins when it sets them, otherwise
-//     the tool's value stands.
+//   - ExecutorType, WorkerGroup, BVBRCAppID, RequiresGPU,
+//     RequiredDatasets and the #260 secret opt-ins: the step wins when it
+//     sets them, otherwise the tool's value stands.
+//   - GPUs: the larger count (a step's plain gpu: true must not lower a
+//     tool's gpu_count).
 //
 // Either argument may be nil; nil is returned when both are.
 func mergeStepHints(tool, step *model.StepHints) *model.StepHints {
@@ -2215,6 +2317,12 @@ func mergeStepHints(tool, step *model.StepHints) *model.StepHints {
 	if step.RequiresGPU {
 		out.RequiresGPU = true
 	}
+	if step.GPUs > out.GPUs {
+		out.GPUs = step.GPUs
+	}
+	if out.GPUs > 0 {
+		out.RequiresGPU = true
+	}
 	if len(step.RequiredDatasets) > 0 {
 		out.RequiredDatasets = step.RequiredDatasets
 	}
@@ -2228,9 +2336,18 @@ func mergeStepHints(tool, step *model.StepHints) *model.StepHints {
 	return &out
 }
 
-// extractStepHints extracts GoWe-specific hints and CWL DockerRequirement from hints and requirements maps.
-// DockerRequirement may appear in either hints or requirements; both are checked.
+// extractStepHints is extractStepHintsNS for a document without $namespaces.
 func extractStepHints(hints map[string]any, requirements map[string]any) (*model.StepHints, error) {
+	return extractStepHintsNS(hints, requirements, nil)
+}
+
+// extractStepHintsNS extracts GoWe-specific hints, CWL DockerRequirement and
+// the GPU count from hints and requirements maps. DockerRequirement may
+// appear in either hints or requirements; both are checked. The GPU count is
+// the larger of gowe:Execution's (gpu: true = 1, gpu_count: n wins over gpu)
+// and CUDARequirement's (see cudaDeviceCount; namespaces are the document's
+// $namespaces, for its prefix spellings).
+func extractStepHintsNS(hints, requirements map[string]any, namespaces map[string]string) (*model.StepHints, error) {
 	if hints == nil && requirements == nil {
 		return nil, nil
 	}
@@ -2248,7 +2365,14 @@ func extractStepHints(hints map[string]any, requirements map[string]any) (*model
 		h.DockerImage = stringField(goweMap, "docker_image")
 		h.WorkerGroup = stringField(goweMap, "worker_group")
 		if gpu, ok := goweMap["gpu"].(bool); ok && gpu {
-			h.RequiresGPU = true
+			h.GPUs = 1
+		}
+		if raw, ok := goweMap["gpu_count"]; ok {
+			n, err := positiveIntValue(raw)
+			if err != nil {
+				return nil, fmt.Errorf("gowe:Execution.gpu_count must be an integer >= 1: %w", err)
+			}
+			h.GPUs = n
 		}
 		if inject, ok := goweMap["inject_bvbrc_token"].(bool); ok && inject {
 			h.InjectBVBRCToken = true
@@ -2316,8 +2440,19 @@ func extractStepHints(hints map[string]any, requirements map[string]any) (*model
 		}
 	}
 
+	// GPU count: the larger of the gowe hint and CUDARequirement.
+	cuda, err := cudaDeviceCount(hints, requirements, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	if cuda > h.GPUs {
+		h.GPUs = cuda
+	}
+	h.RequiresGPU = h.GPUs > 0
+
 	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && h.WorkerGroup == "" &&
-		len(h.RequiredDatasets) == 0 && len(h.SecretEnv) == 0 && !h.InjectSecrets && !h.InjectBVBRCToken {
+		len(h.RequiredDatasets) == 0 && len(h.SecretEnv) == 0 && !h.InjectSecrets && !h.InjectBVBRCToken &&
+		!h.RequiresGPU && h.GPUs == 0 {
 		return nil, nil
 	}
 	return &h, nil

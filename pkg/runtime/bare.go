@@ -38,11 +38,14 @@ func (r *Bare) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	if spec.InheritHostEnv {
 		cmd.Env = os.Environ()
 	} else {
-		cmd.Env = BaseHostEnv(spec.GPU.Enabled)
+		cmd.Env = BaseHostEnv(spec.GPU.HasAccess())
 	}
 	for k, v := range spec.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	// GPU device restriction (or none when GPU access is denied); appended
+	// last so it wins over an inherited value.
+	cmd.Env = append(cmd.Env, spec.GPU.CUDAEnv()...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -204,7 +205,67 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB),
 		"default_task_cores", capLog(worker.DefaultTaskCores), "default_task_ram_mb", capLog(worker.DefaultTaskRamMB),
 		"host_id", worker.HostID, "host_cpus", capLog(worker.HostCPUs), "host_mem_mb", capLog(worker.HostMemMB), "gpus", len(worker.GPUs))
+	s.warnGPUOverlap(r.Context(), worker)
 	respondCreated(w, reqID, worker)
+}
+
+// warnGPUOverlap logs a WARN for every online worker on the registering GPU
+// worker's host that reports some of the same GPU UUIDs: the two would hand
+// out the same devices. It never rejects: a restarted worker's previous row
+// stays online until the reaper removes it.
+func (s *Server) warnGPUOverlap(ctx context.Context, worker *model.Worker) {
+	if !worker.GPUEnabled || worker.HostID == "" || len(worker.GPUs) == 0 {
+		return
+	}
+	others, err := s.store.ListWorkers(ctx)
+	if err != nil {
+		s.logger.Debug("worker registration: list workers for GPU overlap check", "error", err)
+		return
+	}
+	for _, o := range findGPUOverlaps(worker, others) {
+		s.logger.Warn("worker registration: GPUs also reported by another online worker on the same host; both may hand out the same devices (give each worker disjoint GPUs with --gpu-id; ignore if the other worker is this worker's previous registration, which stays online until it times out)",
+			"worker_id", worker.ID, "worker_name", worker.Name,
+			"other_worker_id", o.worker.ID, "other_worker_name", o.worker.Name,
+			"host_id", worker.HostID, "gpu_uuids", strings.Join(o.uuids, ","))
+	}
+}
+
+// gpuOverlap is another worker that reports some of the same GPUs.
+type gpuOverlap struct {
+	worker *model.Worker
+	uuids  []string // in common, in the registering worker's inventory order
+}
+
+// findGPUOverlaps returns the workers among others, other than w, that are
+// online, share w's non-empty host_id and report a GPU UUID w also reports,
+// with the UUIDs in common. Nothing is returned when w is not GPU-enabled or
+// reports no host id or no GPUs.
+func findGPUOverlaps(w *model.Worker, others []*model.Worker) []gpuOverlap {
+	if !w.GPUEnabled || w.HostID == "" || len(w.GPUs) == 0 {
+		return nil
+	}
+	var out []gpuOverlap
+	for _, o := range others {
+		if o == nil || o.ID == w.ID || o.State != model.WorkerStateOnline || o.HostID != w.HostID || len(o.GPUs) == 0 {
+			continue
+		}
+		theirs := make(map[string]bool, len(o.GPUs))
+		for _, g := range o.GPUs {
+			if g.UUID != "" {
+				theirs[g.UUID] = true
+			}
+		}
+		var common []string
+		for _, g := range w.GPUs {
+			if g.UUID != "" && theirs[g.UUID] {
+				common = append(common, g.UUID)
+			}
+		}
+		if len(common) > 0 {
+			out = append(out, gpuOverlap{worker: o, uuids: common})
+		}
+	}
+	return out
 }
 
 // Limits on worker-reported GPU metadata (#323). Oversized input is trimmed,

@@ -118,14 +118,14 @@ func secretEnvAssignments(secrets map[string]string, prefix string) []string {
 // baseToolEnv returns the base environment for a tool process that runs
 // directly on the host (no container boundary). Only an allow-list of host
 // variables is passed through (PATH, LANG, LC_*, TZ, USER, LOGNAME, SHELL,
-// TERM; plus NVIDIA_*, CUDA_* and LD_LIBRARY_PATH when GPU is enabled), so the
-// worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, ...)
+// TERM; plus NVIDIA_*, CUDA_* and LD_LIBRARY_PATH when the task has GPU
+// access), so the worker's own secrets (BVBRC_TOKEN, SHOCK_TOKEN, AWS_*, ...)
 // never reach the tool. opts.InheritHostEnv restores the full os.Environ().
 func baseToolEnv(opts *Options) []string {
 	if opts.InheritHostEnv {
 		return os.Environ()
 	}
-	env := gort.BaseHostEnv(opts.GPU.Enabled)
+	env := gort.BaseHostEnv(opts.GPU.HasAccess())
 	for _, name := range opts.PreserveEnv {
 		if v, ok := os.LookupEnv(name); ok {
 			env = append(env, name+"="+v)
@@ -211,10 +211,10 @@ func (e *Executor) executeLocal(ctx context.Context, opts *Options) (*Result, er
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
 
-	// GPU support: set CUDA_VISIBLE_DEVICES for local execution.
-	if opts.GPU.Enabled && opts.GPU.DeviceID != "" {
-		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES="+opts.GPU.DeviceID)
-	}
+	// GPU support: CUDA_VISIBLE_DEVICES (with CUDA_DEVICE_ORDER) for specific
+	// devices, or empty when GPU access is denied (GPUConfig.CUDAEnv).
+	// Appended last, so it wins over inherited and requirement values.
+	cmd.Env = append(cmd.Env, opts.GPU.CUDAEnv()...)
 
 	// Handle stdin.
 	if cmdResult.Stdin != "" {
@@ -376,14 +376,10 @@ func (e *Executor) executeInDocker(ctx context.Context, opts *Options) (*Result,
 	// Docker's NVIDIA runtime remaps GPUs inside the container, so device=3
 	// on the host becomes device 0 inside. Do not set CUDA_VISIBLE_DEVICES
 	// since --gpus already restricts visibility and the host device IDs
-	// don't match the remapped container device IDs.
-	if opts.GPU.Enabled {
-		if opts.GPU.DeviceID != "" {
-			dockerArgs = append(dockerArgs, "--gpus", fmt.Sprintf("device=%s", opts.GPU.DeviceID))
-		} else {
-			dockerArgs = append(dockerArgs, "--gpus", "all")
-		}
-	}
+	// don't match the remapped container device IDs. The device list is
+	// passed as `"device=a,b"`, quotes included (GPUConfig.DockerGPUArgs); no
+	// --gpus at all when GPU access is denied.
+	dockerArgs = append(dockerArgs, opts.GPU.DockerGPUArgs()...)
 
 	// Resource limits for container execution.
 	if opts.Resources.RamMB > 0 {
@@ -789,12 +785,15 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// any APPTAINERENV_* variable from its own process environment into the
 	// container, so the value never appears on apptainerArgs / `ps auxww`.
 
-	// GPU support: use --nv for NVIDIA GPU passthrough.
-	if opts.GPU.Enabled {
+	// GPU support: use --nv for NVIDIA GPU passthrough. --nv exposes every
+	// device node, so CUDA_VISIBLE_DEVICES (with CUDA_DEVICE_ORDER) is what
+	// restricts a task to its devices, or to none when GPU access is denied
+	// (no --nv then either; GPUConfig.CUDAEnv).
+	if opts.GPU.HasAccess() {
 		apptainerArgs = append(apptainerArgs, "--nv")
-		if opts.GPU.DeviceID != "" {
-			apptainerArgs = append(apptainerArgs, "--env", "CUDA_VISIBLE_DEVICES="+opts.GPU.DeviceID)
-		}
+	}
+	for _, kv := range opts.GPU.CUDAEnv() {
+		apptainerArgs = append(apptainerArgs, "--env", kv)
 	}
 
 	// Resource limits for container execution. Apptainer --memory/--cpus need

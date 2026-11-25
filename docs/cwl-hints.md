@@ -38,6 +38,39 @@ hints:
 | `worker_group` | string | Target worker group for task routing (e.g., `gpu`, `esmfold`) |
 | `bvbrc_app_id` | string | BV-BRC application ID (implies `executor: bvbrc`) |
 | `docker_image` | string | Container image override (takes priority over `DockerRequirement.dockerPull`) |
+| `gpu` | boolean | `true`: the tool needs one GPU (a `--gpu` worker) |
+| `gpu_count` | integer >= 1 | Number of GPUs the tool needs; wins over `gpu`. Anything else (0, a string, an expression) fails registration |
+
+### GPUs
+
+A tool asks for GPUs with `gowe:Execution` (`gpu: true` = 1 GPU, `gpu_count: n` = n GPUs) or with cwltool's
+`CUDARequirement`, in `hints` or `requirements`:
+
+```yaml
+$namespaces:
+  cwltool: http://commonwl.org/cwltool#
+
+requirements:
+  cwltool:CUDARequirement:
+    cudaDeviceCountMin: 2     # GPU count; 1 when absent
+    cudaVersionMin: "11.4"    # accepted, ignored
+```
+
+- `CUDARequirement` is recognized as `cwltool:CUDARequirement`, as the full URI
+  `http://commonwl.org/cwltool#CUDARequirement`, and under any prefix the document's `$namespaces` maps to
+  `http://commonwl.org/cwltool#`. A declaration under `requirements` wins over one under `hints`.
+- The count is `cudaDeviceCountMin`, 1 when absent. It must be an integer >= 1: a CWL expression or 0 fails
+  registration. `cudaDeviceCountMax`, `cudaVersionMin` and `cudaComputeCapability` are accepted and ignored (no CUDA
+  version or compute capability matching).
+- With both a `gowe:Execution` GPU field and `CUDARequirement`, the larger count applies.
+- A workflow step can set the count too (`gowe:Execution` under the step's `hints`, `CUDARequirement` under its
+  `hints` or `requirements`); the larger of the step and tool counts is used. Only `CUDARequirement` is read from a step's
+  `requirements`. Workflow-level declarations are not read.
+- The scheduler routes the task to a `--gpu` worker that can give it that many GPUs (the server counts GPUs per worker,
+  see the server's capacity accounting). On a worker running several tasks at once the task gets exactly that many
+  devices; at `--concurrency 1` it gets the worker's whole GPU configuration.
+- `runtime.cudaDeviceCount` is not provided to expressions.
+- `cwl-runner` accepts these declarations but does not act on them (no GPU passthrough there).
 
 ### Executor Selection
 
@@ -303,11 +336,11 @@ This tool:
 ```
 CWL hints
   ↓ parser/extractStepHints()
-model.StepHints (BVBRCAppID, ExecutorType, DockerImage, WorkerGroup, RequiredDatasets)
+model.StepHints (BVBRCAppID, ExecutorType, DockerImage, WorkerGroup, RequiredDatasets, RequiresGPU, GPUs)
   ↓ scheduler/createTaskFromStep()
 model.Task.RuntimeHints
   ↓ store/CheckoutTask()
-Worker matching: runtime, group, datasets (prestage=require, cache=prefer)
+Worker matching: runtime, group, datasets (prestage=require, cache=prefer), GPU count
   ↓ worker execution
 Container launched with bind mounts from --pre-stage-dir / --extra-bind
 ```
@@ -319,5 +352,6 @@ Container launched with bind mounts from --pre-stage-dir / --extra-bind
 | `DockerRequirement` | Fully supported | Standard CWL |
 | `gowe:Execution` | Safely ignored (namespaced) | GoWe-specific |
 | `gowe:ResourceData` | Safely ignored (namespaced) | GoWe-specific |
+| `cwltool:CUDARequirement` | Supported by cwltool | cwltool extension |
 
 To maximize portability, always place GoWe extensions in `hints` and use `$namespaces` for `gowe:` prefixed hints (both `gowe:Execution` and `gowe:ResourceData`).

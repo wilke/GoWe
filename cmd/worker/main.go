@@ -71,7 +71,7 @@ func main() {
 	flag.StringVar(&cfg.Resources.ApptainerCgroupsMode, "apptainer-cgroups", "auto", "Apptainer --cpus/--memory limits: auto (only for cgroup controllers delegated to the user's systemd service, or all when root), on (always), off (never)")
 
 	// Concurrency flags.
-	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "Maximum number of tasks run at once (not above the worker's CPUs; refused with --gpu above 1)")
+	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "Maximum number of tasks run at once (not above the worker's CPUs; with --gpu above 1, each task gets its own GPUs from the nvidia-smi inventory, which is then required)")
 	flag.IntVar(&cfg.DefaultTaskCores, "default-task-cores", 0, "Cores charged to and given to a task that requests none, when --concurrency > 1 (0 = max CPUs / concurrency)")
 	flag.Int64Var(&cfg.DefaultTaskRamMB, "default-task-ram", 0, "Memory in MiB charged to and given to a task that requests none, when --concurrency > 1 (0 = max memory / concurrency)")
 
@@ -194,9 +194,9 @@ func main() {
 		logger.Warn("--apptainer-no-containall is set: Apptainer containers share the host PID namespace and /tmp; only --cleanenv remains")
 	}
 
-	// Validate --concurrency (the capacity checks follow in worker.New, after
-	// CPU/memory auto-detection).
-	if err := worker.ValidateConcurrency(cfg.Concurrency, cfg.GPU.Enabled); err != nil {
+	// Validate --concurrency (the capacity and GPU inventory checks follow in
+	// worker.New, after CPU/memory/GPU auto-detection).
+	if err := worker.ValidateConcurrency(cfg.Concurrency); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}

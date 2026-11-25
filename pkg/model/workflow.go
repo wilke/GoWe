@@ -92,6 +92,11 @@ type StepHints struct {
 	InjectBVBRCToken bool                 `json:"inject_bvbrc_token,omitempty"`
 	RequiredDatasets []DatasetRequirement `json:"required_datasets,omitempty"`
 
+	// GPUs is the number of GPUs the step's tool needs, from
+	// gowe:Execution.gpu / gpu_count and CUDARequirement (the larger wins).
+	// RequiresGPU is true whenever GPUs > 0.
+	GPUs int `json:"gpus,omitempty"`
+
 	// SecretEnv names submission secrets (by name) this step's tool may see,
 	// parsed from gowe:Execution.secret_env.
 	SecretEnv []string `json:"secret_env,omitempty"`

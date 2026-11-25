@@ -98,6 +98,8 @@ hints:
     worker_group: esmfold      # Target worker group
     bvbrc_app_id: GenomeAssembly2
     docker_image: override.sif # Override DockerRequirement
+    gpu: true                  # Needs 1 GPU (--gpu worker)
+    gpu_count: 2               # Needs N GPUs (wins over gpu); also cwltool:CUDARequirement.cudaDeviceCountMin, larger wins
 
   gowe:ResourceData:
     datasets:
@@ -186,8 +188,8 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--secret NAME=value` | Secret env var injected into containers (never sent to server) |
 | `--secret-file` | Load secrets from file (`NAME=value` per line) |
 | `--image-dir` | Base directory for resolving relative `.sif` image paths |
-| `--gpu` / `--gpu-id` | GPU passthrough |
-| `--concurrency N` | Max tasks run at once (default 1 = one at a time; ≤ effective CPUs; refused with `--gpu` above 1). A task requesting no cores/RAM gets the share the server charged (`max(1, CPUs/N)` cores, `mem/N` MiB, or `--default-task-cores` / `--default-task-ram`); an older server (no `default_task_cores` echoed, or a task without `charged_cores`) drops the worker to 1 with a WARN. Shutdown cancels running tasks, waits ≤ 60 s, then deregisters (no drain) |
+| `--gpu` / `--gpu-id` | GPU passthrough. At concurrency 1 every task gets the whole config; above 1 each task gets exactly its own devices (count charged by the server as `charged_gpus`, UUIDs from the nvidia-smi inventory, which is then required; a task needing none gets no GPU access) |
+| `--concurrency N` | Max tasks run at once (default 1 = one at a time; ≤ effective CPUs; with `--gpu` above 1 the GPU inventory is required). A task requesting no cores/RAM gets the share the server charged (`max(1, CPUs/N)` cores, `mem/N` MiB, or `--default-task-cores` / `--default-task-ram`); an older server (no `default_task_cores` echoed, or a task without `charged_cores`) drops the worker to 1 with a WARN. Shutdown cancels running tasks, waits ≤ 60 s, then deregisters (no drain) |
 | `--host-id` | Host identity sent at registration, verbatim (1-64 chars `[A-Za-z0-9._-]`); default: first 16 hex of sha256 of `/etc/machine-id` → boot_id → hostname |
 | `--worker-key-file` | Worker auth key, key file only (regular file, mode 0600 or stricter). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are **refused**: both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
 | `--inherit-host-env` | Degraded: host-run tools (`--runtime none`) inherit the worker env instead of the allow-list (WARN; label `inherit_host_env=true`) |

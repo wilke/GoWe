@@ -46,6 +46,7 @@ type Worker struct {
 	hostCPUs          int                      // Physical host CPUs (0 = unknown)
 	hostMemMB         int64                    // Physical host memory in MiB (0 = unknown)
 	gpuInventory      []model.GPUInfo          // GPUs reported at registration (nil unless --gpu)
+	gpuLedger         *gpuLedger               // Per-task GPU assignment (--gpu with --concurrency > 1); nil = static config for every task
 	usage             *usageSampler            // Host/GPU usage for heartbeats (#323); nil until Run
 	imageDigests      digestCache              // sha256 cache for blessed-image checks
 	imageDir          string                   // Base directory for resolving .sif image paths
@@ -269,6 +270,16 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 			"default_task_ram_mb", shareRamMB,
 		)
 	}
+	// Several tasks at once on a GPU worker: each task gets its own devices
+	// from the inventory (a task that needs none gets no GPU access).
+	if err := validateGPUConcurrency(slots, cfg.GPU.Enabled, gpuInventory); err != nil {
+		return nil, err
+	}
+	var ledger *gpuLedger
+	if slots > 1 && cfg.GPU.Enabled {
+		ledger = newGPULedger(gpuInventory)
+		logger.Info("per-task GPU assignment", "devices", strings.Join(ledger.devices, ","))
+	}
 
 	// Build TLS config.
 	tlsCfg, err := cfg.Stager.TLS.BuildTLSConfig()
@@ -421,6 +432,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		hostCPUs:          hostCPUs,
 		hostMemMB:         hostMemMB,
 		gpuInventory:      gpuInventory,
+		gpuLedger:         ledger,
 		imageDir:          cfg.ImageDir,
 		dockerHostPathMap: cfg.DockerHostPathMap,
 		dockerVolume:      cfg.DockerVolume,
@@ -440,15 +452,31 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	}, nil
 }
 
-// ValidateConcurrency checks --concurrency on its own: at least 1, and not
-// above 1 together with --gpu (every task would get the same GPU devices;
-// per-task GPU assignment does not exist yet).
-func ValidateConcurrency(n int, gpu bool) error {
+// ValidateConcurrency checks --concurrency on its own: at least 1. Above 1
+// together with --gpu, New also requires the GPU inventory
+// (validateGPUConcurrency).
+func ValidateConcurrency(n int) error {
 	if n < 1 {
 		return fmt.Errorf("--concurrency must be at least 1 (got %d)", n)
 	}
-	if n > 1 && gpu {
-		return fmt.Errorf("--concurrency %d cannot be combined with --gpu: every task would get the same GPU devices (per-task GPU assignment is not supported yet)", n)
+	return nil
+}
+
+// validateGPUConcurrency refuses --gpu with more than one slot when the GPU
+// inventory is empty: per-task device assignment hands out the inventory's
+// devices, so without it a task would get either no GPU or every GPU.
+func validateGPUConcurrency(slots int, gpu bool, inventory []model.GPUInfo) error {
+	if slots > 1 && gpu && len(inventory) == 0 {
+		return fmt.Errorf("--concurrency %d with --gpu: per-task GPU assignment needs the GPU inventory (nvidia-smi), and none was found (check nvidia-smi and --gpu-id, or use --concurrency 1)", slots)
+	}
+	if slots > 1 && gpu {
+		// The server counts only inventory entries with a UUID; a device
+		// without one would be handed out here but not accounted for there.
+		for _, g := range inventory {
+			if g.UUID == "" {
+				return fmt.Errorf("--concurrency %d with --gpu: GPU %d has no UUID in the nvidia-smi inventory; per-task GPU assignment needs one for every device (use --concurrency 1)", slots, g.Index)
+			}
+		}
 	}
 	return nil
 }
@@ -465,7 +493,7 @@ func resolveConcurrency(cfg Config, hostCPUs int, hostMemMB int64) (slots, share
 	if slots == 0 {
 		slots = 1 // unset (library callers): one task at a time
 	}
-	if err := ValidateConcurrency(slots, cfg.GPU.Enabled); err != nil {
+	if err := ValidateConcurrency(slots); err != nil {
 		return 0, 0, 0, err
 	}
 	if cfg.DefaultTaskCores < 0 || cfg.DefaultTaskRamMB < 0 {
@@ -754,6 +782,14 @@ func (w *Worker) fillSlots(ctx context.Context, slots chan struct{}, freed chan<
 			w.dropToSingleTask("checked-out task carries no resource charge: the server cannot account for concurrent tasks, running one task at a time from now on",
 				"task_id", task.ID)
 		}
+		if w.gpuLedger != nil && task.ChargedGPUs == nil {
+			// The server does not count GPUs, so it cannot keep concurrent
+			// tasks within this worker's GPUs. Tasks keep going through the
+			// ledger (each gets only its own devices): others may still hold
+			// devices, so no task may get every GPU.
+			w.dropToSingleTask("checked-out task carries no GPU charge: the server does not count GPUs, running one task at a time from now on (each task still gets only its own GPU devices)",
+				"task_id", task.ID)
+		}
 
 		// Register the task before its goroutine starts so the next
 		// heartbeat lists it and the in-flight count is exact.
@@ -761,7 +797,11 @@ func (w *Worker) fillSlots(ctx context.Context, slots chan struct{}, freed chan<
 		w.active.add(task.ID, cancel)
 		wg.Add(1)
 		go func() {
+			// GPU devices this task acquires (runTask); released first on
+			// every exit path, panic included, before the slot is freed.
+			hold := &gpuHold{}
 			defer func() {
+				w.releaseTaskGPUs(task.ID, hold)
 				<-slots
 				select {
 				case freed <- struct{}{}:
@@ -775,7 +815,7 @@ func (w *Worker) fillSlots(ctx context.Context, slots chan struct{}, freed chan<
 					w.logTaskError(task, w.reportFailure(context.WithoutCancel(ctx), task, fmt.Errorf("worker panic: %v", r)))
 				}
 			}()
-			w.logTaskError(task, w.runTask(runCtx, cancel, task))
+			w.logTaskError(task, w.runTask(runCtx, cancel, task, hold))
 		}()
 	}
 }
@@ -797,13 +837,17 @@ func (w *Worker) executeTask(ctx context.Context, task *model.Task) error {
 	// affecting the worker or other tasks.
 	runCtx, cancel := context.WithCancel(ctx)
 	w.active.add(task.ID, cancel)
-	return w.runTask(runCtx, cancel, task)
+	hold := &gpuHold{}
+	defer w.releaseTaskGPUs(task.ID, hold)
+	return w.runTask(runCtx, cancel, task, hold)
 }
 
 // runTask runs a single task already registered in w.active with cancel, the
-// cancel func of runCtx: stage-in → run → collect outputs → stage-out →
-// report. It removes the task from w.active and cancels runCtx on return.
-func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task *model.Task) error {
+// cancel func of runCtx: GPU devices → stage-in → run → collect outputs →
+// stage-out → report. It removes the task from w.active and cancels runCtx
+// on return. The GPU devices it acquires are recorded in hold; the caller
+// releases them (releaseTaskGPUs) once runTask has returned.
+func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task *model.Task, hold *gpuHold) error {
 	// The worker holds the submitter's credentials only for the lifetime of
 	// this task. Deferred first so it runs after every other deferred func and
 	// on every exit path: success, failure, cancellation and panic.
@@ -813,6 +857,24 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 		cancel()
 	}()
 
+	// GPU access for this task: the worker's static config, or devices of its
+	// own (possibly after a wait), or none.
+	gpu, err := w.taskGPU(runCtx, task, hold)
+	if err != nil {
+		// Cancelled while waiting for devices: same decision as a cancelled
+		// execution (SKIPPED for a server cancel, left for requeue on
+		// shutdown); otherwise the task fails.
+		if handled, cerr := w.handleExecCancellation(runCtx, task); handled {
+			return cerr
+		}
+		return w.reportFailure(runCtx, task, err)
+	}
+
+	// The devices go back to the ledger as soon as the tool has exited, before
+	// stage-out and the report: the server frees the task's GPU charge at the
+	// report and may hand this worker its next GPU task right away.
+	releaseGPU := func() { w.releaseTaskGPUs(task.ID, hold) }
+
 	taskDir := filepath.Join(w.workDir, task.ID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return w.reportFailure(runCtx, task, fmt.Errorf("create task dir: %w", err))
@@ -820,11 +882,73 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 
 	// Check if task has Tool+Job (new format) or legacy _base_command.
 	if task.HasTool() {
-		return w.executeWithCWLTool(runCtx, task, taskDir)
+		return w.executeWithCWLTool(runCtx, task, taskDir, gpu, releaseGPU)
 	}
 
 	// Legacy path: use _base_command from task.Inputs.
-	return w.executeLegacy(runCtx, task, taskDir)
+	return w.executeLegacy(runCtx, task, taskDir, gpu, releaseGPU)
+}
+
+// gpuAcquireWait bounds how long a task waits for its GPU devices to be
+// released by the tasks still holding them. A variable so tests can shrink it.
+var gpuAcquireWait = 60 * time.Second
+
+// taskGPUCount is the number of GPUs a checked-out task gets: the server's
+// charge when present (authoritative), else what the task asks for.
+func taskGPUCount(task *model.Task) int {
+	if task.ChargedGPUs != nil {
+		return max(0, *task.ChargedGPUs)
+	}
+	return task.RuntimeHints.GPUCount()
+}
+
+// taskGPU returns the GPU configuration task runs with. Without a device
+// ledger (one task at a time, or no --gpu) every task gets the worker's
+// static configuration, as before per-task assignment. With the ledger, a
+// task needing k > 0 GPUs (taskGPUCount) first acquires k devices into hold,
+// waiting at most gpuAcquireWait (a WARN is logged once when it has to wait);
+// a task needing none gets GPU access denied. An error means the task cannot
+// run: ctx was cancelled (ctx.Err()), the wait timed out, or the task needs
+// more GPUs than the worker has.
+func (w *Worker) taskGPU(ctx context.Context, task *model.Task, hold *gpuHold) (GPUConfig, error) {
+	if w.gpuLedger == nil {
+		return toolexecGPU(w.gpu), nil
+	}
+	k := taskGPUCount(task)
+	if k == 0 {
+		return GPUConfig{AccessDenied: true}, nil
+	}
+	if n := w.gpuLedger.size(); k > n {
+		return GPUConfig{}, fmt.Errorf("task needs %d GPUs but this worker has %d", k, n)
+	}
+	actx, cancel := context.WithTimeout(ctx, gpuAcquireWait)
+	defer cancel()
+	devices, err := w.gpuLedger.acquire(actx, k, func() {
+		w.logger.Warn("waiting for GPU devices still held by another task of this worker (its process outlived the server's charge)",
+			"task_id", task.ID, "gpus", k, "max_wait", gpuAcquireWait)
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return GPUConfig{}, ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return GPUConfig{}, fmt.Errorf("no %d free GPU devices after waiting %s: other tasks of this worker still hold them", k, gpuAcquireWait)
+		}
+		return GPUConfig{}, fmt.Errorf("acquire GPU devices: %w", err)
+	}
+	hold.devices = devices
+	w.logger.Info("GPU devices assigned", "task_id", task.ID, "devices", strings.Join(devices, ","))
+	return GPUConfig{Enabled: true, Devices: devices}, nil
+}
+
+// releaseTaskGPUs returns the devices recorded in hold to the ledger.
+func (w *Worker) releaseTaskGPUs(taskID string, hold *gpuHold) {
+	if w.gpuLedger == nil || hold == nil || len(hold.devices) == 0 {
+		return
+	}
+	w.gpuLedger.release(hold.devices)
+	w.logger.Debug("GPU devices released", "task_id", taskID, "devices", strings.Join(hold.devices, ","))
+	hold.devices = nil
 }
 
 // cleanupTaskDir removes a completed task's working directories (the task dir
@@ -1071,8 +1195,9 @@ func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task
 	}
 }
 
-// executeWithCWLTool executes a task using the cwltool package with full CWL support.
-func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string) error {
+// executeWithCWLTool executes a task using the cwltool package with full CWL
+// support. gpu is the task's GPU configuration (taskGPU).
+func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string, gpu GPUConfig, releaseGPU func()) error {
 	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
 
 	// Rematerialize file literals in job inputs if paths don't exist locally.
@@ -1090,7 +1215,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 		ContainerRuntime:      w.containerRuntime,
 		DockerHostPathMap:     w.dockerHostPathMap,
 		DockerVolume:          w.dockerVolume,
-		GPU:                   toolexecGPU(w.gpu),
+		GPU:                   gpu,
 		MaxCPUs:               w.resources.MaxCPUs,
 		MaxMemMB:              w.resources.MaxMemMB,
 		ApptainerCgroups:      w.resources.ApptainerCgroups,
@@ -1189,6 +1314,7 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 
 	// Execute the tool.
 	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
+	releaseGPU()
 
 	// Build the redaction mask now, then drop the config's references to the
 	// secret maps. Go strings cannot be zeroed; this releases the last
@@ -1310,8 +1436,9 @@ func (w *Worker) redactOutputsForReport(taskID string, outputs map[string]any, t
 
 // executeLegacy executes a task using the legacy _base_command approach.
 // The server charges such a task like any other, but no cores/RAM limit is
-// applied to the command (as before --concurrency).
-func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir string) error {
+// applied to the command (as before --concurrency). gpu is the task's GPU
+// configuration (taskGPU).
+func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir string, gpu GPUConfig, releaseGPU func()) error {
 	// Extract reserved keys from task inputs.
 	command := extractBaseCommand(task.Inputs)
 	image, _ := task.Inputs["_docker_image"].(string)
@@ -1338,14 +1465,11 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 
 	// Run via configured runtime.
 	spec := RunSpec{
-		Image:   image,
-		Command: command,
-		WorkDir: taskDir,
-		Volumes: volumes,
-		GPU: GPUConfig{
-			Enabled:  w.gpu.Enabled,
-			DeviceID: w.gpu.DeviceID,
-		},
+		Image:                 image,
+		Command:               command,
+		WorkDir:               taskDir,
+		Volumes:               volumes,
+		GPU:                   gpu,
 		InheritHostEnv:        w.inheritHostEnv,
 		ApptainerNoContainall: w.noContainall,
 	}
@@ -1367,6 +1491,7 @@ func (w *Worker) executeLegacy(ctx context.Context, task *model.Task, taskDir st
 	)
 
 	result, runErr := w.runtime.Run(ctx, spec)
+	releaseGPU()
 	if runErr != nil {
 		// Cancellation takes precedence over a generic runtime error.
 		if handled, cerr := w.handleExecCancellation(ctx, task); handled {

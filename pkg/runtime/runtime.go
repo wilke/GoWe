@@ -32,10 +32,81 @@ type RunSpec struct {
 	ApptainerNoContainall bool
 }
 
-// GPUConfig specifies GPU requirements for container execution.
+// GPUConfig specifies GPU access for one execution, in one of three cases:
+//
+//   - Legacy (Devices empty, AccessDenied false): the worker's static --gpu /
+//     --gpu-id, given to every task of a one-task-at-a-time worker. Enabled
+//     gives GPU access; DeviceID restricts it to that comma-separated list,
+//     empty means every GPU.
+//   - Assigned (Devices non-empty): the devices a multi-task worker assigned
+//     to this task (UUIDs, or indices when the inventory has no UUID).
+//     Enabled and DeviceID are ignored.
+//   - AccessDenied: a multi-task GPU worker runs a task that needs no GPU;
+//     the tool gets no GPU access. Overrides everything else.
 type GPUConfig struct {
-	Enabled  bool   // Whether to enable GPU access
-	DeviceID string // Specific GPU device (e.g., "0", "1", "0,1") - empty means all
+	Enabled  bool     // Whether to enable GPU access (legacy)
+	DeviceID string   // Specific GPU device (e.g., "0", "1", "0,1") - empty means all (legacy)
+	Devices  []string // Devices assigned to this task (multi-task worker)
+	// AccessDenied means GPU access is denied for this task.
+	AccessDenied bool
+}
+
+// HasAccess reports whether the execution gets GPU access (Docker --gpus,
+// Apptainer --nv, the host CUDA_* / NVIDIA_* environment).
+func (g GPUConfig) HasAccess() bool {
+	return !g.AccessDenied && (len(g.Devices) > 0 || g.Enabled)
+}
+
+// VisibleDevices returns the comma-separated device list the execution is
+// restricted to and whether it is restricted at all: the assigned Devices,
+// else the legacy DeviceID when Enabled, else "" with restricted true when
+// access is denied (no device). restricted is false for every GPU (legacy
+// without DeviceID) and for no GPU configuration at all.
+func (g GPUConfig) VisibleDevices() (list string, restricted bool) {
+	switch {
+	case g.AccessDenied:
+		return "", true
+	case len(g.Devices) > 0:
+		return strings.Join(g.Devices, ","), true
+	case g.Enabled && g.DeviceID != "":
+		return g.DeviceID, true
+	default:
+		return "", false
+	}
+}
+
+// CUDAEnv returns the CUDA_* variables for an execution that sees the host's
+// device numbering (host processes and Apptainer; not Docker, which
+// renumbers the devices it passes in): CUDA_VISIBLE_DEVICES=<list> plus
+// CUDA_DEVICE_ORDER=PCI_BUS_ID for specific devices, so an index means the
+// same device to CUDA as to nvidia-smi; CUDA_VISIBLE_DEVICES= (empty, no
+// device) when access is denied; nothing otherwise.
+func (g GPUConfig) CUDAEnv() []string {
+	list, restricted := g.VisibleDevices()
+	switch {
+	case !restricted:
+		return nil
+	case list == "":
+		return []string{"CUDA_VISIBLE_DEVICES="}
+	default:
+		return []string{"CUDA_VISIBLE_DEVICES=" + list, "CUDA_DEVICE_ORDER=PCI_BUS_ID"}
+	}
+}
+
+// DockerGPUArgs returns the docker run arguments for GPU access: none without
+// access, "--gpus all" for every GPU, else "--gpus" followed by exactly
+// `"device=a,b"`, double quotes included. Docker parses the --gpus value as
+// CSV, so an unquoted list would be split at its commas; the argv is exec'd,
+// not run through a shell, so the quotes reach docker.
+func (g GPUConfig) DockerGPUArgs() []string {
+	if !g.HasAccess() {
+		return nil
+	}
+	list, restricted := g.VisibleDevices()
+	if !restricted {
+		return []string{"--gpus", "all"}
+	}
+	return []string{"--gpus", `"device=` + list + `"`}
 }
 
 // NetworkConfig specifies network requirements for container execution.

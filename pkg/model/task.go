@@ -73,6 +73,12 @@ type Task struct {
 	// keeps its last values, which are then no longer counted).
 	ChargedCores *int   `json:"charged_cores,omitempty"`
 	ChargedRamMB *int64 `json:"charged_ram_mb,omitempty"`
+	// ChargedGPUs is the number of GPUs the server charged against the worker
+	// at checkout (worker level only; 0 for a task that needs none). Same
+	// lifecycle as ChargedCores. Nil means checked out by a server that does
+	// not count GPUs: a worker then cannot rely on the server to keep its
+	// concurrent tasks within its GPUs.
+	ChargedGPUs *int `json:"charged_gpus,omitempty"`
 }
 
 // DatasetRequirement describes a reference dataset needed by a CWL tool.
@@ -112,8 +118,13 @@ type RuntimeHints struct {
 	// CWLDir is the directory containing the CWL file, used for resolving relative paths.
 	CWLDir string `json:"cwl_dir,omitempty"`
 
-	// RequiresGPU indicates the task needs a GPU-enabled worker.
+	// RequiresGPU indicates the task needs a GPU-enabled worker. It is true
+	// whenever GPUs > 0 (older servers and workers read only this field).
 	RequiresGPU bool `json:"requires_gpu,omitempty"`
+
+	// GPUs is the number of GPUs the task needs (gowe:Execution.gpu_count or
+	// CUDARequirement.cudaDeviceCountMin). 0 means not stated: see GPUCount.
+	GPUs int `json:"gpus,omitempty"`
 
 	// InjectBVBRCToken indicates the worker should inject the user's BV-BRC
 	// token as BVBRC_TOKEN env var into the container execution.
@@ -209,6 +220,22 @@ type HTTPCredential struct {
 // HasTool returns true if this task has a Tool definition for worker execution.
 func (t *Task) HasTool() bool {
 	return t.Tool != nil && len(t.Tool) > 0
+}
+
+// GPUCount is the number of GPUs the task needs: GPUs when positive, else 1
+// when RequiresGPU is set (tasks and workflows created before GPU counts
+// carry only the boolean), else 0. A nil receiver needs none.
+func (h *RuntimeHints) GPUCount() int {
+	switch {
+	case h == nil:
+		return 0
+	case h.GPUs > 0:
+		return h.GPUs
+	case h.RequiresGPU:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // ScrubSecrets removes every secret-bearing value from the hints in place:
