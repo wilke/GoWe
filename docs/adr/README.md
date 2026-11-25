@@ -33,6 +33,7 @@ recorded before or as they are made.
 | [0011](0011-scatter-subworkflow-proxy-tasks.md) | Run sub-workflow steps through proxy tasks paired with child submissions | Accepted |
 | [0012](0012-admin-blessed-token-injection.md) | Admin-blessed token injection (supersedes ADR-0010) | Accepted |
 | [0013](0013-admission-control-over-worker-reported-capacity.md) | Admit tasks against worker-reported capacity | Accepted |
+| [0014](0014-postgresql-second-store-backend.md) | Add PostgreSQL as a second store backend (amends ADR-0006) | Accepted |
 
 ## Writing a new ADR
 

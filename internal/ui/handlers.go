@@ -858,15 +858,17 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Create StepInstances for each workflow step (3-level state architecture).
+	// CreatedAt is staggered by one nanosecond per step so that reading the
+	// steps ORDER BY created_at keeps the workflow order on PostgreSQL too.
 	stepInstances := make([]*model.StepInstance, 0, len(wf.Steps))
-	for _, step := range wf.Steps {
+	for i, step := range wf.Steps {
 		stepInstances = append(stepInstances, &model.StepInstance{
 			ID:           "si_" + uuid.New().String(),
 			SubmissionID: sub.ID,
 			StepID:       step.ID,
 			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
-			CreatedAt:    now,
+			CreatedAt:    now.Add(time.Duration(i) * time.Nanosecond),
 		})
 	}
 	if err := ui.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {

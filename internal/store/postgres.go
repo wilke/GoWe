@@ -21,6 +21,13 @@ type PostgresConfig struct {
 	URL      string // postgres:// or postgresql:// URL, or a key=value DSN
 	Password string // overrides any password in URL; empty = none (e.g. Unix socket, trust auth)
 	Schema   string // optional: schema to work in (sets search_path); "" = the role's default
+
+	// PasswordOnlyFromConfig makes Password the only password source: the
+	// connection password is set to exactly Password (possibly empty), and
+	// whatever the driver took from the URL, PGPASSWORD or a passfile
+	// (~/.pgpass, PGPASSFILE) is discarded. When false, a non-empty Password
+	// overrides the driver's password and an empty one keeps it.
+	PasswordOnlyFromConfig bool
 }
 
 // minPostgresVersionNum is the oldest server_version_num the store accepts:
@@ -38,35 +45,9 @@ const defaultPostgresConnectTimeout = 10 * time.Second
 // Neither the password nor the URL is ever logged or put into an error; only
 // host, port and database are.
 func NewPostgresStore(ctx context.Context, cfg PostgresConfig, logger *slog.Logger) (*SQLStore, error) {
-	secrets := postgresSecrets(cfg)
-
-	// An empty string would make the driver build the whole configuration
-	// from PG* environment variables and connect wherever they point.
-	if strings.TrimSpace(cfg.URL) == "" {
-		return nil, errors.New("postgres connection string is empty")
-	}
-	connCfg, err := pgx.ParseConfig(cfg.URL)
+	connCfg, secrets, err := postgresConnConfig(cfg)
 	if err != nil {
-		// The parse error quotes fragments of the connection string, which
-		// can be part of a password: report nothing of it.
-		return nil, errors.New("parse postgres connection string: invalid connection string")
-	}
-	if connCfg.ConnectTimeout == 0 {
-		// The store has one connection: without a timeout an unreachable
-		// server would block every store call until TCP gives up.
-		connCfg.ConnectTimeout = defaultPostgresConnectTimeout
-	}
-	if connCfg.Password != "" {
-		secrets = append(secrets, connCfg.Password)
-	}
-	if cfg.Password != "" {
-		connCfg.Password = cfg.Password
-	}
-	if cfg.Schema != "" {
-		if connCfg.RuntimeParams == nil {
-			connCfg.RuntimeParams = map[string]string{}
-		}
-		connCfg.RuntimeParams["search_path"] = cfg.Schema
+		return nil, err
 	}
 	where := fmt.Sprintf("host=%s port=%d database=%s", connCfg.Host, connCfg.Port, connCfg.Database)
 
@@ -101,6 +82,48 @@ func NewPostgresStore(ctx context.Context, cfg PostgresConfig, logger *slog.Logg
 	}, nil
 }
 
+// postgresConnConfig builds the driver configuration cfg selects, without
+// connecting. It also returns the strings that must never appear in a
+// message (see postgresSecrets), including a password the driver found on
+// its own.
+func postgresConnConfig(cfg PostgresConfig) (*pgx.ConnConfig, []string, error) {
+	secrets := postgresSecrets(cfg)
+
+	// An empty string would make the driver build the whole configuration
+	// from PG* environment variables and connect wherever they point.
+	if strings.TrimSpace(cfg.URL) == "" {
+		return nil, nil, errors.New("postgres connection string is empty")
+	}
+	connCfg, err := pgx.ParseConfig(cfg.URL)
+	if err != nil {
+		// The parse error quotes fragments of the connection string, which
+		// can be part of a password: report nothing of it.
+		return nil, nil, errors.New("parse postgres connection string: invalid connection string")
+	}
+	if connCfg.ConnectTimeout == 0 {
+		// The store has one connection: without a timeout an unreachable
+		// server would block every store call until TCP gives up.
+		connCfg.ConnectTimeout = defaultPostgresConnectTimeout
+	}
+	if connCfg.Password != "" {
+		secrets = append(secrets, connCfg.Password)
+	}
+	switch {
+	case cfg.PasswordOnlyFromConfig:
+		// Fallback hosts share this password: pgconn.FallbackConfig has none.
+		connCfg.Password = cfg.Password
+	case cfg.Password != "":
+		connCfg.Password = cfg.Password
+	}
+	if cfg.Schema != "" {
+		if connCfg.RuntimeParams == nil {
+			connCfg.RuntimeParams = map[string]string{}
+		}
+		connCfg.RuntimeParams["search_path"] = cfg.Schema
+	}
+	return connCfg, secrets, nil
+}
+
 // checkPostgresServer connects and checks what the store relies on: version
 // 16 or newer, UTF8 encoding, byte-order (C) collation, and a schema to
 // create the tables in.
@@ -132,7 +155,7 @@ func checkPostgresServer(ctx context.Context, db *sql.DB) error {
 	if !byteOrder {
 		return errors.New("the database must use the C collation (timestamps and names are TEXT, compared and sorted as text, " +
 			"which is only correct in byte order): create it with --locale=C or " +
-			"`CREATE DATABASE ... TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'`")
+			"`CREATE DATABASE ... TEMPLATE template0 LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'C'`")
 	}
 
 	var schema sql.NullString

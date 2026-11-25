@@ -4332,14 +4332,17 @@ func (s *SQLStore) DeleteLabelVocabulary(ctx context.Context, id string) error {
 }
 
 // validatedOrderBy returns a safe ORDER BY clause using a whitelist of allowed columns.
+// The primary key is always the last sort key: these lists are paged with
+// LIMIT/OFFSET, and without a total order rows with equal sort values could
+// be repeated or skipped across pages (PostgreSQL returns ties in any order).
 func validatedOrderBy(sortBy, sortDir string, allowed map[string]string, defaultSort string) string {
 	col, ok := allowed[sortBy]
 	if !ok {
-		return defaultSort
+		return defaultSort + ", id"
 	}
 	dir := "DESC"
 	if strings.EqualFold(sortDir, "asc") {
 		dir = "ASC"
 	}
-	return col + " " + dir
+	return col + " " + dir + ", id"
 }

@@ -134,6 +134,8 @@ All endpoints under `/api/v1`. JSON envelope: `{status, request_id, timestamp, d
 
 SQLite with `modernc.org/sqlite` (pure Go, no CGO). Schema in `internal/store/migrations.go`. Migrations use idempotent `ALTER TABLE ADD COLUMN` with `addColumnIfNotExists()`. WAL mode, `max_open_conns=1`.
 
+PostgreSQL 16+ is a second backend of the same `*store.SQLStore` (dialect in `internal/store/dialect_postgres.go`, ADR-0014), selected by a `postgres://` URL in `--db` or `database.url` of `--config` (`cmd/server/database.go`), also with one connection; store tests run on it when `GOWE_TEST_POSTGRES_URL` is set.
+
 ## Go Conventions
 
 - Wrap errors with context: `fmt.Errorf("context: %w", err)`

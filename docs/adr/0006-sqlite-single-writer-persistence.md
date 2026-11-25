@@ -1,6 +1,7 @@
 # 0006. Persist state in pure-Go SQLite, single writer, WAL
 
 - **Status**: Accepted (back-filled 2026-07-06)
+- **Amended by**: [ADR-0014](0014-postgresql-second-store-backend.md) (PostgreSQL as a second backend, still one connection)
 - **Date**: 2026-02-18
 - **Deciders**: GoWe core
 - **Related**: ADR-0004 (workers rely on atomic checkout); [`GoWe-Implementation-Plan.md`](../GoWe-Implementation-Plan.md) performance section

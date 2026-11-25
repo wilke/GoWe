@@ -5,7 +5,7 @@ type ServerConfig struct {
 	Addr            string // Listen address (default ":8080")
 	LogLevel        string // Log level: debug, info, warn, error
 	LogFormat       string // Log format: text, json
-	DBPath          string // SQLite database path (default ~/.gowe/gowe.db, ":memory:" for testing)
+	DBPath          string // --db: SQLite database path (default ~/.gowe/gowe.db, ":memory:" for testing), or a postgres:// / postgresql:// URL (no password) selecting PostgreSQL
 	DefaultExecutor string // Default executor when no CWL hint is set: "local", "docker", "worker", "" (auto)
 	ForceExecutor   string // Force all tasks to this executor, ignoring CWL hints (testing only)
 	Version         string // Build version stamped into the binary (surfaced by /api/v1/health); "dev" when unset

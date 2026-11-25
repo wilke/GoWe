@@ -17,6 +17,14 @@
 #   -k, --keep         Keep server running after tests
 #   -h, --help         Show this help message
 #
+# Environment (optional):
+#   GOWE_CONFORMANCE_DB      Passed to the server as --db instead of the fresh
+#                            SQLite file in the work dir, e.g.
+#                            postgres://gowe@127.0.0.1:5433/gowe_conformance
+#                            (use an empty database: it is not reset between runs)
+#   GOWE_CONFORMANCE_CONFIG  Passed to the server as --config when set, e.g. a
+#                            mode 0600 file holding database.password
+#
 # Examples:
 #   ./scripts/run-conformance-server-local.sh                    # Run required tests
 #   ./scripts/run-conformance-server-local.sh -p 9091            # Use port 9091
@@ -60,7 +68,7 @@ log_header() {
 }
 
 usage() {
-    sed -n '2,27p' "$0" | sed 's/^# \?//'
+    sed -n '2,33p' "$0" | sed 's/^# \?//'
     exit 0
 }
 
@@ -175,11 +183,24 @@ mkdir -p "$WORK_DIR"
 # the at-rest encryption round-trip.
 export GOWE_TOKEN_KEY="$(printf '%s' 'gowe-conformance-test-key-32byte' | base64)"
 
+# Database and config file: optional overrides from the environment (see
+# the usage text). The URL is not printed.
+SERVER_DB="${GOWE_CONFORMANCE_DB:-$WORK_DIR/gowe.db}"
+if [ -n "${GOWE_CONFORMANCE_DB:-}" ]; then
+    log_info "Database: from GOWE_CONFORMANCE_DB"
+fi
+SERVER_CONFIG_ARGS=()
+if [ -n "${GOWE_CONFORMANCE_CONFIG:-}" ]; then
+    SERVER_CONFIG_ARGS=(--config "$GOWE_CONFORMANCE_CONFIG")
+    log_info "Config:   $GOWE_CONFORMANCE_CONFIG"
+fi
+
 # Start server with local executor and fast polling for tests
 log_info "Starting server with local executor..."
 ./bin/gowe-server \
     --addr ":${PORT}" \
-    --db "$WORK_DIR/gowe.db" \
+    --db "$SERVER_DB" \
+    ${SERVER_CONFIG_ARGS[@]+"${SERVER_CONFIG_ARGS[@]}"} \
     --default-executor local \
     --allow-anonymous \
     --anonymous-executors "local,docker,worker,container" \

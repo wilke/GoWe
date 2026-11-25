@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -39,7 +38,7 @@ func main() {
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "Listen address")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.LogFormat, "log-format", cfg.LogFormat, "Log format (text, json)")
-	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "Database path (default ~/.gowe/gowe.db)")
+	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path (default ~/.gowe/gowe.db, :memory: for testing), or a postgres:// / postgresql:// URL without a password to use PostgreSQL (the password goes in database.password of the --config file; see docs/tools/server.md)")
 	flag.StringVar(&cfg.DefaultExecutor, "default-executor", cfg.DefaultExecutor, "Default executor when no CWL hint is set: local, docker, worker (empty for auto)")
 	forceExecutor := flag.String("force-executor", "", "Force all tasks to this executor, ignoring CWL hints (testing only)")
 	imageDir := flag.String("image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
@@ -77,7 +76,7 @@ func main() {
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
 	anonymousExecutors := flag.String("anonymous-executors", "local,docker,worker", "Comma-separated list of executors allowed for anonymous users")
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
-	configFile := flag.String("config", "", "Path to server config file (for admins, worker keys)")
+	configFile := flag.String("config", "", "Path to server config file (JSON: admins, and the PostgreSQL database block url/password/schema; with a password the file must be mode 0600)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
 	insecureSkipTokenVerify := flag.Bool("insecure-skip-token-verify", false, "Disable cryptographic verification of provider token signatures (testing/air-gapped only); identities are then trusted as claimed")
 	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
@@ -181,24 +180,30 @@ func main() {
 		}
 	}
 
-	// Resolve database path.
-	dbPath := cfg.DBPath
-	if dbPath == "" {
-		home, err := os.UserHomeDir()
+	// Select the database: SQLite (--db path) or PostgreSQL (postgres:// URL
+	// in --db or database.url in --config; password only from --config).
+	dbSel, err := selectDatabase(cfg.DBPath, *configFile, os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "database configuration: %v\n", err)
+		os.Exit(1)
+	}
+	var dbPath string
+	if dbSel.Backend == backendSQLite {
+		if dbSel.UnusedURL {
+			logger.Warn("database.url in the --config file is ignored: --db selects SQLite", "config", *configFile)
+		}
+		if dbSel.UnusedPassword {
+			logger.Warn("database.password in the --config file is unused: the server uses SQLite", "config", *configFile)
+		}
+		dbPath, err = resolveSQLitePath(dbSel.SQLitePath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot determine home directory: %v\n", err)
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		dir := filepath.Join(home, ".gowe")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "cannot create %s: %v\n", dir, err)
-			os.Exit(1)
-		}
-		dbPath = filepath.Join(dir, "gowe.db")
 	}
 
 	// Open store and run migrations.
-	st, err := store.NewSQLiteStore(dbPath, logger)
+	st, err := openStore(context.Background(), dbSel, dbPath, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)
@@ -209,7 +214,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "migrate database: %v\n", err)
 		os.Exit(1)
 	}
-	logger.Info("database ready", "path", dbPath)
+	if dbSel.Backend == backendPostgres {
+		// The store logged host, port, database and schema; never the URL.
+		logger.Info("database ready", "backend", backendPostgres)
+	} else {
+		logger.Info("database ready", "path", dbPath, "backend", backendSQLite)
+	}
 
 	if *checkoutHoldAfter < 0 {
 		fmt.Fprintln(os.Stderr, "--checkout-hold-after must not be negative (0 disables)")

@@ -31,7 +31,8 @@ GoWe is a workflow engine that:
   scheduler** (§7);
 - dispatches concrete work to **five interchangeable executor backends** (§8);
 - distributes work to remote machines through a **pull-based worker protocol** (§9);
-- persists all state in an embedded **SQLite** store (§11) and exposes an **HTTP API** (§12).
+- persists all state in an embedded **SQLite** store (default) or in **PostgreSQL** 16+, with a
+  single connection on both (§11), and exposes an **HTTP API** (§12).
 
 Out of scope for this document: the internal CWL expression engine, the BV-BRC JSON-RPC wire
 format (see [`docs/BVBRC-API.md`](docs/BVBRC-API.md)), and the web UI.
@@ -567,9 +568,11 @@ PUT is not thrown away.
 
 ## 11. Persistence (normative)
 
-State MUST be persisted to SQLite via `modernc.org/sqlite` (pure Go, no CGO), with
-`max_open_conns = 1` (single writer), WAL mode, and foreign keys enforced. Rationale:
-[ADR-0006](docs/adr/0006-sqlite-single-writer-persistence.md). Core tables: `workflows`
+State MUST be persisted either to SQLite (the default) via `modernc.org/sqlite` (pure Go, no
+CGO), in WAL mode with foreign keys enforced, or to PostgreSQL 16 or newer (UTF8 encoding, C
+collation) via pgx v5 (pure Go). On both backends the store MUST use `max_open_conns = 1`
+(single writer). Rationale: [ADR-0006](docs/adr/0006-sqlite-single-writer-persistence.md),
+[ADR-0014](docs/adr/0014-postgresql-second-store-backend.md). Core tables: `workflows`
 (deduped by content hash), `submissions`, `step_instances`, `tasks`, `workers`, plus `users`,
 `sessions`, and label vocabulary. Schema migrations MUST be idempotent
 (`addColumnIfNotExists`; `internal/store/migrations.go`). Task checkout MUST be a single
