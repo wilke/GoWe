@@ -15,7 +15,7 @@ A CWL v1.2 workflow engine written in Go. GoWe parses Common Workflow Language d
 - **REST API** — JSON endpoints for workflows, submissions, tasks, workers, and file management
 - **CLI client** — `gowe` command for login, submit, status, logs, cancel, and more
 - **Multi-provider auth** — BV-BRC and MG-RAST tokens with per-task delegation; anonymous mode for development
-- **SQLite persistence** — embedded database, zero external dependencies, automatic migrations
+- **SQLite persistence** — embedded database, zero external dependencies, automatic migrations; PostgreSQL 16+ can be used instead (see [docs/tools/server.md](docs/tools/server.md#postgresql))
 - **Container runtimes** — Docker and Apptainer/Singularity with SIF image support and GPU passthrough
 
 ## Requirements
@@ -425,7 +425,7 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr` | `:8080` | Listen address |
-| `--db` | `~/.gowe/gowe.db` | SQLite database path (`:memory:` for testing) |
+| `--db` | `~/.gowe/gowe.db` | SQLite database path (`:memory:` for testing), or a `postgres://` URL without a password to use PostgreSQL (password in `database.password` of the `--config` file) |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text` or `json` |
 | `--debug` | `false` | Shorthand for `--log-level=debug` |

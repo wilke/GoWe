@@ -131,15 +131,19 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 	// submission in ONE transaction: a crash mid-creation can never leave a
 	// child submission with zero step instances, which the finalize phase
 	// would complete as an (empty) success.
+	//
+	// CreatedAt is staggered by one nanosecond per step: steps are read back
+	// ORDER BY created_at, and PostgreSQL returns rows with equal keys in no
+	// particular order, so equal timestamps would lose the workflow order.
 	steps := make([]*model.StepInstance, 0, len(childWf.Steps))
-	for _, step := range childWf.Steps {
+	for i, step := range childWf.Steps {
 		steps = append(steps, &model.StepInstance{
 			ID:           "si_" + uuid.New().String(),
 			SubmissionID: childSub.ID,
 			StepID:       step.ID,
 			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
-			CreatedAt:    now,
+			CreatedAt:    now.Add(time.Duration(i) * time.Nanosecond),
 		})
 	}
 	if err := l.store.CreateSubmissionWithSteps(ctx, childSub, steps); err != nil {

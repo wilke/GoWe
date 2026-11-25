@@ -594,6 +594,17 @@ For debug-level logging, set `LOG_LEVEL=debug` before starting.
 
 SQLite in WAL mode at `/scout/wf/gowe/gowe.db`. Single-writer, no external database server needed. Back up by copying the file while the server is stopped, or use `.backup` via the SQLite CLI.
 
+When the server uses PostgreSQL, back up with `pg_dump` while the server runs, for example
+`pg_dump --format=custom --file=gowe-$(date +%F).dump gowe` (restore with `pg_restore`). Give `pg_dump` its password
+through its own 0600 `~/.pgpass`, not on the command line.
+
+### PostgreSQL
+
+The server can use PostgreSQL 16+ instead of SQLite: a `postgres://` URL in `--db` or in `database.url` of the
+`--config` file, with the password in `database.password` of that file (mode 0600). Only one server process may use
+the database. Setup, the database creation statement and the checks the server makes at start are in
+[docs/tools/server.md](tools/server.md#postgresql).
+
 ## Troubleshooting
 
 **Server won't start — port already in use:**

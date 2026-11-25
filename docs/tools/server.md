@@ -25,10 +25,10 @@ gowe-server [flags]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr` | `:8080` | Listen address (host:port) |
-| `--db` | `~/.gowe/gowe.db` | SQLite database path |
+| `--db` | `~/.gowe/gowe.db` | SQLite database path (`:memory:` for testing), or a `postgres://` / `postgresql://` URL without a password to use PostgreSQL (see [Database](#database)) |
 | `--default-executor` | `""` | Default executor type: `local`, `container`, `worker`, `bvbrc` (empty = hint-based) |
 | `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths in `DockerRequirement` |
-| `--config` | `""` | Path to server config file (for admins, worker keys) |
+| `--config` | `""` | Path to the server config file (JSON): `admins`, and the PostgreSQL `database` block (see [Database](#database)) |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--checkout-hold-after` | `10m` | After a queued task has waited this long for capacity on a worker that runs several tasks, that worker stops taking later tasks that need the same capacity (`0` disables; see [Capacity accounting at checkout](#capacity-accounting-at-checkout)) |
 | `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
@@ -220,6 +220,91 @@ The server initializes several components on startup:
 SQLite database with automatic migrations. Default location: `~/.gowe/gowe.db`
 
 The directory is created automatically if it doesn't exist.
+
+#### PostgreSQL
+
+The server can keep its state in PostgreSQL 16 or newer instead (see
+[ADR-0014](../adr/0014-postgresql-second-store-backend.md)). SQLite stays the default. The tables are the same,
+and the server still uses a single database connection, so only one server process may use a database.
+
+PostgreSQL is selected by a `postgres://` or `postgresql://` URL, either in `--db` or in `database.url` of the
+`--config` file. A `--db` value given on the command line wins over `database.url`. Any other `--db` value is a
+SQLite path.
+
+The password goes in the `--config` file, never on the command line or in the environment (both can be read by
+other processes of the same user through `/proc`):
+
+```json
+{
+  "admins": ["alice"],
+  "database": {
+    "url": "postgres://gowe@127.0.0.1:5433/gowe",
+    "password": "...",
+    "schema": "gowe"
+  }
+}
+```
+
+```bash
+chmod 600 /etc/gowe/server.json
+gowe-server --config /etc/gowe/server.json
+# or, with the URL on the command line (password still from the file):
+gowe-server --db postgres://gowe@127.0.0.1:5433/gowe --config /etc/gowe/server.json
+```
+
+| Field | Description |
+|-------|-------------|
+| `url` | `postgres://` or `postgresql://` URL, without a password. Any other value is an error (SQLite is configured with `--db`) |
+| `password` | The database password. With a non-empty password the file must be a regular file with mode `0600` or stricter |
+| `schema` | Optional schema to work in (sets `search_path`). Empty: the role's default schema |
+
+The `database` block is read strictly: when `--config` is given, the server does not start if the file cannot be
+read, is not valid JSON, or the `database` block has an unknown field or a field of the wrong type. A config file
+without a `database` block is fine. (The `admins` list is still read leniently.)
+
+The server refuses to start, with an error that names the fix, when:
+- the config file holds `database.password` and is not a regular file, or has any permission bit for group or
+  others (`chmod 600 <file>`);
+- the URL contains a password (`postgres://user:pw@host/db`) or a `password=` parameter, whether it comes from
+  `--db` or from `database.url`;
+- the URL has a `passfile=`, `service=`, `servicefile=` or `sslpassword=` parameter;
+- `--db` looks like a PostgreSQL URL but does not start with exactly `postgres://` or `postgresql://`;
+- `--config` names something that is not a regular file, or a file larger than 1 MiB;
+- PostgreSQL is selected and any libpq-style `PG*` environment variable the driver reads is set (`PGHOST`,
+  `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGPASSFILE`, `PGAPPNAME`, `PGCONNECT_TIMEOUT`, `PGSSLMODE`,
+  `PGSSLKEY`, `PGSSLCERT`, `PGSSLSNI`, `PGSSLROOTCERT`, `PGSSLPASSWORD`, `PGSSLNEGOTIATION`,
+  `PGTARGETSESSIONATTRS`, `PGSERVICE`, `PGSERVICEFILE`, `PGTZ`, `PGOPTIONS`): the driver would read them on its
+  own, and they could supply a password or change where and how the server connects. Give the whole connection
+  (host, port, database, user, `sslmode`, certificate paths) in the URL. The error names the variables, never
+  their values.
+
+`--db` with a SQLite path wins over `database.url`; the server then logs one WARN line that the URL is ignored.
+The driver also uses client certificates in `~/.postgresql/` (`postgresql.crt`, `postgresql.key`, `root.crt`)
+when they exist, as libpq does.
+
+The config file protects the password from other users of the machine, not from programs running as the
+server's own user: a tool the server or a same-user worker runs on the host (no container) can read the file.
+Run a PostgreSQL-backed server under a user that runs no tools if that matters.
+
+The server also ignores `~/.pgpass`: the connection password is exactly `database.password` (empty for none, for
+example with peer or trust authentication over a Unix socket). A `database.password` while the server uses SQLite
+is not an error; the server logs one WARN line that it is unused.
+
+The URL and the password are never logged. At start the store logs host, port, database and schema, then
+`database ready` with `backend=postgres`.
+
+Create the database with UTF8 encoding and the C collation; the server checks both at start:
+
+```sql
+CREATE ROLE gowe LOGIN;
+\password gowe
+CREATE DATABASE gowe OWNER gowe TEMPLATE template0 ENCODING 'UTF8' LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'C';
+-- optional, with "schema": "gowe" in the config file:
+\c gowe
+CREATE SCHEMA gowe AUTHORIZATION gowe;
+```
+
+The tables are created on first start, as with SQLite.
 
 ### Executor Registry
 

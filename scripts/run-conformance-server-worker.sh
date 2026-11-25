@@ -26,6 +26,14 @@
 #   -k, --keep               Keep server/workers running after tests
 #   -h, --help               Show this help message
 #
+# Environment (optional):
+#   GOWE_CONFORMANCE_DB      Passed to the server as --db instead of the fresh
+#                            SQLite file in the work dir, e.g.
+#                            postgres://gowe@127.0.0.1:5433/gowe_conformance
+#                            (use an empty database: it is not reset between runs)
+#   GOWE_CONFORMANCE_CONFIG  Passed to the server as --config when set, e.g. a
+#                            mode 0600 file holding database.password
+#
 # Examples:
 #   ./scripts/run-conformance-server-worker.sh                       # All tests, 2 workers, bare
 #   ./scripts/run-conformance-server-worker.sh -r apptainer          # Workers with apptainer
@@ -68,7 +76,7 @@ log_error()  { echo -e "${RED}[ERROR]${NC} $1"; }
 log_header() { echo -e "\n${CYAN}=== $1 ===${NC}\n"; }
 
 usage() {
-    sed -n '2,36p' "$0" | sed 's/^# \?//'
+    sed -n '2,44p' "$0" | sed 's/^# \?//'
     exit 0
 }
 
@@ -197,10 +205,23 @@ done
 # memory; only the DB column is encrypted.
 export GOWE_TOKEN_KEY="$(printf '%s' 'gowe-conformance-test-key-32byte' | base64)"
 
+# Database and config file: optional overrides from the environment (see
+# the usage text). The URL is not printed.
+SERVER_DB="${GOWE_CONFORMANCE_DB:-$WORK_DIR/gowe.db}"
+if [ -n "${GOWE_CONFORMANCE_DB:-}" ]; then
+    log_info "Database: from GOWE_CONFORMANCE_DB"
+fi
+SERVER_CONFIG_ARGS=()
+if [ -n "${GOWE_CONFORMANCE_CONFIG:-}" ]; then
+    SERVER_CONFIG_ARGS=(--config "$GOWE_CONFORMANCE_CONFIG")
+    log_info "Config: $GOWE_CONFORMANCE_CONFIG"
+fi
+
 log_info "Starting server..."
 ./bin/gowe-server \
     --addr ":${PORT}" \
-    --db "$WORK_DIR/gowe.db" \
+    --db "$SERVER_DB" \
+    ${SERVER_CONFIG_ARGS[@]+"${SERVER_CONFIG_ARGS[@]}"} \
     --default-executor worker \
     --allow-anonymous --anonymous-executors "local,worker,container" \
     --scheduler-poll 100ms \

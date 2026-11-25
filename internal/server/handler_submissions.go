@@ -429,15 +429,18 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 	// Create a StepInstance for each workflow step (3-level state architecture).
 	// StepInstances track step lifecycle; Tasks are created later by the scheduler
 	// when a step is dispatched.
+	// CreatedAt is staggered by one nanosecond per step: steps are read back
+	// ORDER BY created_at, and PostgreSQL returns rows with equal keys in no
+	// particular order, so equal timestamps would lose the workflow order.
 	stepInstances := make([]*model.StepInstance, 0, len(wf.Steps))
-	for _, step := range wf.Steps {
+	for i, step := range wf.Steps {
 		stepInstances = append(stepInstances, &model.StepInstance{
 			ID:           "si_" + uuid.New().String(),
 			SubmissionID: sub.ID,
 			StepID:       step.ID,
 			State:        model.StepStateWaiting,
 			Outputs:      map[string]any{},
-			CreatedAt:    now,
+			CreatedAt:    now.Add(time.Duration(i) * time.Nanosecond),
 		})
 	}
 	if err := s.store.BatchCreateStepInstances(r.Context(), stepInstances); err != nil {
