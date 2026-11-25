@@ -1,4 +1,12 @@
-package main
+// Package dbconfig decides which database a GoWe program opens: SQLite (a
+// file path) or PostgreSQL (a postgres:// URL on the command line or in the
+// "database" block of a --config JSON file). The PostgreSQL password may only
+// come from database.password in that file, which must then be mode 0600 or
+// stricter; never from the command line or the environment.
+//
+// gowe-server and gowe-db-copy share these rules so that both refuse the same
+// configurations with the same messages.
+package dbconfig
 
 import (
 	"bytes"
@@ -17,10 +25,10 @@ import (
 	"github.com/me/gowe/internal/store"
 )
 
-// Database backends the server can run on.
+// Database backends a GoWe program can run on.
 const (
-	backendSQLite   = "sqlite"
-	backendPostgres = "postgres"
+	BackendSQLite   = "sqlite"
+	BackendPostgres = "postgres"
 )
 
 // pgRefusedEnv lists the environment variables refused when PostgreSQL is
@@ -33,10 +41,10 @@ var pgRefusedEnv = []string{
 	"PGTARGETSESSIONATTRS", "PGSERVICE", "PGSERVICEFILE", "PGTZ", "PGOPTIONS",
 }
 
-// passwordHint names the one place a database password may come from.
 // maxConfigFileSize bounds how much of the --config file is read.
 const maxConfigFileSize = 1 << 20
 
+// passwordHint names the one place a database password may come from.
 const passwordHint = "put the password in database.password in the --config file (regular file, mode 0600)"
 
 // databaseFileConfig is the "database" block of the --config file.
@@ -46,12 +54,12 @@ type databaseFileConfig struct {
 	Schema   string `json:"schema"`   // optional PostgreSQL schema (store.PostgresConfig.Schema)
 }
 
-// dbSelection is the database the server opens.
-type dbSelection struct {
-	Backend string // backendSQLite or backendPostgres
+// Selection is the database a program opens.
+type Selection struct {
+	Backend string // BackendSQLite or BackendPostgres
 
 	// SQLitePath is the --db value for SQLite, unchanged: a file path,
-	// ":memory:", or "" for the default ~/.gowe/gowe.db (see resolveSQLitePath).
+	// ":memory:", or "" for the default ~/.gowe/gowe.db (see ResolveSQLitePath).
 	SQLitePath string
 
 	// Postgres is the store configuration for PostgreSQL.
@@ -67,7 +75,6 @@ type dbSelection struct {
 	UnusedURL bool
 }
 
-// isPostgresURL reports whether s selects PostgreSQL.
 // looksLikeURL reports whether s is more likely a mistyped database URL than
 // a file path.
 func looksLikeURL(s string) bool {
@@ -75,16 +82,24 @@ func looksLikeURL(s string) bool {
 	return strings.HasPrefix(t, "postgres:") || strings.HasPrefix(t, "postgresql:")
 }
 
+// isPostgresURL reports whether s selects PostgreSQL.
 func isPostgresURL(s string) bool {
 	return strings.HasPrefix(s, "postgres://") || strings.HasPrefix(s, "postgresql://")
 }
 
-// selectDatabase decides which database the server opens from the --db value
-// and the "database" block of the --config file (configPath, "" = none). A
+// Select decides which database gowe-server opens from the --db value and
+// the "database" block of the --config file (configPath, "" = none). A
 // non-empty --db wins over database.url. getenv is injected for testing.
 //
 // No error it returns contains the URL or the password.
-func selectDatabase(dbFlag, configPath string, getenv func(string) string) (*dbSelection, error) {
+func Select(dbFlag, configPath string, getenv func(string) string) (*Selection, error) {
+	return SelectFor("--db", dbFlag, configPath, getenv)
+}
+
+// SelectFor is Select for a program whose database flag is called flagName
+// (for example "--to"): the flag value plays the role of --db, and error
+// messages about the flag name it. Select is SelectFor("--db", ...).
+func SelectFor(flagName, dbFlag, configPath string, getenv func(string) string) (*Selection, error) {
 	fileCfg, err := readDatabaseConfig(configPath)
 	if err != nil {
 		return nil, err
@@ -92,7 +107,7 @@ func selectDatabase(dbFlag, configPath string, getenv func(string) string) (*dbS
 
 	if fileCfg.URL != "" {
 		if !isPostgresURL(fileCfg.URL) {
-			return nil, fmt.Errorf("database.url in %s must start with postgres:// or postgresql:// (SQLite is configured with --db)", configPath)
+			return nil, fmt.Errorf("database.url in %s must start with postgres:// or postgresql:// (SQLite is configured with %s)", configPath, flagName)
 		}
 		if err := checkURLHasNoPassword(fileCfg.URL, "database.url in "+configPath); err != nil {
 			return nil, err
@@ -103,22 +118,22 @@ func selectDatabase(dbFlag, configPath string, getenv func(string) string) (*dbS
 	// postgresql:// prefix would be taken for a SQLite file name, and the
 	// open error would then print it, password included.
 	if !isPostgresURL(dbFlag) && looksLikeURL(dbFlag) {
-		return nil, errors.New("--db looks like a URL but does not start with postgres:// or postgresql:// (lower case, no leading space); a SQLite database is given as a file path")
+		return nil, fmt.Errorf("%s looks like a URL but does not start with postgres:// or postgresql:// (lower case, no leading space); a SQLite database is given as a file path", flagName)
 	}
 
 	var pgURL, source string
 	switch {
 	case dbFlag != "":
 		if isPostgresURL(dbFlag) {
-			pgURL, source = dbFlag, "--db"
+			pgURL, source = dbFlag, flagName
 		}
 	case fileCfg.URL != "":
 		pgURL, source = fileCfg.URL, "database.url in "+configPath
 	}
 
 	if pgURL == "" {
-		return &dbSelection{
-			Backend:        backendSQLite,
+		return &Selection{
+			Backend:        BackendSQLite,
 			SQLitePath:     dbFlag,
 			UnusedPassword: fileCfg.Password != "",
 			UnusedURL:      fileCfg.URL != "",
@@ -128,11 +143,11 @@ func selectDatabase(dbFlag, configPath string, getenv func(string) string) (*dbS
 	if err := checkURLHasNoPassword(pgURL, source); err != nil {
 		return nil, err
 	}
-	if err := checkPostgresEnv(getenv); err != nil {
+	if err := checkPostgresEnv(flagName, getenv); err != nil {
 		return nil, err
 	}
-	return &dbSelection{
-		Backend: backendPostgres,
+	return &Selection{
+		Backend: BackendPostgres,
 		Postgres: store.PostgresConfig{
 			URL:                    pgURL,
 			Password:               fileCfg.Password,
@@ -289,8 +304,9 @@ func checkURLHasNoPassword(rawURL, source string) error {
 }
 
 // checkPostgresEnv refuses the PG* variables the driver would read on its
-// own. Only the names are reported, never a value.
-func checkPostgresEnv(getenv func(string) string) error {
+// own. Only the names are reported, never a value. flagName is the database
+// flag of the program ("--db" for the server).
+func checkPostgresEnv(flagName string, getenv func(string) string) error {
 	var set []string
 	for _, name := range pgRefusedEnv {
 		if getenv(name) != "" {
@@ -303,12 +319,12 @@ func checkPostgresEnv(getenv func(string) string) error {
 	return fmt.Errorf("environment variable(s) %s must not be set when the server uses PostgreSQL: "+
 		"the driver reads them on its own and they would silently supply a password or change where and how the server connects, "+
 		"and the environment is readable by other processes of the same user; unset them, "+
-		"give the whole connection (host, port, database, user, sslmode) in --db or database.url, and %s", strings.Join(set, ", "), passwordHint)
+		"give the whole connection (host, port, database, user, sslmode) in %s or database.url, and %s", strings.Join(set, ", "), flagName, passwordHint)
 }
 
-// resolveSQLitePath returns the SQLite database path: dbPath itself, or for
+// ResolveSQLitePath returns the SQLite database path: dbPath itself, or for
 // "" ~/.gowe/gowe.db (creating ~/.gowe).
-func resolveSQLitePath(dbPath string) (string, error) {
+func ResolveSQLitePath(dbPath string) (string, error) {
 	if dbPath != "" {
 		return dbPath, nil
 	}
@@ -323,10 +339,10 @@ func resolveSQLitePath(dbPath string) (string, error) {
 	return filepath.Join(dir, "gowe.db"), nil
 }
 
-// openStore opens the selected database. For SQLite, sqlitePath is the
-// resolved path (see resolveSQLitePath).
-func openStore(ctx context.Context, sel *dbSelection, sqlitePath string, logger *slog.Logger) (*store.SQLStore, error) {
-	if sel.Backend == backendPostgres {
+// Open opens the selected database. For SQLite, sqlitePath is the resolved
+// path (see ResolveSQLitePath); it is ignored for PostgreSQL.
+func Open(ctx context.Context, sel *Selection, sqlitePath string, logger *slog.Logger) (*store.SQLStore, error) {
+	if sel.Backend == BackendPostgres {
 		return store.NewPostgresStore(ctx, sel.Postgres, logger)
 	}
 	return store.NewSQLiteStore(sqlitePath, logger)

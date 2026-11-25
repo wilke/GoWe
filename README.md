@@ -643,6 +643,7 @@ cmd/
   server/         API server (→ gowe-server)
   worker/         Distributed worker (→ gowe-worker)
   cwl-runner/     Standalone CWL runner
+  db-copy/        One-off SQLite → PostgreSQL database copy (→ gowe-db-copy)
   gen-cwl-tools/  BV-BRC CWL tool generator
   smoke-test/     End-to-end integration test
   verify-bvbrc/   BV-BRC API verification

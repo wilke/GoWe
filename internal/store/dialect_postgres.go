@@ -130,6 +130,56 @@ func (postgresDialect) indexExists(ctx context.Context, q queryer, name string) 
 	return ok, nil
 }
 
+// tableNames lists the base tables of the current schema from
+// information_schema.tables.
+func (postgresDialect) tableNames(ctx context.Context, q queryer) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT table_name::text FROM information_schema.tables
+		 WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
+		 ORDER BY table_name::text`)
+	if err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("list tables: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	return names, nil
+}
+
+// columnNames lists the columns of table in the current schema from
+// information_schema.columns, lower-cased, by ordinal_position.
+func (postgresDialect) columnNames(ctx context.Context, q queryer, table string) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT lower(column_name::text) FROM information_schema.columns
+		 WHERE table_schema = current_schema() AND table_name::text = CAST(? AS TEXT)
+		 ORDER BY ordinal_position`, table)
+	if err != nil {
+		return nil, fmt.Errorf("list columns of %s: %w", table, err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("list columns of %s: %w", table, err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list columns of %s: %w", table, err)
+	}
+	return names, nil
+}
+
 // pgJSONPath renders a dot-separated key path as a quoted PostgreSQL text[]
 // path literal: "a.b" -> '{a,b}'. Paths are Go constants of the store; it
 // panics on anything but non-empty keys made of [a-z0-9_], so a path that
@@ -256,6 +306,9 @@ func (postgresDialect) bindArgs(args []any) []any {
 	}
 	return out
 }
+
+// sanitizeText is pgSanitizeText, the rule bindArgs applies to strings.
+func (postgresDialect) sanitizeText(s string) (string, bool) { return pgSanitizeText(s) }
 
 func boolInt64(b bool) int64 {
 	if b {

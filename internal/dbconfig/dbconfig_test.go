@@ -1,4 +1,4 @@
-package main
+package dbconfig
 
 import (
 	"os"
@@ -59,31 +59,31 @@ func TestSelectDatabase(t *testing.T) {
 		wantSchema string // PostgreSQL
 		wantUnused bool   // SQLite: database.password unused
 	}{
-		{name: "sqlite path", db: "/var/lib/gowe/gowe.db", wantBack: backendSQLite, wantPath: "/var/lib/gowe/gowe.db"},
-		{name: "sqlite memory", db: ":memory:", wantBack: backendSQLite, wantPath: ":memory:"},
-		{name: "sqlite default", db: "", wantBack: backendSQLite, wantPath: ""},
-		{name: "postgres URL in --db", db: pgURL, wantBack: backendPostgres, wantURL: pgURL},
-		{name: "postgresql URL in --db", db: pgsqlURL, wantBack: backendPostgres, wantURL: pgsqlURL},
+		{name: "sqlite path", db: "/var/lib/gowe/gowe.db", wantBack: BackendSQLite, wantPath: "/var/lib/gowe/gowe.db"},
+		{name: "sqlite memory", db: ":memory:", wantBack: BackendSQLite, wantPath: ":memory:"},
+		{name: "sqlite default", db: "", wantBack: BackendSQLite, wantPath: ""},
+		{name: "postgres URL in --db", db: pgURL, wantBack: BackendPostgres, wantURL: pgURL},
+		{name: "postgresql URL in --db", db: pgsqlURL, wantBack: BackendPostgres, wantURL: pgsqlURL},
 		{name: "URL from config", config: fullCfg, mode: 0o600,
-			wantBack: backendPostgres, wantURL: otherPGURL, wantPW: testFilePW, wantSchema: "gowe"},
+			wantBack: BackendPostgres, wantURL: otherPGURL, wantPW: testFilePW, wantSchema: "gowe"},
 		{name: "postgres --db wins over config url", db: pgURL, config: fullCfg, mode: 0o600,
-			wantBack: backendPostgres, wantURL: pgURL, wantPW: testFilePW, wantSchema: "gowe"},
+			wantBack: BackendPostgres, wantURL: pgURL, wantPW: testFilePW, wantSchema: "gowe"},
 		{name: "sqlite --db wins over config url", db: "/data/gowe.db", config: fullCfg, mode: 0o600,
-			wantBack: backendSQLite, wantPath: "/data/gowe.db", wantUnused: true},
+			wantBack: BackendSQLite, wantPath: "/data/gowe.db", wantUnused: true},
 		{name: "config 0400 with password accepted", config: fullCfg, mode: 0o400,
-			wantBack: backendPostgres, wantURL: otherPGURL, wantPW: testFilePW, wantSchema: "gowe"},
+			wantBack: BackendPostgres, wantURL: otherPGURL, wantPW: testFilePW, wantSchema: "gowe"},
 		{name: "password only, --db URL", db: pgsqlURL, config: `{"database": {"password": "` + testFilePW + `"}}`, mode: 0o600,
-			wantBack: backendPostgres, wantURL: pgsqlURL, wantPW: testFilePW},
+			wantBack: BackendPostgres, wantURL: pgsqlURL, wantPW: testFilePW},
 		{name: "password with sqlite is unused", db: ":memory:", config: `{"database": {"password": "` + testFilePW + `"}}`, mode: 0o600,
-			wantBack: backendSQLite, wantPath: ":memory:", wantUnused: true},
+			wantBack: BackendSQLite, wantPath: ":memory:", wantUnused: true},
 		{name: "config without database block", config: `{"admins": ["alice"]}`, mode: 0o644,
-			wantBack: backendSQLite, wantPath: ""},
+			wantBack: BackendSQLite, wantPath: ""},
 		{name: "config with database null", config: `{"database": null}`, mode: 0o644,
-			wantBack: backendSQLite, wantPath: ""},
+			wantBack: BackendSQLite, wantPath: ""},
 		{name: "other top-level keys and ill-typed admins are not checked", config: `{"admins": "alice", "x": 1}`, mode: 0o644,
-			wantBack: backendSQLite, wantPath: ""},
+			wantBack: BackendSQLite, wantPath: ""},
 		{name: "config 0644 without password", db: "", config: `{"database": {"url": "` + pgURL + `"}}`, mode: 0o644,
-			wantBack: backendPostgres, wantURL: pgURL},
+			wantBack: BackendPostgres, wantURL: pgURL},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,9 +92,9 @@ func TestSelectDatabase(t *testing.T) {
 			if tc.config != "" {
 				configPath = writeConfig(t, tc.config, tc.mode)
 			}
-			sel, err := selectDatabase(tc.db, configPath, os.Getenv)
+			sel, err := Select(tc.db, configPath, os.Getenv)
 			if err != nil {
-				t.Fatalf("selectDatabase: %v", err)
+				t.Fatalf("Select: %v", err)
 			}
 			if sel.Backend != tc.wantBack {
 				t.Fatalf("backend = %s, want %s", sel.Backend, tc.wantBack)
@@ -102,7 +102,7 @@ func TestSelectDatabase(t *testing.T) {
 			if sel.UnusedPassword != tc.wantUnused {
 				t.Errorf("UnusedPassword = %v, want %v", sel.UnusedPassword, tc.wantUnused)
 			}
-			if tc.wantBack == backendSQLite {
+			if tc.wantBack == BackendSQLite {
 				if sel.SQLitePath != tc.wantPath {
 					t.Errorf("SQLite path = %q, want %q", sel.SQLitePath, tc.wantPath)
 				}
@@ -230,9 +230,9 @@ func TestSelectDatabase_Refusals(t *testing.T) {
 			case tc.config != "":
 				configPath = writeConfig(t, tc.config, tc.mode)
 			}
-			sel, err := selectDatabase(tc.db, configPath, os.Getenv)
+			sel, err := Select(tc.db, configPath, os.Getenv)
 			if err == nil {
-				t.Fatalf("selectDatabase = %+v, want an error", sel.Backend)
+				t.Fatalf("Select = %+v, want an error", sel.Backend)
 			}
 			msg := err.Error()
 			// The path may legitimately hold short substrings ("q"): check
@@ -255,6 +255,44 @@ func TestSelectDatabase_Refusals(t *testing.T) {
 	}
 }
 
+// TestSelectFor_FlagName: a program whose database flag has another name
+// (gowe-db-copy's --to) gets errors that name its flag, never --db.
+func TestSelectFor_FlagName(t *testing.T) {
+	const pgURL = "postgres://gowe@127.0.0.1:5433/gowe"
+	tests := []struct {
+		name string
+		db   string
+		env  map[string]string
+		want string
+	}{
+		{name: "password in URL", db: "postgres://gowe:" + testURLPW + "@127.0.0.1/gowe", want: "the PostgreSQL URL from --to contains a password"},
+		{name: "mistyped scheme", db: "Postgres://gowe@127.0.0.1/gowe", want: "--to looks like a URL"},
+		{name: "PG variable", db: pgURL, env: map[string]string{"PGPASSWORD": testEnvPW}, want: "in --to or database.url"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearPGEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := SelectFor("--to", tc.db, "", os.Getenv)
+			if err == nil {
+				t.Fatal("SelectFor succeeded, want an error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.want) {
+				t.Errorf("error does not contain %q: %s", tc.want, msg)
+			}
+			if strings.Contains(msg, "--db") {
+				t.Errorf("error names --db: %s", msg)
+			}
+			if strings.Contains(msg, testURLPW) || strings.Contains(msg, testEnvPW) {
+				t.Error("error leaks a secret")
+			}
+		})
+	}
+}
+
 // TestSelectDatabase_EnvIgnoredForSQLite: the PG* variables only matter when
 // PostgreSQL is selected.
 func TestSelectDatabase_EnvIgnoredForSQLite(t *testing.T) {
@@ -262,11 +300,11 @@ func TestSelectDatabase_EnvIgnoredForSQLite(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			clearPGEnv(t)
 			t.Setenv(name, testEnvPW)
-			sel, err := selectDatabase(":memory:", "", os.Getenv)
+			sel, err := Select(":memory:", "", os.Getenv)
 			if err != nil {
-				t.Fatalf("selectDatabase: %v", err)
+				t.Fatalf("Select: %v", err)
 			}
-			if sel.Backend != backendSQLite || sel.SQLitePath != ":memory:" {
+			if sel.Backend != BackendSQLite || sel.SQLitePath != ":memory:" {
 				t.Errorf("selection = %s %q, want sqlite :memory:", sel.Backend, sel.SQLitePath)
 			}
 		})
@@ -287,9 +325,9 @@ func TestResolveSQLitePath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
-			got, err := resolveSQLitePath(tc.in)
+			got, err := ResolveSQLitePath(tc.in)
 			if err != nil {
-				t.Fatalf("resolveSQLitePath: %v", err)
+				t.Fatalf("ResolveSQLitePath: %v", err)
 			}
 			if want := tc.want(home); got != want {
 				t.Errorf("path = %q, want %q", got, want)
@@ -307,11 +345,11 @@ func TestResolveSQLitePath(t *testing.T) {
 func TestSelectDatabase_UnusedURL(t *testing.T) {
 	clearPGEnv(t)
 	cfg := writeConfig(t, `{"database": {"url": "postgres://gowe@127.0.0.1:5433/gowe"}}`, 0o600)
-	sel, err := selectDatabase("/var/lib/gowe/gowe.db", cfg, os.Getenv)
+	sel, err := Select("/var/lib/gowe/gowe.db", cfg, os.Getenv)
 	if err != nil {
-		t.Fatalf("selectDatabase: %v", err)
+		t.Fatalf("Select: %v", err)
 	}
-	if sel.Backend != backendSQLite || !sel.UnusedURL || sel.UnusedPassword {
+	if sel.Backend != BackendSQLite || !sel.UnusedURL || sel.UnusedPassword {
 		t.Errorf("selection = %+v, want SQLite with UnusedURL only", sel)
 	}
 }
@@ -320,7 +358,7 @@ func TestSelectDatabase_UnusedURL(t *testing.T) {
 // --config is refused instead of being read.
 func TestSelectDatabase_ConfigNotRegularFile(t *testing.T) {
 	clearPGEnv(t)
-	_, err := selectDatabase(":memory:", t.TempDir(), os.Getenv)
+	_, err := Select(":memory:", t.TempDir(), os.Getenv)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("err = %v, want a not-a-regular-file error", err)
 	}
@@ -330,11 +368,11 @@ func TestSelectDatabase_ConfigNotRegularFile(t *testing.T) {
 // mistyped PostgreSQL URL.
 func TestSelectDatabase_SQLiteFileURI(t *testing.T) {
 	clearPGEnv(t)
-	sel, err := selectDatabase("file:///var/lib/gowe/gowe.db?mode=rwc", "", os.Getenv)
+	sel, err := Select("file:///var/lib/gowe/gowe.db?mode=rwc", "", os.Getenv)
 	if err != nil {
-		t.Fatalf("selectDatabase: %v", err)
+		t.Fatalf("Select: %v", err)
 	}
-	if sel.Backend != backendSQLite {
+	if sel.Backend != BackendSQLite {
 		t.Errorf("backend = %s, want sqlite", sel.Backend)
 	}
 }

@@ -306,6 +306,13 @@ CREATE SCHEMA gowe AUTHORIZATION gowe;
 
 The tables are created on first start, as with SQLite.
 
+To move an existing SQLite deployment to PostgreSQL with its history, copy the database once with
+[`gowe-db-copy`](db-copy.md): it reads a copy of the SQLite file, writes everything into the empty PostgreSQL
+database in one transaction, verifies every row before committing, and selects the target with the same rules and
+the same `--config` file as the server. Start the server on PostgreSQL with the same token key file
+(`--token-key-file`) as before, and keep the SQLite file as the way back; there is no tool for the reverse
+direction.
+
 ### Executor Registry
 
 The server registers multiple executor backends:
