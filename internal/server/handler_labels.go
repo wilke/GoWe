@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -67,7 +69,7 @@ func (s *Server) handleCreateLabelVocabulary(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := s.store.CreateLabelVocabulary(r.Context(), lv); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
+		if errors.Is(err, store.ErrDuplicate) {
 			respondError(w, reqID, http.StatusConflict, &model.APIError{
 				Code:    model.ErrConflict,
 				Message: "label vocabulary entry already exists for key:value " + req.Key + ":" + req.Value,

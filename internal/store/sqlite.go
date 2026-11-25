@@ -408,7 +408,7 @@ func (s *SQLiteStore) ListWorkflows(ctx context.Context, opts model.ListOptions)
 		}
 	}
 	if opts.Search != "" {
-		where = append(where, `(name LIKE ? OR id LIKE ? OR description LIKE ?)`)
+		where = append(where, `(LOWER(name) LIKE LOWER(?) OR LOWER(id) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?))`)
 		pat := "%" + opts.Search + "%"
 		args = append(args, pat, pat, pat)
 	}
@@ -830,7 +830,7 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 		countArgs = append(countArgs, opts.DateEnd+"T23:59:59Z")
 	}
 	if opts.Search != "" {
-		whereClauses = append(whereClauses, `(workflow_name LIKE ? OR id LIKE ?)`)
+		whereClauses = append(whereClauses, `(LOWER(workflow_name) LIKE LOWER(?) OR LOWER(id) LIKE LOWER(?))`)
 		pat := "%" + opts.Search + "%"
 		countArgs = append(countArgs, pat, pat)
 	}
@@ -2174,7 +2174,7 @@ func (s *SQLiteStore) SumChargedByWorker(ctx context.Context) (map[string]model.
 	s.logger.Debug("sql", "op", "sum_charged_by_worker", "table", "tasks")
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT external_id, COALESCE(SUM(charged_cores), 0), COALESCE(SUM(charged_ram_mb), 0) FROM tasks
+		`SELECT external_id, CAST(COALESCE(SUM(charged_cores), 0) AS BIGINT), CAST(COALESCE(SUM(charged_ram_mb), 0) AS BIGINT) FROM tasks
 		 WHERE state = ? AND executor_type = ? AND external_id != ''
 		 GROUP BY external_id`,
 		string(model.TaskStateRunning), string(model.ExecutorTypeWorker))
@@ -3064,11 +3064,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	var workerChargedCores, workerChargedMem, hostChargedCores, hostChargedMem, workerChargedGPUs int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT
-		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_cores END), 0),
-		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_ram_mb END), 0),
-		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_cores END), 0),
-		   COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0),
-		   COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_gpus END), 0)
+		   CAST(COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_cores END), 0) AS BIGINT),
+		   CAST(COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_ram_mb END), 0) AS BIGINT),
+		   CAST(COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_cores END), 0) AS BIGINT),
+		   CAST(COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0) AS BIGINT),
+		   CAST(COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_gpus END), 0) AS BIGINT)
 		 FROM tasks t JOIN workers w ON w.id = t.external_id
 		 WHERE t.state = 'RUNNING' AND t.executor_type = 'worker'`,
 		workerID, workerID,
@@ -3129,7 +3129,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	// charge is taskCharge in SQL for one dimension; it binds the worker's
 	// default share (one ?).
 	charge := func(path string) string {
-		return `(CASE WHEN COALESCE(` + hint(path) + `, 0) > 0 THEN ` + hint(path) + ` ELSE COALESCE(?, 0) END)`
+		return `(CASE WHEN COALESCE(` + hint(path) + `, 0) > 0 THEN ` + hint(path) + ` ELSE COALESCE(CAST(? AS BIGINT), 0) END)`
 	}
 	// gpuRequest is model.RuntimeHints.GPUCount in SQL (no binds). It is both
 	// the request and the charge of the GPU dimension.
@@ -3168,13 +3168,13 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		for _, dim := range dims {
 			// Total: the request must fit the effective capacity.
 			query += `
-		   AND (? IS NULL OR ` + dim.request + ` <= ?)`
+		   AND (CAST(? AS BIGINT) IS NULL OR ` + dim.request + ` <= CAST(? AS BIGINT))`
 			args = append(args, nullableInt(dim.total), nullableInt(dim.total))
 			if withFree {
 				// Free: a task that charges nothing always passes, even when
 				// free is negative (host over-committed).
 				query += `
-		   AND (? IS NULL OR ` + dim.charge + ` = 0 OR ` + dim.charge + ` <= ?)`
+		   AND (CAST(? AS BIGINT) IS NULL OR ` + dim.charge + ` = 0 OR ` + dim.charge + ` <= CAST(? AS BIGINT))`
 				args = append(args, nullableInt(dim.free))
 				args = append(args, dim.chargeArgs...)
 				args = append(args, dim.chargeArgs...)
@@ -3561,12 +3561,20 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	chargedGPUs := selected.RuntimeHints.GPUCount()
 	now := time.Now().UTC()
 	nowStr := formatTime(now)
-	_, err = tx.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ?, charged_cores = ?, charged_ram_mb = ?, charged_gpus = ?
 		 WHERE id = ? AND state = 'QUEUED'`,
 		workerID, nowStr, chargedCores, chargedMem, chargedGPUs, selected.ID)
 	if err != nil {
 		return nil, fmt.Errorf("update task state: %w", err)
+	}
+	// The task was QUEUED when this transaction selected it. With a single
+	// connection nothing can change it in between; with a connection pool
+	// another checkout could. Hand out nothing then: the worker polls again.
+	if n, err := res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("update task state: %w", err)
+	} else if n == 0 {
+		return nil, nil
 	}
 
 	// Update worker's current_task.
@@ -3950,7 +3958,7 @@ func (s *SQLiteStore) RequeueWorkerTasks(ctx context.Context, workerID string) (
 const releaseWorkerTaskSQL = `UPDATE workers SET current_task = COALESCE(
 	    (SELECT id FROM tasks
 	     WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ? AND id != ?
-	     ORDER BY started_at DESC LIMIT 1), '')
+	     ORDER BY started_at DESC NULLS LAST LIMIT 1), '')
 	 WHERE id = ? AND (current_task = ? OR current_task NOT IN
 	    (SELECT id FROM tasks
 	     WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?))`
@@ -4222,8 +4230,9 @@ func (s *SQLiteStore) LinkProvider(ctx context.Context, userID string, provider 
 	s.logger.Debug("sql", "op", "insert", "table", "linked_providers", "user_id", userID, "provider", provider)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO linked_providers (user_id, provider, username)
-		 VALUES (?, ?, ?)`,
+		`INSERT INTO linked_providers (user_id, provider, username)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(user_id, provider) DO UPDATE SET username = excluded.username`,
 		userID, provider, username,
 	)
 	return err
@@ -4263,6 +4272,9 @@ func (s *SQLiteStore) CreateLabelVocabulary(ctx context.Context, lv *model.Label
 		lv.ID, lv.Key, lv.Value, lv.Description, lv.Color,
 		formatTime(lv.CreatedAt),
 	)
+	if isUniqueViolation(err) {
+		return fmt.Errorf("%w: %v", ErrDuplicate, err)
+	}
 	return err
 }
 

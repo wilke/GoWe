@@ -1602,7 +1602,7 @@ func (ui *UI) HandleAdminLabelCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ui.store.CreateLabelVocabulary(r.Context(), lv); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
+		if errors.Is(err, store.ErrDuplicate) {
 			qv := url.Values{}
 			qv.Set("error", fmt.Sprintf("Entry already exists for %s:%s", key, value))
 			http.Redirect(w, r, ui.href("/admin/labels?"+qv.Encode()), http.StatusSeeOther)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/me/gowe/pkg/model"
@@ -112,7 +111,9 @@ func (s *SQLiteStore) CreateToolBlessing(ctx context.Context, b *model.ToolBless
 		b.BlessedBy, formatTime(b.BlessedAt.UTC()), b.Note, string(summaryJSON),
 		nullableTime(b.RevokedAt), b.RevokedBy, b.RevokeReason)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") && strings.Contains(err.Error(), "tool_hash") {
+		// The only unique index besides the primary key is the one on the
+		// active (unrevoked) tool hash.
+		if isUniqueViolation(err) && !isPrimaryKeyViolation(err) {
 			return ErrBlessingActive
 		}
 		return err
