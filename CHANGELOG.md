@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.29.0](https://github.com/wilke/GoWe/compare/v0.28.1...v0.29.0) (2026-11-25)
+
+
+### Features
+
+* **cwl/apps:** port IWC generic viral variant calling and consensus ([#345](https://github.com/wilke/GoWe/issues/345)) ([7d2af81](https://github.com/wilke/GoWe/commit/7d2af8137a854e51986c96f372a5b6db402ad381))
+* **cwl/apps:** port IWC SARS-CoV-2 WGS paired-end variant calling ([#344](https://github.com/wilke/GoWe/issues/344)) ([799ee3c](https://github.com/wilke/GoWe/commit/799ee3c0649037358ca9c03b5ef45756e937fa8b))
+* GPU count per task and per-task GPU assignment ([#372](https://github.com/wilke/GoWe/issues/372)) ([a29daf6](https://github.com/wilke/GoWe/commit/a29daf6bd2b6a666b63462ccedb06212cf46cc04))
+* **server:** charge resources at checkout and gate on free worker and host capacity ([#366](https://github.com/wilke/GoWe/issues/366)) ([0620791](https://github.com/wilke/GoWe/commit/0620791265c5ab125692ab2a942e97003d7e21ae))
+* **server:** hold later tasks for a large task waiting on a worker's capacity ([#371](https://github.com/wilke/GoWe/issues/371)) ([7834b18](https://github.com/wilke/GoWe/commit/7834b18fa80a457bc68aca2670545491b013b96e))
+* **server:** per-host view (GET /api/v1/hosts and fleet page) ([#365](https://github.com/wilke/GoWe/issues/365)) ([ed15b0b](https://github.com/wilke/GoWe/commit/ed15b0bdadcaa7fa4860a3cffcbde6504f4becc4)), closes [#323](https://github.com/wilke/GoWe/issues/323)
+* **worker:** host and GPU usage in heartbeats, per-host metrics ([#364](https://github.com/wilke/GoWe/issues/364)) ([100161d](https://github.com/wilke/GoWe/commit/100161d334804a25073c678cd34754db0ac9f495)), closes [#323](https://github.com/wilke/GoWe/issues/323)
+* **worker:** report host identity, capacity and GPU inventory at registration ([#363](https://github.com/wilke/GoWe/issues/363)) ([e1223c6](https://github.com/wilke/GoWe/commit/e1223c6fe50d7d28f1664d1b29a53ae13bed33e2)), closes [#323](https://github.com/wilke/GoWe/issues/323)
+* **worker:** run several tasks at once with --concurrency ([#370](https://github.com/wilke/GoWe/issues/370)) ([13096e9](https://github.com/wilke/GoWe/commit/13096e9d6fe1f6134d288ddb2b51c0fa160dbf84))
+
+
+### Bug Fixes
+
+* **scripts:** exit non-zero when conformance tests fail ([#354](https://github.com/wilke/GoWe/issues/354)) ([3e9e68b](https://github.com/wilke/GoWe/commit/3e9e68b5e4da53dd312b20c0f0dfb1878cc9c800))
+* **server:** stop assuming one task per worker in complete and reaper ([#367](https://github.com/wilke/GoWe/issues/367)) ([1808258](https://github.com/wilke/GoWe/commit/1808258752758f4272990a5aaa1d4dcae9858ca2))
+* **store:** requeue a worker's running tasks when it is deleted ([#360](https://github.com/wilke/GoWe/issues/360)) ([42f6e5c](https://github.com/wilke/GoWe/commit/42f6e5cdbdc0f18a9605a7a20d6f10ae05c54d45)), closes [#358](https://github.com/wilke/GoWe/issues/358)
+* **toolexec:** signal the whole process group on cancel ([#359](https://github.com/wilke/GoWe/issues/359)) ([0f68885](https://github.com/wilke/GoWe/commit/0f688854ee1cf8e5b37654b7f90277def6944a5f))
+
 ## [0.28.1](https://github.com/wilke/GoWe/compare/v0.28.0...v0.28.1) (2026-11-11)
 
 
