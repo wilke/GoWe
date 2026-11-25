@@ -79,6 +79,51 @@ type SQLiteStore struct {
 	// plaintextWarnOnce guards a single startup warning when tokens are being
 	// persisted without encryption.
 	plaintextWarnOnce sync.Once
+
+	// checkoutHoldAfter enables CheckoutTask's hold rule when > 0. Set via
+	// SetCheckoutHoldAfter before the store is used.
+	checkoutHoldAfter time.Duration
+	// holdMu guards holdLast: per worker id, the holder task id found by that
+	// worker's previous checkout, so the start of a hold is logged once.
+	holdMu   sync.Mutex
+	holdLast map[string]string
+}
+
+// SetCheckoutHoldAfter configures CheckoutTask's hold rule: once a queued task
+// has waited d (since it was last dispatched, else created) for capacity on a
+// worker that runs several tasks, that worker stops taking later tasks that
+// need the same capacity. d <= 0 disables the rule (the default). Call before
+// the store is used.
+func (s *SQLiteStore) SetCheckoutHoldAfter(d time.Duration) {
+	s.checkoutHoldAfter = d
+}
+
+// noteHolder records the holder task id found by workerID's checkout ("" =
+// none; the entry is deleted) and reports whether a holder differs from the
+// one recorded at the worker's previous checkout. The map is reset if it
+// reaches checkoutHoldLogMax entries (workers removed while holding).
+func (s *SQLiteStore) noteHolder(workerID, holderID string) bool {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	if holderID == "" {
+		delete(s.holdLast, workerID)
+		return false
+	}
+	if s.holdLast[workerID] == holderID {
+		return false
+	}
+	if _, known := s.holdLast[workerID]; s.holdLast == nil || (!known && len(s.holdLast) >= checkoutHoldLogMax) {
+		s.holdLast = map[string]string{}
+	}
+	s.holdLast[workerID] = holderID
+	return true
+}
+
+// heldFor returns the task workerID's previous checkout held for ("" = none).
+func (s *SQLiteStore) heldFor(workerID string) string {
+	s.holdMu.Lock()
+	defer s.holdMu.Unlock()
+	return s.holdLast[workerID]
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at dbPath and returns a Store.
@@ -1599,7 +1644,7 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, task *model.Task) error {
 
 // taskColumns is the column set returned by every unscoped `SELECT * FROM
 // tasks` query and the column order for `INSERT INTO tasks`. Scanned
-// positionally by scanTask, scanTasks, and CheckoutTask's own inline scan —
+// positionally by scanTask, scanTasks, and scanCheckoutRow (CheckoutTask) —
 // all three must stay in this exact order. New columns are appended at the
 // end so the position of every existing column stays stable.
 const taskColumns = `id, submission_id, step_id, step_instance_id, state, executor_type, external_id,
@@ -2938,6 +2983,13 @@ func (s *SQLiteStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 //     fit what is free on the worker and on its host (host_id + key_id)
 //     after the charges of RUNNING tasks. A task that charges 0 always fits.
 //     The charge is recorded on the task (charged_cores, charged_ram_mb).
+//   - Hold (only with SetCheckoutHoldAfter > 0): when the first task in queue
+//     order that this worker could take but for the free capacity on its own
+//     worker gate has waited longer than the hold-after duration, and would
+//     fit the host gate if this worker's own tasks finished, tasks behind it
+//     that charge a dimension it is short in are not handed out (see
+//     findHolder). When the task a worker held for becomes eligible, no task
+//     behind it in queue order is considered at that checkout.
 func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "group", workerGroup, "runtime", runtime)
 
@@ -2999,8 +3051,19 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		nullInt64Ptr(workerMaxCPUs), nullInt64Ptr(workerHostCPUs), workerChargedCores, hostChargedCores)
 	capMem, freeMem := checkoutBounds(workerHostID,
 		nullInt64Ptr(workerMaxMem), nullInt64Ptr(workerHostMem), workerChargedMem, hostChargedMem)
+	// Hold rule bounds (see findHolder), per dimension: ownFree is what is
+	// free on this worker's own gate (nil without a worker max); drain is
+	// what the host gate would leave if this worker's own running tasks
+	// finished (nil when the host term does not apply, as in checkoutBounds).
+	_, ownFreeCores := checkoutBounds("", nullInt64Ptr(workerMaxCPUs), nil, workerChargedCores, 0)
+	_, ownFreeMem := checkoutBounds("", nullInt64Ptr(workerMaxMem), nil, workerChargedMem, 0)
+	_, drainCores := checkoutBounds(workerHostID, nil, nullInt64Ptr(workerHostCPUs), 0, hostChargedCores-workerChargedCores)
+	_, drainMem := checkoutBounds(workerHostID, nil, nullInt64Ptr(workerHostMem), 0, hostChargedMem-workerChargedMem)
 	// A non-positive default share is treated as unset.
 	defaultCores, defaultMem := positiveInt64Ptr(workerDefaultCores), positiveInt64Ptr(workerDefaultMem)
+	// A task whose last dispatch (else creation) is before holdCutoff has
+	// waited longer than the hold-after duration (hold rule only).
+	holdCutoff := time.Now().UTC().Add(-s.checkoutHoldAfter)
 
 	// Find the oldest QUEUED worker tasks this worker can take. The capacity,
 	// group and GPU predicates are part of the query so a run of tasks this
@@ -3009,181 +3072,92 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	hint := func(path string) string {
 		return `CASE WHEN json_valid(runtime_hints) THEN json_extract(runtime_hints,'$.` + path + `') END`
 	}
-	query := `SELECT ` + taskColumns + `
-		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'
+	// charge is taskCharge in SQL for one dimension; it binds the worker's
+	// default share (one ?).
+	charge := func(path string) string {
+		return `(CASE WHEN COALESCE(` + hint(path) + `, 0) > 0 THEN ` + hint(path) + ` ELSE COALESCE(?, 0) END)`
+	}
+	dims := []struct {
+		path         string
+		total, free  *int64
+		ownFree      *int64
+		defaultShare *int64
+	}{
+		{"cores", capCores, freeCores, ownFreeCores, defaultCores},
+		{"ram_mb", capMem, freeMem, ownFreeMem, defaultMem},
+	}
+	// candidateQuery builds a query for the QUEUED worker tasks this worker
+	// can take, in queue order: the aged predicate when aged (first: cheap
+	// and usually false), the token-blessing, effective capacity, group and
+	// GPU predicates, the free-capacity gate when withFree, then extra
+	// (binding extraArgs).
+	candidateQuery := func(withFree, aged bool, extra string, extraArgs []any, limit int) (string, []any) {
+		query := `SELECT ` + taskColumns + `
+		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'`
+		var args []any
+		if aged {
+			query += `
+		   AND COALESCE(dispatched_at, created_at) < ?`
+			args = append(args, holdCutoff.Format(time.RFC3339Nano))
+		}
+		query += `
 		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
 		         THEN (json_extract(runtime_hints,'$.inject_bvbrc_token')=1
 		               AND COALESCE(json_extract(runtime_hints,'$.token_blessing_id'),'') = '') END, 0)`
-	var args []any
-	for _, dim := range []struct {
-		path         string
-		total, free  *int64
-		defaultShare *int64
-	}{
-		{"cores", capCores, freeCores, defaultCores},
-		{"ram_mb", capMem, freeMem, defaultMem},
-	} {
-		request := `COALESCE(` + hint(dim.path) + `, 0)`
-		charge := `(CASE WHEN ` + request + ` > 0 THEN ` + hint(dim.path) + ` ELSE COALESCE(?, 0) END)`
-		// Total: the request must fit the effective capacity.
-		query += `
+		for _, dim := range dims {
+			request := `COALESCE(` + hint(dim.path) + `, 0)`
+			// Total: the request must fit the effective capacity.
+			query += `
 		   AND (? IS NULL OR ` + request + ` <= ?)`
-		args = append(args, nullableInt(dim.total), nullableInt(dim.total))
-		// Free: a task that charges nothing always passes, even when free
-		// is negative (host over-committed).
-		query += `
-		   AND (? IS NULL OR ` + charge + ` = 0 OR ` + charge + ` <= ?)`
-		args = append(args, nullableInt(dim.free),
-			nullableInt(dim.defaultShare), nullableInt(dim.defaultShare), nullableInt(dim.free))
-	}
-	// Worker group, same semantics as the Go check below.
-	group := `COALESCE(` + hint("worker_group") + `, '')`
-	if workerGroup != "default" && workerGroup != "" {
-		query += `
+			args = append(args, nullableInt(dim.total), nullableInt(dim.total))
+			if withFree {
+				// Free: a task that charges nothing always passes, even when
+				// free is negative (host over-committed).
+				query += `
+		   AND (? IS NULL OR ` + charge(dim.path) + ` = 0 OR ` + charge(dim.path) + ` <= ?)`
+				args = append(args, nullableInt(dim.free),
+					nullableInt(dim.defaultShare), nullableInt(dim.defaultShare), nullableInt(dim.free))
+			}
+		}
+		// Worker group, same semantics as the Go check below.
+		group := `COALESCE(` + hint("worker_group") + `, '')`
+		if workerGroup != "default" && workerGroup != "" {
+			query += `
 		   AND ` + group + ` = ?`
-		args = append(args, workerGroup)
-	} else {
-		query += `
-		   AND ` + group + ` IN ('', 'default')`
-	}
-	// GPU: a CPU-only worker skips tasks that require a GPU.
-	if !workerGPUEnabled {
-		query += `
-		   AND NOT COALESCE(` + hint("requires_gpu") + ` = 1, 0)`
-	}
-	query += `
-		 ORDER BY priority DESC, created_at LIMIT 10`
-
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []*model.Task
-	for rows.Next() {
-		var task model.Task
-		var inputsJSON, outputsJSON, dependsOnJSON string
-		var toolJSON, jobJSON, runtimeHintsJSON string
-		var stateStr, executorType, createdAt string
-		var startedAt, completedAt, dispatchedAt *string
-
-		if err := rows.Scan(
-			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
-			&executorType, &task.ExternalID, &task.BVBRCAppID,
-			&inputsJSON, &outputsJSON, &dependsOnJSON,
-			&task.Priority, &task.RetryCount, &task.MaxRetries,
-			&task.Stdout, &task.Stderr, &task.ExitCode,
-			&createdAt, &startedAt, &completedAt,
-			&toolJSON, &jobJSON, &runtimeHintsJSON,
-			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
-			&task.ChargedCores, &task.ChargedRamMB,
-		); err != nil {
-			rows.Close()
-			return nil, err
-		}
-
-		task.State = model.TaskState(stateStr)
-		task.ExecutorType = model.ExecutorType(executorType)
-		if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(outputsJSON, &task.Outputs, "outputs"); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(dependsOnJSON, &task.DependsOn, "depends_on"); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(toolJSON, &task.Tool, "tool"); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(jobJSON, &task.Job, "job"); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
-			slog.Error("skipping task row with undecryptable token in checkout", "id", task.ID, "error", err)
-			continue
-		}
-		if t, err := parseTimeOrZero(createdAt); err != nil {
-			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-			continue
+			args = append(args, workerGroup)
 		} else {
-			task.CreatedAt = t
+			query += `
+		   AND ` + group + ` IN ('', 'default')`
 		}
-		if startedAt != nil {
-			t, err := parseTimeOrZero(*startedAt)
-			if err != nil {
-				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-				continue
-			}
-			task.StartedAt = &t
+		// GPU: a CPU-only worker skips tasks that require a GPU.
+		if !workerGPUEnabled {
+			query += `
+		   AND NOT COALESCE(` + hint("requires_gpu") + ` = 1, 0)`
 		}
-		if completedAt != nil {
-			t, err := parseTimeOrZero(*completedAt)
-			if err != nil {
-				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-				continue
-			}
-			task.CompletedAt = &t
-		}
-		if dispatchedAt != nil {
-			t, err := parseTimeOrZero(*dispatchedAt)
-			if err != nil {
-				slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
-				continue
-			}
-			task.DispatchedAt = &t
-		}
-
-		candidates = append(candidates, &task)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+		query += extra + fmt.Sprintf(`
+		 ORDER BY priority DESC, created_at LIMIT %d`, limit)
+		return query, append(args, extraArgs...)
 	}
 
 	// Filter by runtime capability, worker group, and dataset affinity.
 	canRunContainers := model.HasContainerRuntime(runtime)
 
-	// Filter candidates into eligible tasks, scoring by affinity.
-	type scored struct {
-		task       *model.Task
-		cacheScore int
-		gpuMatch   bool // true if task wants GPU and worker has GPU
-	}
-	var eligible []scored
-
-	for _, task := range candidates {
-		// Check effective capacity and free capacity (defence in depth: the
-		// candidate query already applies the same bounds).
+	// checkEligible applies every per-task check of this checkout except the
+	// free-capacity gate (shared by the candidate and the hold passes): the
+	// effective capacity (defence in depth: the queries apply the same bound),
+	// container runtime, GPU, worker group and prestage datasets. It returns
+	// the task's cache score (number of matching cache datasets).
+	checkEligible := func(task *model.Task) (int, bool) {
 		reqCores, reqMem := taskRequest(task)
 		if capCores != nil && reqCores > *capCores {
 			s.logger.Debug("checkout skip: task exceeds worker cores", "task_id", task.ID, "worker_id", workerID,
 				"want", reqCores, "max", *capCores)
-			continue
+			return 0, false
 		}
 		if capMem != nil && reqMem > *capMem {
 			s.logger.Debug("checkout skip: task exceeds worker memory", "task_id", task.ID, "worker_id", workerID,
 				"want_mb", reqMem, "max_mb", *capMem)
-			continue
-		}
-		if c := taskCharge(reqCores, defaultCores); freeCores != nil && c != 0 && c > *freeCores {
-			s.logger.Debug("checkout skip: task exceeds free cores", "task_id", task.ID, "worker_id", workerID,
-				"charge", c, "free", *freeCores)
-			continue
-		}
-		if c := taskCharge(reqMem, defaultMem); freeMem != nil && c != 0 && c > *freeMem {
-			s.logger.Debug("checkout skip: task exceeds free memory", "task_id", task.ID, "worker_id", workerID,
-				"charge_mb", c, "free_mb", *freeMem)
-			continue
+			return 0, false
 		}
 
 		// Check container runtime capability.
@@ -3195,13 +3169,13 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 			taskNeedsContainer = true
 		}
 		if taskNeedsContainer && !canRunContainers {
-			continue
+			return 0, false
 		}
 
 		// Check GPU requirement: CPU-only workers skip GPU tasks.
 		taskWantsGPU := task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU
 		if taskWantsGPU && !workerGPUEnabled {
-			continue
+			return 0, false
 		}
 
 		// Check worker group matching.
@@ -3211,11 +3185,11 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		}
 		if workerGroup != "default" && workerGroup != "" {
 			if taskGroup != workerGroup {
-				continue
+				return 0, false
 			}
 		} else {
 			if taskGroup != "" && taskGroup != "default" {
-				continue
+				return 0, false
 			}
 		}
 
@@ -3236,32 +3210,256 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 				}
 			}
 			if missingPrestage {
-				continue
+				return 0, false
 			}
 		}
-
-		eligible = append(eligible, scored{
-			task:       task,
-			cacheScore: cacheScore,
-			gpuMatch:   taskWantsGPU && workerGPUEnabled,
-		})
+		return cacheScore, true
 	}
 
-	// Select best task: GPU workers prefer GPU tasks, then best cache score, then first.
+	// chargeOf is what this worker would charge the task, per dimension.
+	chargeOf := func(task *model.Task) (cores, ramMB int64) {
+		reqCores, reqMem := taskRequest(task)
+		return taskCharge(reqCores, defaultCores), taskCharge(reqMem, defaultMem)
+	}
+
+	// An eligible task, scored by affinity.
+	type scored struct {
+		task       *model.Task
+		cacheScore int
+		gpuMatch   bool // true if task wants GPU and worker has GPU
+	}
+
+	// loadEligible runs the candidate query (free-capacity gate on, plus
+	// extra binding extraArgs) and keeps the rows that pass checkEligible and
+	// the free-capacity gate (defence in depth: the query applies the same
+	// bounds). It returns them in queue order, and whether any of them
+	// charges a non-zero amount.
+	loadEligible := func(extra string, extraArgs []any) ([]scored, bool, error) {
+		query, args := candidateQuery(true, false, extra, extraArgs, 10)
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, false, err
+		}
+
+		var candidates []*model.Task
+		for rows.Next() {
+			task, err := s.scanCheckoutRow(rows)
+			if err != nil {
+				rows.Close()
+				return nil, false, err
+			}
+			if task != nil {
+				candidates = append(candidates, task)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, false, err
+		}
+
+		var eligible []scored
+		anyCharged := false // some eligible task charges a non-zero amount
+		for _, task := range candidates {
+			cacheScore, ok := checkEligible(task)
+			if !ok {
+				continue
+			}
+			// Check free capacity (defence in depth: the candidate query already
+			// applies the same bounds).
+			chargeCores, chargeMem := chargeOf(task)
+			if freeCores != nil && chargeCores != 0 && chargeCores > *freeCores {
+				s.logger.Debug("checkout skip: task exceeds free cores", "task_id", task.ID, "worker_id", workerID,
+					"charge", chargeCores, "free", *freeCores)
+				continue
+			}
+			if freeMem != nil && chargeMem != 0 && chargeMem > *freeMem {
+				s.logger.Debug("checkout skip: task exceeds free memory", "task_id", task.ID, "worker_id", workerID,
+					"charge_mb", chargeMem, "free_mb", *freeMem)
+				continue
+			}
+			anyCharged = anyCharged || chargeCores != 0 || chargeMem != 0
+
+			eligible = append(eligible, scored{
+				task:       task,
+				cacheScore: cacheScore,
+				gpuMatch:   task.RuntimeHints != nil && task.RuntimeHints.RequiresGPU && workerGPUEnabled,
+			})
+		}
+		return eligible, anyCharged, nil
+	}
+
+	eligible, anyCharged, err := loadEligible("", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// findHolder returns the holder of the hold rule and the dimensions it is
+	// short in: the first task in queue order that passes every check of this
+	// worker except the free-capacity gate, that has waited longer than the
+	// hold-after duration since it was last dispatched (else created), that
+	// is short on this worker's own gate in some dimension (charge > 0 and
+	// above ownFree; never in a dimension without a worker max), and for
+	// which holding can help: in each short dimension its charge would fit
+	// the host gate if this worker's own running tasks finished (drain). The
+	// host gate alone never makes a task short: it is shared with workers
+	// that may never see the holder, so holding for it could idle this
+	// worker without helping. Only the first checkoutHoldScan rows matching
+	// in SQL are examined; if none of them qualifies there is no holder. Rows
+	// that cannot be scanned, decoded or decrypted are never holders.
+	findHolder := func() (*model.Task, bool, bool, error) {
+		var short []string
+		var extraArgs []any
+		for _, dim := range dims {
+			if dim.ownFree == nil {
+				continue
+			}
+			short = append(short, `(`+charge(dim.path)+` > 0 AND `+charge(dim.path)+` > ?)`)
+			extraArgs = append(extraArgs, nullableInt(dim.defaultShare), nullableInt(dim.defaultShare), *dim.ownFree)
+		}
+		if len(short) == 0 {
+			return nil, false, false, nil // no worker max: no task is short
+		}
+		extra := `
+		   AND (` + strings.Join(short, ` OR `) + `)`
+		query, args := candidateQuery(false, true, extra, extraArgs, checkoutHoldScan)
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, false, false, fmt.Errorf("find checkout holder: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			task, err := s.scanCheckoutRow(rows)
+			if err != nil {
+				s.logger.Warn("sql", "op", "checkout_hold_scan", "worker_id", workerID, "error", err)
+				continue
+			}
+			if task == nil {
+				continue
+			}
+			if _, ok := checkEligible(task); !ok {
+				continue
+			}
+			c, m := chargeOf(task)
+			shortCores := ownFreeCores != nil && c > 0 && c > *ownFreeCores
+			shortMem := ownFreeMem != nil && m > 0 && m > *ownFreeMem
+			if !shortCores && !shortMem {
+				continue
+			}
+			if (shortCores && drainCores != nil && c > *drainCores) || (shortMem && drainMem != nil && m > *drainMem) {
+				continue
+			}
+			return task, shortCores, shortMem, nil
+		}
+		if err := rows.Err(); err != nil {
+			return nil, false, false, fmt.Errorf("find checkout holder: %w", err)
+		}
+		return nil, false, false, nil
+	}
+
+	// Hold rule: leave out the tasks behind the holder in queue order that
+	// charge a dimension it is short in, so they cannot keep taking the
+	// capacity it waits for. Tasks that charge nothing there are never held.
+	// No holder search (no query) when this worker has no running charges
+	// (nothing can be short on its own gate) or nothing eligible charges
+	// capacity (nothing to hold; the recorded holder is then kept so a hold
+	// over an otherwise empty queue is not logged again).
+	var holder *model.Task
+	var shortCores, shortMem bool
+	var protectedID string // the task this worker's previous checkout held for
+	if s.checkoutHoldAfter > 0 {
+		protectedID = s.heldFor(workerID)
+		switch {
+		case workerChargedCores == 0 && workerChargedMem == 0:
+			s.noteHolder(workerID, "")
+		case anyCharged:
+			if holder, shortCores, shortMem, err = findHolder(); err != nil {
+				return nil, err
+			}
+			if holder == nil {
+				s.noteHolder(workerID, "")
+			}
+		}
+	}
+	if holder != nil {
+		// Re-run the candidate query without the held tasks, so they cannot
+		// fill the LIMIT window and hide the tasks behind them (the bind order
+		// follows the predicate: priority, priority, created_at, then one
+		// default share per charge expression).
+		var short, charged []string
+		extraArgs := []any{holder.Priority, holder.Priority, holder.CreatedAt.Format(time.RFC3339Nano)}
+		if shortCores {
+			short = append(short, "cores")
+			charged = append(charged, charge("cores")+` != 0`)
+			extraArgs = append(extraArgs, nullableInt(defaultCores))
+		}
+		if shortMem {
+			short = append(short, "ram")
+			charged = append(charged, charge("ram_mb")+` != 0`)
+			extraArgs = append(extraArgs, nullableInt(defaultMem))
+		}
+		extra := `
+		   AND NOT ((priority < ? OR (priority = ? AND created_at >= ?)) AND (` + strings.Join(charged, ` OR `) + `))`
+		if eligible, _, err = loadEligible(extra, extraArgs); err != nil {
+			return nil, err
+		}
+		// Defence in depth: the query already left the held tasks out.
+		kept := eligible[:0]
+		for _, e := range eligible {
+			behind := e.task.Priority < holder.Priority ||
+				(e.task.Priority == holder.Priority && !e.task.CreatedAt.Before(holder.CreatedAt))
+			c, m := chargeOf(e.task)
+			if behind && ((shortCores && c != 0) || (shortMem && m != 0)) {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		eligible = kept
+
+		s.logger.Debug("checkout hold", "worker_id", workerID, "holder_task_id", holder.ID, "short", strings.Join(short, ","))
+		if s.noteHolder(workerID, holder.ID) {
+			c, m := chargeOf(holder)
+			attrs := []any{"worker_id", workerID, "holder_task_id", holder.ID, "short", strings.Join(short, ",")}
+			if shortCores {
+				attrs = append(attrs, "charge_cores", c, "free_cores", *ownFreeCores)
+			}
+			if shortMem {
+				attrs = append(attrs, "charge_ram_mb", m, "free_ram_mb", *ownFreeMem)
+			}
+			s.logger.Info("checkout hold: worker stops taking later tasks that need the capacity a waiting task is short of", attrs...)
+		}
+	}
+
+	// Protected task: when the task this worker held for at its previous
+	// checkout now fits, nothing behind it in queue order is considered, so
+	// the capacity freed for it does not go to a better-scored task behind
+	// it. Tasks ahead of it keep their place.
+	if protectedID != "" {
+		for i, e := range eligible {
+			if e.task.ID == protectedID {
+				eligible = eligible[:i+1]
+				break
+			}
+		}
+	}
+
 	var selected *model.Task
-	bestScore := -1
-	for _, e := range eligible {
-		score := e.cacheScore
-		if workerGPUEnabled && e.gpuMatch {
-			score += 100 // Strongly prefer GPU tasks on GPU workers
+	// Select best task: GPU workers prefer GPU tasks, then best cache score,
+	// then first.
+	{
+		bestScore := -1
+		for _, e := range eligible {
+			score := e.cacheScore
+			if workerGPUEnabled && e.gpuMatch {
+				score += 100 // Strongly prefer GPU tasks on GPU workers
+			}
+			if score > bestScore {
+				bestScore = score
+				selected = e.task
+			}
 		}
-		if score > bestScore {
-			bestScore = score
-			selected = e.task
+		if selected == nil && len(eligible) > 0 {
+			selected = eligible[0].task
 		}
-	}
-	if selected == nil && len(eligible) > 0 {
-		selected = eligible[0].task
 	}
 
 	if selected == nil {
@@ -3302,6 +3500,100 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	selected.ChargedRamMB = &chargedMem
 
 	return selected, nil
+}
+
+// checkoutHoldScan bounds the hold rule's search (CheckoutTask, findHolder):
+// at most this many short, aged tasks are examined per checkout.
+const checkoutHoldScan = 50
+
+// checkoutHoldLogMax bounds noteHolder's map (one entry per holding worker).
+const checkoutHoldLogMax = 1024
+
+// scanCheckoutRow scans and decodes one row (taskColumns order) of a
+// CheckoutTask query. A corrupt or undecryptable row is logged and skipped:
+// it returns (nil, nil). An error means the row could not be scanned.
+func (s *SQLiteStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
+	var task model.Task
+	var inputsJSON, outputsJSON, dependsOnJSON string
+	var toolJSON, jobJSON, runtimeHintsJSON string
+	var stateStr, executorType, createdAt string
+	var startedAt, completedAt, dispatchedAt *string
+
+	if err := rows.Scan(
+		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
+		&executorType, &task.ExternalID, &task.BVBRCAppID,
+		&inputsJSON, &outputsJSON, &dependsOnJSON,
+		&task.Priority, &task.RetryCount, &task.MaxRetries,
+		&task.Stdout, &task.Stderr, &task.ExitCode,
+		&createdAt, &startedAt, &completedAt,
+		&toolJSON, &jobJSON, &runtimeHintsJSON,
+		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
+		&task.ChargedCores, &task.ChargedRamMB,
+	); err != nil {
+		return nil, err
+	}
+
+	task.State = model.TaskState(stateStr)
+	task.ExecutorType = model.ExecutorType(executorType)
+	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if err := unmarshalJSON(outputsJSON, &task.Outputs, "outputs"); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if err := unmarshalJSON(dependsOnJSON, &task.DependsOn, "depends_on"); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if err := unmarshalJSON(toolJSON, &task.Tool, "tool"); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if err := unmarshalJSON(jobJSON, &task.Job, "job"); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if err := unmarshalJSON(runtimeHintsJSON, &task.RuntimeHints, "runtime_hints"); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if err := s.revealRuntimeHints(task.RuntimeHints, task.ID); err != nil {
+		slog.Error("skipping task row with undecryptable token in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	}
+	if t, err := parseTimeOrZero(createdAt); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	} else {
+		task.CreatedAt = t
+	}
+	if startedAt != nil {
+		t, err := parseTimeOrZero(*startedAt)
+		if err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			return nil, nil
+		}
+		task.StartedAt = &t
+	}
+	if completedAt != nil {
+		t, err := parseTimeOrZero(*completedAt)
+		if err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			return nil, nil
+		}
+		task.CompletedAt = &t
+	}
+	if dispatchedAt != nil {
+		t, err := parseTimeOrZero(*dispatchedAt)
+		if err != nil {
+			slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+			return nil, nil
+		}
+		task.DispatchedAt = &t
+	}
+	return &task, nil
 }
 
 // taskRequest returns the cores and RAM (MiB) a task requests, 0 when it
