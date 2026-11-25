@@ -36,17 +36,14 @@ func (r *Docker) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		args = append(args, "--network", "none")
 	}
 
-	// GPU support: use --gpus for NVIDIA GPU passthrough.
-	if spec.GPU.Enabled {
-		if spec.GPU.DeviceID != "" {
-			// Specific GPU(s): --gpus '"device=0"' or --gpus '"device=0,1"'
-			args = append(args, "--gpus", fmt.Sprintf(`"device=%s"`, spec.GPU.DeviceID))
-			// Also set CUDA_VISIBLE_DEVICES for applications that check it.
-			args = append(args, "-e", "CUDA_VISIBLE_DEVICES="+spec.GPU.DeviceID)
-		} else {
-			// All GPUs
-			args = append(args, "--gpus", "all")
-		}
+	// GPU support: use --gpus for NVIDIA GPU passthrough: all GPUs, or
+	// --gpus '"device=0,1"' for specific ones (see GPUConfig.DockerGPUArgs).
+	args = append(args, spec.GPU.DockerGPUArgs()...)
+	if len(spec.GPU.Devices) == 0 && !spec.GPU.AccessDenied && spec.GPU.Enabled && spec.GPU.DeviceID != "" {
+		// Legacy --gpu-id only (kept as before): also set
+		// CUDA_VISIBLE_DEVICES for applications that check it. Not for
+		// assigned devices: docker renumbers the devices it passes in.
+		args = append(args, "-e", "CUDA_VISIBLE_DEVICES="+spec.GPU.DeviceID)
 	}
 
 	// Environment variables.

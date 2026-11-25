@@ -459,7 +459,8 @@ func TestResolveConcurrency(t *testing.T) {
 		{name: "negative refused", cfg: Config{Concurrency: -1, Resources: res(8, 8000)}, wantErr: "at least 1"},
 		{name: "above CPUs refused", cfg: Config{Concurrency: 9, Resources: res(8, 8000)}, hostCPUs: 8, wantErr: "exceeds the worker's 8 CPUs"},
 		{name: "above host CPUs refused", cfg: Config{Concurrency: 5, Resources: res(32, 8000)}, hostCPUs: 4, wantErr: "exceeds the worker's 4 CPUs"},
-		{name: "gpu refused above 1", cfg: Config{Concurrency: 2, GPU: GPUWorkerConfig{Enabled: true}, Resources: res(8, 8000)}, wantErr: "--gpu"},
+		// The GPU inventory is checked in New (validateGPUConcurrency).
+		{name: "gpu allowed above 1", cfg: Config{Concurrency: 2, GPU: GPUWorkerConfig{Enabled: true}, Resources: res(8, 8000)}, slots: 2, cores: 4, ram: 4000},
 		{name: "gpu allowed at 1", cfg: Config{Concurrency: 1, GPU: GPUWorkerConfig{Enabled: true}, Resources: res(8, 8000)}, slots: 1},
 		{name: "cores override above capacity", cfg: Config{Concurrency: 2, DefaultTaskCores: 9, Resources: res(8, 8000)}, wantErr: "--default-task-cores 9"},
 		{name: "ram override above capacity", cfg: Config{Concurrency: 2, DefaultTaskRamMB: 9000, Resources: res(8, 8000)}, wantErr: "--default-task-ram 9000"},
@@ -492,11 +493,10 @@ func TestResolveConcurrency(t *testing.T) {
 func TestValidateConcurrency(t *testing.T) {
 	for _, tc := range []struct {
 		n       int
-		gpu     bool
 		wantErr bool
-	}{{0, false, true}, {-3, false, true}, {1, false, false}, {1, true, false}, {4, false, false}, {2, true, true}} {
-		if err := ValidateConcurrency(tc.n, tc.gpu); (err != nil) != tc.wantErr {
-			t.Errorf("ValidateConcurrency(%d, gpu=%v) = %v, wantErr %v", tc.n, tc.gpu, err, tc.wantErr)
+	}{{0, true}, {-3, true}, {1, false}, {4, false}} {
+		if err := ValidateConcurrency(tc.n); (err != nil) != tc.wantErr {
+			t.Errorf("ValidateConcurrency(%d) = %v, wantErr %v", tc.n, err, tc.wantErr)
 		}
 	}
 }

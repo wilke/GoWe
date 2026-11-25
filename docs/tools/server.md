@@ -884,6 +884,26 @@ offered to that worker, and the scheduler uses the same effective capacity when 
 run a task. A task that charges nothing (no request, no default share) is never held back, even on an over-committed
 host. Running tasks of offline workers are not counted (the reaper requeues them), except the checking-out worker's own; a RUNNING task checked out by an older server has no charge and counts as 0.
 
+**GPUs** are a third dimension, counted per worker only (no host term, no default share). A task's GPU request is
+`gpus` (from `gowe:Execution.gpu_count` or `CUDARequirement.cudaDeviceCountMin`), else 1 when it only carries
+`requires_gpu` (`gpu: true`, and tasks and workflows from before GPU counts), else 0. A worker's GPU capacity is the
+number of GPUs in the inventory it registered with `--gpu`:
+- A CPU-only worker is never offered a task that needs a GPU.
+- A GPU worker with an inventory of `c` GPUs is offered a task needing `k` GPUs only when `k <= c` and, for `k > 0`,
+  `k` fits `c` minus the GPUs charged to the worker's own RUNNING tasks.
+- A GPU worker that registered no inventory (older worker) or an empty one (`nvidia-smi` failed) has an unknown
+  capacity: it is offered only tasks needing at most one GPU, with no free-GPU gate.
+
+The GPU charge is stored on the task (`charged_gpus`, 0 for a task that needs no GPU) with the same lifecycle as
+`charged_cores`; a multi-task GPU worker gives the task exactly that many of its devices. A task that needs more
+GPUs than any online GPU worker of its group can give is not failed at dispatch: it stays queued, like a GPU task
+while no GPU worker is online. GPU workers are still preferred for GPU tasks at checkout.
+
+When a GPU worker registers with GPU UUIDs that another **online** worker with the same `host_id` also reports, the
+server logs a WARN naming both workers and the shared UUIDs: the two would hand out the same devices (give each worker
+its own GPUs with `--gpu-id`). The registration is not rejected, since a restarted worker's previous row stays online
+until the reaper removes it.
+
 **Holding capacity for a waiting task** (`--checkout-hold-after`, default `10m`, `0` disables). On a worker that runs
 several tasks at once, a large task could otherwise wait forever: whenever one of the worker's tasks ends, smaller
 tasks behind the large one take the freed capacity before enough is free for it. So when a worker that has running
@@ -892,7 +912,8 @@ could otherwise take and that has waited longer than the hold-after duration (co
 creation), whose charge does not fit what is free on the **worker gate** (`max_cpus` / `max_mem_mb` minus the charges
 of the worker's own running tasks) in some dimension, and that would fit the host gate once the worker's own running
 tasks finished. If it finds one, the worker does not take tasks behind it that charge the dimension it is short of
-(cores, RAM or both). It still takes tasks ahead of it, and tasks behind it that charge nothing in that dimension
+(cores, RAM, GPUs, or several). GPUs count only on a worker with a GPU inventory; a task that needs no GPU is never
+held for a GPU shortfall. It still takes tasks ahead of it, and tasks behind it that charge nothing in that dimension
 (including tasks that charge nothing at all), as usual. Once enough capacity is free, tasks behind the one
 the worker held for are not considered at that checkout, whatever their GPU or cache-dataset preference; tasks ahead
 of it keep their place. The server keeps the held-for task per
@@ -916,7 +937,7 @@ worker in memory; after a server restart the next checkout re-establishes it.
 
 Known undercounts:
 - A cancelled task releases its charge as soon as the server marks it terminal, before the worker has actually stopped
-  its process.
+  its process. For GPUs, a multi-task worker makes the next task wait (at most 60 s) until the device is released.
 - Tasks already RUNNING when the server is upgraded have no charge until they are requeued and checked out again.
 
 ---

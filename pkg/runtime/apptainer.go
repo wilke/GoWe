@@ -41,13 +41,14 @@ func (r *Apptainer) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		args = append(args, "--net", "--network", "none")
 	}
 
-	// GPU support: use --nv for NVIDIA GPU passthrough.
-	if spec.GPU.Enabled {
+	// GPU support: use --nv for NVIDIA GPU passthrough, and CUDA_VISIBLE_DEVICES
+	// (with CUDA_DEVICE_ORDER) to restrict to specific GPU(s), or to none when
+	// GPU access is denied (see GPUConfig.CUDAEnv).
+	if spec.GPU.HasAccess() {
 		args = append(args, "--nv")
-		// Use CUDA_VISIBLE_DEVICES to restrict to specific GPU(s).
-		if spec.GPU.DeviceID != "" {
-			args = append(args, "--env", "CUDA_VISIBLE_DEVICES="+spec.GPU.DeviceID)
-		}
+	}
+	for _, kv := range spec.GPU.CUDAEnv() {
+		args = append(args, "--env", kv)
 	}
 
 	// Environment variables.

@@ -1747,12 +1747,17 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 		if step.Hints.BVBRCAppID != "" {
 			task.BVBRCAppID = step.Hints.BVBRCAppID
 		}
-		// Propagate GPU requirement from step hints.
-		if step.Hints.RequiresGPU {
+		// Propagate the GPU requirement and count from step hints;
+		// RequiresGPU stays true whenever GPUs > 0 (older workers read only
+		// the boolean).
+		if step.Hints.RequiresGPU || step.Hints.GPUs > 0 {
 			if task.RuntimeHints == nil {
 				task.RuntimeHints = &model.RuntimeHints{}
 			}
 			task.RuntimeHints.RequiresGPU = true
+			if step.Hints.GPUs > 0 {
+				task.RuntimeHints.GPUs = step.Hints.GPUs
+			}
 		}
 		// The token request is NOT propagated from step hints: only
 		// attachCredentials (credentials.go) may set InjectBVBRCToken, and only
@@ -1910,7 +1915,8 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 		}
 	}
 
-	wantGPU := hints != nil && hints.RequiresGPU
+	wantGPUs := hints.GPUCount() // nil-safe
+	wantGPU := wantGPUs > 0
 	wantCores, wantRam := 0, int64(0)
 	if hints != nil {
 		wantCores, wantRam = hints.Cores, hints.RamMB
@@ -1922,8 +1928,12 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 	}
 
 	for _, w := range caps.Workers {
-		// Check GPU requirement.
+		// Check GPU requirement: a GPU worker, whose GPU capacity fits the
+		// count (unknown capacity: at most one GPU, as CheckoutTask).
 		if wantGPU && !w.GPUEnabled {
+			continue
+		}
+		if wantGPU && gpuLimit(w) < wantGPUs {
 			continue
 		}
 		// Check worker group.
@@ -1987,21 +1997,38 @@ func canMatchTask(caps *WorkerCapabilities, hints *model.RuntimeHints) (bool, st
 		}
 	}
 	if wantGPU {
-		hasGPU := false
+		hasGPU, largest := false, 0
 		for _, w := range caps.Workers {
 			if w.GPUEnabled {
 				hasGPU = true
-				break
+				if n := gpuLimit(w); n > largest {
+					largest = n
+				}
 			}
 		}
 		if !hasGPU {
 			reasons = append(reasons, "no GPU-enabled workers")
+		} else if largest < wantGPUs {
+			reasons = append(reasons, fmt.Sprintf("no online GPU worker can give a task %d GPUs (largest %d; a GPU worker without a GPU inventory counts as 1)",
+				wantGPUs, largest))
 		}
 	}
 	if len(reasons) == 0 {
 		reasons = append(reasons, "no single worker satisfies all constraints simultaneously")
 	}
 	return false, strings.Join(reasons, "; ")
+}
+
+// gpuLimit is the most GPUs one task can get on w, as CheckoutTask applies
+// it: 0 for a CPU-only worker, its GPU capacity when known, else 1.
+func gpuLimit(w *model.Worker) int {
+	if !w.GPUEnabled {
+		return 0
+	}
+	if c := w.GPUCapacity(); c != nil {
+		return *c
+	}
+	return 1
 }
 
 // hasOnlineWorkers checks if any workers are currently online.

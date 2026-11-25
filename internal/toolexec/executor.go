@@ -11,6 +11,7 @@ import (
 	"github.com/me/gowe/internal/cmdline"
 	"github.com/me/gowe/internal/iwdr"
 	"github.com/me/gowe/pkg/cwl"
+	gort "github.com/me/gowe/pkg/runtime"
 )
 
 // ExecutionMode specifies how the tool should be executed.
@@ -41,11 +42,12 @@ type Result struct {
 // bytes so that the tail (most useful for debugging) is preserved.
 const maxLogCapture = 256 * 1024 // 256 KB
 
-// GPUConfig holds GPU configuration for container execution.
-type GPUConfig struct {
-	Enabled  bool   // Enable GPU support
-	DeviceID string // Specific GPU device ID (e.g., "0", "1") - empty means use all/auto
-}
+// GPUConfig holds GPU configuration for one execution: the worker's static
+// --gpu / --gpu-id (Enabled, DeviceID), the devices assigned to this task
+// (Devices), or GPU access denied (AccessDenied). It is the shared
+// runtime.GPUConfig, so the legacy runtimes and toolexec make the same
+// decisions (HasAccess, CUDAEnv, DockerGPUArgs).
+type GPUConfig = gort.GPUConfig
 
 // ResourceConfig holds resource limits for container execution.
 type ResourceConfig struct {

@@ -514,6 +514,14 @@ var alterStatements = []struct {
 		column:   "default_task_ram_mb",
 		alterSQL: "ALTER TABLE workers ADD COLUMN default_task_ram_mb INTEGER",
 	},
+	// GPUs charged at checkout against the worker (no host term), same
+	// lifecycle as charged_cores: NULL = not checked out by a server that
+	// counts GPUs.
+	{
+		table:    "tasks",
+		column:   "charged_gpus",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN charged_gpus INTEGER",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
