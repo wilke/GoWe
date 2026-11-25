@@ -109,7 +109,7 @@ func (s *SQLiteStore) CreateToolBlessing(ctx context.Context, b *model.ToolBless
 		`INSERT INTO blessed_tools (`+toolBlessingColumns+`)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		b.ID, b.ToolHash, b.ToolName, envJSON, groupsJSON, b.ImageRef, shaJSON,
-		b.BlessedBy, b.BlessedAt.UTC().Format(time.RFC3339Nano), b.Note, string(summaryJSON),
+		b.BlessedBy, formatTime(b.BlessedAt.UTC()), b.Note, string(summaryJSON),
 		nullableTime(b.RevokedAt), b.RevokedBy, b.RevokeReason)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") && strings.Contains(err.Error(), "tool_hash") {
@@ -173,7 +173,7 @@ func (s *SQLiteStore) RevokeToolBlessing(ctx context.Context, id, revokedBy, rea
 	s.logger.Debug("sql", "op", "update", "table", "blessed_tools", "id", id, "action", "revoke")
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE blessed_tools SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL`,
-		time.Now().UTC().Format(time.RFC3339Nano), revokedBy, reason, id)
+		formatTime(time.Now().UTC()), revokedBy, reason, id)
 	if err != nil {
 		return err
 	}

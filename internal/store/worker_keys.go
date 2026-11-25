@@ -15,7 +15,7 @@ func nullableTime(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
-	return t.Format(time.RFC3339Nano)
+	return formatTime(*t)
 }
 
 // scanNullableTime parses a nullable RFC3339Nano timestamp column.
@@ -49,7 +49,7 @@ func (s *SQLiteStore) CreateWorkerKey(ctx context.Context, k *model.WorkerKey) e
 		`INSERT INTO worker_keys (id, label, key_hash, key_prefix, groups, description, disabled, created_by, created_at, expires_at, last_used_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.ID, k.Label, k.KeyHash, k.KeyPrefix, string(groupsJSON), k.Description,
-		disabled, k.CreatedBy, k.CreatedAt.Format(time.RFC3339Nano),
+		disabled, k.CreatedBy, formatTime(k.CreatedAt),
 		nullableTime(k.ExpiresAt), nullableTime(k.LastUsedAt),
 	)
 	return err
@@ -205,6 +205,6 @@ func (s *SQLiteStore) CountWorkerKeys(ctx context.Context) (int, error) {
 func (s *SQLiteStore) TouchWorkerKey(ctx context.Context, id string, when time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE worker_keys SET last_used_at=? WHERE id=?`,
-		when.Format(time.RFC3339Nano), id)
+		formatTime(when), id)
 	return err
 }
