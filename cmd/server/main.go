@@ -17,6 +17,7 @@ import (
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/cwltool"
+	"github.com/me/gowe/internal/dbconfig"
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/logging"
 	"github.com/me/gowe/internal/metrics"
@@ -182,20 +183,20 @@ func main() {
 
 	// Select the database: SQLite (--db path) or PostgreSQL (postgres:// URL
 	// in --db or database.url in --config; password only from --config).
-	dbSel, err := selectDatabase(cfg.DBPath, *configFile, os.Getenv)
+	dbSel, err := dbconfig.Select(cfg.DBPath, *configFile, os.Getenv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "database configuration: %v\n", err)
 		os.Exit(1)
 	}
 	var dbPath string
-	if dbSel.Backend == backendSQLite {
+	if dbSel.Backend == dbconfig.BackendSQLite {
 		if dbSel.UnusedURL {
 			logger.Warn("database.url in the --config file is ignored: --db selects SQLite", "config", *configFile)
 		}
 		if dbSel.UnusedPassword {
 			logger.Warn("database.password in the --config file is unused: the server uses SQLite", "config", *configFile)
 		}
-		dbPath, err = resolveSQLitePath(dbSel.SQLitePath)
+		dbPath, err = dbconfig.ResolveSQLitePath(dbSel.SQLitePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -203,7 +204,7 @@ func main() {
 	}
 
 	// Open store and run migrations.
-	st, err := openStore(context.Background(), dbSel, dbPath, logger)
+	st, err := dbconfig.Open(context.Background(), dbSel, dbPath, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)
@@ -214,11 +215,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "migrate database: %v\n", err)
 		os.Exit(1)
 	}
-	if dbSel.Backend == backendPostgres {
+	if dbSel.Backend == dbconfig.BackendPostgres {
 		// The store logged host, port, database and schema; never the URL.
-		logger.Info("database ready", "backend", backendPostgres)
+		logger.Info("database ready", "backend", dbconfig.BackendPostgres)
 	} else {
-		logger.Info("database ready", "path", dbPath, "backend", backendSQLite)
+		logger.Info("database ready", "path", dbPath, "backend", dbconfig.BackendSQLite)
 	}
 
 	if *checkoutHoldAfter < 0 {

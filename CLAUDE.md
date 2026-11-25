@@ -134,7 +134,7 @@ All endpoints under `/api/v1`. JSON envelope: `{status, request_id, timestamp, d
 
 SQLite with `modernc.org/sqlite` (pure Go, no CGO). Schema in `internal/store/migrations.go`. Migrations use idempotent `ALTER TABLE ADD COLUMN` with `addColumnIfNotExists()`. WAL mode, `max_open_conns=1`.
 
-PostgreSQL 16+ is a second backend of the same `*store.SQLStore` (dialect in `internal/store/dialect_postgres.go`, ADR-0014), selected by a `postgres://` URL in `--db` or `database.url` of `--config` (`cmd/server/database.go`), also with one connection; store tests run on it when `GOWE_TEST_POSTGRES_URL` is set.
+PostgreSQL 16+ is a second backend of the same `*store.SQLStore` (dialect in `internal/store/dialect_postgres.go`, ADR-0014), selected by a `postgres://` URL in `--db` or `database.url` of `--config` (`internal/dbconfig`, shared with `cmd/db-copy`), also with one connection; store tests run on it when `GOWE_TEST_POSTGRES_URL` is set. `gowe-db-copy` (`cmd/db-copy`, `store.CopyDatabase` in `internal/store/copy.go`) copies a SQLite database into an empty PostgreSQL one; a new table must be added to `copyTables` there (a test fails otherwise).
 
 ## Go Conventions
 

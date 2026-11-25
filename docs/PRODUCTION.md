@@ -605,6 +605,12 @@ The server can use PostgreSQL 16+ instead of SQLite: a `postgres://` URL in `--d
 the database. Setup, the database creation statement and the checks the server makes at start are in
 [docs/tools/server.md](tools/server.md#postgresql).
 
+To move this deployment from SQLite to PostgreSQL with its history: stop the server, copy
+`/scout/wf/gowe/gowe.db` with `sqlite3 'file:/scout/wf/gowe/gowe.db?mode=ro' ".backup /path/copy.db"`, and copy that
+file into the empty PostgreSQL database with [`gowe-db-copy`](tools/db-copy.md) (one transaction, verified before
+commit, refuses a non-empty target). Then start the server on PostgreSQL with the same `--token-key-file`, and keep
+the SQLite file as the rollback: there is no tool for the reverse direction.
+
 ## Troubleshooting
 
 **Server won't start — port already in use:**

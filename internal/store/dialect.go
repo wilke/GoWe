@@ -31,6 +31,10 @@ type dialect interface {
 	// store's column types. It returns args itself when nothing changes and
 	// never modifies args in place.
 	bindArgs(args []any) []any
+	// sanitizeText is what bindArgs does to a string argument: s made
+	// storable in a TEXT column of the database, and whether that changed
+	// anything.
+	sanitizeText(s string) (string, bool)
 
 	// jsonDoc prepares a JSON document for a column that SQL parses with the
 	// json helpers above (tasks.runtime_hints, workflows.labels). SQLite
@@ -46,6 +50,13 @@ type dialect interface {
 	columnExists(ctx context.Context, q queryer, table, column string) (bool, error)
 	// indexExists reports whether an index named name exists.
 	indexExists(ctx context.Context, q queryer, name string) (bool, error)
+	// tableNames lists the base tables of the database (of the current
+	// schema for PostgreSQL), without the database's own internal tables,
+	// sorted by name.
+	tableNames(ctx context.Context, q queryer) ([]string, error)
+	// columnNames lists the columns of table, lower-cased, in their order
+	// in the table. A table that does not exist has no columns.
+	columnNames(ctx context.Context, q queryer, table string) ([]string, error)
 
 	// jsonValid is a condition that is true when col holds valid JSON.
 	jsonValid(col string) string
@@ -101,6 +112,9 @@ func (sqliteDialect) rebind(query string) string { return query }
 // bindArgs returns args unchanged: SQLite stores every value as given.
 func (sqliteDialect) bindArgs(args []any) []any { return args }
 
+// sanitizeText returns s unchanged: SQLite stores any string.
+func (sqliteDialect) sanitizeText(s string) (string, bool) { return s, false }
+
 func (sqliteDialect) jsonDoc(doc string) string { return doc }
 
 // ddl returns stmt unchanged: the schema is written for SQLite.
@@ -138,6 +152,74 @@ func (sqliteDialect) indexExists(ctx context.Context, q queryer, name string) (b
 		return false, fmt.Errorf("look up index %s: %w", name, err)
 	}
 	return n > 0, nil
+}
+
+// tableNames reads sqlite_master, without SQLite's internal sqlite_* tables.
+func (sqliteDialect) tableNames(ctx context.Context, q queryer) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("list tables: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	return names, nil
+}
+
+// columnNames reads PRAGMA table_info(table). table is pasted into the
+// statement (PRAGMA takes no parameters), so it must be a plain identifier.
+func (sqliteDialect) columnNames(ctx context.Context, q queryer, table string) ([]string, error) {
+	if !isSQLIdentifier(table) {
+		return nil, fmt.Errorf("list columns: invalid table name %q", table)
+	}
+	rows, err := q.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return nil, fmt.Errorf("list columns of %s: %w", table, err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue *string
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("list columns of %s: %w", table, err)
+		}
+		names = append(names, strings.ToLower(name))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list columns of %s: %w", table, err)
+	}
+	return names, nil
+}
+
+// isSQLIdentifier reports whether s matches ^[a-z_][a-z0-9_]*$: a table or
+// column name that can be pasted into SQL text without quoting.
+func isSQLIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_', 'a' <= c && c <= 'z':
+		case '0' <= c && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // sqliteJSONPath renders a dot-separated key path as a quoted SQLite JSON
