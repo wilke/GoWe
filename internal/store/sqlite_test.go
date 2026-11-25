@@ -306,10 +306,10 @@ func TestDeleteWorkflow_NotFound(t *testing.T) {
 // TestGetWorkflowByName_ReturnsNewest pins the retrieval contract from
 // #201: by-name lookup must resolve to the newest of any same-name rows
 // (created_at DESC). Timestamps are hand-staggered by whole seconds — like
-// TestListWorkflows_Pagination — because created_at is stored as an
-// RFC3339Nano *string* and compared lexically; RFC3339Nano trims trailing
-// fractional zeros, so two same-second timestamps with different
-// sub-second precision can sort backwards lexically. Whole-second spacing
+// TestListWorkflows_Pagination — because created_at is stored as a *string*
+// and compared lexically. Rows written as RFC3339Nano (before formatTime)
+// trim trailing fractional zeros, so two same-second timestamps with
+// different sub-second precision could sort backwards. Whole-second spacing
 // avoids that trap entirely.
 func TestGetWorkflowByName_ReturnsNewest(t *testing.T) {
 	st := testStore(t)

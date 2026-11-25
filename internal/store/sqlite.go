@@ -29,13 +29,27 @@ func unmarshalJSON(data string, dest any, field string) error {
 	return nil
 }
 
-// formatTimePtr formats a *time.Time as an RFC3339Nano *string for a
-// nullable TEXT column, returning nil (SQL NULL) when t is nil.
+// storeTimeLayout is how every TEXT timestamp column is written: UTC with
+// exactly nine fractional digits. Timestamps are compared and ordered as
+// strings in SQL, which is only chronological when all values have the same
+// width and zone; time.RFC3339Nano drops trailing zeros and keeps the zone.
+const storeTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
+// formatTime renders t for a TEXT timestamp column (see storeTimeLayout).
+// Rows written before this layout was introduced are still RFC3339Nano and
+// parse the same way; next to new rows they can only sort wrongly within the
+// same second.
+func formatTime(t time.Time) string {
+	return t.UTC().Format(storeTimeLayout)
+}
+
+// formatTimePtr formats a *time.Time as a *string for a nullable TEXT column
+// (see formatTime), returning nil (SQL NULL) when t is nil.
 func formatTimePtr(t *time.Time) *string {
 	if t == nil {
 		return nil
 	}
-	s := t.Format(time.RFC3339Nano)
+	s := formatTime(*t)
 	return &s
 }
 
@@ -205,7 +219,7 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) er
 		wf.ID, wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
 		wf.CreatedBy,
-		wf.CreatedAt.Format(time.RFC3339Nano), wf.UpdatedAt.Format(time.RFC3339Nano),
+		formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt),
 		secretInputsCol,
 	)
 	return err
@@ -515,7 +529,7 @@ func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) er
 		 inputs=?, outputs=?, steps=?, labels=?, updated_at=?, secret_inputs=? WHERE id=?`,
 		wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
 		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
-		wf.UpdatedAt.Format(time.RFC3339Nano), secretInputsCol, wf.ID,
+		formatTime(wf.UpdatedAt), secretInputsCol, wf.ID,
 	)
 	if err != nil {
 		return err
@@ -583,7 +597,7 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 
 	var completedAt *string
 	if sub.CompletedAt != nil {
-		s := sub.CompletedAt.Format(time.RFC3339Nano)
+		s := formatTime(*sub.CompletedAt)
 		completedAt = &s
 	}
 
@@ -630,7 +644,7 @@ func (s *SQLiteStore) insertSubmission(ctx context.Context, ex execer, sub *mode
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.ID, sub.WorkflowID, sub.WorkflowName, string(sub.State),
 		string(inputsJSON), string(outputsJSON), string(labelsJSON),
-		sub.SubmittedBy, sub.CreatedAt.Format(time.RFC3339Nano), completedAt,
+		sub.SubmittedBy, formatTime(sub.CreatedAt), completedAt,
 		storedToken, tokenExpiry, sub.AuthProvider, sub.ParentTaskID,
 		sub.OutputDestination, sub.OutputState,
 		formatTimePtr(sub.PrestageStartedAt), formatTimePtr(sub.PrestageCompletedAt),
@@ -807,7 +821,9 @@ func (s *SQLiteStore) ListSubmissions(ctx context.Context, opts model.ListOption
 	}
 	if opts.DateStart != "" {
 		whereClauses = append(whereClauses, "created_at >= ?")
-		countArgs = append(countArgs, opts.DateStart+"T00:00:00Z")
+		// No fraction and no zone suffix: this prefix sorts before every
+		// timestamp of that day, whatever its fractional digits.
+		countArgs = append(countArgs, opts.DateStart+"T00:00:00")
 	}
 	if opts.DateEnd != "" {
 		whereClauses = append(whereClauses, "created_at <= ?")
@@ -1021,7 +1037,7 @@ func (s *SQLiteStore) CountSubmissionsByState(ctx context.Context, since time.Ti
 	var args []any
 	if !since.IsZero() {
 		where = append(where, `created_at >= ?`)
-		args = append(args, since.Format(time.RFC3339Nano))
+		args = append(args, formatTime(since))
 	}
 	if submittedBy != "" {
 		where = append(where, `submitted_by = ?`)
@@ -1097,7 +1113,7 @@ func (s *SQLiteStore) execSubmissionUpdate(ctx context.Context, sub *model.Submi
 
 	var completedAt *string
 	if sub.CompletedAt != nil {
-		v := sub.CompletedAt.Format(time.RFC3339Nano)
+		v := formatTime(*sub.CompletedAt)
 		completedAt = &v
 	}
 
@@ -1190,7 +1206,7 @@ func (s *SQLiteStore) PurgeSubmissionSecrets(ctx context.Context, id string, at 
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE submissions SET secrets=NULL, secrets_purged_at=? WHERE id=?`,
-		at.Format(time.RFC3339Nano), id)
+		formatTime(at), id)
 	if err != nil {
 		return fmt.Errorf("purge submission secrets %s: %w", id, err)
 	}
@@ -1397,7 +1413,7 @@ func (s *SQLiteStore) insertStepInstance(ctx context.Context, ex execer, si *mod
 
 	var completedAt *string
 	if si.CompletedAt != nil {
-		v := si.CompletedAt.Format(time.RFC3339Nano)
+		v := formatTime(*si.CompletedAt)
 		completedAt = &v
 	}
 
@@ -1416,7 +1432,7 @@ func (s *SQLiteStore) insertStepInstance(ctx context.Context, ex execer, si *mod
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		si.ID, si.SubmissionID, si.StepID, string(si.State),
 		si.ScatterCount, si.ScatterMethod, string(scatterDimsJSON), string(outputsJSON), errText,
-		si.CreatedAt.Format(time.RFC3339Nano), completedAt,
+		formatTime(si.CreatedAt), completedAt,
 	)
 	return err
 }
@@ -1506,7 +1522,7 @@ func (s *SQLiteStore) execStepInstanceUpdate(ctx context.Context, ex execer, si 
 
 	var completedAt *string
 	if si.CompletedAt != nil {
-		v := si.CompletedAt.Format(time.RFC3339Nano)
+		v := formatTime(*si.CompletedAt)
 		completedAt = &v
 	}
 
@@ -1569,7 +1585,7 @@ func (s *SQLiteStore) CancelNonTerminalSteps(ctx context.Context, submissionID s
 		`UPDATE step_instances
 		 SET state = ?, completed_at = ?
 		 WHERE submission_id = ? AND state NOT IN (?, ?, ?)`,
-		string(model.StepStateSkipped), completedAt.Format(time.RFC3339Nano),
+		string(model.StepStateSkipped), formatTime(completedAt),
 		submissionID,
 		string(model.StepStateCompleted), string(model.StepStateFailed), string(model.StepStateSkipped))
 	if err != nil {
@@ -1699,15 +1715,15 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 
 	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
-		s := task.StartedAt.Format(time.RFC3339Nano)
+		s := formatTime(*task.StartedAt)
 		startedAt = &s
 	}
 	if task.CompletedAt != nil {
-		s := task.CompletedAt.Format(time.RFC3339Nano)
+		s := formatTime(*task.CompletedAt)
 		completedAt = &s
 	}
 	if task.DispatchedAt != nil {
-		s := task.DispatchedAt.Format(time.RFC3339Nano)
+		s := formatTime(*task.DispatchedAt)
 		dispatchedAt = &s
 	}
 
@@ -1719,7 +1735,7 @@ func (s *SQLiteStore) insertTask(ctx context.Context, ex execer, task *model.Tas
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
 		task.Priority, task.RetryCount, task.MaxRetries,
 		task.Stdout, task.Stderr, task.ExitCode,
-		task.CreatedAt.Format(time.RFC3339Nano), startedAt, completedAt,
+		formatTime(task.CreatedAt), startedAt, completedAt,
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
 		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB), nullableInt(task.ChargedGPUs),
@@ -1868,15 +1884,15 @@ func (s *SQLiteStore) execTaskUpdate(ctx context.Context, task *model.Task, wher
 
 	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
-		v := task.StartedAt.Format(time.RFC3339Nano)
+		v := formatTime(*task.StartedAt)
 		startedAt = &v
 	}
 	if task.CompletedAt != nil {
-		v := task.CompletedAt.Format(time.RFC3339Nano)
+		v := formatTime(*task.CompletedAt)
 		completedAt = &v
 	}
 	if task.DispatchedAt != nil {
-		v := task.DispatchedAt.Format(time.RFC3339Nano)
+		v := formatTime(*task.DispatchedAt)
 		dispatchedAt = &v
 	}
 
@@ -1981,7 +1997,7 @@ func (s *SQLiteStore) CASTaskState(ctx context.Context, id string, from, to mode
 func (s *SQLiteStore) MarkTaskRunning(ctx context.Context, id string) (bool, error) {
 	s.logger.Debug("sql", "op", "mark_running", "table", "tasks", "id", id)
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := formatTime(time.Now().UTC())
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET state = ?, started_at = COALESCE(started_at, ?) WHERE id = ? AND state = ?`,
 		string(model.TaskStateRunning), now, id, string(model.TaskStateQueued))
@@ -2211,7 +2227,7 @@ func (s *SQLiteStore) CancelNonTerminalTasks(ctx context.Context, submissionID s
 		`UPDATE tasks
 		 SET state = ?, completed_at = ?
 		 WHERE submission_id = ? AND state NOT IN (?, ?, ?) AND executor_type != ?`,
-		string(model.TaskStateSkipped), completedAt.Format(time.RFC3339Nano),
+		string(model.TaskStateSkipped), formatTime(completedAt),
 		submissionID,
 		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped),
 		string(model.ExecutorTypeSubworkflow))
@@ -2595,8 +2611,8 @@ func (s *SQLiteStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		`INSERT INTO workers (`+workerColumns+`)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
-		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
-		w.CurrentTask, w.RegisteredAt.Format(time.RFC3339Nano),
+		string(labelsJSON), formatTime(w.LastSeen),
+		w.CurrentTask, formatTime(w.RegisteredAt),
 		gpuEnabled, w.GPUDevice, string(datasetsJSON), w.Version, w.KeyID,
 		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
 		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
@@ -2806,7 +2822,7 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 		 host_id=?, host_cpus=?, host_mem_mb=?, slots=?, cgroup_cpu=?, cgroup_memory=?, gpus=?,
 		 default_task_cores=?, default_task_ram_mb=? WHERE id=?`,
 		w.Name, w.Hostname, w.Group, string(w.State), string(w.Runtime),
-		string(labelsJSON), w.LastSeen.Format(time.RFC3339Nano),
+		string(labelsJSON), formatTime(w.LastSeen),
 		w.CurrentTask, gpuEnabled, w.GPUDevice, string(datasetsJSON),
 		nullableInt(w.MaxCPUs), nullableInt(w.MaxMemMB),
 		w.HostID, nullableInt(w.HostCPUs), nullableInt(w.HostMemMB), nullableInt(w.Slots),
@@ -2830,7 +2846,7 @@ func (s *SQLiteStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 func (s *SQLiteStore) TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, usage *model.WorkerUsage) error {
 	s.logger.Debug("sql", "op", "touch", "table", "workers", "id", id, "usage", usage != nil)
 
-	ts := lastSeen.Format(time.RFC3339Nano)
+	ts := formatTime(lastSeen)
 	var result sql.Result
 	var err error
 	if usage == nil {
@@ -3143,7 +3159,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		if aged {
 			query += `
 		   AND COALESCE(dispatched_at, created_at) < ?`
-			args = append(args, holdCutoff.Format(time.RFC3339Nano))
+			args = append(args, formatTime(holdCutoff))
 		}
 		query += `
 		   AND NOT COALESCE(CASE WHEN json_valid(runtime_hints)
@@ -3450,7 +3466,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 		// default share per cores / RAM charge expression; the GPU charge
 		// binds nothing).
 		var short, charged []string
-		extraArgs := []any{holder.Priority, holder.Priority, holder.CreatedAt.Format(time.RFC3339Nano)}
+		extraArgs := []any{holder.Priority, holder.Priority, formatTime(holder.CreatedAt)}
 		if shortCores {
 			short = append(short, "cores")
 			charged = append(charged, charge("cores")+` != 0`)
@@ -3544,7 +3560,7 @@ func (s *SQLiteStore) CheckoutTask(ctx context.Context, workerID string, workerG
 	chargedMem := taskCharge(reqMem, defaultMem)
 	chargedGPUs := selected.RuntimeHints.GPUCount()
 	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
+	nowStr := formatTime(now)
 	_, err = tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'RUNNING', external_id = ?, started_at = ?, charged_cores = ?, charged_ram_mb = ?, charged_gpus = ?
 		 WHERE id = ? AND state = 'QUEUED'`,
@@ -3748,7 +3764,7 @@ func positiveInt64Ptr(n sql.NullInt64) *int64 {
 // MarkStaleWorkersOffline transitions workers to offline if their last_seen
 // is older than the given timeout. Returns the workers that were transitioned.
 func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error) {
-	cutoff := time.Now().UTC().Add(-timeout).Format(time.RFC3339Nano)
+	cutoff := formatTime(time.Now().UTC().Add(-timeout))
 	s.logger.Debug("sql", "op", "mark_stale_offline", "cutoff", cutoff)
 
 	// Find stale workers first.
@@ -3805,7 +3821,7 @@ func (s *SQLiteStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.
 // out of the stranded requeue. Returns the workers marked offline with their
 // requeued counts, and the number of stranded tasks requeued.
 func (s *SQLiteStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) ([]ReapedWorker, int, error) {
-	cutoff := time.Now().UTC().Add(-timeout).Format(time.RFC3339Nano)
+	cutoff := formatTime(time.Now().UTC().Add(-timeout))
 	s.logger.Debug("sql", "op", "reap_stale_workers", "cutoff", cutoff)
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -4245,7 +4261,7 @@ func (s *SQLiteStore) CreateLabelVocabulary(ctx context.Context, lv *model.Label
 		`INSERT INTO label_vocabulary (id, key, value, description, color, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		lv.ID, lv.Key, lv.Value, lv.Description, lv.Color,
-		lv.CreatedAt.Format(time.RFC3339Nano),
+		formatTime(lv.CreatedAt),
 	)
 	return err
 }
