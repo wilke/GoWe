@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.30.0](https://github.com/wilke/GoWe/compare/v0.29.0...v0.30.0) (2026-11-25)
+
+
+### Features
+
+* copy tool from SQLite to PostgreSQL ([#379](https://github.com/wilke/GoWe/issues/379)) ([103eba5](https://github.com/wilke/GoWe/commit/103eba548b1398110d1f57556d96efd07f73d20f))
+* **server:** select PostgreSQL with --db postgres:// ([#378](https://github.com/wilke/GoWe/issues/378)) ([246733e](https://github.com/wilke/GoWe/commit/246733e2af6dfa804958ca780c60827b9e4eb7be))
+* **store:** PostgreSQL backend ([#377](https://github.com/wilke/GoWe/issues/377)) ([6e04531](https://github.com/wilke/GoWe/commit/6e04531fab9e900a9ac5e44ef181255d7a584218))
+
+
+### Bug Fixes
+
+* **store:** write timestamps as fixed-width UTC ([#373](https://github.com/wilke/GoWe/issues/373)) ([0251be1](https://github.com/wilke/GoWe/commit/0251be1bf07be2f7bf52ab8407a3ac771d06a33f))
+
 ## [0.29.0](https://github.com/wilke/GoWe/compare/v0.28.1...v0.29.0) (2026-11-25)
 
 
