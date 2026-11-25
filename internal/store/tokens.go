@@ -124,7 +124,7 @@ func (s *SQLStore) marshalRuntimeHints(h *model.RuntimeHints, id string) (string
 	if err != nil {
 		return "", fmt.Errorf("marshal runtime_hints: %w", err)
 	}
-	return string(b), nil
+	return s.dialect.jsonDoc(string(b)), nil
 }
 
 // runtimeHintsForStorage returns a value equivalent to h but with any embedded

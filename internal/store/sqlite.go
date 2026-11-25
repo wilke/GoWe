@@ -224,7 +224,7 @@ func (s *SQLStore) CreateWorkflow(ctx context.Context, wf *model.Workflow) error
 		`INSERT INTO workflows (id, name, description, class, cwl_version, content_hash, raw_cwl, inputs, outputs, steps, labels, created_by, created_at, updated_at, secret_inputs)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		wf.ID, wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
-		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
+		string(inputsJSON), string(outputsJSON), string(stepsJSON), s.dialect.jsonDoc(string(labelsJSON)),
 		wf.CreatedBy,
 		formatTime(wf.CreatedAt), formatTime(wf.UpdatedAt),
 		secretInputsCol,
@@ -535,7 +535,7 @@ func (s *SQLStore) UpdateWorkflow(ctx context.Context, wf *model.Workflow) error
 		`UPDATE workflows SET name=?, description=?, class=?, cwl_version=?, content_hash=?, raw_cwl=?,
 		 inputs=?, outputs=?, steps=?, labels=?, updated_at=?, secret_inputs=? WHERE id=?`,
 		wf.Name, wf.Description, class, wf.CWLVersion, wf.ContentHash, wf.RawCWL,
-		string(inputsJSON), string(outputsJSON), string(stepsJSON), string(labelsJSON),
+		string(inputsJSON), string(outputsJSON), string(stepsJSON), s.dialect.jsonDoc(string(labelsJSON)),
 		formatTime(wf.UpdatedAt), secretInputsCol, wf.ID,
 	)
 	if err != nil {
@@ -4174,7 +4174,7 @@ func (s *SQLStore) GetOrCreateUser(ctx context.Context, username string, provide
 		`INSERT INTO users (id, username, provider, role, created_at, last_login)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(username) DO UPDATE SET last_login = excluded.last_login`,
-		user.ID, user.Username, user.Provider, user.Role,
+		user.ID, user.Username, string(user.Provider), string(user.Role),
 		user.CreatedAt.Unix(), user.LastLoginAt.Unix(),
 	)
 	if err != nil {
@@ -4200,7 +4200,7 @@ func (s *SQLStore) UpdateUser(ctx context.Context, user *model.User) error {
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE users SET role=?, last_login=? WHERE id=?`,
-		user.Role, user.LastLoginAt.Unix(), user.ID,
+		string(user.Role), user.LastLoginAt.Unix(), user.ID,
 	)
 	if err != nil {
 		return err
@@ -4247,7 +4247,7 @@ func (s *SQLStore) LinkProvider(ctx context.Context, userID string, provider mod
 		`INSERT INTO linked_providers (user_id, provider, username)
 		 VALUES (?, ?, ?)
 		 ON CONFLICT(user_id, provider) DO UPDATE SET username = excluded.username`,
-		userID, provider, username,
+		userID, string(provider), username,
 	)
 	return err
 }
