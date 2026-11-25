@@ -63,6 +63,7 @@ func main() {
 	preflightDeferral := flag.Int("preflight-deferral", 30, "Ticks to defer worker task dispatch when no capable worker exists (0=disable)")
 	stuckTaskThreshold := flag.Int("stuck-task-threshold", 30, "Consecutive zero-progress ticks before QUEUED tasks are flagged as stuck (0=disable)")
 	stuckTaskAction := flag.String("stuck-task-action", "warn", "Action for stuck tasks: 'warn' (log only) or 'fail' (also fail oldest task)")
+	checkoutHoldAfter := flag.Duration("checkout-hold-after", 10*time.Minute, "After a queued task has waited this long for capacity on a worker that runs several tasks, that worker stops taking later tasks that need the same capacity (0 disables)")
 	tokenInjectGroups := flag.String("token-inject-groups", "", "DEPRECATED, staging-only: comma-separated worker groups whose tasks receive the submitter's provider token as a staging credential. It no longer injects the token into any tool environment (that needs the tool to request it AND an administrator blessing); worker tasks now get the staging credential by need, so this flag is unnecessary")
 	tokenBlessing := flag.String("token-blessing", "enforce", "Provider-token policy: 'enforce' (default) injects the token into a tool's environment only if the tool requests it AND an administrator blessed its exact content (gowe admin bless); 'dev' ALSO grants it to unblessed tools (loud: WARN on every grant, banner in the UI, warning on submissions, token_blessing=dev in /api/v1/health) so development workflows run end to end")
 	devImageDir := flag.String("dev-image-dir", "", "Dev mode only: directory relative .sif images of unblessed token-requesting tools are resolved against to pin the image digest the worker verifies. Without it (or for non-.sif images) an unblessed grant is denied")
@@ -209,6 +210,12 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("database ready", "path", dbPath)
+
+	if *checkoutHoldAfter < 0 {
+		fmt.Fprintln(os.Stderr, "--checkout-hold-after must not be negative (0 disables)")
+		os.Exit(1)
+	}
+	st.SetCheckoutHoldAfter(*checkoutHoldAfter)
 
 	// Configure provider-token encryption at rest. A configured key encrypts the
 	// submitter's token in submissions.user_token and any bearer credential in

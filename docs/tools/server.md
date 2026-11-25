@@ -30,6 +30,7 @@ gowe-server [flags]
 | `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths in `DockerRequirement` |
 | `--config` | `""` | Path to server config file (for admins, worker keys) |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
+| `--checkout-hold-after` | `10m` | After a queued task has waited this long for capacity on a worker that runs several tasks, that worker stops taking later tasks that need the same capacity (`0` disables; see [Capacity accounting at checkout](#capacity-accounting-at-checkout)) |
 | `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
 | `--workspace-url` | `""` | BV-BRC Workspace service URL for server-side staging and the web UI workspace browser/uploads, which always run under the logged-in user's own token (default: production) |
 | `--redeliver-source-dirs` | `""` | Comma-separated directories the admin re-delivery endpoint may read staged originals from (typically the shared stage-out directory; symlinks resolved). Empty refuses local re-upload |
@@ -882,6 +883,36 @@ A request larger than the effective capacity (the smaller of `max_cpus` and `hos
 offered to that worker, and the scheduler uses the same effective capacity when it decides whether any worker could ever
 run a task. A task that charges nothing (no request, no default share) is never held back, even on an over-committed
 host. Running tasks of offline workers are not counted (the reaper requeues them), except the checking-out worker's own; a RUNNING task checked out by an older server has no charge and counts as 0.
+
+**Holding capacity for a waiting task** (`--checkout-hold-after`, default `10m`, `0` disables). On a worker that runs
+several tasks at once, a large task could otherwise wait forever: whenever one of the worker's tasks ends, smaller
+tasks behind the large one take the freed capacity before enough is free for it. So when a worker that has running
+tasks checks out, the server looks for the first queued task in queue order (priority, then age) that this worker
+could otherwise take and that has waited longer than the hold-after duration (counted from its last dispatch, else its
+creation), whose charge does not fit what is free on the **worker gate** (`max_cpus` / `max_mem_mb` minus the charges
+of the worker's own running tasks) in some dimension, and that would fit the host gate once the worker's own running
+tasks finished. If it finds one, the worker does not take tasks behind it that charge the dimension it is short of
+(cores, RAM or both). It still takes tasks ahead of it, and tasks behind it that charge nothing in that dimension
+(including tasks that charge nothing at all), as usual. Once enough capacity is free, tasks behind the one
+the worker held for are not considered at that checkout, whatever their GPU or cache-dataset preference; tasks ahead
+of it keep their place. The server keeps the held-for task per
+worker in memory; after a server restart the next checkout re-establishes it.
+
+- A worker that runs one task at a time never holds: it only asks for work when it is idle, so its own gate is never
+  short.
+- Only the worker gate triggers a hold. A task waiting only for host capacity used by other workers on the same host
+  is not protected, because those workers may never be offered it and holding on this worker would not free anything
+  for it.
+- A dimension without `max_cpus` / `max_mem_mb` never triggers a hold.
+- A hold has no time limit: it lasts until the worker's own running tasks have freed enough capacity.
+- Every worker of a group that could run the waiting task holds for it at the same time, and only one of them will
+  take it; the others release at their next checkout.
+- If other workers on the host take the freed capacity before the waiting task is checked out, the task waits again
+  and the hold starts over.
+- A task requeued after its worker went away keeps its dispatch time, so it can count as waiting immediately.
+- The search looks at the first 50 short, aged tasks in queue order; if none of them qualifies, nothing is held.
+- The server logs at Info when a worker starts holding for a task (worker id, task id, the short dimensions, charge
+  and free capacity).
 
 Known undercounts:
 - A cancelled task releases its charge as soon as the server marks it terminal, before the worker has actually stopped
