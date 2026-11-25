@@ -35,3 +35,30 @@ jobs:
           done
       - name: Test
         run: go test ./...
+
+  test-postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        postgres: ["16", "17"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Test store on PostgreSQL
+        run: GOWE_TEST_REQUIRE_POSTGRES=1 GOWE_TEST_POSTGRES_URL=postgres://postgres:postgres@localhost:5432/postgres go test -count=1 ./internal/store/...

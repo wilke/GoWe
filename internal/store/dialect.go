@@ -21,12 +21,22 @@ import (
 // "worker_group" or "stager_overrides.http_credential". Both are pasted into
 // the SQL text, so they must be literals from the code, never user input.
 type dialect interface {
-	// name identifies the dialect ("sqlite").
+	// name identifies the dialect ("sqlite", "postgres").
 	name() string
 
 	// rebind turns a query written with ? placeholders into the
 	// database's placeholder syntax.
 	rebind(query string) string
+	// bindArgs adapts query arguments to what the database accepts for the
+	// store's column types. It returns args itself when nothing changes and
+	// never modifies args in place.
+	bindArgs(args []any) []any
+
+	// jsonDoc prepares a JSON document for a column that SQL parses with the
+	// json helpers above (tasks.runtime_hints, workflows.labels). SQLite
+	// stores it as is. PostgreSQL cannot read a document containing the
+	// escape for a NUL character, so that escape is replaced there.
+	jsonDoc(doc string) string
 	// ddl adapts a schema statement (CREATE TABLE / ALTER TABLE / CREATE
 	// INDEX ...) written for SQLite to the database's column types.
 	ddl(stmt string) string
@@ -87,6 +97,11 @@ func (sqliteDialect) name() string { return "sqlite" }
 
 // rebind returns query unchanged: SQLite takes ? placeholders.
 func (sqliteDialect) rebind(query string) string { return query }
+
+// bindArgs returns args unchanged: SQLite stores every value as given.
+func (sqliteDialect) bindArgs(args []any) []any { return args }
+
+func (sqliteDialect) jsonDoc(doc string) string { return doc }
 
 // ddl returns stmt unchanged: the schema is written for SQLite.
 func (sqliteDialect) ddl(stmt string) string { return stmt }
