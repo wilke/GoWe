@@ -2,26 +2,17 @@ package store
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/me/gowe/pkg/model"
 )
 
-func newTestStore(t *testing.T) *SQLiteStore {
+// newTestStore is testStore under the name the worker-key and tool-blessing
+// tests use.
+func newTestStore(t *testing.T) *SQLStore {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st, err := NewSQLiteStore(":memory:", logger)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if err := st.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
+	return testStore(t)
 }
 
 func sampleWorkerKey(id, raw string) *model.WorkerKey {

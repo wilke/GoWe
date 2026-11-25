@@ -27,7 +27,7 @@ import (
 // In-memory Submission/Task values always carry plaintext; encryption is
 // confined to the database boundary so the delegated-execution path (local
 // executor and the worker API) is unchanged.
-func (s *SQLiteStore) ConfigureTokenEncryption(cipher *tokencrypt.Cipher, refusePlaintext bool) {
+func (s *SQLStore) ConfigureTokenEncryption(cipher *tokencrypt.Cipher, refusePlaintext bool) {
 	s.cipher = cipher
 	s.refusePlaintextTokens = refusePlaintext
 }
@@ -44,7 +44,7 @@ func taskSecretsAAD(id string) string       { return "task.runtime_hints.secrets
 // encryptToken prepares a token for persistence per the configured policy,
 // binding aad as the storage context so the ciphertext cannot be relocated to
 // another row.
-func (s *SQLiteStore) encryptToken(token, aad string) (string, error) {
+func (s *SQLStore) encryptToken(token, aad string) (string, error) {
 	if token == "" {
 		return "", nil
 	}
@@ -64,7 +64,7 @@ func (s *SQLiteStore) encryptToken(token, aad string) (string, error) {
 // Without a cipher, a plaintext value passes through, but a value that is
 // marked as encrypted is an error (the key is missing/misconfigured) rather
 // than something to hand downstream as if it were a real token.
-func (s *SQLiteStore) decryptToken(stored, aad string) (string, error) {
+func (s *SQLStore) decryptToken(stored, aad string) (string, error) {
 	if stored == "" {
 		return "", nil
 	}
@@ -81,7 +81,7 @@ func (s *SQLiteStore) decryptToken(stored, aad string) (string, error) {
 // encrypts it under aad per the configured token policy, following the same
 // fail-closed/plaintext-warning rules as encryptToken. A nil/empty map
 // encrypts to "" (the caller stores that as SQL NULL).
-func (s *SQLiteStore) encryptSecretsMap(m map[string]string, aad string) (string, error) {
+func (s *SQLStore) encryptSecretsMap(m map[string]string, aad string) (string, error) {
 	if len(m) == 0 {
 		return "", nil
 	}
@@ -94,7 +94,7 @@ func (s *SQLiteStore) encryptSecretsMap(m map[string]string, aad string) (string
 
 // decryptSecretsMap reverses encryptSecretsMap. An empty stored value decodes
 // to a nil map, no error.
-func (s *SQLiteStore) decryptSecretsMap(stored, aad string) (map[string]string, error) {
+func (s *SQLStore) decryptSecretsMap(stored, aad string) (map[string]string, error) {
 	if stored == "" {
 		return nil, nil
 	}
@@ -115,7 +115,7 @@ func (s *SQLiteStore) decryptSecretsMap(stored, aad string) (map[string]string, 
 // marshalRuntimeHints marshals task runtime hints for persistence, encrypting
 // an embedded HTTP bearer token and/or the task's delivered secrets subset
 // when required by policy. id is the task ID, used to derive both AADs.
-func (s *SQLiteStore) marshalRuntimeHints(h *model.RuntimeHints, id string) (string, error) {
+func (s *SQLStore) marshalRuntimeHints(h *model.RuntimeHints, id string) (string, error) {
 	stored, err := s.runtimeHintsForStorage(h, id)
 	if err != nil {
 		return "", err
@@ -133,7 +133,7 @@ func (s *SQLiteStore) marshalRuntimeHints(h *model.RuntimeHints, id string) (str
 // revealRuntimeHints for the read-side counterpart. The input is never
 // mutated, so callers keep operating on the live, plaintext values in memory.
 // Returns h unchanged when there is nothing to protect.
-func (s *SQLiteStore) runtimeHintsForStorage(h *model.RuntimeHints, id string) (*model.RuntimeHints, error) {
+func (s *SQLStore) runtimeHintsForStorage(h *model.RuntimeHints, id string) (*model.RuntimeHints, error) {
 	if h == nil {
 		return h, nil
 	}
@@ -173,7 +173,7 @@ func (s *SQLiteStore) runtimeHintsForStorage(h *model.RuntimeHints, id string) (
 // task's secrets subset in freshly-scanned task runtime hints, in place.
 // Safe because each read produces a fresh object. id is the task ID, used to
 // derive both AADs.
-func (s *SQLiteStore) revealRuntimeHints(h *model.RuntimeHints, id string) error {
+func (s *SQLStore) revealRuntimeHints(h *model.RuntimeHints, id string) error {
 	if h == nil {
 		return nil
 	}
@@ -203,7 +203,7 @@ func (s *SQLiteStore) revealRuntimeHints(h *model.RuntimeHints, id string) error
 // does not abort startup. Returns the number of submission and task rows
 // rewritten (a row counts once even if it needed more than one field
 // upgraded).
-func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, tasks int, err error) {
+func (s *SQLStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, tasks int, err error) {
 	if s.cipher == nil {
 		return 0, 0, nil
 	}
@@ -383,13 +383,14 @@ func (s *SQLiteStore) ReencryptPlaintextTokens(ctx context.Context) (subs int, t
 // here. Rows whose runtime_hints is not valid JSON are skipped (json_remove
 // would error on them). It is idempotent and returns the number of rows
 // changed; callers log the error and carry on (it must never block startup).
-func (s *SQLiteStore) ScrubTerminalTaskCredentialsRaw(ctx context.Context) (int, error) {
+func (s *SQLStore) ScrubTerminalTaskCredentialsRaw(ctx context.Context) (int, error) {
+	d := s.dialect
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks
-SET runtime_hints = json_remove(runtime_hints, '$.stager_overrides.http_credential', '$.secrets')
+SET runtime_hints = `+d.jsonRemove("runtime_hints", "stager_overrides.http_credential", "secrets")+`
 WHERE state IN ('SUCCESS','FAILED','SKIPPED')
-  AND json_valid(runtime_hints)
-  AND (json_type(runtime_hints, '$.stager_overrides.http_credential') IS NOT NULL
-       OR json_type(runtime_hints, '$.secrets') IS NOT NULL)`)
+  AND `+d.jsonValid("runtime_hints")+`
+  AND (`+d.jsonHasKey("runtime_hints", "stager_overrides.http_credential")+`
+       OR `+d.jsonHasKey("runtime_hints", "secrets")+`)`)
 	if err != nil {
 		return 0, fmt.Errorf("scrub terminal task credentials: %w", err)
 	}
@@ -406,13 +407,14 @@ WHERE state IN ('SUCCESS','FAILED','SKIPPED')
 // their environment instead of being handed to a worker that would inject it
 // without a blessing. Raw JSON edit, no decryption, idempotent; rows whose
 // runtime_hints is not valid JSON are skipped. Returns the rows changed.
-func (s *SQLiteStore) ClearUnblessedInjectRaw(ctx context.Context) (int, error) {
+func (s *SQLStore) ClearUnblessedInjectRaw(ctx context.Context) (int, error) {
+	d := s.dialect
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks
-SET runtime_hints = json_remove(runtime_hints, '$.inject_bvbrc_token')
+SET runtime_hints = `+d.jsonRemove("runtime_hints", "inject_bvbrc_token")+`
 WHERE state NOT IN ('SUCCESS','FAILED','SKIPPED')
-  AND json_valid(runtime_hints)
-  AND json_extract(runtime_hints, '$.inject_bvbrc_token') = 1
-  AND COALESCE(json_extract(runtime_hints, '$.token_blessing_id'), '') = ''`)
+  AND `+d.jsonValid("runtime_hints")+`
+  AND `+d.jsonIsTrue("runtime_hints", "inject_bvbrc_token")+`
+  AND COALESCE(`+d.jsonText("runtime_hints", "token_blessing_id")+`, '') = ''`)
 	if err != nil {
 		return 0, fmt.Errorf("clear unblessed token requests: %w", err)
 	}

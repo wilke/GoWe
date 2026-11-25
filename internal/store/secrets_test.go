@@ -45,7 +45,7 @@ func secretsTask(id string, secrets map[string]string) *model.Task {
 	}
 }
 
-func rawSubmissionSecrets(t *testing.T, st *SQLiteStore, id string) *string {
+func rawSubmissionSecrets(t *testing.T, st *SQLStore, id string) *string {
 	t.Helper()
 	var v *string
 	if err := st.db.QueryRowContext(context.Background(),

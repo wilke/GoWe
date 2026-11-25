@@ -80,7 +80,7 @@ func jsonList(v []string) (string, error) {
 // CreateToolBlessing inserts a new blessing. It returns ErrBlessingActive when
 // an active blessing for the same tool hash exists. At least one pinned image
 // digest is required.
-func (s *SQLiteStore) CreateToolBlessing(ctx context.Context, b *model.ToolBlessing) error {
+func (s *SQLStore) CreateToolBlessing(ctx context.Context, b *model.ToolBlessing) error {
 	s.logger.Debug("sql", "op", "insert", "table", "blessed_tools", "id", b.ID)
 	if b.ID == "" || b.ToolHash == "" {
 		return fmt.Errorf("tool blessing needs id and tool_hash")
@@ -113,7 +113,7 @@ func (s *SQLiteStore) CreateToolBlessing(ctx context.Context, b *model.ToolBless
 	if err != nil {
 		// The only unique index besides the primary key is the one on the
 		// active (unrevoked) tool hash.
-		if isUniqueViolation(err) && !isPrimaryKeyViolation(err) {
+		if s.dialect.isUniqueViolation(err) && !s.dialect.isPrimaryKeyViolation(err) {
 			return ErrBlessingActive
 		}
 		return err
@@ -122,7 +122,7 @@ func (s *SQLiteStore) CreateToolBlessing(ctx context.Context, b *model.ToolBless
 }
 
 // GetToolBlessing returns the blessing with the given id, or nil if absent.
-func (s *SQLiteStore) GetToolBlessing(ctx context.Context, id string) (*model.ToolBlessing, error) {
+func (s *SQLStore) GetToolBlessing(ctx context.Context, id string) (*model.ToolBlessing, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+toolBlessingColumns+` FROM blessed_tools WHERE id = ?`, id)
 	b, err := scanToolBlessing(row)
 	if err == sql.ErrNoRows {
@@ -133,7 +133,7 @@ func (s *SQLiteStore) GetToolBlessing(ctx context.Context, id string) (*model.To
 
 // GetActiveToolBlessingByHash returns the active (non-revoked) blessing for a
 // tool hash, or nil if there is none.
-func (s *SQLiteStore) GetActiveToolBlessingByHash(ctx context.Context, toolHash string) (*model.ToolBlessing, error) {
+func (s *SQLStore) GetActiveToolBlessingByHash(ctx context.Context, toolHash string) (*model.ToolBlessing, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+toolBlessingColumns+` FROM blessed_tools WHERE tool_hash = ? AND revoked_at IS NULL`, toolHash)
 	b, err := scanToolBlessing(row)
@@ -145,7 +145,7 @@ func (s *SQLiteStore) GetActiveToolBlessingByHash(ctx context.Context, toolHash 
 
 // ListToolBlessings lists blessings newest first. Revoked rows are included
 // only when includeRevoked is set.
-func (s *SQLiteStore) ListToolBlessings(ctx context.Context, includeRevoked bool) ([]*model.ToolBlessing, error) {
+func (s *SQLStore) ListToolBlessings(ctx context.Context, includeRevoked bool) ([]*model.ToolBlessing, error) {
 	q := `SELECT ` + toolBlessingColumns + ` FROM blessed_tools`
 	if !includeRevoked {
 		q += ` WHERE revoked_at IS NULL`
@@ -170,7 +170,7 @@ func (s *SQLiteStore) ListToolBlessings(ctx context.Context, includeRevoked bool
 
 // RevokeToolBlessing marks a blessing revoked. The row is kept. It returns
 // ErrBlessingNotFound or ErrBlessingRevoked as appropriate.
-func (s *SQLiteStore) RevokeToolBlessing(ctx context.Context, id, revokedBy, reason string) error {
+func (s *SQLStore) RevokeToolBlessing(ctx context.Context, id, revokedBy, reason string) error {
 	s.logger.Debug("sql", "op", "update", "table", "blessed_tools", "id", id, "action", "revoke")
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE blessed_tools SET revoked_at = ?, revoked_by = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL`,
@@ -197,7 +197,7 @@ func (s *SQLiteStore) RevokeToolBlessing(ctx context.Context, id, revokedBy, rea
 
 // AddToolBlessingImageSHA256 appends an allowed image digest to an active
 // blessing (idempotent: a digest already present is a no-op).
-func (s *SQLiteStore) AddToolBlessingImageSHA256(ctx context.Context, id, sha string) error {
+func (s *SQLStore) AddToolBlessingImageSHA256(ctx context.Context, id, sha string) error {
 	s.logger.Debug("sql", "op", "update", "table", "blessed_tools", "id", id, "action", "add-image")
 	sha = model.NormalizeSHA256(sha)
 	if !model.IsValidSHA256(sha) {

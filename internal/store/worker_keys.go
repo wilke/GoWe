@@ -32,7 +32,7 @@ func scanNullableTime(ns sql.NullString) (*time.Time, error) {
 
 // CreateWorkerKey inserts a new worker key. Only k.KeyHash (not the raw secret)
 // is persisted.
-func (s *SQLiteStore) CreateWorkerKey(ctx context.Context, k *model.WorkerKey) error {
+func (s *SQLStore) CreateWorkerKey(ctx context.Context, k *model.WorkerKey) error {
 	s.logger.Debug("sql", "op", "insert", "table", "worker_keys", "id", k.ID)
 
 	groupsJSON, err := json.Marshal(k.Groups)
@@ -89,7 +89,7 @@ func scanWorkerKey(row interface {
 const workerKeyColumns = `id, label, key_hash, key_prefix, groups, description, disabled, created_by, created_at, expires_at, last_used_at`
 
 // GetWorkerKeyByID returns the worker key with the given id, or nil if not found.
-func (s *SQLiteStore) GetWorkerKeyByID(ctx context.Context, id string) (*model.WorkerKey, error) {
+func (s *SQLStore) GetWorkerKeyByID(ctx context.Context, id string) (*model.WorkerKey, error) {
 	s.logger.Debug("sql", "op", "select", "table", "worker_keys", "id", id)
 
 	row := s.db.QueryRowContext(ctx,
@@ -106,7 +106,7 @@ func (s *SQLiteStore) GetWorkerKeyByID(ctx context.Context, id string) (*model.W
 
 // GetWorkerKeyByHash returns the worker key with the given SHA-256 hash, or nil
 // if not found. This is the lookup used during worker authentication.
-func (s *SQLiteStore) GetWorkerKeyByHash(ctx context.Context, hash string) (*model.WorkerKey, error) {
+func (s *SQLStore) GetWorkerKeyByHash(ctx context.Context, hash string) (*model.WorkerKey, error) {
 	s.logger.Debug("sql", "op", "select", "table", "worker_keys", "by", "hash")
 
 	row := s.db.QueryRowContext(ctx,
@@ -122,7 +122,7 @@ func (s *SQLiteStore) GetWorkerKeyByHash(ctx context.Context, hash string) (*mod
 }
 
 // ListWorkerKeys returns all worker keys ordered by creation time (newest first).
-func (s *SQLiteStore) ListWorkerKeys(ctx context.Context) ([]*model.WorkerKey, error) {
+func (s *SQLStore) ListWorkerKeys(ctx context.Context) ([]*model.WorkerKey, error) {
 	s.logger.Debug("sql", "op", "list", "table", "worker_keys")
 
 	rows, err := s.db.QueryContext(ctx,
@@ -146,7 +146,7 @@ func (s *SQLiteStore) ListWorkerKeys(ctx context.Context) ([]*model.WorkerKey, e
 
 // UpdateWorkerKey updates the mutable fields of a worker key (label, groups,
 // description, disabled, expiry). The key hash is immutable.
-func (s *SQLiteStore) UpdateWorkerKey(ctx context.Context, k *model.WorkerKey) error {
+func (s *SQLStore) UpdateWorkerKey(ctx context.Context, k *model.WorkerKey) error {
 	s.logger.Debug("sql", "op", "update", "table", "worker_keys", "id", k.ID)
 
 	groupsJSON, err := json.Marshal(k.Groups)
@@ -178,7 +178,7 @@ func (s *SQLiteStore) UpdateWorkerKey(ctx context.Context, k *model.WorkerKey) e
 }
 
 // DeleteWorkerKey permanently removes (revokes) a worker key.
-func (s *SQLiteStore) DeleteWorkerKey(ctx context.Context, id string) error {
+func (s *SQLStore) DeleteWorkerKey(ctx context.Context, id string) error {
 	s.logger.Debug("sql", "op", "delete", "table", "worker_keys", "id", id)
 
 	result, err := s.db.ExecContext(ctx, `DELETE FROM worker_keys WHERE id = ?`, id)
@@ -194,7 +194,7 @@ func (s *SQLiteStore) DeleteWorkerKey(ctx context.Context, id string) error {
 
 // CountWorkerKeys returns the number of configured worker keys. Used to decide
 // whether DB-backed worker-key enforcement is active.
-func (s *SQLiteStore) CountWorkerKeys(ctx context.Context) (int, error) {
+func (s *SQLStore) CountWorkerKeys(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_keys`).Scan(&n)
 	return n, err
@@ -202,7 +202,7 @@ func (s *SQLiteStore) CountWorkerKeys(ctx context.Context) (int, error) {
 
 // TouchWorkerKey records that a key was used at the given time. Best-effort: a
 // missing key is not treated as an error.
-func (s *SQLiteStore) TouchWorkerKey(ctx context.Context, id string, when time.Time) error {
+func (s *SQLStore) TouchWorkerKey(ctx context.Context, id string, when time.Time) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE worker_keys SET last_used_at=? WHERE id=?`,
 		formatTime(when), id)

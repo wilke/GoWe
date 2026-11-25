@@ -10,7 +10,7 @@ import (
 
 // runningTask creates and persists a RUNNING worker task attributed to workerID,
 // started startedAgo in the past. Returns the task ID.
-func runningTask(t *testing.T, st *SQLiteStore, sub *model.Submission, id, workerID string, startedAgo time.Duration) string {
+func runningTask(t *testing.T, st *SQLStore, sub *model.Submission, id, workerID string, startedAgo time.Duration) string {
 	t.Helper()
 	ctx := context.Background()
 	task := sampleTask(sub.ID)
@@ -26,7 +26,7 @@ func runningTask(t *testing.T, st *SQLiteStore, sub *model.Submission, id, worke
 	return task.ID
 }
 
-func reconcileFixture(t *testing.T) (*SQLiteStore, *model.Submission) {
+func reconcileFixture(t *testing.T) (*SQLStore, *model.Submission) {
 	t.Helper()
 	ctx := context.Background()
 	st := testStore(t)

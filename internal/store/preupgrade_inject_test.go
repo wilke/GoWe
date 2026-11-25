@@ -11,7 +11,7 @@ import (
 // seedPreUpgradeQueued writes a QUEUED worker task as a pre-policy server
 // would have: inject flag, credential, no blessing id (raw SQL bypasses the
 // store guard, as the old code did).
-func seedPreUpgradeQueued(t *testing.T, st *SQLiteStore, id string) {
+func seedPreUpgradeQueued(t *testing.T, st *SQLStore, id string) {
 	t.Helper()
 	ctx := context.Background()
 	task := tokenTask(id, "tok-"+id)
@@ -19,9 +19,9 @@ func seedPreUpgradeQueued(t *testing.T, st *SQLiteStore, id string) {
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET runtime_hints=json_remove(runtime_hints,'$.token_blessing_id') WHERE id=?`, id); err != nil {
-		t.Fatal(err)
-	}
+	editRuntimeHints(t, st, id, func(h map[string]any) {
+		delete(h, "token_blessing_id")
+	})
 }
 
 func TestClearUnblessedInjectRaw_QueuedRow(t *testing.T) {

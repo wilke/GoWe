@@ -1,10 +1,6 @@
 package store
 
-import (
-	"context"
-	"database/sql"
-	"strings"
-)
+import "context"
 
 // schema contains the DDL for all GoWe tables.
 // Each statement uses IF NOT EXISTS for idempotency.
@@ -525,9 +521,11 @@ var alterStatements = []struct {
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
-func migrate(ctx context.Context, db *sql.DB) error {
+// Every schema statement passes through the dialect's ddl.
+func migrate(ctx context.Context, db *sqlDB) error {
+	d := db.d
 	for _, stmt := range schema {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
+		if _, err := db.ExecContext(ctx, d.ddl(stmt)); err != nil {
 			return err
 		}
 	}
@@ -538,7 +536,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	// non-unique — a UNIQUE constraint here blocks both `register --force`
 	// and PUT-publishes-new-version from ever inserting a row whose hash
 	// happens to match an existing row.
-	if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS idx_workflows_content_hash`); err != nil {
+	if _, err := db.ExecContext(ctx, d.ddl(`DROP INDEX IF EXISTS idx_workflows_content_hash`)); err != nil {
 		return err
 	}
 
@@ -548,7 +546,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 		if alter.indexSQL != "" {
-			if _, err := db.ExecContext(ctx, alter.indexSQL); err != nil {
+			if _, err := db.ExecContext(ctx, d.ddl(alter.indexSQL)); err != nil {
 				return err
 			}
 		}
@@ -567,7 +565,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_label_vocab_key ON label_vocabulary(key)`,
 	} {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
+		if _, err := db.ExecContext(ctx, d.ddl(stmt)); err != nil {
 			return err
 		}
 	}
@@ -576,28 +574,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
 }
 
 // addColumnIfNotExists adds a column to a table if it doesn't already exist.
-func addColumnIfNotExists(ctx context.Context, db *sql.DB, table, column, alterSQL string) error {
-	// Query table info to check if column exists.
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+// alterSQL passes through the dialect's ddl.
+func addColumnIfNotExists(ctx context.Context, db *sqlDB, table, column, alterSQL string) error {
+	exists, err := db.d.columnExists(ctx, db, table, column)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dfltValue *string
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			return err
-		}
-		if strings.EqualFold(name, column) {
-			return nil // Column already exists
-		}
+	if exists {
+		return nil
 	}
 
 	// Column doesn't exist, add it.
-	_, err = db.ExecContext(ctx, alterSQL)
+	_, err = db.ExecContext(ctx, db.d.ddl(alterSQL))
 	return err
 }

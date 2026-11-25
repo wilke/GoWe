@@ -44,7 +44,7 @@ func gpuTask(id string, k int, age time.Duration) *model.Task {
 
 // seedRunningGPU inserts a RUNNING worker task owned by workerID charged
 // gpus GPUs (nil = NULL) and no cores or RAM.
-func seedRunningGPU(t *testing.T, st *SQLiteStore, id, workerID string, gpus *int) {
+func seedRunningGPU(t *testing.T, st *SQLStore, id, workerID string, gpus *int) {
 	t.Helper()
 	tk := capTask(id, 0, 0, 2*time.Hour)
 	tk.State = model.TaskStateRunning
@@ -204,31 +204,31 @@ func TestCheckoutTask_RequeueClearsGPUCharge(t *testing.T) {
 	tests := []struct {
 		name    string
 		mod     func(w *model.Worker)
-		requeue func(t *testing.T, st *SQLiteStore)
+		requeue func(t *testing.T, st *SQLStore)
 	}{
-		{"RequeueWorkerTasks", nil, func(t *testing.T, st *SQLiteStore) {
+		{"RequeueWorkerTasks", nil, func(t *testing.T, st *SQLStore) {
 			if _, err := st.RequeueWorkerTasks(context.Background(), "wrk_g"); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"ReconcileWorkerTasks", nil, func(t *testing.T, st *SQLiteStore) {
+		{"ReconcileWorkerTasks", nil, func(t *testing.T, st *SQLStore) {
 			if _, err := st.ReconcileWorkerTasks(context.Background(), "wrk_g", nil, 0); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"DeleteWorker", nil, func(t *testing.T, st *SQLiteStore) {
+		{"DeleteWorker", nil, func(t *testing.T, st *SQLStore) {
 			if err := st.DeleteWorker(context.Background(), "wrk_g"); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"ReapStaleWorkers stale worker", func(w *model.Worker) { w.LastSeen = old }, func(t *testing.T, st *SQLiteStore) {
+		{"ReapStaleWorkers stale worker", func(w *model.Worker) { w.LastSeen = old }, func(t *testing.T, st *SQLStore) {
 			if _, _, err := st.ReapStaleWorkers(context.Background(), time.Minute); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"ReapStaleWorkers stranded task", func(w *model.Worker) {
 			w.State, w.LastSeen = model.WorkerStateOffline, old
-		}, func(t *testing.T, st *SQLiteStore) {
+		}, func(t *testing.T, st *SQLStore) {
 			if _, _, err := st.ReapStaleWorkers(context.Background(), time.Minute); err != nil {
 				t.Fatal(err)
 			}
@@ -347,9 +347,7 @@ func TestMigrate_ChargedGPUsColumnIdempotent(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate again: %v", err)
 	}
-	var n int
-	if err := st.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'charged_gpus'`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("column tasks.charged_gpus count = %d, err %v", n, err)
+	if !hasColumn(t, st, "tasks", "charged_gpus") {
+		t.Errorf("column tasks.charged_gpus missing")
 	}
 }
