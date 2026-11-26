@@ -64,6 +64,7 @@ var copyTables = []copyTable{
 	{name: "submissions", pk: []string{"id"}},
 	{name: "step_instances", pk: []string{"id"}},
 	{name: "tasks", pk: []string{"id"}},
+	{name: "task_attempts", pk: []string{"task_id", "attempt"}},
 	{name: "workers", pk: []string{"id"}},
 	{name: "worker_keys", pk: []string{"id"}},
 	{name: "blessed_tools", pk: []string{"id"}},

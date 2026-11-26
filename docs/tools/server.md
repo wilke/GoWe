@@ -882,6 +882,74 @@ curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/task_123/logs
 }
 ```
 
+#### `GET /api/v1/submissions/{sid}/tasks/{tid}/attempts`
+
+The earlier attempts of a task, oldest first (see
+[Task attempt history](#task-attempt-history)). Same access rule as the task
+itself; 404 when the task does not belong to the submission.
+
+```bash
+curl http://localhost:8080/api/v1/submissions/sub_xyz789/tasks/task_123/attempts
+```
+
+```json
+{
+  "attempts": [
+    {
+      "task_id": "task_123",
+      "attempt": 1,
+      "submission_id": "sub_xyz789",
+      "reason": "retry",
+      "state": "SCHEDULED",
+      "exit_code": 137,
+      "stdout": "",
+      "stderr": "Killed\n",
+      "executor_type": "worker",
+      "external_id": "wrk_abc",
+      "worker_name": "gpu-node-1",
+      "retry_count": 0,
+      "started_at": "2026-11-20T10:00:05Z",
+      "completed_at": "2026-11-20T10:42:17Z",
+      "archived_at": "2026-11-20T10:42:20Z"
+    }
+  ]
+}
+```
+
+#### Task attempt history
+
+Before a task record is retried, reset or requeued, the server copies what it
+holds about the attempt that ended into the `task_attempts` table, in the same
+transaction as the reset: the task's state at that moment (`SCHEDULED` for a
+scheduler retry, which archives right after claiming the task; `FAILED` for a
+user reset; `RUNNING` for a requeue), exit code, stdout and stderr (the same
+text the task record held, not more), executor, worker id and the worker's
+name at that moment, retry count, start and end times. Attempts are numbered
+1, 2, 3 ... per task in the order they ended. `reason` says why the attempt
+ended:
+
+| Reason | When |
+|--------|------|
+| `retry` | the attempt failed and the scheduler retried the task |
+| `reset` | the attempt failed and a user re-queued it: UI resume or recompute of the task, or a submission retry (`PUT /api/v1/submissions/{id}/retry`, see below) |
+| `worker_offline` | the worker stopped sending heartbeats and the server requeued its running tasks |
+| `worker_removed` | the worker was deleted or deregistered while running the task |
+| `requeued` | another requeue of a running worker task (a worker that no longer reports the task, `RequeueWorkerTasks`) |
+
+Scheduler retries, UI resume or recompute of a task and worker requeues run
+the task again under the same task id, so its history is on that task. A
+submission retry (`PUT /api/v1/submissions/{id}/retry`) is different: it
+resets the failed task records, and the scheduler then dispatches the steps
+again as new tasks with new ids. The failed attempt (`reset`) stays on the old
+task record; look it up there, not on the new task.
+
+The history keeps the newest 20 attempts per task: archiving a newer one
+deletes the older ones (numbering goes on: 21, 22, ...). A task that is reset
+before it ever started and has no output leaves no record. The history is
+read through the route above, `gowe logs <submission> --attempts`, and the
+"Earlier attempts" section of the task logs page in the web UI. It is deleted
+together with the submission.
+
 ---
 
 ### Workers

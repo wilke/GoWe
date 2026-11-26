@@ -499,6 +499,7 @@ func (s *Server) routes() {
 						r.Route("/{tid}", func(r chi.Router) {
 							r.Get("/", s.handleGetTask)
 							r.Get("/logs", s.handleGetTaskLogs)
+							r.Get("/attempts", s.handleListTaskAttempts)
 						})
 					})
 				})

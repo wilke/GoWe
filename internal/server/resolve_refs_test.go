@@ -135,6 +135,12 @@ func (m *mockStore) GetTaskSummaries(context.Context, []string) (map[string]mode
 }
 func (m *mockStore) ResetFailedTasks(context.Context, string) (int, error) { return 0, nil }
 func (m *mockStore) ResetFailedSteps(context.Context, string) (int, error) { return 0, nil }
+func (m *mockStore) ArchiveAndResetTask(context.Context, *model.Task, model.TaskState, string) (bool, error) {
+	return true, nil
+}
+func (m *mockStore) ListTaskAttempts(context.Context, string) ([]model.TaskAttempt, error) {
+	return nil, nil
+}
 func (m *mockStore) CountTasksByState(context.Context) (map[string]int, error) {
 	return nil, nil
 }

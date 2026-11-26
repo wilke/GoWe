@@ -180,6 +180,31 @@ var schema = []string{
 		updated_at TEXT NOT NULL
 	)`,
 
+	// Earlier attempts of a task (#368 follow-up): the task row's values
+	// copied by archiveTaskAttempts before a retry, reset or requeue blanks
+	// them. attempt counts 1, 2, 3 ... per task in the order the attempts
+	// ended; worker_name is the worker's name at archive time ('' unknown).
+	// Deleted with the submission.
+	`CREATE TABLE IF NOT EXISTS task_attempts (
+		task_id       TEXT NOT NULL,
+		attempt       INTEGER NOT NULL,
+		submission_id TEXT NOT NULL,
+		reason        TEXT NOT NULL,
+		state         TEXT NOT NULL,
+		exit_code     INTEGER,
+		stdout        TEXT NOT NULL DEFAULT '',
+		stderr        TEXT NOT NULL DEFAULT '',
+		executor_type TEXT NOT NULL DEFAULT '',
+		external_id   TEXT NOT NULL DEFAULT '',
+		worker_name   TEXT NOT NULL DEFAULT '',
+		retry_count   INTEGER NOT NULL DEFAULT 0,
+		started_at    TEXT,
+		completed_at  TEXT,
+		archived_at   TEXT NOT NULL,
+		PRIMARY KEY (task_id, attempt)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_task_attempts_submission_id ON task_attempts(submission_id)`,
+
 	// Linked providers for multi-provider authentication
 	`CREATE TABLE IF NOT EXISTS linked_providers (
 		user_id   TEXT NOT NULL,

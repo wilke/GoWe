@@ -2391,6 +2391,34 @@ var templates = map[string]string{
             {{end}}
         </div>
     </div>
+
+    {{if .Attempts}}
+    <!-- Earlier attempts -->
+    <details id="earlier-attempts" class="bg-white shadow overflow-hidden sm:rounded-lg mt-6">
+        <summary class="px-4 py-5 sm:px-6 cursor-pointer text-lg leading-6 font-medium text-gray-900 select-none">Earlier attempts ({{len .Attempts}})</summary>
+        <div class="border-t border-gray-200 p-4 space-y-4">
+            {{range .Attempts}}
+            <details class="border border-gray-200 rounded-md">
+                <summary class="px-4 py-3 cursor-pointer text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-md select-none">{{.Summary}}</summary>
+                <div class="px-4 py-4 space-y-3">
+                    <h4 class="text-sm font-medium text-gray-700">Standard Error</h4>
+                    {{if .Stderr}}
+                    <pre class="bg-red-900 text-red-100 p-4 rounded-lg overflow-x-auto text-sm max-h-96"><code>{{.Stderr}}</code></pre>
+                    {{else}}
+                    <p class="text-gray-500 text-sm">No errors</p>
+                    {{end}}
+                    <h4 class="text-sm font-medium text-gray-700">Standard Output</h4>
+                    {{if .Stdout}}
+                    <pre class="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm max-h-96"><code>{{.Stdout}}</code></pre>
+                    {{else}}
+                    <p class="text-gray-500 text-sm">No output</p>
+                    {{end}}
+                </div>
+            </details>
+            {{end}}
+        </div>
+    </details>
+    {{end}}
 </div>
 {{end}}`,
 

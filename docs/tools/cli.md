@@ -332,6 +332,10 @@ gowe logs sub_abc123 task_001
 
 # List all task logs for a submission
 gowe logs sub_abc123
+
+# Also print each task's earlier attempts (attempt, reason, exit code,
+# worker, times, stderr; see server.md "Task attempt history")
+gowe logs sub_abc123 --task task_001 --attempts
 ```
 
 **Output:**

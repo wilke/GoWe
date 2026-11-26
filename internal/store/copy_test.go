@@ -172,6 +172,14 @@ func fillCopySource(t *testing.T, src *SQLStore) copyFixture {
 	}
 	fx.hintsTaskID = hintsTask.ID
 
+	// One archived attempt of the hints task (clean text, fixed-width times:
+	// nothing for the copy to fix or sanitise in task_attempts).
+	if _, err := src.db.ExecContext(ctx, `UPDATE tasks SET stderr = 'boom', exit_code = 1, started_at = ? WHERE id = ?`,
+		formatTime(now), hintsTask.ID); err != nil {
+		t.Fatalf("give the hints task an attempt: %v", err)
+	}
+	archiveTask(t, src, hintsTask.ID, model.AttemptReasonRetry)
+
 	w := sampleWorker()
 	if err := src.CreateWorker(ctx, w); err != nil {
 		t.Fatalf("create worker: %v", err)

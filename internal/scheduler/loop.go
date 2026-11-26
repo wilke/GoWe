@@ -2387,7 +2387,6 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		}
 
 		task.State = model.TaskStateScheduled
-		task.RetryCount++
 		task.ExitCode = nil
 		task.Stdout = ""
 		task.Stderr = ""
@@ -2395,6 +2394,30 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.StartedAt = nil
 		task.StageInMs = nil
 		task.StageOutMs = nil
+
+		// Keep the failed attempt and write the blanked record now, in one
+		// transaction and only while the task is still SCHEDULED (a cancel
+		// may have SKIPPED it since the claim). The row still holds the
+		// failed attempt: markRetries' FAILED→RETRYING and the claim above
+		// are state-only CAS writes; a row already blanked by an earlier
+		// pass (crash before the submit persisted) archives nothing. The
+		// worker executor's Status reads stdout, stderr and the exit code
+		// back from the row during the submit below, so without this write
+		// the queued task would show the failed attempt's output again.
+		if applied, err := l.store.ArchiveAndResetTask(ctx, task, model.TaskStateScheduled, model.AttemptReasonRetry); err != nil {
+			l.logger.Error("archive and blank retried task", "task_id", task.ID, "error", err)
+			continue
+		} else if !applied {
+			l.logger.Info("retry resubmit skipped: task left SCHEDULED", "task_id", task.ID)
+			continue
+		}
+
+		// Count the retry only now: the write above keeps the old
+		// retry_count, and submitAndUpdateTask / failRetryingTaskNow persist
+		// the new one with the outcome. A crash in between must not cost
+		// the retry twice (the stranded-SCHEDULED reclaim above retries the
+		// task again and counts it then).
+		task.RetryCount++
 
 		// Worker-group access (#261): a retry puts the task back in the
 		// queue, so the submitter must still be allowed its group. A denial

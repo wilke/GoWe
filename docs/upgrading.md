@@ -16,6 +16,16 @@ A task that runs again starts in a fresh task directory (#368). No manual steps;
   succeeds, and nothing removes them yet. Watch the work directory of workers whose tasks are retried often.
 - A tool that resumed from files its own failed attempt left in the task directory no longer finds them.
 
+The server keeps a history of a task's earlier attempts in a new table `task_attempts` (exit code, stdout/stderr,
+worker, times; the newest 20 per task; see [Task attempt history](tools/server.md#task-attempt-history)). The table is
+created automatically at startup on SQLite and PostgreSQL; no manual steps. `gowe-db-copy` copies it.
+
+- **Behaviour change**: a retried worker task now shows an empty output (no stdout, stderr, exit code or end time)
+  while it waits in the queue; the failed attempt's output is in the history. Before, the queued task still showed the
+  failed attempt's stderr and end time.
+- After a rollback to an older server binary, deleting a submission leaves its `task_attempts` rows behind. They are
+  harmless (nothing reads them) and are not cleaned up automatically.
+
 ## 0.24.x → next
 
 Capacity-aware checkout (#324). No manual steps; the schema gains nullable `workers.max_cpus` / `max_mem_mb`.

@@ -1023,7 +1023,9 @@ automatically, and each one can hold a full copy of the staged inputs and
 partial outputs, so watch the disk on workers whose tasks are retried often.
 Absolute symlinks inside a moved directory that pointed into the task's own
 directories now point at the new attempt's, or at nothing. A tool can no longer
-resume from files its own earlier attempt left in the task directory.
+resume from files its own earlier attempt left in the task directory. The
+server keeps the earlier attempt's exit code and output, see
+[Task attempt history](server.md#task-attempt-history).
 
 Staged copies in a shared stage-out directory (`--stage-out file:///...`) or in
 Shock are not cleaned by the worker; submission-level retention of those

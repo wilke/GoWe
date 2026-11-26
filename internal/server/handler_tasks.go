@@ -166,3 +166,56 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 		"exit_code": task.ExitCode,
 	})
 }
+
+// handleListTaskAttempts returns the archived earlier attempts of a task
+// (exit code, stdout/stderr, worker, times), oldest first. Same access check
+// as handleGetTask (requireSubmissionAccess), except that a submission that
+// cannot be read is an error, never a skipped check; 404 when the task does
+// not belong to the submission. stdout/stderr go out as the task logs
+// handler sends the task's own: as stored, no redaction.
+// GET /api/v1/submissions/{id}/tasks/{tid}/attempts
+func (s *Server) handleListTaskAttempts(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+	subID := chi.URLParam(r, "id")
+	tid := chi.URLParam(r, "tid")
+
+	// Ownership check: verify the caller can access the parent submission.
+	sub, err := s.store.GetSubmission(r.Context(), subID)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if sub == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", subID))
+		return
+	}
+	if !requireSubmissionAccess(sub, UserFromContext(r.Context())) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied",
+		})
+		return
+	}
+
+	task, err := s.store.GetTask(r.Context(), tid)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if task == nil || task.SubmissionID != subID {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
+		return
+	}
+
+	attempts, err := s.store.ListTaskAttempts(r.Context(), tid)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if attempts == nil {
+		attempts = []model.TaskAttempt{}
+	}
+	respondOK(w, reqID, map[string]any{"attempts": attempts})
+}
