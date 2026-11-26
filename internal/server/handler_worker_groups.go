@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -30,9 +32,21 @@ func (s *Server) workerGroupRoutes(r chi.Router) {
 }
 
 // putWorkerGroupRequest is the body of PUT /admin/worker-groups/{group}.
+// Managers absent (nil) keeps the stored managers; a list, also [],
+// replaces them; null is refused. Kept raw to tell absent from null.
 type putWorkerGroupRequest struct {
-	Users  []string `json:"users"`
-	Admins bool     `json:"admins"`
+	Users    []string        `json:"users"`
+	Managers json.RawMessage `json:"managers"`
+	Admins   bool            `json:"admins"`
+}
+
+// workerGroupResponse is a rule as answered by the admin write routes, with
+// the ids of the worker keys whose groups are exactly [group] when a change
+// took managers away (those keys stay valid; the admin decides). nil omits
+// the field; an empty list is sent as [].
+type workerGroupResponse struct {
+	*model.WorkerGroupPolicy
+	GroupKeyIDs *[]string `json:"group_key_ids,omitempty"`
 }
 
 // defaultDenyRequest is the body of PUT /admin/worker-groups-default-deny.
@@ -95,6 +109,58 @@ func (s *Server) storedWorkerGroups(ctx context.Context) (bool, []*model.WorkerG
 	return deny, groups, nil
 }
 
+// storedWorkerGroup returns the stored rule of group, nil when it has none.
+func (s *Server) storedWorkerGroup(ctx context.Context, group string) (*model.WorkerGroupPolicy, error) {
+	groups, err := s.store.ListWorkerGroupPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range groups {
+		if g.Group == group {
+			return g, nil
+		}
+	}
+	return nil, nil
+}
+
+// isGroupKey reports whether k is a key of group alone: its groups are
+// exactly [group] (an empty list means any group, so it is not).
+func isGroupKey(k *model.WorkerKey, group string) bool {
+	return len(k.Groups) == 1 && k.Groups[0] == group
+}
+
+// groupKeys returns the worker keys whose groups are exactly [group], newest
+// first (never nil).
+func (s *Server) groupKeys(ctx context.Context, group string) ([]*model.WorkerKey, error) {
+	keys, err := s.store.ListWorkerKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []*model.WorkerKey{}
+	for _, k := range keys {
+		if isGroupKey(k, group) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
+// groupKeyIDs returns the ids of the worker keys whose groups are exactly
+// [group], for the admin's answer after managers were taken away. On error
+// it logs a WARN and returns nil: the change is already done.
+func (s *Server) groupKeyIDs(ctx context.Context, group string) []string {
+	keys, err := s.groupKeys(ctx, group)
+	if err != nil {
+		s.logger.Warn("cannot list the worker keys of the group", "group", group, "error", err)
+		return nil
+	}
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, k.ID)
+	}
+	return ids
+}
+
 // requireGroupPolicy answers 503 when the server has no live policy to load
 // a change into, before anything is written.
 func (s *Server) requireGroupPolicy(w http.ResponseWriter, reqID string) bool {
@@ -109,15 +175,16 @@ func (s *Server) requireGroupPolicy(w http.ResponseWriter, reqID string) bool {
 }
 
 // reloadGroupPolicy loads the stored rules into the live policy after a
-// write, with the write's context. On failure it logs ERROR and answers 500;
-// the previous rules stay in force until a later reload succeeds (the next
-// change or GET /admin/worker-groups).
+// write, with the write's context. On failure it logs ERROR and answers 500
+// (the detail to server admins only, see respondInternal); the previous
+// rules stay in force until a later reload succeeds (the next change or GET
+// /admin/worker-groups).
 func (s *Server) reloadGroupPolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, reqID string) bool {
 	if err := s.groupPolicy.Reload(ctx, s.store); err != nil {
 		s.logger.Error("worker group policy stored but not reloaded; the previous policy stays in force",
-			"admin", adminName(r), "error", err)
-		respondError(w, reqID, http.StatusInternalServerError, model.NewInternalError(
-			"the change was stored but the live worker group policy could not be reloaded (the previous policy stays in force): "+err.Error()))
+			"actor", adminName(r), "error", err)
+		respondInternal(w, r, reqID,
+			"the change was stored but the live worker group policy could not be reloaded (the previous policy stays in force): "+err.Error())
 		return false
 	}
 	return true
@@ -174,6 +241,28 @@ func (s *Server) handlePutWorkerGroup(w http.ResponseWriter, r *http.Request) {
 		validationErr(w, reqID, err.Error())
 		return
 	}
+	// Absent = keep the stored managers.
+	keepManagers := req.Managers == nil
+	var managers []string
+	if !keepManagers {
+		if string(req.Managers) == "null" {
+			validationErr(w, reqID, `"managers": null is not allowed: use [] to clear, omit to keep`)
+			return
+		}
+		var list []string
+		if err := json.Unmarshal(req.Managers, &list); err != nil {
+			validationErr(w, reqID, "invalid JSON body: managers: "+err.Error())
+			return
+		}
+		if managers, err = groupacl.ValidateManagers(list); err != nil {
+			validationErr(w, reqID, err.Error())
+			return
+		}
+		if err := groupacl.CheckManagersGroup(group, managers); err != nil {
+			validationErr(w, reqID, err.Error())
+			return
+		}
+	}
 	if !s.requireGroupPolicy(w, reqID) {
 		return
 	}
@@ -183,9 +272,23 @@ func (s *Server) handlePutWorkerGroup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := writeContext(r)
 	defer cancel()
 
+	// The managers before the change, to tell the admin about the keys of
+	// the group when some are taken away. Best effort: an unreadable row
+	// must not block the PUT that repairs it.
+	var oldManagers []string
+	if !keepManagers {
+		prev, err := s.storedWorkerGroup(ctx, group)
+		if err != nil {
+			s.logger.Warn("cannot read the managers before the change; removed managers will not be reported",
+				"group", group, "error", err)
+		} else if prev != nil {
+			oldManagers = prev.Managers
+		}
+	}
+
 	admin := adminName(r)
 	now := time.Now().UTC()
-	rule := &model.WorkerGroupPolicy{Group: group, Users: users, Admins: req.Admins, UpdatedBy: admin, CreatedAt: now, UpdatedAt: now}
+	rule := &model.WorkerGroupPolicy{Group: group, Users: users, Managers: managers, Admins: req.Admins, UpdatedBy: admin, CreatedAt: now, UpdatedAt: now}
 	if err := s.store.UpsertWorkerGroupPolicy(ctx, rule); err != nil {
 		internalErr(w, reqID, err)
 		return
@@ -193,19 +296,49 @@ func (s *Server) handlePutWorkerGroup(w http.ResponseWriter, r *http.Request) {
 	if !s.reloadGroupPolicy(ctx, w, r, reqID) {
 		return
 	}
-	s.logger.Info("worker group policy set", "admin", admin, "group", group, "users", len(users), "admins", req.Admins)
 
 	// Answer with the rule as stored (created_at of a replaced rule is
-	// kept); the change is done, so a failed read falls back to the request.
-	if groups, err := s.store.ListWorkerGroupPolicies(ctx); err == nil {
-		for _, g := range groups {
-			if g.Group == group {
-				respondOK(w, reqID, g)
-				return
+	// kept, managers may have been kept). The change is done: a failed read
+	// falls back to the request when it gave the managers; when they were
+	// kept the request does not know them, so the answer is 500 rather than
+	// a rule claiming no managers.
+	stored, err := s.storedWorkerGroup(ctx, group)
+	if err != nil || stored == nil {
+		if keepManagers {
+			reason := "it is no longer stored"
+			if err != nil {
+				reason = err.Error()
 			}
+			s.logger.Error("worker group policy set and reloaded but not read back", "admin", admin, "group", group, "error", reason)
+			respondError(w, reqID, http.StatusInternalServerError, model.NewInternalError(fmt.Sprintf(
+				"the rule of worker group %q was stored and loaded into the live policy, but could not be read back (%s), so its kept managers cannot be shown; GET /api/v1/admin/worker-groups lists it",
+				group, reason)))
+			return
+		}
+		stored = rule
+		if stored.Managers == nil {
+			stored.Managers = []string{}
 		}
 	}
-	respondOK(w, reqID, rule)
+	s.logger.Info("worker group policy set", "admin", admin, "group", group, "users", len(users),
+		"managers", len(stored.Managers), "admins", req.Admins)
+
+	resp := workerGroupResponse{WorkerGroupPolicy: stored}
+	removed := 0
+	for _, m := range oldManagers {
+		if !slices.Contains(managers, m) {
+			removed++
+		}
+	}
+	if removed > 0 {
+		ids := s.groupKeyIDs(ctx, group)
+		if ids != nil {
+			resp.GroupKeyIDs = &ids
+		}
+		s.logger.Info("worker group managers removed; the group's worker keys stay valid",
+			"admin", admin, "group", group, "managers_removed", removed, "group_keys", len(ids))
+	}
+	respondOK(w, reqID, resp)
 }
 
 // handleDeleteWorkerGroup removes the rule of a group: the group becomes
@@ -243,11 +376,13 @@ func (s *Server) handleDeleteWorkerGroup(w http.ResponseWriter, r *http.Request)
 	// The number of users of the removed rule, for the log line; -1 when the
 	// rules cannot be read (an unreadable row must still be removable).
 	removedUsers := -1
+	hadManagers := false
 	if groups, err := s.store.ListWorkerGroupPolicies(ctx); err == nil {
 		removedUsers = 0
 		for _, g := range groups {
 			if g.Group == group {
 				removedUsers = len(g.Users)
+				hadManagers = len(g.Managers) > 0
 			}
 		}
 	}
@@ -264,10 +399,18 @@ func (s *Server) handleDeleteWorkerGroup(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.logger.Info("worker group policy deleted", "admin", adminName(r), "group", group, "users", removedUsers)
-	respondOK(w, reqID, map[string]any{
+	resp := map[string]any{
 		"group":   group,
 		"deleted": true,
-	})
+	}
+	// Keys issued for this group alone outlive its rule (and its managers);
+	// name them so the admin can decide.
+	if ids := s.groupKeyIDs(ctx, group); ids != nil && (hadManagers || len(ids) > 0) {
+		resp["group_key_ids"] = ids
+		s.logger.Info("deleted worker group rule had managers or group keys; the keys stay valid",
+			"admin", adminName(r), "group", group, "group_keys", len(ids))
+	}
+	respondOK(w, reqID, resp)
 }
 
 // handleSetWorkerGroupsDefaultDeny sets default_deny.

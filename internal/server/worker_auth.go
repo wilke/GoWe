@@ -192,22 +192,70 @@ func NewWorkerKeyAuthenticator(static *WorkerKeyConfig, st store.Store, logger *
 	return &WorkerKeyAuthenticator{static: static, store: st, logger: logger}
 }
 
+// WorkerAuthSettingOn reports whether a stored worker_auth.required value
+// (store.WorkerAuthRequiredKey) turns worker authentication on: absent is
+// off, and any value except "false" (case-insensitive, surrounding
+// whitespace ignored) is on, so a mistyped value fails closed.
+func WorkerAuthSettingOn(value string, found bool) bool {
+	return found && !strings.EqualFold(strings.TrimSpace(value), "false")
+}
+
 // Enabled reports whether worker-key enforcement is active. It is active when
-// any static key OR any DB-backed key is configured. On a store error it fails
-// closed (returns true) so a transient DB fault cannot silently open the fleet.
+// any static key is configured OR the server setting worker_auth.required
+// (store.WorkerAuthRequiredKey) is on (WorkerAuthSettingOn): the store sets
+// it to "true" with the first DB-backed key, and it stays set when the last
+// key is deleted, so revoking keys never opens the fleet. Nothing is cached:
+// the setting is read on every call, so the first key takes effect at once.
+// On a store error it fails closed (returns true) so a transient DB fault
+// cannot silently open the fleet.
 func (a *WorkerKeyAuthenticator) Enabled(ctx context.Context) bool {
 	if a.static.IsEnabled() {
 		return true
 	}
 	if a.store != nil {
-		n, err := a.store.CountWorkerKeys(ctx)
+		value, found, err := a.store.GetServerSetting(ctx, store.WorkerAuthRequiredKey)
 		if err != nil {
-			a.logger.Error("count worker keys failed; enforcing auth", "error", err)
+			a.logger.Error("read worker auth setting failed; enforcing auth", "error", err)
 			return true // fail closed
 		}
-		return n > 0
+		return WorkerAuthSettingOn(value, found)
 	}
 	return false
+}
+
+// workerAuthSettingStore is what EnsureWorkerAuthRequired needs of the store.
+type workerAuthSettingStore interface {
+	CountWorkerKeys(ctx context.Context) (int, error)
+	GetServerSetting(ctx context.Context, key string) (value string, found bool, err error)
+	SetServerSetting(ctx context.Context, key, value, updatedBy string) error
+}
+
+// EnsureWorkerAuthRequired is run at server start-up: when the database holds
+// worker keys but worker_auth.required is not on (absent or "false"; keys
+// created before the setting existed), it sets the setting to "true", so the
+// deployment keeps requiring worker keys as before, and reports true. A
+// database without keys is left alone (the worker API stays open until the
+// first key is created). The caller must not start on error: worker auth
+// could be off while keys exist.
+func EnsureWorkerAuthRequired(ctx context.Context, st workerAuthSettingStore) (bool, error) {
+	value, found, err := st.GetServerSetting(ctx, store.WorkerAuthRequiredKey)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", store.WorkerAuthRequiredKey, err)
+	}
+	if WorkerAuthSettingOn(value, found) {
+		return false, nil
+	}
+	n, err := st.CountWorkerKeys(ctx)
+	if err != nil {
+		return false, fmt.Errorf("count worker keys: %w", err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if err := st.SetServerSetting(ctx, store.WorkerAuthRequiredKey, "true", "server start-up"); err != nil {
+		return false, fmt.Errorf("set %s: %w", store.WorkerAuthRequiredKey, err)
+	}
+	return true, nil
 }
 
 // Authenticate validates a raw worker key and returns the resulting auth context,
@@ -258,13 +306,14 @@ func (a *WorkerKeyAuthenticator) Authenticate(ctx context.Context, raw string) *
 }
 
 // workerAuthMiddleware validates the X-Worker-Key header for worker endpoints.
-// If no keys are configured (static or DB), authentication is disabled (open access).
+// Unless auth.Enabled (static keys, or a DB key has ever been created),
+// authentication is disabled (open access).
 func workerAuthMiddleware(auth *WorkerKeyAuthenticator, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			reqID := RequestIDFromContext(r.Context())
 
-			// If no keys are configured, allow open access.
+			// If worker auth is not enabled, allow open access.
 			if auth == nil || !auth.Enabled(r.Context()) {
 				// Create anonymous worker context — allow any group.
 				workerCtx := &WorkerAuthContext{

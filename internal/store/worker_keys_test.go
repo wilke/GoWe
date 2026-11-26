@@ -148,3 +148,79 @@ func TestWorkerKeyDeleteAndList(t *testing.T) {
 		t.Errorf("DeleteWorkerKey(missing) = nil, want error")
 	}
 }
+
+// Creating a key sets worker_auth.required; deleting every key leaves it.
+func TestCreateWorkerKey_SetsWorkerAuthRequired(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, found, err := st.GetServerSetting(ctx, WorkerAuthRequiredKey); err != nil || found {
+		t.Fatalf("fresh store: found=%v err=%v; want no setting", found, err)
+	}
+	if err := st.CreateWorkerKey(ctx, sampleWorkerKey("wk_a", "gwk_a")); err != nil {
+		t.Fatal(err)
+	}
+	if v, found, err := st.GetServerSetting(ctx, WorkerAuthRequiredKey); err != nil || !found || v != "true" {
+		t.Fatalf("after create = %q, %v, %v; want \"true\"", v, found, err)
+	}
+	if err := st.CreateWorkerKey(ctx, sampleWorkerKey("wk_b", "gwk_b")); err != nil {
+		t.Fatalf("second key: %v", err)
+	}
+	for _, id := range []string{"wk_a", "wk_b"} {
+		if err := st.DeleteWorkerKey(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, found, err := st.GetServerSetting(ctx, WorkerAuthRequiredKey); err != nil || !found || v != "true" {
+		t.Errorf("after deleting every key = %q, %v, %v; want \"true\"", v, found, err)
+	}
+	// A failed insert (duplicate hash) sets nothing new and stores no key.
+	if err := st.CreateWorkerKey(ctx, sampleWorkerKey("wk_c", "gwk_c")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateWorkerKey(ctx, sampleWorkerKey("wk_d", "gwk_c")); err == nil {
+		t.Error("a duplicate key hash must fail")
+	}
+	if k, _ := st.GetWorkerKeyByID(ctx, "wk_d"); k != nil {
+		t.Error("the failed key was stored")
+	}
+}
+
+// DeleteWorkerKeyForGroup deletes only a key whose groups are exactly
+// [group].
+func TestDeleteWorkerKeyForGroup(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	for id, groups := range map[string][]string{
+		"wk_g":   {"g"},
+		"wk_gh":  {"g", "h"},
+		"wk_h":   {"h"},
+		"wk_any": {},
+		"wk_gg":  {"g", "g"},
+	} {
+		k := sampleWorkerKey(id, "gwk_"+id)
+		k.Groups = groups
+		if err := st.CreateWorkerKey(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"wk_gh", "wk_h", "wk_any", "wk_gg", "wk_missing"} {
+		if deleted, err := st.DeleteWorkerKeyForGroup(ctx, id, "g"); err != nil || deleted {
+			t.Errorf("DeleteWorkerKeyForGroup(%s, g) = %v, %v; want false, nil", id, deleted, err)
+		}
+	}
+	if n, _ := st.CountWorkerKeys(ctx); n != 5 {
+		t.Fatalf("%d keys left, want all 5", n)
+	}
+	if deleted, err := st.DeleteWorkerKeyForGroup(ctx, "wk_g", "h"); err != nil || deleted {
+		t.Errorf("DeleteWorkerKeyForGroup(wk_g, h) = %v, %v; want false, nil", deleted, err)
+	}
+	if deleted, err := st.DeleteWorkerKeyForGroup(ctx, "wk_g", "g"); err != nil || !deleted {
+		t.Fatalf("DeleteWorkerKeyForGroup(wk_g, g) = %v, %v; want true, nil", deleted, err)
+	}
+	if k, _ := st.GetWorkerKeyByID(ctx, "wk_g"); k != nil {
+		t.Error("wk_g is still stored")
+	}
+	if n, _ := st.CountWorkerKeys(ctx); n != 4 {
+		t.Errorf("%d keys left, want 4", n)
+	}
+}

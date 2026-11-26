@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -200,6 +201,8 @@ func TestAdminWorkerGroups_Validation(t *testing.T) {
 		{"body too large", "PUT", workerGroupsPath + "/gpu", `{"users":["` + strings.Repeat("a", 1<<20) + `"]}`, "request body too large"},
 		{"username with a control character", "PUT", workerGroupsPath + "/gpu", `{"users":["ali\nce"]}`, "contains a control character"},
 		{"group name too long", "PUT", workerGroupsPath + "/" + strings.Repeat("g", groupacl.MaxGroupNameBytes+1), `{"users":["a"]}`, "at most 64 are allowed"},
+		{"managers null", "PUT", workerGroupsPath + "/gpu", `{"users":["a"],"managers":null}`, "use [] to clear, omit to keep"},
+		{"managers not a list", "PUT", workerGroupsPath + "/gpu", `{"users":["a"],"managers":"mgr"}`, "invalid JSON body: managers"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -300,6 +303,69 @@ func TestAdminWorkerGroups_ReloadFailureKeepsOldPolicy(t *testing.T) {
 	}
 	if !policy.Allowed("mallory", "esmfold") || policy.Allowed("mallory", "gpu") {
 		t.Error("the previous rules must stay in force")
+	}
+}
+
+// readBackFailStore fails ListWorkerGroupPolicies, while armed, once passes
+// calls have succeeded.
+type readBackFailStore struct {
+	store.Store
+	armed  bool
+	passes int
+}
+
+func (s *readBackFailStore) ListWorkerGroupPolicies(ctx context.Context) ([]*model.WorkerGroupPolicy, error) {
+	if s.armed {
+		if s.passes == 0 {
+			return nil, errors.New("read-back broken")
+		}
+		s.passes--
+	}
+	return s.Store.ListWorkerGroupPolicies(ctx)
+}
+
+// When the rule cannot be read back after the PUT stored and loaded it, a
+// PUT that kept the managers answers 500 saying the rule is stored (it
+// cannot claim managers it does not know); a PUT that gave them answers
+// with the rule as sent.
+func TestAdminWorkerGroups_PutReadBackFailure(t *testing.T) {
+	ctx := context.Background()
+	srv, st, policy := newWorkerGroupServer(t)
+	if w, _ := wgDo(t, srv, "PUT", workerGroupsPath+"/g", `{"users":["alice"],"managers":["mgr"]}`, adminAuthToken); w.Code != http.StatusOK {
+		t.Fatalf("PUT g: %d %s", w.Code, w.Body.String())
+	}
+	fs := &readBackFailStore{Store: st}
+	srv.store = fs
+
+	// Managers kept: List is called by the reload (passes), then by the
+	// read-back (fails).
+	fs.armed, fs.passes = true, 1
+	w, env := wgDo(t, srv, "PUT", workerGroupsPath+"/g", `{"users":["bob"]}`, adminAuthToken)
+	fs.armed = false
+	if w.Code != http.StatusInternalServerError || env.Error == nil || !strings.Contains(env.Error.Message, "was stored") {
+		t.Fatalf("PUT keeping managers with a failed read-back: %d %+v, want 500 saying the rule was stored", w.Code, env.Error)
+	}
+	if strings.Contains(w.Body.String(), `"managers":[]`) {
+		t.Errorf("the answer must not claim no managers: %s", w.Body.String())
+	}
+	rules, err := st.ListWorkerGroupPolicies(ctx)
+	if err != nil || len(rules) != 1 || !reflect.DeepEqual(rules[0].Users, []string{"bob"}) || !reflect.DeepEqual(rules[0].Managers, []string{"mgr"}) {
+		t.Errorf("stored = %+v, %v; want users [bob], managers kept [mgr]", rules, err)
+	}
+	if !policy.Allowed("bob", "g") || !policy.IsManager("mgr", "g") {
+		t.Error("the stored rule must be in force")
+	}
+
+	// Managers given: List is called for the old managers and by the reload
+	// (both pass), then by the read-back (fails).
+	fs.armed, fs.passes = true, 2
+	w, env = wgDo(t, srv, "PUT", workerGroupsPath+"/g", `{"users":["carol"],"managers":["mgr2"]}`, adminAuthToken)
+	fs.armed = false
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT with managers and a failed read-back: %d %s, want 200", w.Code, w.Body.String())
+	}
+	if rule := decode[model.WorkerGroupPolicy](t, env); !reflect.DeepEqual(rule.Users, []string{"carol"}) || !reflect.DeepEqual(rule.Managers, []string{"mgr2"}) {
+		t.Errorf("answer = %+v, want the rule as sent", rule)
 	}
 }
 

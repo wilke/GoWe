@@ -215,6 +215,10 @@ type Store interface {
 	ListWorkerKeys(ctx context.Context) ([]*model.WorkerKey, error)
 	UpdateWorkerKey(ctx context.Context, k *model.WorkerKey) error
 	DeleteWorkerKey(ctx context.Context, id string) error
+	// DeleteWorkerKeyForGroup removes the key only when its groups are
+	// exactly [group]; false (no error) when the key does not exist or has
+	// other groups.
+	DeleteWorkerKeyForGroup(ctx context.Context, id, group string) (bool, error)
 	CountWorkerKeys(ctx context.Context) (int, error)
 	TouchWorkerKey(ctx context.Context, id string, when time.Time) error
 
@@ -232,8 +236,14 @@ type Store interface {
 	// that cannot be read is an error, never skipped (the policy fails closed).
 	ListWorkerGroupPolicies(ctx context.Context) ([]*model.WorkerGroupPolicy, error)
 	// UpsertWorkerGroupPolicy creates the rule of p.Group or replaces its
-	// users, admins, updated_by and updated_at (created_at is kept).
+	// users, admins, updated_by and updated_at (created_at is kept); managers
+	// are replaced unless p.Managers is nil (then kept).
 	UpsertWorkerGroupPolicy(ctx context.Context, p *model.WorkerGroupPolicy) error
+	// AddWorkerGroupUser / RemoveWorkerGroupUser change the users of an
+	// existing rule in one transaction and report whether the list changed;
+	// ErrWorkerGroupPolicyNotFound when the group has no rule.
+	AddWorkerGroupUser(ctx context.Context, group, username, by string) (bool, error)
+	RemoveWorkerGroupUser(ctx context.Context, group, username, by string) (bool, error)
 	// DeleteWorkerGroupPolicy removes the rule of group and reports whether
 	// one existed.
 	DeleteWorkerGroupPolicy(ctx context.Context, group string) (bool, error)

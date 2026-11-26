@@ -343,9 +343,12 @@ Token sources (checked in order):
 
 ### Worker Authentication
 
-Workers authenticate by sending an `X-Worker-Key` header. The server validates it against two sources; if **neither** has any key, worker endpoints are open (dev convenience — production SHOULD configure keys).
+Workers authenticate by sending an `X-Worker-Key` header. The server validates it against two sources. Worker endpoints are open (dev convenience — production SHOULD configure keys) only while there are no static keys **and** no database key has ever been created (or an operator reopened the fleet, see below).
 
-**1. Per-worker keys (recommended, hashed at rest).** Minted and revoked through the admin API (see [Admin](#admin) below). Only the SHA-256 hash of each key is stored, so the datastore never holds the raw secret, and one leaked worker's key can be revoked without disrupting the fleet.
+**1. Per-worker keys (recommended, hashed at rest).** Minted and revoked through the admin API (see [Admin](#admin) below), or for one group by its managers (see [Worker group managers](#worker-group-managers)). Only the SHA-256 hash of each key is stored, so the datastore never holds the raw secret, and one leaked worker's key can be revoked without disrupting the fleet.
+
+**Once a database key has existed, worker authentication stays on.** Creating a key also sets the server setting `worker_auth.required` to `true` (table `server_settings`, same transaction), and the server enforces worker keys while it is set, whatever the number of keys: revoking the last key does not open the fleet. Any stored value other than `false` (case-insensitive, surrounding whitespace ignored) counts as set; only a missing row or `false` leaves worker authentication off. At start-up a database that holds keys but not the setting (keys created by an older version) gets it, so existing deployments keep requiring keys; the server refuses to start when it cannot check this. To go back to an open fleet, with no static keys configured, an operator deletes **all** rows of `worker_keys` and the setting's row:
+`DELETE FROM worker_keys; DELETE FROM server_settings WHERE key = 'worker_auth.required';`. Deleting the setting alone is not enough: while key rows exist, the server sets it again at its next start-up. No restart is needed for the change to take effect: the setting is read on every worker request.
 
 **2. Static keys (file/env, for bootstrap or dev).** A key set can also be configured statically and mapped to allowed groups:
 
@@ -392,8 +395,9 @@ gowe admin worker-groups delete model-router
 ```
 
 - A group with a rule is restricted: a submitter may use it only when their username is in its `users` (exact,
-  case-sensitive match), or when `admins` is `true` and they are a server admin. An empty `users` list with
-  `admins: false` means nobody.
+  case-sensitive match), when they are one of its `managers` (see [Worker group managers](#worker-group-managers)),
+  or when `admins` is `true` and they are a server admin. Empty `users` and `managers` with `admins: false` means
+  nobody.
 - A group without a rule is open, unless `default_deny` is `true`: then every group without a rule except the
   default group is open to server admins only.
 - The default group (`""` or `"default"`, the same group) is open unless it has a rule itself, written for the
@@ -429,8 +433,44 @@ the `--config` file, read by earlier development builds, is no longer read: the 
 file has one (move the rules over with the commands above).
 
 The policy is only as strong as the username it is given: with `--insecure-skip-token-verify` or
-`--allow-unverified-mgrast` set, a caller can claim a listed username. When the policy loaded at start-up has
-restrictions, the server logs a WARN naming the flag (restrictions added later through the API do not repeat it).
+`--allow-unverified-mgrast` set, a caller can claim a listed username, or a manager's. When the policy loaded at
+start-up has restrictions, the server logs a WARN naming the flag and saying that group managers are identified by
+username too (restrictions added later through the API do not repeat it).
+
+#### Worker group managers
+
+A rule may name **managers** (`managers`, appointed by server admins: `gowe admin worker-groups set <group>
+--manager <user>`, or `"managers"` in the PUT body). For their group only, a manager:
+
+- may use the group (submit to it) without being in its `users`;
+- adds and removes `users` (`gowe worker-groups add-user` / `remove-user`);
+- lists, issues and revokes worker keys valid for **exactly** that group (groups `[<group>]`): starting a worker with
+  such a key (`gowe-worker --group <group> --worker-key-file FILE`) is how a manager adds resources to the group.
+  A manager cannot revoke a key with any other groups, and cannot issue keys before a server admin has created the
+  first worker key (worker authentication must already be on; `409` otherwise).
+
+Managers, the `admins` switch, `default_deny` and deleting a rule stay admin-only (the `/api/v1/admin/...` routes);
+managers cannot appoint managers. The default group cannot have managers (`400`): its workers receive every
+untargeted task of every user. Server admins may use the manager routes on every group. The routes are under
+`/api/v1/worker-groups` (see [Worker groups (managers)](#worker-groups-managers)); every write takes effect at once and
+logs one INFO line with the actor, the group and the action (never the user names or key material); issuing a key
+logs two: `worker key issued` (key id, label, groups, `created_by`, as on the admin route) and the line with the
+action. A manager
+removed by an admin loses access at once: each write reloads the stored policy and checks the right again before it
+writes.
+
+What a manager can do, and what removing one does not undo:
+
+- Whoever can issue a key for a group can run a worker that receives **every task sent to that group**, including
+  the submitter's input data and the token the worker uses for staging. Appoint managers you would trust to run
+  such workers.
+- Revoking a key stops new registrations and checkouts with it; it does not stop a task already running on a worker
+  nor recall the token that task received.
+- Removing a manager (or deleting the rule) does not revoke the keys they created: they may hold the raw keys. The
+  admin's PUT or DELETE answer lists them in `group_key_ids` (the keys whose groups are exactly `[<group>]`); revoke
+  them with `DELETE /api/v1/admin/worker-keys/{id}` if needed. When an admin later changes the groups of a key a
+  non-admin created, the server logs a WARN (it does not refuse).
+- Static keys (`--worker-keys`, `GOWE_WORKER_KEYS`) are outside manager control.
 
 The policy is applied when a task is created or re-queued:
 
@@ -505,7 +545,7 @@ Protected endpoints require one of:
 - `X-MG-RAST-Token` header (MG-RAST token)
 - Anonymous access (if `--allow-anonymous` is set)
 
-Worker endpoints use `X-Worker-Key` header (if worker keys configured).
+Worker endpoints use `X-Worker-Key` header (once worker authentication is on: static keys, or a database key has ever been created; see [Worker Authentication](#worker-authentication)).
 
 ### Error Codes
 
@@ -1290,7 +1330,7 @@ curl -X PUT http://localhost:8080/api/v1/admin/users/user@bvbrc/role \
 
 #### `POST /api/v1/admin/worker-keys`
 
-Mint a per-worker key. The raw secret is returned **exactly once**; only its SHA-256 hash is persisted. `groups` scopes which worker groups the key may join (empty = any); `expires_at` is optional.
+Mint a per-worker key. The raw secret is returned **exactly once**; only its SHA-256 hash is persisted. `groups` scopes which worker groups the key may join (empty = any); `expires_at` is optional. `label` may be at most 200 bytes long and `description` at most 1000 bytes (`400` otherwise).
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/admin/worker-keys \
@@ -1356,7 +1396,7 @@ policy then stays in force).
 {
   "default_deny": false,
   "groups": [
-    {"group": "model-router", "users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true,
+    {"group": "model-router", "users": ["awilke@bvbrc", "svc-router@bvbrc"], "managers": ["lead@bvbrc"], "admins": true,
      "updated_by": "root@bvbrc", "created_at": "2026-11-25T10:00:00Z", "updated_at": "2026-11-25T10:00:00Z"}
   ]
 }
@@ -1364,21 +1404,29 @@ policy then stays in force).
 
 #### `PUT /api/v1/admin/worker-groups/{group}`
 
-Create or replace the rule of `{group}` (`default` for the default group). The body is `{"users": [...], "admins": bool}`;
-`users` replaces the previous list, duplicates are dropped, unknown fields are refused. Answers with the stored rule.
-Takes effect at once.
+Create or replace the rule of `{group}` (`default` for the default group). The body is
+`{"users": [...], "managers": [...], "admins": bool}`; `users` replaces the previous list, duplicates are dropped,
+unknown fields are refused. `managers` is optional: absent keeps the stored managers (none for a new rule), a list —
+also `[]` — replaces them, and `null` is refused (`400`: use `[]` to clear, omit to keep); it is validated like
+`users`, and managers on `default` are refused (`400`). Answers with the stored rule. When the PUT removed one or
+more managers, the answer also carries `"group_key_ids": [...]`, the ids of the worker keys whose groups are exactly
+`[{group}]`: they stay valid, the admin decides (one INFO line with their count). Takes effect at once. If the rule
+cannot be read back after it was stored and loaded, a PUT without `managers` answers `500` saying so (the rule is
+stored and in force; the kept managers are not known to the answer); a PUT with `managers` answers with the rule as
+sent.
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/admin/worker-groups/model-router \
   -H "Authorization: $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true}'
+  -d '{"users": ["awilke@bvbrc", "svc-router@bvbrc"], "managers": ["lead@bvbrc"], "admins": true}'
 ```
 
 #### `DELETE /api/v1/admin/worker-groups/{group}`
 
 Remove the rule of `{group}`: the group becomes open, or admin-only when `default_deny` is `true`. `404` when the
 group has no rule. The name is not checked against the group name rule, so a stored row with an invalid name (which
-makes every reload fail) can be removed.
+makes every reload fail) can be removed. When the rule had managers, or keys exist whose groups are exactly
+`[{group}]`, the answer carries `"group_key_ids": [...]` (those keys stay valid).
 
 #### `PUT /api/v1/admin/worker-groups-default-deny`
 
@@ -1390,6 +1438,60 @@ this server" when the server runs without a policy handle, and `500` (with an ER
 was stored but could not be loaded; the previous policy then stays in force until a reload succeeds, so the stored
 and the enforced policy differ: `GET /api/v1/admin/worker-groups` (`gowe admin worker-groups list`) re-syncs them
 (see [Worker Group Access](#worker-group-access)).
+
+### Worker groups (managers)
+
+For the managers of a group and for server admins (normal user authentication, not under `/admin`; see
+[Worker group managers](#worker-group-managers)). Every route on one group answers `401` to an unauthenticated or
+anonymous caller, `400` for an invalid `{group}`, `403` (`FORBIDDEN`) when the caller is neither a server admin nor a
+manager of `{group}` (also for a group without a rule), `404` when an admin names a group without a rule, and `503`
+when the server runs without a policy handle. Writes take effect at once and answer `500` when the policy cannot be
+reloaded. A `500` (reload failure or any other internal error) tells a caller who is not a server admin only
+`internal error; ask a server admin` (the detail can name other groups and their users); the detail is in the
+server log at ERROR, and server admins get it in the answer.
+
+#### `GET /api/v1/worker-groups`
+
+The rules the caller manages (a server admin: every rule), each with `users` and `managers`: `{"groups": [...]}`
+(empty for a user who manages nothing).
+
+#### `GET /api/v1/worker-groups/{group}`
+
+The rule of `{group}`, in the format of the admin listing.
+
+#### `POST /api/v1/worker-groups/{group}/users`
+
+Add a user: body `{"username": "..."}` (validated like the admin `users`; unknown fields refused). Answers with the
+rule. Adding a user already listed changes nothing.
+
+#### `DELETE /api/v1/worker-groups/{group}/users/{username}`
+
+Remove a user (`{username}` path-escaped). Answers with the rule; `404` when the user is not in the list.
+
+#### `GET /api/v1/worker-groups/{group}/keys`
+
+The worker keys whose groups are exactly `[{group}]`, in the format of `GET /api/v1/admin/worker-keys` (never a hash
+or raw key).
+
+#### `POST /api/v1/worker-groups/{group}/keys`
+
+Issue a worker key for exactly `[{group}]`, `created_by` the caller: body `{"label": "...", "description": "...",
+"expires_at": "RFC 3339"}` (same validation as the admin route: `label` at most 200 bytes, `description` at most
+1000 bytes; `groups` is refused). Answers `201` like `POST /api/v1/admin/worker-keys`, with the raw key **once**.
+`409` (`CONFLICT`) while worker authentication is not enabled yet (an admin must create the first worker key), and
+while 100 keys whose groups are exactly `[{group}]` exist (revoke unused ones first; the admin route has no such
+bound).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/worker-groups/model-router/keys \
+  -H "Authorization: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"label":"gpu-node-07","expires_at":"2027-06-30T00:00:00Z"}'
+```
+
+#### `DELETE /api/v1/worker-groups/{group}/keys/{id}`
+
+Revoke (delete) a key whose groups are exactly `[{group}]`; `404` when the key does not exist or has any other
+groups. A task already running with it is not stopped.
 
 #### `POST /api/v1/admin/submissions/{id}/verify-outputs`
 

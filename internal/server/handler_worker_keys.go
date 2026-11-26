@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,14 +36,6 @@ func (s *Server) handleCreateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now()) {
-		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
-			Code:    model.ErrValidation,
-			Message: "expires_at must be in the future",
-		})
-		return
-	}
-
 	// An empty groups list means "any group" (see CanJoinGroup), which would
 	// silently grant a key fleet-wide reach. Default to the least-privilege
 	// "default" group so an omitted scope is narrow, not wildcard; an admin who
@@ -49,15 +44,48 @@ func (s *Server) handleCreateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		req.Groups = []string{"default"}
 	}
 
-	raw, hash, prefix, err := model.GenerateWorkerKey()
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError, model.NewInternalError(err.Error()))
-		return
-	}
-
 	var createdBy string
 	if uc := UserFromContext(r.Context()); uc != nil && uc.User != nil {
 		createdBy = uc.User.Username
+	}
+
+	s.issueWorkerKey(r.Context(), w, r, reqID, req, createdBy)
+}
+
+// Bounds of the label and the description of a worker key issued through
+// issueWorkerKey, in bytes.
+const (
+	maxWorkerKeyLabelBytes       = 200
+	maxWorkerKeyDescriptionBytes = 1000
+)
+
+// issueWorkerKey validates req (label and description length, expires_at in
+// the future), mints a key with req.Groups (which the caller has set),
+// stores its hash and answers 201 with the raw key, returned this once. It
+// reports whether the key was issued. Shared by the admin route and the
+// worker-group key route; an internal error is detailed to server admins
+// only (respondInternal).
+func (s *Server) issueWorkerKey(ctx context.Context, w http.ResponseWriter, r *http.Request, reqID string, req createWorkerKeyRequest, createdBy string) (*model.WorkerKey, bool) {
+	if len(req.Label) > maxWorkerKeyLabelBytes {
+		validationErr(w, reqID, fmt.Sprintf("label is %d bytes long; at most %d are allowed", len(req.Label), maxWorkerKeyLabelBytes))
+		return nil, false
+	}
+	if len(req.Description) > maxWorkerKeyDescriptionBytes {
+		validationErr(w, reqID, fmt.Sprintf("description is %d bytes long; at most %d are allowed", len(req.Description), maxWorkerKeyDescriptionBytes))
+		return nil, false
+	}
+	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now()) {
+		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "expires_at must be in the future",
+		})
+		return nil, false
+	}
+
+	raw, hash, prefix, err := model.GenerateWorkerKey()
+	if err != nil {
+		s.internalErrForCaller(w, r, reqID, err)
+		return nil, false
 	}
 
 	key := &model.WorkerKey{
@@ -72,9 +100,11 @@ func (s *Server) handleCreateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   req.ExpiresAt,
 	}
 
-	if err := s.store.CreateWorkerKey(r.Context(), key); err != nil {
-		respondError(w, reqID, http.StatusInternalServerError, model.NewInternalError(err.Error()))
-		return
+	// The store also sets worker_auth.required in the same transaction, so
+	// worker authentication is on from this key onwards.
+	if err := s.store.CreateWorkerKey(ctx, key); err != nil {
+		s.internalErrForCaller(w, r, reqID, err)
+		return nil, false
 	}
 
 	s.logger.Info("worker key issued", "key_id", key.ID, "label", key.Label,
@@ -86,6 +116,7 @@ func (s *Server) handleCreateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		"worker_key": key,
 		"warning":    "store this key now; it cannot be retrieved again",
 	})
+	return key, true
 }
 
 // handleListWorkerKeys lists all worker keys. Hashes and raw secrets are never
@@ -163,6 +194,14 @@ func (s *Server) handleUpdateWorkerKey(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// A key a non-admin (a worker group manager) created was scoped to
+		// that one group; giving it other groups reaches beyond what its
+		// creator was trusted with, and the creator may hold the raw key.
+		// Allowed (the admin decides), but logged.
+		if !sameGroups(key.Groups, *req.Groups) && !s.isServerAdmin(key.CreatedBy) {
+			s.logger.Warn("groups of a worker key created by a non-admin changed; its creator may hold the raw key",
+				"key_id", key.ID, "old_groups", key.Groups, "new_groups", *req.Groups)
+		}
 		key.Groups = *req.Groups
 	}
 	if req.ClearExpiry {
@@ -185,6 +224,20 @@ func (s *Server) handleUpdateWorkerKey(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("worker key updated", "key_id", key.ID, "disabled", key.Disabled)
 	respondOK(w, reqID, key)
+}
+
+// sameGroups reports whether a and b hold the same group names, in any order.
+func sameGroups(a, b []string) bool {
+	x, y := slices.Clone(a), slices.Clone(b)
+	slices.Sort(x)
+	slices.Sort(y)
+	return slices.Equal(slices.Compact(x), slices.Compact(y))
+}
+
+// isServerAdmin reports whether username is a server admin by the server's
+// admin configuration ("" never is).
+func (s *Server) isServerAdmin(username string) bool {
+	return username != "" && s.adminConfig != nil && s.adminConfig.IsAdmin(username)
 }
 
 // handleRevokeWorkerKey permanently revokes (deletes) a worker key.

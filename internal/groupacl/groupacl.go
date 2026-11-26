@@ -3,7 +3,9 @@
 // stored in the database (worker_group_policies and the
 // worker_groups.default_deny server setting) and changed at runtime by server
 // admins, decides which users may target one with
-// gowe:Execution.worker_group or the worker_group label.
+// gowe:Execution.worker_group or the worker_group label. A rule may also name
+// managers (IsManager): they may always use their group, and the server lets
+// them change its users and its group-only worker keys.
 //
 // The scheduler enforces it at dispatch (authoritative) and when a FAILED
 // task is re-queued, as do the UI resume/recompute handlers; the submission
@@ -53,8 +55,9 @@ var groupNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var anonymousUser = model.AnonymousUser.Username
 
 type rule struct {
-	users  map[string]bool
-	admins bool
+	users    map[string]bool
+	managers map[string]bool
+	admins   bool
 }
 
 // snapshot is one immutable set of rules. It is never modified after Reload
@@ -127,23 +130,36 @@ func ValidateGroupName(name string) error {
 // a name with leading or trailing whitespace or with a control character
 // anywhere, and "anonymous" are refused.
 func ValidateUsers(users []string) ([]string, error) {
+	return validateNames("users", users)
+}
+
+// ValidateManagers checks a managers list with the rules of ValidateUsers
+// (errors name "managers") and returns it without duplicates, in the order
+// given (never nil). Whether the group may have managers at all is
+// CheckManagersGroup's question.
+func ValidateManagers(managers []string) ([]string, error) {
+	return validateNames("managers", managers)
+}
+
+// validateNames is ValidateUsers for the list called field.
+func validateNames(field string, users []string) ([]string, error) {
 	if len(users) > MaxUsers {
-		return nil, fmt.Errorf("users holds %d entries; at most %d are allowed", len(users), MaxUsers)
+		return nil, fmt.Errorf("%s holds %d entries; at most %d are allowed", field, len(users), MaxUsers)
 	}
 	out := make([]string, 0, len(users))
 	seen := make(map[string]bool, len(users))
 	for _, u := range users {
 		switch {
 		case u == "":
-			return nil, errors.New("users holds an empty username")
+			return nil, fmt.Errorf("%s holds an empty username", field)
 		case len(u) > MaxUsernameBytes:
-			return nil, fmt.Errorf("users holds a username of %d bytes; at most %d are allowed", len(u), MaxUsernameBytes)
+			return nil, fmt.Errorf("%s holds a username of %d bytes; at most %d are allowed", field, len(u), MaxUsernameBytes)
 		case strings.TrimSpace(u) != u:
 			return nil, fmt.Errorf("username %q has leading or trailing whitespace", u)
 		case strings.IndexFunc(u, unicode.IsControl) >= 0:
 			return nil, fmt.Errorf("username %q contains a control character", u)
 		case u == anonymousUser:
-			return nil, fmt.Errorf("users holds %q: anonymous submitters can never be granted a restricted group", anonymousUser)
+			return nil, fmt.Errorf("%s holds %q: anonymous submitters can never be granted a restricted group", field, anonymousUser)
 		}
 		if !seen[u] {
 			seen[u] = true
@@ -165,11 +181,23 @@ func ParseDefaultDeny(value string) (bool, error) {
 	return false, fmt.Errorf("server setting %s holds %q, want \"true\" or \"false\"", DefaultDenyKey, value)
 }
 
+// CheckManagersGroup refuses managers on the default group ("default" or
+// ""): its workers receive every untargeted task of every user, so whoever
+// could add a worker to it would see all of them. Any other group, and the
+// default group without managers, is fine.
+func CheckManagersGroup(group string, managers []string) error {
+	if len(managers) > 0 && normalizeGroup(group) == DefaultGroup {
+		return fmt.Errorf("the %q group cannot have managers: its workers receive every untargeted task of every user", DefaultGroup)
+	}
+	return nil
+}
+
 // Reload reads the rules from src and makes them the rules of p and of every
 // copy WithAdmins made of it, in one swap. On error nothing changes and the
-// error is returned. A stored rule that fails ValidateGroupName or
-// ValidateUsers (other than duplicates), or a default_deny value other than
-// "true"/"false", is an error: the policy fails closed instead of skipping it.
+// error is returned. A stored rule that fails ValidateGroupName,
+// ValidateUsers or ValidateManagers (other than duplicates) or
+// CheckManagersGroup, or a default_deny value other than "true"/"false", is
+// an error: the policy fails closed instead of skipping it.
 func (p *Policy) Reload(ctx context.Context, src Source) error {
 	if p == nil || p.state == nil {
 		return errors.New("worker group policy: Reload needs a policy made by groupacl.New")
@@ -210,9 +238,19 @@ func load(ctx context.Context, src Source) (*snapshot, error) {
 		if err != nil {
 			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, err)
 		}
-		r := rule{users: make(map[string]bool, len(users)), admins: gp.Admins}
+		managers, err := ValidateManagers(gp.Managers)
+		if err != nil {
+			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, err)
+		}
+		if err := CheckManagersGroup(gp.Group, managers); err != nil {
+			return nil, fmt.Errorf("worker group policy: stored rule: %w", err)
+		}
+		r := rule{users: make(map[string]bool, len(users)), managers: make(map[string]bool, len(managers)), admins: gp.Admins}
 		for _, u := range users {
 			r.users[u] = true
+		}
+		for _, m := range managers {
+			r.managers[m] = true
 		}
 		s.groups[gp.Group] = r
 	}
@@ -246,7 +284,7 @@ func (p *Policy) userIsAdmin(username string) bool {
 // Allowed reports whether username may use group ("" and "default" are the
 // default group). The anonymous username ("anonymous", as unauthenticated
 // REST submissions are stored) is treated exactly like "": never in a users
-// list, never an admin.
+// list, never an admin. A manager of a group may always use it.
 func (p *Policy) Allowed(username, group string) bool {
 	return p.allowedIn(p.rules(), username, group)
 }
@@ -270,10 +308,44 @@ func (p *Policy) allowedIn(s *snapshot, username, group string) bool {
 	if username == "" {
 		return false
 	}
-	if r.users[username] {
+	if r.users[username] || r.managers[username] {
 		return true
 	}
 	return r.admins && p.userIsAdmin(username)
+}
+
+// IsManager reports whether username manages group ("" and "default" are the
+// default group, which never has managers). "" and "anonymous" never manage
+// a group.
+func (p *Policy) IsManager(username, group string) bool {
+	if username == "" || username == anonymousUser {
+		return false
+	}
+	s := p.rules()
+	if s == nil {
+		return false
+	}
+	r, listed := s.groups[normalizeGroup(group)]
+	return listed && r.managers[username]
+}
+
+// ManagedGroups returns the groups username manages, sorted (nil when none).
+func (p *Policy) ManagedGroups(username string) []string {
+	if username == "" || username == anonymousUser {
+		return nil
+	}
+	s := p.rules()
+	if s == nil {
+		return nil
+	}
+	var names []string
+	for name, r := range s.groups {
+		if r.managers[username] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Restricted reports whether any restriction is in force (for a start-up

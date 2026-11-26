@@ -30,8 +30,15 @@ func scanNullableTime(ns sql.NullString) (*time.Time, error) {
 	return &t, nil
 }
 
-// CreateWorkerKey inserts a new worker key. Only k.KeyHash (not the raw secret)
-// is persisted.
+// WorkerAuthRequiredKey is the server setting that keeps worker
+// authentication on ("true") once a DB-backed worker key has existed, so
+// deleting the last key does not open the worker API. CreateWorkerKey sets
+// it; only an operator removing the row turns it off again.
+const WorkerAuthRequiredKey = "worker_auth.required"
+
+// CreateWorkerKey inserts a new worker key and, in the same transaction, sets
+// the server setting WorkerAuthRequiredKey to "true". Only k.KeyHash (not the
+// raw secret) is persisted.
 func (s *SQLStore) CreateWorkerKey(ctx context.Context, k *model.WorkerKey) error {
 	s.logger.Debug("sql", "op", "insert", "table", "worker_keys", "id", k.ID)
 
@@ -45,14 +52,29 @@ func (s *SQLStore) CreateWorkerKey(ctx context.Context, k *model.WorkerKey) erro
 		disabled = 1
 	}
 
-	_, err = s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO worker_keys (id, label, key_hash, key_prefix, groups, description, disabled, created_by, created_at, expires_at, last_used_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.ID, k.Label, k.KeyHash, k.KeyPrefix, string(groupsJSON), k.Description,
 		disabled, k.CreatedBy, formatTime(k.CreatedAt),
 		nullableTime(k.ExpiresAt), nullableTime(k.LastUsedAt),
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, upsertServerSettingSQL,
+		WorkerAuthRequiredKey, "true", k.CreatedBy, formatTime(time.Now().UTC())); err != nil {
+		return fmt.Errorf("set %s: %w", WorkerAuthRequiredKey, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
 }
 
 // scanWorkerKey scans a single worker_keys row into a model.WorkerKey.
@@ -192,8 +214,51 @@ func (s *SQLStore) DeleteWorkerKey(ctx context.Context, id string) error {
 	return nil
 }
 
-// CountWorkerKeys returns the number of configured worker keys. Used to decide
-// whether DB-backed worker-key enforcement is active.
+// DeleteWorkerKeyForGroup removes the worker key id only when its stored
+// groups are exactly [group], decoded and compared inside one transaction,
+// and reports whether it was removed (false: no such key, or a key with any
+// other groups, which is left alone).
+func (s *SQLStore) DeleteWorkerKeyForGroup(ctx context.Context, id, group string) (bool, error) {
+	s.logger.Debug("sql", "op", "delete", "table", "worker_keys", "id", id, "group", group)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var groupsJSON string
+	err = tx.QueryRowContext(ctx, `SELECT groups FROM worker_keys WHERE id = ?`, id).Scan(&groupsJSON)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var groups []string
+	if err := unmarshalJSON(groupsJSON, &groups, "groups"); err != nil {
+		return false, err
+	}
+	if len(groups) != 1 || groups[0] != group {
+		return false, nil
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM worker_keys WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit: %w", err)
+	}
+	return n > 0, nil
+}
+
+// CountWorkerKeys returns the number of configured worker keys. Used at
+// start-up to set WorkerAuthRequiredKey on databases that hold keys from
+// before the setting existed.
 func (s *SQLStore) CountWorkerKeys(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_keys`).Scan(&n)
