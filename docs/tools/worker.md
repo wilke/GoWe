@@ -1012,6 +1012,19 @@ Directories are retained when:
 - outputs are staged in place (`--stage-out local`), where downstream tasks
   read directly from the task directory
 
+A task that runs again on the same worker (a retry, or a requeue after a worker
+timeout, restart or removal) keeps its id but starts in a fresh, empty task
+directory. Whatever the earlier attempt left is moved next to it as
+`<task id>.attempt-N` (with `<task id>.attempt-N_tmp` /
+`<task id>.attempt-N_staging`; N is the first free number). This happens on
+every worker, with or without `--keep-task-dirs`, and the `.attempt-N`
+directories stay even when a later attempt succeeds: they are never removed
+automatically, and each one can hold a full copy of the staged inputs and
+partial outputs, so watch the disk on workers whose tasks are retried often.
+Absolute symlinks inside a moved directory that pointed into the task's own
+directories now point at the new attempt's, or at nothing. A tool can no longer
+resume from files its own earlier attempt left in the task directory.
+
 Staged copies in a shared stage-out directory (`--stage-out file:///...`) or in
 Shock are not cleaned by the worker; submission-level retention of those
 intermediates is tracked in [#159](https://github.com/wilke/GoWe/issues/159).
