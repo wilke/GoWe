@@ -1,24 +1,26 @@
 // Package groupacl decides which submitters may send tasks to a worker group
-// (#261). Worker keys decide which workers may join a group; this policy, the
-// "worker_groups" block of the server --config file, decides which users may
-// target one with gowe:Execution.worker_group or the worker_group label.
+// (#261). Worker keys decide which workers may join a group; this policy,
+// stored in the database (worker_group_policies and the
+// worker_groups.default_deny server setting) and changed at runtime by server
+// admins, decides which users may target one with
+// gowe:Execution.worker_group or the worker_group label.
 //
 // The scheduler enforces it at dispatch (authoritative) and when a FAILED
 // task is re-queued, as do the UI resume/recompute handlers; the submission
-// handlers use it to refuse early with a readable error.
+// handlers use it to refuse early with a readable error. All of them hold the
+// same *Policy; Reload swaps its rules for every holder at once.
 package groupacl
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
+	"sync"
+	"sync/atomic"
+	"unicode"
 
 	"github.com/me/gowe/pkg/model"
 )
@@ -27,15 +29,19 @@ import (
 // means the same group.
 const DefaultGroup = "default"
 
-// maxConfigFileSize bounds how much of the --config file is read (same bound
-// as internal/dbconfig).
-const maxConfigFileSize = 1 << 20
+// DefaultDenyKey is the server setting holding default_deny ("true" or
+// "false"; no row = false).
+const DefaultDenyKey = "worker_groups.default_deny"
 
-// knownTopLevelKeys are the top-level keys of the server --config file:
-// admins (internal/server/admin_config.go), database (internal/dbconfig) and
-// worker_groups (this package). Any other key is a start-up error, so a
-// misspelt block cannot silently leave the policy unset.
-var knownTopLevelKeys = map[string]bool{"admins": true, "database": true, "worker_groups": true}
+// Size limits of a rule, checked by ValidateGroupName and ValidateUsers.
+const (
+	// MaxGroupNameBytes is the longest group name a rule may have.
+	MaxGroupNameBytes = 64
+	// MaxUsernameBytes is the longest username a users list may hold.
+	MaxUsernameBytes = 256
+	// MaxUsers is the most entries a users list may hold.
+	MaxUsers = 1000
+)
 
 // groupNameRe is the worker group name rule, mirrored from
 // internal/blessing/blessing.go (groupNameRe): letters, digits, '.', '_' or
@@ -46,32 +52,48 @@ var groupNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // with (model.AnonymousUser). The policy treats it exactly like "".
 var anonymousUser = model.AnonymousUser.Username
 
-// groupRule is one entry of worker_groups.groups in the config file.
-type groupRule struct {
-	Users  []string `json:"users"`
-	Admins bool     `json:"admins"`
-}
-
-// fileConfig is the "worker_groups" block of the config file.
-type fileConfig struct {
-	DefaultDeny bool                 `json:"default_deny"`
-	Groups      map[string]groupRule `json:"groups"`
-}
-
 type rule struct {
 	users  map[string]bool
 	admins bool
 }
 
+// snapshot is one immutable set of rules. It is never modified after Reload
+// built it, so readers need no lock.
+type snapshot struct {
+	defaultDeny bool
+	groups      map[string]rule // key: group name, the default group as DefaultGroup
+}
+
+// live is the state shared by a Policy and the copies WithAdmins returns.
+type live struct {
+	// reloadMu serialises Reload, so the snapshot stored last is the one
+	// read last: two changes reloading at once cannot leave the older rules
+	// in force.
+	reloadMu sync.Mutex
+	current  atomic.Pointer[snapshot] // nil = no rules
+}
+
 // IsAdminFunc reports whether a username is a server admin.
 type IsAdminFunc func(username string) bool
 
+// Source is where Reload reads the rules from; *store.SQLStore satisfies it.
+type Source interface {
+	ListWorkerGroupPolicies(ctx context.Context) ([]*model.WorkerGroupPolicy, error)
+	GetServerSetting(ctx context.Context, key string) (value string, found bool, err error)
+}
+
 // Policy decides whether a submitter may send tasks to a worker group.
-// The zero value / nil *Policy allows everything.
+// A nil *Policy, the zero value and a Policy that was never reloaded allow
+// everything.
 type Policy struct {
-	defaultDeny bool
-	groups      map[string]rule // key: group name, "" folded into DefaultGroup
-	isAdmin     IsAdminFunc
+	state   *live
+	isAdmin IsAdminFunc
+}
+
+// New returns a policy without rules (everything open). Load the stored
+// rules with Reload.
+func New() *Policy {
+	return &Policy{state: &live{}}
 }
 
 // normalizeGroup folds the two spellings of the default group into one key.
@@ -82,128 +104,137 @@ func normalizeGroup(group string) string {
 	return group
 }
 
-// Load reads the worker_groups block of the server config file at path
-// ("" = no policy). The block is read strictly: an unreadable file, invalid
-// JSON, an unknown top-level key, an unknown field inside the block, a
-// wrongly typed value, an invalid group name or "anonymous" in a users list
-// is an error. The other known top-level keys are left to their own readers.
-// A missing or null block yields a policy that allows everything.
-func Load(path string) (*Policy, error) {
-	if path == "" {
-		return nil, nil
+// ValidateGroupName checks a group name as an admin gives it: letters,
+// digits, '.', '_' or '-', starting with a letter or digit. The default group
+// is written "default"; "" is refused, and so is a name longer than
+// MaxGroupNameBytes.
+func ValidateGroupName(name string) error {
+	if name == "" {
+		return errors.New(`group name is empty (the default group is "default")`)
 	}
-	// O_NONBLOCK so a FIFO at this path cannot block start-up (as in
-	// internal/dbconfig).
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, fmt.Errorf("config file: %w", err)
+	if len(name) > MaxGroupNameBytes {
+		return fmt.Errorf("group name is %d bytes long; at most %d are allowed", len(name), MaxGroupNameBytes)
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("config file: %w", err)
+	if !groupNameRe.MatchString(name) {
+		return fmt.Errorf("%q is not a valid group name (letters, digits, '.', '_' or '-', starting with a letter or digit)", name)
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("config file %s is not a regular file", path)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("read config file %s: %w", path, err)
-	}
-	if len(data) > maxConfigFileSize {
-		return nil, fmt.Errorf("config file %s is larger than %d bytes", path, maxConfigFileSize)
-	}
-	return parse(path, data)
+	return nil
 }
 
-// parse decodes the worker_groups block of the config file contents data.
-// path is used in messages only.
-func parse(path string, data []byte) (*Policy, error) {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(data, &top); err != nil {
-		return nil, jsonError(path, false, err)
+// ValidateUsers checks a users list and returns it without duplicates, in
+// the order given (never nil). A list of more than MaxUsers entries
+// (duplicates included), an empty name, a name longer than MaxUsernameBytes,
+// a name with leading or trailing whitespace or with a control character
+// anywhere, and "anonymous" are refused.
+func ValidateUsers(users []string) ([]string, error) {
+	if len(users) > MaxUsers {
+		return nil, fmt.Errorf("users holds %d entries; at most %d are allowed", len(users), MaxUsers)
 	}
-	var unknown []string
-	for key := range top {
-		if !knownTopLevelKeys[key] {
-			unknown = append(unknown, fmt.Sprintf("%q", key))
+	out := make([]string, 0, len(users))
+	seen := make(map[string]bool, len(users))
+	for _, u := range users {
+		switch {
+		case u == "":
+			return nil, errors.New("users holds an empty username")
+		case len(u) > MaxUsernameBytes:
+			return nil, fmt.Errorf("users holds a username of %d bytes; at most %d are allowed", len(u), MaxUsernameBytes)
+		case strings.TrimSpace(u) != u:
+			return nil, fmt.Errorf("username %q has leading or trailing whitespace", u)
+		case strings.IndexFunc(u, unicode.IsControl) >= 0:
+			return nil, fmt.Errorf("username %q contains a control character", u)
+		case u == anonymousUser:
+			return nil, fmt.Errorf("users holds %q: anonymous submitters can never be granted a restricted group", anonymousUser)
+		}
+		if !seen[u] {
+			seen[u] = true
+			out = append(out, u)
 		}
 	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		return nil, fmt.Errorf("config file %s: unknown top-level key %s (allowed: admins, database, worker_groups)", path, strings.Join(unknown, ", "))
-	}
-	block := top["worker_groups"]
-	if len(block) == 0 || string(block) == "null" {
-		return nil, nil
-	}
+	return out, nil
+}
 
-	var fc fileConfig
-	dec := json.NewDecoder(bytes.NewReader(block))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&fc); err != nil {
-		return nil, jsonError(path, true, err)
+// ParseDefaultDeny parses the stored value of DefaultDenyKey: exactly "true"
+// or "false".
+func ParseDefaultDeny(value string) (bool, error) {
+	switch value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
 	}
+	return false, fmt.Errorf("server setting %s holds %q, want \"true\" or \"false\"", DefaultDenyKey, value)
+}
 
-	p := &Policy{defaultDeny: fc.DefaultDeny, groups: make(map[string]rule, len(fc.Groups))}
-	for name, gr := range fc.Groups {
-		if name == "" {
-			return nil, fmt.Errorf("config file %s: worker_groups.groups has an empty group name (the default group is \"default\")", path)
+// Reload reads the rules from src and makes them the rules of p and of every
+// copy WithAdmins made of it, in one swap. On error nothing changes and the
+// error is returned. A stored rule that fails ValidateGroupName or
+// ValidateUsers (other than duplicates), or a default_deny value other than
+// "true"/"false", is an error: the policy fails closed instead of skipping it.
+func (p *Policy) Reload(ctx context.Context, src Source) error {
+	if p == nil || p.state == nil {
+		return errors.New("worker group policy: Reload needs a policy made by groupacl.New")
+	}
+	p.state.reloadMu.Lock()
+	defer p.state.reloadMu.Unlock()
+
+	s, err := load(ctx, src)
+	if err != nil {
+		return err
+	}
+	p.state.current.Store(s)
+	return nil
+}
+
+// load builds a snapshot from src.
+func load(ctx context.Context, src Source) (*snapshot, error) {
+	s := &snapshot{}
+	value, found, err := src.GetServerSetting(ctx, DefaultDenyKey)
+	if err != nil {
+		return nil, fmt.Errorf("worker group policy: read %s: %w", DefaultDenyKey, err)
+	}
+	if found {
+		if s.defaultDeny, err = ParseDefaultDeny(value); err != nil {
+			return nil, fmt.Errorf("worker group policy: %w", err)
 		}
-		if !groupNameRe.MatchString(name) {
-			return nil, fmt.Errorf("config file %s: worker_groups.groups: %q is not a valid group name (letters, digits, '.', '_' or '-', starting with a letter or digit)", path, name)
+	}
+	rows, err := src.ListWorkerGroupPolicies(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("worker group policy: list rules: %w", err)
+	}
+	s.groups = make(map[string]rule, len(rows))
+	for _, gp := range rows {
+		if err := ValidateGroupName(gp.Group); err != nil {
+			return nil, fmt.Errorf("worker group policy: stored rule: %w", err)
 		}
-		r := rule{users: make(map[string]bool, len(gr.Users)), admins: gr.Admins}
-		for _, u := range gr.Users {
-			if u == "" {
-				return nil, fmt.Errorf("config file %s: worker_groups.groups.%s.users holds an empty username", path, name)
-			}
-			if u == anonymousUser {
-				return nil, fmt.Errorf("config file %s: worker_groups.groups.%s.users holds %q: anonymous submitters can never be granted a restricted group", path, name, anonymousUser)
-			}
+		users, err := ValidateUsers(gp.Users)
+		if err != nil {
+			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, err)
+		}
+		r := rule{users: make(map[string]bool, len(users)), admins: gp.Admins}
+		for _, u := range users {
 			r.users[u] = true
 		}
-		p.groups[normalizeGroup(name)] = r
+		s.groups[gp.Group] = r
 	}
-	return p, nil
-}
-
-// jsonError turns a decoding error of the config file into a message naming
-// the position or field, in the style of internal/dbconfig. inBlock is false
-// while the top level is decoded, true for the worker_groups block.
-func jsonError(path string, inBlock bool, err error) error {
-	var syn *json.SyntaxError
-	var typ *json.UnmarshalTypeError
-	switch {
-	case errors.As(err, &syn):
-		return fmt.Errorf("config file %s is not valid JSON (error at byte %d)", path, syn.Offset)
-	case errors.As(err, &typ):
-		switch {
-		case !inBlock:
-			return fmt.Errorf("config file %s: the top level must be a JSON object", path)
-		case typ.Field == "":
-			return fmt.Errorf("config file %s: worker_groups must be a JSON object", path)
-		}
-		return fmt.Errorf("config file %s: worker_groups.%s must be a %s", path, typ.Field, typ.Type)
-	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
-		return fmt.Errorf("config file %s is not valid JSON (unexpected end of input)", path)
-	case strings.HasPrefix(err.Error(), "json: unknown field "):
-		name := strings.TrimPrefix(err.Error(), "json: unknown field ")
-		return fmt.Errorf("config file %s: unknown field %s in worker_groups (allowed: default_deny, groups; per group: users, admins)", path, name)
-	default:
-		return fmt.Errorf("config file %s: invalid worker_groups block: %v", path, err)
-	}
+	return s, nil
 }
 
 // WithAdmins returns the policy with the admin lookup set (may be nil =
-// nobody is admin). A nil policy stays nil (everything allowed).
+// nobody is admin). The returned policy shares p's rules: a Reload of either
+// changes both. A nil policy stays nil (everything allowed).
 func (p *Policy) WithAdmins(f IsAdminFunc) *Policy {
 	if p == nil {
 		return nil
 	}
-	cp := *p
-	cp.isAdmin = f
-	return &cp
+	return &Policy{state: p.state, isAdmin: f}
+}
+
+// rules returns the current snapshot, nil when there are no rules.
+func (p *Policy) rules() *snapshot {
+	if p == nil || p.state == nil {
+		return nil
+	}
+	return p.state.current.Load()
 }
 
 // userIsAdmin reports whether username is a server admin. The anonymous
@@ -217,16 +248,21 @@ func (p *Policy) userIsAdmin(username string) bool {
 // REST submissions are stored) is treated exactly like "": never in a users
 // list, never an admin.
 func (p *Policy) Allowed(username, group string) bool {
-	if p == nil {
+	return p.allowedIn(p.rules(), username, group)
+}
+
+// allowedIn is Allowed against the snapshot s (nil = no rules).
+func (p *Policy) allowedIn(s *snapshot, username, group string) bool {
+	if s == nil {
 		return true
 	}
 	if username == anonymousUser {
 		username = ""
 	}
 	key := normalizeGroup(group)
-	r, listed := p.groups[key]
+	r, listed := s.groups[key]
 	if !listed {
-		if !p.defaultDeny || key == DefaultGroup {
+		if !s.defaultDeny || key == DefaultGroup {
 			return true
 		}
 		return p.userIsAdmin(username)
@@ -240,26 +276,29 @@ func (p *Policy) Allowed(username, group string) bool {
 	return r.admins && p.userIsAdmin(username)
 }
 
-// Restricted reports whether any restriction is configured (for a start-up
+// Restricted reports whether any restriction is in force (for a start-up
 // log line).
 func (p *Policy) Restricted() bool {
-	return p != nil && (p.defaultDeny || len(p.groups) > 0)
+	s := p.rules()
+	return s != nil && (s.defaultDeny || len(s.groups) > 0)
 }
 
 // DefaultDeny reports whether unlisted groups other than the default group
 // are denied to everyone but server admins.
 func (p *Policy) DefaultDeny() bool {
-	return p != nil && p.defaultDeny
+	s := p.rules()
+	return s != nil && s.defaultDeny
 }
 
 // Groups returns the names of the listed (restricted) groups, sorted. It
 // never exposes the user lists.
 func (p *Policy) Groups() []string {
-	if p == nil {
+	s := p.rules()
+	if s == nil {
 		return nil
 	}
-	names := make([]string, 0, len(p.groups))
-	for name := range p.groups {
+	names := make([]string, 0, len(s.groups))
+	for name := range s.groups {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -268,12 +307,15 @@ func (p *Policy) Groups() []string {
 
 // Check returns nil when username may use every group in groups, else an
 // error naming the first denied group: `user "X" may not use worker group "Y"`.
+// Every group is checked against the same rules, even when a Reload happens
+// meanwhile.
 func (p *Policy) Check(username string, groups []string) error {
-	if p == nil {
+	s := p.rules()
+	if s == nil {
 		return nil
 	}
 	for _, g := range groups {
-		if !p.Allowed(username, g) {
+		if !p.allowedIn(s, username, g) {
 			return fmt.Errorf("user %q may not use worker group %q", username, normalizeGroup(g))
 		}
 	}

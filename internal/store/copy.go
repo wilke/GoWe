@@ -67,6 +67,8 @@ var copyTables = []copyTable{
 	{name: "workers", pk: []string{"id"}},
 	{name: "worker_keys", pk: []string{"id"}},
 	{name: "blessed_tools", pk: []string{"id"}},
+	{name: "worker_group_policies", pk: []string{"group_name"}},
+	{name: "server_settings", pk: []string{"key"}},
 	{name: "sessions", pk: []string{"id"}, secretKey: true},
 	{name: "label_vocabulary", pk: []string{"id"}},
 }

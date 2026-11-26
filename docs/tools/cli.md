@@ -404,6 +404,7 @@ Administrative operations; the caller must hold the **admin** role.
 ```bash
 gowe admin verify-outputs <submission_id> | --all [--output-state delivered,upload_failed] [--since YYYY-MM-DD] [--json]
 gowe admin redeliver <submission_id> [--dry-run] [--json]
+gowe admin worker-groups list|set|delete|default-deny ...   # see below
 ```
 
 **verify-outputs** (read-only) downloads every `ws://` output of a submission — including
@@ -432,6 +433,42 @@ gowe admin redeliver sub_abc
 
 See [API_GUIDE.md §10](../API_GUIDE.md#10-admin-verify-and-re-deliver-workspace-outputs) and
 [upgrading.md](../upgrading.md) for the post-0.15.0 recovery procedure.
+
+#### worker-groups
+
+Shows and changes which submitters may use which worker groups (the worker group access
+policy, stored in the server's database; see
+[server.md, Worker Group Access](server.md#worker-group-access)).
+
+```bash
+gowe admin worker-groups list [--json]
+gowe admin worker-groups set <group> [--user <username>]... [--admins]
+gowe admin worker-groups delete <group>
+gowe admin worker-groups default-deny <true|false>
+```
+
+**set** creates or replaces the rule of a group: only the `--user` usernames (repeatable, exact
+and case-sensitive) may use it, and server admins too with `--admins`; with neither, nobody may.
+**set replaces the whole rule**, it does not edit it: omitting `--admins` turns the admins switch
+off, and omitting `--user` leaves nobody in the users list. The default group is written
+`default`. **delete** removes the rule: the group becomes open, or admin-only while
+**default-deny** is `true` (which makes every group without a rule, except `default`,
+admin-only). Group names (for **set**) and usernames are checked before any request is sent;
+`anonymous` cannot be listed. **delete** only refuses an empty name, so it also removes a stored
+rule with an invalid name.
+
+A change takes effect at once for new submissions, dispatch and re-queued tasks; tasks already
+QUEUED or RUNNING are not checked again. **list** first reloads the stored policy into the one
+the server enforces, so it shows what is in force; after a change answered "stored but ... could
+not be reloaded" (the stored and the enforced policy then differ), running **list** once the
+cause is fixed re-syncs them. A direct SQL edit of the tables is seen after the next **list**,
+change or server restart.
+
+```bash
+gowe admin worker-groups set gpu --user alice@bvbrc --user bob@bvbrc --admins
+gowe admin worker-groups default-deny true
+gowe admin worker-groups list
+```
 
 ---
 

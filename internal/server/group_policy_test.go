@@ -1,10 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/me/gowe/internal/groupacl"
@@ -40,18 +39,52 @@ const gpStepHint = `        hints:
             worker_group: gpu
 `
 
+// gpPolicy stores a rule for group gpu (secrets-tester and admins) and loads
+// it into a new policy with adminCfg's admin lookup.
 func gpPolicy(t *testing.T, adminCfg *AdminConfig) *groupacl.Policy {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "server.json")
-	cfg := `{"admins": [], "worker_groups": {"groups": {"gpu": {"users": ["secrets-tester"], "admins": true}}}}`
-	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+	ctx := context.Background()
+	st := testAuthStore(t)
+	if err := st.UpsertWorkerGroupPolicy(ctx, &model.WorkerGroupPolicy{Group: "gpu", Users: []string{"secrets-tester"}, Admins: true}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := groupacl.Load(path)
-	if err != nil {
+	p := groupacl.New().WithAdmins(adminCfg.IsAdmin)
+	if err := p.Reload(ctx, st); err != nil {
 		t.Fatal(err)
 	}
-	return p.WithAdmins(adminCfg.IsAdmin)
+	return p
+}
+
+// A change made through the admin API applies to the next submission, with
+// no restart.
+func TestCreateSubmission_GroupPolicyChangeAppliesAtOnce(t *testing.T) {
+	srv, _, _ := newWorkerGroupServer(t)
+	wfID, _ := tcRegister(t, srv, gpDoc(""))
+	body, _ := json.Marshal(map[string]any{"workflow_id": wfID, "inputs": map[string]any{}, "labels": map[string]string{"worker_group": "gpu"}})
+	submit := func() *envelope {
+		t.Helper()
+		w, env := doPostAs(t, srv, "/api/v1/submissions", string(body), userAuthToken)
+		if w.Code != http.StatusCreated && w.Code != http.StatusForbidden {
+			t.Fatalf("submit: %d %s", w.Code, w.Body.String())
+		}
+		return &env
+	}
+
+	if env := submit(); env.Error != nil {
+		t.Fatalf("no rule yet: submission refused: %+v", env.Error)
+	}
+	if w, _ := doPutAs(t, srv, workerGroupsPath+"/gpu", `{"users":["secrets-tester"]}`, adminAuthToken); w.Code != http.StatusOK {
+		t.Fatalf("PUT gpu: %d %s", w.Code, w.Body.String())
+	}
+	if env := submit(); env.Error == nil || env.Error.Message != `user "tester" may not use worker group "gpu"` {
+		t.Fatalf("after the rule: error = %+v, want the 403 for tester", env.Error)
+	}
+	if w := doDeleteAs(t, srv, workerGroupsPath+"/gpu", adminAuthToken); w.Code != http.StatusOK {
+		t.Fatalf("DELETE gpu: %d %s", w.Code, w.Body.String())
+	}
+	if env := submit(); env.Error != nil {
+		t.Fatalf("after deleting the rule: submission refused: %+v", env.Error)
+	}
 }
 
 func TestCreateSubmission_GroupPolicy(t *testing.T) {

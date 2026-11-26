@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,14 +20,7 @@ import (
 // The UI submission path runs the same worker-group fast-fail as the API
 // (#261): a group the user may not use is refused with a visible error.
 func TestHandleSubmissionCreatePost_GroupPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "server.json")
-	if err := os.WriteFile(path, []byte(`{"worker_groups": {"groups": {"gpu": {"users": ["alice"]}}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	policy, err := groupacl.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := loadUIGroupPolicy(t, &model.WorkerGroupPolicy{Group: "gpu", Users: []string{"alice"}})
 
 	tests := []struct {
 		name      string
@@ -94,14 +85,19 @@ func TestHandleSubmissionCreatePost_GroupPolicy(t *testing.T) {
 
 // --- Re-queue handlers: Resume, RecomputeFailed, TaskRecompute ---
 
-func loadUIGroupPolicy(t *testing.T, content string) *groupacl.Policy {
+// loadUIGroupPolicy stores rules in a database of its own and returns a live
+// policy loaded from it (no server admins).
+func loadUIGroupPolicy(t *testing.T, rules ...*model.WorkerGroupPolicy) *groupacl.Policy {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "server.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	st := setupTestStore(t)
+	t.Cleanup(func() { st.Close() })
+	for _, r := range rules {
+		if err := st.UpsertWorkerGroupPolicy(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
 	}
-	p, err := groupacl.Load(path)
-	if err != nil {
+	p := groupacl.New()
+	if err := p.Reload(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -226,7 +222,9 @@ func TestRecomputeHandlers_OwnerOrAdmin(t *testing.T) {
 // F1: TaskRecompute re-checks the worker-group policy before a FAILED worker
 // task goes back to QUEUED.
 func TestHandleTaskRecompute_GroupPolicy(t *testing.T) {
-	policy := loadUIGroupPolicy(t, `{"worker_groups": {"groups": {"gpu": {"users": ["alice"]}, "default": {"users": ["alice"]}}}}`)
+	policy := loadUIGroupPolicy(t,
+		&model.WorkerGroupPolicy{Group: "gpu", Users: []string{"alice"}},
+		&model.WorkerGroupPolicy{Group: "default", Users: []string{"alice"}})
 	tests := []struct {
 		name       string
 		user       string
@@ -275,7 +273,7 @@ func TestHandleTaskRecompute_GroupPolicy(t *testing.T) {
 // F1: Resume and RecomputeFailed skip and report the denied tasks and
 // requeue the allowed ones; when every task is denied nothing changes.
 func TestBulkRequeue_GroupPolicy(t *testing.T) {
-	policy := loadUIGroupPolicy(t, `{"worker_groups": {"groups": {"gpu": {"users": ["alice"]}}}}`)
+	policy := loadUIGroupPolicy(t, &model.WorkerGroupPolicy{Group: "gpu", Users: []string{"alice"}})
 	const reason = `submitter "mallory" may not use worker group "gpu"`
 	owner := &model.Session{ID: "s1", Username: "mallory", Role: "user"}
 	for _, h := range []struct{ handler, verb string }{{"resume", "requeued"}, {"recompute-failed", "recomputed"}} {

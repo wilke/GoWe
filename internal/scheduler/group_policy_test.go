@@ -5,8 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -93,21 +92,40 @@ $graph:
         type: string
 `
 
-const groupPolicyConfig = `{"worker_groups": {"groups": {"gpu": {"users": ["alice"], "admins": true}}}}`
+// testPolicy is a worker-group policy as stored: default_deny and rules.
+type testPolicy struct {
+	defaultDeny bool
+	rules       []model.WorkerGroupPolicy
+}
 
-// loadTestGroupPolicy writes content as a server config file and loads its
-// worker_groups block; "root" is the only server admin.
-func loadTestGroupPolicy(t *testing.T, content string) *groupacl.Policy {
+// gpuPolicy restricts group "gpu" to alice and server admins.
+var gpuPolicy = testPolicy{rules: []model.WorkerGroupPolicy{{Group: "gpu", Users: []string{"alice"}, Admins: true}}}
+
+// storeTestPolicy writes tp to st and reloads p from st, as the admin API
+// does after a change.
+func storeTestPolicy(t *testing.T, st store.Store, p *groupacl.Policy, tp testPolicy) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "server.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	ctx := context.Background()
+	for i := range tp.rules {
+		if err := st.UpsertWorkerGroupPolicy(ctx, &tp.rules[i]); err != nil {
+			t.Fatalf("UpsertWorkerGroupPolicy: %v", err)
+		}
 	}
-	p, err := groupacl.Load(path)
-	if err != nil {
-		t.Fatalf("groupacl.Load: %v", err)
+	if err := st.SetServerSetting(ctx, groupacl.DefaultDenyKey, strconv.FormatBool(tp.defaultDeny), "root"); err != nil {
+		t.Fatalf("SetServerSetting: %v", err)
 	}
-	return p.WithAdmins(func(u string) bool { return u == "root" })
+	if err := p.Reload(ctx, st); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+}
+
+// loadTestGroupPolicy stores tp in st and returns a live policy loaded from
+// it; "root" is the only server admin.
+func loadTestGroupPolicy(t *testing.T, st store.Store, tp testPolicy) *groupacl.Policy {
+	t.Helper()
+	p := groupacl.New().WithAdmins(func(u string) bool { return u == "root" })
+	storeTestPolicy(t, st, p, tp)
+	return p
 }
 
 // registerGraphWorkflowAs is registerGraphWorkflow with a submitter.
@@ -198,7 +216,7 @@ func TestDispatchStep_GroupPolicy(t *testing.T) {
 			sched, st := testSetup(t)
 			queueOnlyWorkerExecutor(sched, st)
 			if !tt.nilPolicy {
-				sched.SetGroupPolicy(loadTestGroupPolicy(t, groupPolicyConfig))
+				sched.SetGroupPolicy(loadTestGroupPolicy(t, st, gpuPolicy))
 			}
 			subID := registerGraphWorkflowAs(t, st, tt.cwl, tt.labels, tt.user)
 
@@ -240,12 +258,25 @@ func TestDispatchStep_GroupPolicy(t *testing.T) {
 	}
 }
 
+// A rule an admin adds after the submission was accepted applies at dispatch:
+// the scheduler holds the same live handle the admin API reloads.
+func TestDispatchStep_GroupPolicy_ChangedAtRuntime(t *testing.T) {
+	sched, st := testSetup(t)
+	queueOnlyWorkerExecutor(sched, st)
+	policy := loadTestGroupPolicy(t, st, testPolicy{})
+	sched.SetGroupPolicy(policy)
+	subID := registerGraphWorkflowAs(t, st, groupStepHintCWL, nil, "mallory")
+
+	storeTestPolicy(t, st, policy, gpuPolicy)
+	assertStepGroupDenied(t, sched, st, subID, "mallory", "gpu")
+}
+
 // Steps that do not run on the worker executor are not routed by group and
 // are not checked.
 func TestDispatchStep_GroupPolicy_LocalExecutorNotChecked(t *testing.T) {
 	sched, st := testSetup(t)
 	sched.config.MaxRetries = 0
-	sched.SetGroupPolicy(loadTestGroupPolicy(t, groupPolicyConfig))
+	sched.SetGroupPolicy(loadTestGroupPolicy(t, st, gpuPolicy))
 	subID := registerGraphWorkflowAs(t, st, groupStepHintCWL, nil, "mallory")
 	if err := sched.Tick(context.Background()); err != nil {
 		t.Fatal(err)
@@ -328,7 +359,7 @@ func TestDispatchStep_GroupPolicy_Scatter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sched, st := testSetup(t)
 			queueOnlyWorkerExecutor(sched, st)
-			sched.SetGroupPolicy(loadTestGroupPolicy(t, groupPolicyConfig))
+			sched.SetGroupPolicy(loadTestGroupPolicy(t, st, gpuPolicy))
 			subID := registerGraphWorkflowInputsAs(t, st, groupScatterCWL, inputs, nil, tt.user)
 
 			if tt.wantDenied {
@@ -355,7 +386,6 @@ func TestDispatchStep_GroupPolicy_Scatter(t *testing.T) {
 // default_deny at dispatch: an unlisted group other than the default group is
 // for server admins only; the default group stays open.
 func TestDispatchStep_GroupPolicy_DefaultDeny(t *testing.T) {
-	const denyConfig = `{"worker_groups": {"default_deny": true}}`
 	tests := []struct {
 		name       string
 		cwl        string
@@ -372,7 +402,7 @@ func TestDispatchStep_GroupPolicy_DefaultDeny(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sched, st := testSetup(t)
 			queueOnlyWorkerExecutor(sched, st)
-			sched.SetGroupPolicy(loadTestGroupPolicy(t, denyConfig))
+			sched.SetGroupPolicy(loadTestGroupPolicy(t, st, testPolicy{defaultDeny: true}))
 			subID := registerGraphWorkflowAs(t, st, tt.cwl, nil, tt.user)
 
 			if tt.wantDenied {
@@ -400,30 +430,35 @@ func TestDispatchStep_GroupPolicy_DefaultDeny(t *testing.T) {
 
 // A FAILED worker task the retry phase would put back in the queue is
 // re-checked (#261): the task was created while the submitter was allowed
-// (here: no policy yet, as before a restart with a stricter one), and its
-// retry must not reach a worker once the policy denies its group.
+// (here: nothing stored yet), then an admin changes the policy at runtime
+// (stored and reloaded into the handle the scheduler holds, as the admin API
+// does), and the retry must not reach a worker once the policy denies its
+// group.
 func TestResubmitRetrying_GroupPolicy(t *testing.T) {
-	const defaultListed = `{"worker_groups": {"groups": {"default": {"users": ["alice"]}}}}`
+	defaultListed := testPolicy{rules: []model.WorkerGroupPolicy{{Group: "default", Users: []string{"alice"}}}}
 	tests := []struct {
 		name       string
 		cwl        string
-		config     string
+		policy     testPolicy
 		user       string
 		wantDenied bool
 		wantGroup  string // in the reason
 	}{
-		{"restricted group: unlisted submitter refused", groupStepHintCWL, groupPolicyConfig, "mallory", true, "gpu"},
-		{"restricted group: anonymous submitter refused", groupStepHintCWL, groupPolicyConfig, "anonymous", true, "gpu"},
-		{"restricted group: listed submitter resubmitted", groupStepHintCWL, groupPolicyConfig, "alice", false, ""},
-		{"restricted group: admin with admins true resubmitted", groupStepHintCWL, groupPolicyConfig, "root", false, ""},
+		{"restricted group: unlisted submitter refused", groupStepHintCWL, gpuPolicy, "mallory", true, "gpu"},
+		{"restricted group: anonymous submitter refused", groupStepHintCWL, gpuPolicy, "anonymous", true, "gpu"},
+		{"restricted group: listed submitter resubmitted", groupStepHintCWL, gpuPolicy, "alice", false, ""},
+		{"restricted group: admin with admins true resubmitted", groupStepHintCWL, gpuPolicy, "root", false, ""},
 		{"no group on the task: listed default group refused", groupNoHintCWL, defaultListed, "mallory", true, "default"},
-		{"no group on the task: unlisted default group open", groupNoHintCWL, groupPolicyConfig, "mallory", false, ""},
+		{"no group on the task: unlisted default group open", groupNoHintCWL, gpuPolicy, "mallory", false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			sched, st := testSetup(t)
 			queueOnlyWorkerExecutor(sched, st)
+			// The live policy: nothing stored yet, so everything is open.
+			policy := loadTestGroupPolicy(t, st, testPolicy{})
+			sched.SetGroupPolicy(policy)
 			subID := registerGraphWorkflowAs(t, st, tt.cwl, nil, tt.user)
 			if err := sched.Tick(ctx); err != nil {
 				t.Fatal(err)
@@ -441,7 +476,8 @@ func TestResubmitRetrying_GroupPolicy(t *testing.T) {
 				t.Fatalf("fail task: applied=%v err=%v", applied, err)
 			}
 
-			sched.SetGroupPolicy(loadTestGroupPolicy(t, tt.config))
+			// The admin changes the policy; the scheduler's handle sees it.
+			storeTestPolicy(t, st, policy, tt.policy)
 			var logs bytes.Buffer
 			sched.logger = slog.New(slog.NewTextHandler(&logs, nil))
 
