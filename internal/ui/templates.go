@@ -2802,36 +2802,36 @@ var templates = map[string]string{
     </div>
 
     <!-- Detail table -->
-    <div class="bg-white shadow rounded-lg overflow-hidden table-responsive">
+    <div class="bg-white shadow rounded-lg table-responsive">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hostname</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Group</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Runtime</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GPU</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Task</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Version</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Registered</th>
-                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hostname</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Group</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Runtime</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GPU</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Task</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Version</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Seen</th>
+                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Registered</th>
+                    <th class="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
                 {{range .Workers}}
                 <tr id="worker-{{.ID}}" class="hover:bg-gray-50">
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-4 whitespace-nowrap">
                         <span class="inline-flex items-center gap-1.5">
                             <span class="w-2.5 h-2.5 rounded-full {{workerStateColor (print .State)}}"></span>
                             <span class="text-sm text-gray-700">{{.State}}</span>
                         </span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.Name}}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Hostname}}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{.Group}}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.Name}}</td>
+                    <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">{{.Hostname}}</td>
+                    <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">{{.Group}}</td>
+                    <td class="px-3 py-4 whitespace-nowrap">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
                             {{if eq (print .Runtime) "docker"}}bg-blue-100 text-blue-800
                             {{else if eq (print .Runtime) "apptainer"}}bg-purple-100 text-purple-800
@@ -2839,7 +2839,7 @@ var templates = map[string]string{
                             {{.Runtime}}
                         </span>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-4 whitespace-nowrap">
                         {{if .GPUEnabled}}
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                             GPU{{if .GPUDevice}}:{{.GPUDevice}}{{end}}
@@ -2848,7 +2848,7 @@ var templates = map[string]string{
                         <span class="text-gray-400 text-sm">-</span>
                         {{end}}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">
                         {{if .CurrentTask}}
                         {{$subID := index $.TaskSubmission .CurrentTask}}
                         {{if $subID}}<a href="{{base}}/submissions/{{$subID}}" class="text-blue-600 hover:text-blue-800 hover:underline" title="{{.CurrentTask}}">{{truncate .CurrentTask 12}}</a>{{else}}<span class="text-blue-600">{{truncate .CurrentTask 12}}</span>{{end}}
@@ -2856,11 +2856,11 @@ var templates = map[string]string{
                         <span class="text-gray-400">idle</span>
                         {{end}}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">{{if .Version}}{{truncate .Version 7}}{{else}}-{{end}}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{timeAgo .LastSeen}}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .RegisteredAt}}</td>
+                    <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-400 font-mono">{{if .Version}}{{truncate .Version 7}}{{else}}-{{end}}</td>
+                    <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">{{timeAgo .LastSeen}}</td>
+                    <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">{{formatTime .RegisteredAt}}</td>
                     {{if and $.Session $.Session.IsAdmin}}
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm">
+                    <td class="px-3 py-4 whitespace-nowrap text-right text-sm">
                         <button hx-delete="{{base}}/workers/{{.ID}}"
                                 hx-target="#worker-{{.ID}}"
                                 hx-swap="outerHTML"
@@ -2872,7 +2872,7 @@ var templates = map[string]string{
                         </button>
                     </td>
                     {{else}}
-                    <td class="px-6 py-4"></td>
+                    <td class="px-3 py-4"></td>
                     {{end}}
                 </tr>
                 {{end}}

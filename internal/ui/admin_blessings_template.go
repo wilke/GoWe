@@ -125,7 +125,7 @@ const adminBlessingsTemplate = `{{define "content"}}
     {{end}}
 
     <!-- Pending -->
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6 table-responsive">
+    <div class="bg-white shadow sm:rounded-lg mb-6 table-responsive">
         <div class="px-4 py-3 border-b border-gray-200 text-sm font-medium text-gray-900">Awaiting a blessing ({{len .Pending}})</div>
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50"><tr>
@@ -158,7 +158,7 @@ const adminBlessingsTemplate = `{{define "content"}}
     </div>
 
     <!-- Blessings -->
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg table-responsive">
+    <div class="bg-white shadow sm:rounded-lg table-responsive">
         <div class="px-4 py-3 border-b border-gray-200 flex justify-between text-sm">
             <span class="font-medium text-gray-900">Blessings</span>
             {{if .ShowAll}}<a href="{{base}}/admin/tool-blessings" class="text-indigo-600">hide revoked</a>
