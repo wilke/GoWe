@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/wilke/GoWe/compare/v0.32.0...v0.33.0) (2026-11-26)
+
+
+### Features
+
+* **server:** service tokens for programs, and three access fixes found on the way ([#391](https://github.com/wilke/GoWe/issues/391)) ([1750b4c](https://github.com/wilke/GoWe/commit/1750b4c326bae93ca9d4e98e0d336b9af13d1da5))
+
 ## [0.32.0](https://github.com/wilke/GoWe/compare/v0.31.0...v0.32.0) (2026-11-26)
 
 
