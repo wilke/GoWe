@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.32.0](https://github.com/wilke/GoWe/compare/v0.31.0...v0.32.0) (2026-11-26)
+
+
+### Features
+
+* **server:** keep a history of a task's earlier attempts ([#389](https://github.com/wilke/GoWe/issues/389)) ([fc7c0af](https://github.com/wilke/GoWe/commit/fc7c0afcc86b825c9512d7a43d5334866d8ed0bd))
+* **worker:** remove kept task directories after --kept-task-dir-ttl ([#390](https://github.com/wilke/GoWe/issues/390)) ([243bf7d](https://github.com/wilke/GoWe/commit/243bf7df2552e5bc1e365ab73acf9e5dc2926636))
+
+
+### Bug Fixes
+
+* **worker:** start a rerun task in a fresh directory and keep the earlier attempt's ([#387](https://github.com/wilke/GoWe/issues/387)) ([38cf4a8](https://github.com/wilke/GoWe/commit/38cf4a8b5a8f8595f12a77fb794175cad9aa2a82))
+
 ## [0.31.0](https://github.com/wilke/GoWe/compare/v0.30.0...v0.31.0) (2026-11-26)
 
 
