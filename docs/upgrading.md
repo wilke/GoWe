@@ -4,6 +4,18 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.31.x → next
+
+A task that runs again starts in a fresh task directory (#368). No manual steps; roll workers to get it.
+
+- **Behaviour change**: when a task is retried or requeued and runs again on the same worker, the worker moves what the
+  earlier attempt left (`<task id>`, `<task id>_tmp`, `<task id>_staging`) to `<task id>.attempt-N*` and starts in an
+  empty directory. Before, the new attempt ran on top of the old files, and a tool with `InitialWorkDirRequirement`
+  entries failed every further attempt with `file exists`.
+- The `.attempt-N` directories are kept on every worker, with or without `--keep-task-dirs`, also when a later attempt
+  succeeds, and nothing removes them yet. Watch the work directory of workers whose tasks are retried often.
+- A tool that resumed from files its own failed attempt left in the task directory no longer finds them.
+
 ## 0.24.x → next
 
 Capacity-aware checkout (#324). No manual steps; the schema gains nullable `workers.max_cpus` / `max_mem_mb`.

@@ -196,7 +196,7 @@ Trunk-based (GitHub Flow). Full guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | `--worker-key-file` | Worker auth key, key file only (regular file, mode 0600 or stricter). `--worker-key` (argv) and `GOWE_WORKER_KEY` (environment) are **refused**: both are readable by same-uid host processes (`/proc/<pid>/cmdline`, `/proc/<pid>/environ`), and tools without DockerRequirement run on the host on every worker |
 | `--inherit-host-env` | Degraded: host-run tools (`--runtime none`) inherit the worker env instead of the allow-list (WARN; label `inherit_host_env=true`) |
 | `--apptainer-no-containall` | Degraded: Apptainer without `--containall`, `--cleanenv` kept (WARN; label `apptainer_containall=false`) |
-| `--keep-task-dirs` | Keep task dirs after success (failed tasks always kept; `gowe submit --debug` keeps a single job's) |
+| `--keep-task-dirs` | Keep task dirs after success (failed tasks always kept; `gowe submit --debug` keeps a single job's). Independent of this flag, a task that runs again starts in a fresh dir and the earlier attempt's is kept as `<task id>.attempt-N` (never removed automatically) |
 
 `cwl-runner` accepts the same bind/env flags as the worker (`--pre-stage-dir`, `--dataset`, `--extra-bind`, `--env`, `--env-file`; shared parsing in `internal/hostres`; see `docs/tools/cwl-runner.md`) — under Apptainer `--containall` they are the only way host databases and env reach a container.
 

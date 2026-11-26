@@ -876,6 +876,15 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 	releaseGPU := func() { w.releaseTaskGPUs(task.ID, hold) }
 
 	taskDir := filepath.Join(w.workDir, task.ID)
+	// A retried or requeued task keeps its id: start in fresh directories and
+	// keep what an earlier attempt left as "<id>.attempt-N" for debugging.
+	archived, err := archivePreviousAttempt(w.workDir, task.ID)
+	if err != nil {
+		return w.reportFailure(runCtx, task, fmt.Errorf("archive previous attempt: %w", err))
+	}
+	if archived != "" {
+		w.logger.Info("previous attempt's task dir kept", "task_id", task.ID, "archived", archived)
+	}
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return w.reportFailure(runCtx, task, fmt.Errorf("create task dir: %w", err))
 	}
@@ -960,7 +969,8 @@ func (w *Worker) releaseTaskGPUs(taskID string, hold *gpuHold) {
 // --debug`), and when any reported output still resolves into the task dir —
 // which happens with in-place stage-out (e.g. FileStager "local" mode) or
 // when a StageOut failed and left the local path; deleting the dir then would
-// destroy outputs that downstream tasks reference.
+// destroy outputs that downstream tasks reference. Earlier attempts'
+// directories ("<id>.attempt-N", see archivePreviousAttempt) are always kept.
 func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 	if w.keepTaskDirs {
 		return
