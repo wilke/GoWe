@@ -1055,13 +1055,70 @@ func (ui *UI) HandleTaskLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	attempts, err := ui.store.ListTaskAttempts(r.Context(), task.ID)
+	if err != nil {
+		ui.logger.Warn("list task attempts", "task_id", task.ID, "error", err)
+		attempts = nil
+	}
+
 	data := map[string]any{
 		"Title":        fmt.Sprintf("Task Logs %s - GoWe", task.ID),
 		"Session":      sess,
 		"Task":         task,
 		"SubmissionID": subID,
+		"Attempts":     taskAttemptViews(attempts),
 	}
 	ui.render(w, "submissions/task_logs", data)
+}
+
+// taskAttemptView is an earlier attempt of a task as the task logs page
+// shows it: a one-line summary and the attempt's output.
+type taskAttemptView struct {
+	Summary string
+	Stdout  string
+	Stderr  string
+}
+
+// attemptReasonLabels are the human labels of the attempt reasons.
+var attemptReasonLabels = map[string]string{
+	model.AttemptReasonRetry:         "failed, retried",
+	model.AttemptReasonReset:         "failed, re-queued by a user",
+	model.AttemptReasonWorkerOffline: "worker stopped responding",
+	model.AttemptReasonWorkerRemoved: "worker was removed",
+	model.AttemptReasonRequeued:      "re-queued",
+}
+
+// taskAttemptViews builds the views of attempts, in their order. The summary
+// is "Attempt K: <reason>, exit <code or ->, worker <WorkerLabel>,
+// <started> to <ended>"; html/template escapes every field.
+func taskAttemptViews(attempts []model.TaskAttempt) []taskAttemptView {
+	out := make([]taskAttemptView, 0, len(attempts))
+	for _, a := range attempts {
+		reason, ok := attemptReasonLabels[a.Reason]
+		if !ok {
+			reason = a.Reason
+		}
+		exit := "-"
+		if a.ExitCode != nil {
+			exit = strconv.Itoa(*a.ExitCode)
+		}
+		out = append(out, taskAttemptView{
+			Summary: fmt.Sprintf("Attempt %d: %s, exit %s, worker %s, %s to %s",
+				a.Attempt, reason, exit, a.WorkerLabel(), attemptTime(a.StartedAt), attemptTime(a.CompletedAt)),
+			Stdout: a.Stdout,
+			Stderr: a.Stderr,
+		})
+	}
+	return out
+}
+
+// attemptTime formats an attempt's start or end like the formatTimePtr
+// template function ("-" when unknown).
+func attemptTime(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return "-"
+	}
+	return t.Format("2006-01-02 15:04:05")
 }
 
 // HandleSubmissionExport exports submissions as CSV.
@@ -1133,14 +1190,16 @@ func (ui *UI) HandleSubmissionExport(w http.ResponseWriter, r *http.Request) {
 // resetFailedTaskForQueue prepares a FAILED task snapshot for re-execution
 // (QUEUED, cleared retry/output bookkeeping) and writes it back only while
 // the task is still exactly FAILED in the store — a guarded full-row write
-// in the same style as CASTaskState, reusing the exact-state primitive
-// TerminalizeTaskFrom (see its stuck-task caller in
-// internal/scheduler/loop.go) instead of an unconditional UpdateTask. A
-// concurrent scheduler write (markRetries' FAILED→RETRYING CAS, or a cancel
-// SKIP) between the caller's read and this write makes the guard reject the
-// write (applied=false, no error) instead of the stale UI snapshot
-// clobbering the winning state — the caller must skip/count/report that
-// task rather than treat it as reset.
+// in the same style as CASTaskState, through ArchiveAndResetTask (the
+// exact-state compare-and-set of TerminalizeTaskFrom) instead of an
+// unconditional UpdateTask. A concurrent scheduler write (markRetries'
+// FAILED→RETRYING CAS, or a cancel SKIP) between the caller's read and this
+// write makes the guard reject the write (applied=false, no error) instead
+// of the stale UI snapshot clobbering the winning state — the caller must
+// skip/count/report that task rather than treat it as reset.
+//
+// The same transaction archives the failed attempt (reason reset), only
+// when the write applies.
 func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (bool, error) {
 	task.State = model.TaskStateQueued
 	task.RetryCount = 0
@@ -1149,7 +1208,7 @@ func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (boo
 	task.ExitCode = nil
 	task.StartedAt = nil
 	task.CompletedAt = nil
-	return ui.store.TerminalizeTaskFrom(ctx, &task, model.TaskStateFailed)
+	return ui.store.ArchiveAndResetTask(ctx, &task, model.TaskStateFailed, model.AttemptReasonReset)
 }
 
 // requeueGroupDenied returns the reason the worker-group policy (#261)

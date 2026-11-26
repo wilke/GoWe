@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -95,16 +96,37 @@ func (c *Client) send(method, path string, body any, showResponse bool) (*apiRes
 	var apiResp apiResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		if !showResponse {
-			return nil, fmt.Errorf("parse response (status %d): %w", resp.StatusCode, err)
+			return nil, &statusError{status: resp.StatusCode, err: fmt.Errorf("parse response (status %d): %w", resp.StatusCode, err)}
 		}
-		return nil, fmt.Errorf("parse response (status %d): %w\nbody: %s", resp.StatusCode, err, string(respBody))
+		return nil, &statusError{status: resp.StatusCode, err: fmt.Errorf("parse response (status %d): %w\nbody: %s", resp.StatusCode, err, string(respBody))}
 	}
 
 	if apiResp.Status == "error" && apiResp.Error != nil {
-		return &apiResp, apiResp.Error
+		return &apiResp, &statusError{status: resp.StatusCode, err: apiResp.Error}
 	}
 
 	return &apiResp, nil
+}
+
+// statusError is an error of a request that got a response, with the
+// response's HTTP status. Its message is the wrapped error's (an
+// *model.APIError stays reachable through errors.As).
+type statusError struct {
+	status int
+	err    error
+}
+
+func (e *statusError) Error() string { return e.err.Error() }
+func (e *statusError) Unwrap() error { return e.err }
+
+// httpStatus returns the HTTP status of the response err came with, 0 when
+// the request got no response.
+func httpStatus(err error) int {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status
+	}
+	return 0
 }
 
 // Get performs a GET request.

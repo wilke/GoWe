@@ -1278,7 +1278,10 @@ func (s *SQLStore) DeleteSubmission(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
-	// Delete child tasks first.
+	// Delete child tasks first, with their archived attempts.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_attempts WHERE submission_id = ?`, id); err != nil {
+		return fmt.Errorf("delete task attempts: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE submission_id = ?`, id); err != nil {
 		return fmt.Errorf("delete tasks: %w", err)
 	}
@@ -1860,10 +1863,11 @@ func (s *SQLStore) ListTasksByStepInstance(ctx context.Context, stepInstanceID s
 
 // execTaskUpdate marshals the mutable task columns (encrypting any embedded
 // HTTP bearer token via marshalRuntimeHints) and runs the shared UPDATE with
-// the given WHERE clause, returning the number of rows affected. It is the
-// single write path behind UpdateTask and TerminalizeTask so both persist the
-// same field set.
-func (s *SQLStore) execTaskUpdate(ctx context.Context, task *model.Task, where string, whereArgs ...any) (int64, error) {
+// the given WHERE clause on ex (the database or a transaction), returning the
+// number of rows affected. It is the single write path behind UpdateTask,
+// TerminalizeTask, TerminalizeTaskFrom and ArchiveAndResetTask so all persist
+// the same field set.
+func (s *SQLStore) execTaskUpdate(ctx context.Context, ex execer, task *model.Task, where string, whereArgs ...any) (int64, error) {
 	// Sanitize NaN/Inf values before marshaling (Go's encoding/json rejects them).
 	sanitizeFloats(task.Outputs)
 	sanitizeFloats(task.Tool)
@@ -1912,7 +1916,7 @@ func (s *SQLStore) execTaskUpdate(ctx context.Context, task *model.Task, where s
 		task.StepInstanceID, task.ScatterIndex,
 		dispatchedAt, task.StageInMs, task.StageOutMs,
 	}, whereArgs...)
-	result, err := s.db.ExecContext(ctx,
+	result, err := ex.ExecContext(ctx,
 		`UPDATE tasks SET state=?, executor_type=?, external_id=?,
 		 outputs=?, priority=?, retry_count=?, max_retries=?, stdout=?, stderr=?, exit_code=?,
 		 started_at=?, completed_at=?, tool=?, job=?, runtime_hints=?,
@@ -1930,7 +1934,7 @@ func (s *SQLStore) execTaskUpdate(ctx context.Context, task *model.Task, where s
 func (s *SQLStore) UpdateTask(ctx context.Context, task *model.Task) error {
 	s.logger.Debug("sql", "op", "update", "table", "tasks", "id", task.ID)
 
-	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=?`, task.ID)
+	n, err := s.execTaskUpdate(ctx, s.db, task, ` WHERE id=?`, task.ID)
 	if err != nil {
 		return err
 	}
@@ -1948,7 +1952,7 @@ func (s *SQLStore) UpdateTask(ctx context.Context, task *model.Task) error {
 func (s *SQLStore) TerminalizeTask(ctx context.Context, task *model.Task) (bool, error) {
 	s.logger.Debug("sql", "op", "terminalize", "table", "tasks", "id", task.ID)
 
-	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=? AND state NOT IN (?, ?, ?)`,
+	n, err := s.execTaskUpdate(ctx, s.db, task, ` WHERE id=? AND state NOT IN (?, ?, ?)`,
 		task.ID,
 		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped))
 	if err != nil {
@@ -1969,7 +1973,7 @@ func (s *SQLStore) TerminalizeTask(ctx context.Context, task *model.Task) (bool,
 func (s *SQLStore) TerminalizeTaskFrom(ctx context.Context, task *model.Task, from model.TaskState) (bool, error) {
 	s.logger.Debug("sql", "op", "terminalize_from", "table", "tasks", "id", task.ID, "from", from)
 
-	n, err := s.execTaskUpdate(ctx, task, ` WHERE id=? AND state=?`, task.ID, string(from))
+	n, err := s.execTaskUpdate(ctx, s.db, task, ` WHERE id=? AND state=?`, task.ID, string(from))
 	if err != nil {
 		return false, fmt.Errorf("terminalize task %s from %s: %w", task.ID, from, err)
 	}
@@ -2305,11 +2309,23 @@ func (s *SQLStore) GetTaskSummaries(ctx context.Context, submissionIDs []string)
 // ResetFailedTasks also clears started_at (M1): without this, a retried
 // bvbrc task's MarkTaskRunning (COALESCE(started_at, ?)) would preserve the
 // PRIOR attempt's stamp instead of stamping the new one, because a non-nil
-// started_at survives from the failed attempt otherwise.
+// started_at survives from the failed attempt otherwise. The failed attempts
+// are archived (reason reset) in the same transaction before the reset.
 func (s *SQLStore) ResetFailedTasks(ctx context.Context, submissionID string) (int, error) {
 	s.logger.Debug("sql", "op", "reset_failed_tasks", "submission_id", submissionID)
 
-	result, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("reset failed tasks: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonReset,
+		`t.submission_id = ? AND t.state = 'FAILED'`, submissionID); err != nil {
+		return 0, fmt.Errorf("reset failed tasks: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx,
 		`UPDATE tasks
 		 SET state = ?, retry_count = 0, started_at = NULL, completed_at = NULL, stderr = '', exit_code = NULL,
 		     stage_in_ms = NULL, stage_out_ms = NULL
@@ -2319,6 +2335,9 @@ func (s *SQLStore) ResetFailedTasks(ctx context.Context, submissionID string) (i
 		return 0, fmt.Errorf("reset failed tasks: %w", err)
 	}
 	n, _ := result.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("reset failed tasks: commit: %w", err)
+	}
 	return int(n), nil
 }
 
@@ -2928,13 +2947,21 @@ func (s *SQLStore) DeleteOfflineWorker(ctx context.Context, id, group string, si
 // DELETE's "WHERE id = ?", with its arguments args) holds and, in the same
 // transaction, requeues the worker's RUNNING worker-executor tasks (same
 // reset as RequeueWorkerTasks). Nothing changes when no row matched; it
-// reports whether one was deleted.
+// reports whether one was deleted. The tasks' attempts are archived (reason
+// worker_removed) before the DELETE, while the worker's name can still be
+// read; when the DELETE matches nothing the transaction is rolled back and
+// the archived rows with it.
 func (s *SQLStore) deleteWorkerWhere(ctx context.Context, id, cond string, args ...any) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonWorkerRemoved,
+		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`, id); err != nil {
+		return false, err
+	}
 
 	result, err := tx.ExecContext(ctx, `DELETE FROM workers WHERE id = ?`+cond, append([]any{id}, args...)...)
 	if err != nil {
@@ -3947,6 +3974,10 @@ func (s *SQLStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) 
 
 	var reaped []ReapedWorker
 	for _, w := range stale {
+		if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonWorkerOffline,
+			`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`, w.ID); err != nil {
+			return nil, 0, fmt.Errorf("requeue tasks of %s: %w", w.ID, err)
+		}
 		res, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 			     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
@@ -3963,6 +3994,11 @@ func (s *SQLStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) 
 		reaped = append(reaped, ReapedWorker{Worker: w, Requeued: int(n)})
 	}
 
+	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonWorkerOffline,
+		`t.state = 'RUNNING' AND t.executor_type = 'worker'
+		 AND t.external_id IN (SELECT ow.id FROM workers ow WHERE ow.state = 'offline' AND ow.last_seen < ?)`, cutoff); err != nil {
+		return nil, 0, fmt.Errorf("requeue stranded tasks: %w", err)
+	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
@@ -3999,6 +4035,11 @@ func (s *SQLStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonRequeued,
+		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`, workerID); err != nil {
+		return 0, fmt.Errorf("requeue tasks: %w", err)
+	}
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
@@ -4105,11 +4146,7 @@ func (s *SQLStore) ReconcileWorkerTasks(ctx context.Context, workerID string, ru
 	}
 
 	for _, id := range orphans {
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
-			     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
-			 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`,
-			id, workerID); err != nil {
+		if err := s.requeueOrphan(ctx, workerID, id); err != nil {
 			return nil, fmt.Errorf("reconcile: requeue %s: %w", id, err)
 		}
 		// Move current_task off this orphaned task only if it pointed at it,
@@ -4121,6 +4158,31 @@ func (s *SQLStore) ReconcileWorkerTasks(ctx context.Context, workerID string, ru
 	}
 
 	return orphans, nil
+}
+
+// requeueOrphan archives (reason requeued) and requeues task id of workerID
+// in one transaction, both only while the task is still RUNNING on that
+// worker.
+func (s *SQLStore) requeueOrphan(ctx context.Context, workerID, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonRequeued,
+		`t.id = ? AND t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`,
+		id, workerID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
+		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
+		 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`,
+		id, workerID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CancelledTasksForWorker returns the subset of the given task IDs whose owning

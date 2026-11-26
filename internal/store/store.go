@@ -146,8 +146,19 @@ type Store interface {
 	// sub-workflow proxies: those are cancelled by the scheduler's per-tick
 	// reconciliation so the cancel cascade reaches their child submissions.
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
+	// ResetFailedTasks archives (reason reset) and resets the submission's
+	// FAILED tasks to PENDING in one transaction.
 	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
 	ResetFailedSteps(ctx context.Context, submissionID string) (int, error)
+	// ArchiveAndResetTask keeps the task's current record as an attempt
+	// (reason, model.AttemptReason*) and writes task (the caller's blanked
+	// copy) in one transaction, both only if the row is still in state from.
+	// applied=false (nothing archived, nothing written) when it is not. A row
+	// that never started and holds no output is written without an attempt.
+	ArchiveAndResetTask(ctx context.Context, task *model.Task, from model.TaskState, reason string) (applied bool, err error)
+	// ListTaskAttempts returns the task's archived attempts by attempt
+	// ascending (empty when none).
+	ListTaskAttempts(ctx context.Context, taskID string) ([]model.TaskAttempt, error)
 	// CountTasksByState returns the current global count of tasks per state
 	// (a single GROUP BY query), used to refresh the gowe_tasks{state} gauge
 	// once per scheduler tick.
