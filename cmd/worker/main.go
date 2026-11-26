@@ -40,6 +40,7 @@ func main() {
 	flag.StringVar(&cfg.StageOut, "stage-out", "local", "Output staging mode (local, file:///path, http://..., s3://bucket, shock://host)")
 	flag.DurationVar(&cfg.Poll, "poll", 5*time.Second, "Poll interval")
 	flag.BoolVar(&cfg.KeepTaskDirs, "keep-task-dirs", false, "Retain task working directories after successful completion (failed tasks are always kept)")
+	flag.DurationVar(&cfg.KeptTaskDirTTL, "kept-task-dir-ttl", 0, "Remove kept task directories (failed, cancelled, debug, --keep-task-dirs, earlier attempts) whose <dir>.kept marker is older than this, checked at start-up and hourly (0 = never; otherwise at least 1h, e.g. 720h)")
 
 	// Staging mode flags.
 	var stageMode string
@@ -197,6 +198,10 @@ func main() {
 	// Validate --concurrency (the capacity and GPU inventory checks follow in
 	// worker.New, after CPU/memory/GPU auto-detection).
 	if err := worker.ValidateConcurrency(cfg.Concurrency); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if err := worker.ValidateKeptTaskDirTTL(cfg.KeptTaskDirTTL); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -409,6 +414,7 @@ func main() {
 		"max_mem_mb", cfg.Resources.MaxMemMB,
 		"concurrency", cfg.Concurrency,
 		"image_dir", cfg.ImageDir,
+		"kept_task_dir_ttl", cfg.KeptTaskDirTTL,
 	)
 
 	if err := w.Run(ctx, cfg); err != nil {
