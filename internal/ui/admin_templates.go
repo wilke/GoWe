@@ -116,7 +116,7 @@ const adminFleetTemplate = `{{define "content"}}
     {{end}}
 
     {{if .Workers}}
-    <div class="bg-white shadow rounded-lg overflow-hidden table-responsive">
+    <div class="bg-white shadow rounded-lg table-responsive">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
@@ -234,7 +234,7 @@ const adminKeysTemplate = `{{define "content"}}
     </div>
 
     <!-- Existing keys table -->
-    <div class="bg-white shadow overflow-hidden sm:rounded-lg table-responsive">
+    <div class="bg-white shadow sm:rounded-lg table-responsive">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
