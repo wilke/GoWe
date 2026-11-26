@@ -13,6 +13,7 @@ import (
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/config"
 	"github.com/me/gowe/internal/executor"
+	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/scheduler"
@@ -55,6 +56,7 @@ type Server struct {
 	secretsRetention      model.SecretsRetentionPolicy // default secrets_retention applied to a submission that doesn't specify one (see WithSecretsRetention); zero value is SecretsRetentionKeep
 	inputValidation       validate.Mode                // --input-validation mode (#273); empty means warn (see validate.Mode.Effective)
 	tokenBlessing         string                       // --token-blessing mode: "enforce" (default) or "dev" (see WithTokenBlessingMode)
+	groupPolicy           *groupacl.Policy             // optional; worker_groups block of --config (#261); nil allows every group
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -156,6 +158,16 @@ func WithTestApps(apps []map[string]any) Option {
 func WithAdminConfig(cfg *AdminConfig) Option {
 	return func(s *Server) {
 		s.adminConfig = cfg
+	}
+}
+
+// WithGroupPolicy sets the worker-group access policy (#261): submissions
+// that would use a group their submitter may not use are refused with 403
+// (REST) or an error on the form (UI). The scheduler enforces the same policy
+// at dispatch. nil (the default) allows every group.
+func WithGroupPolicy(p *groupacl.Policy) Option {
+	return func(s *Server) {
+		s.groupPolicy = p
 	}
 }
 
@@ -273,6 +285,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		GrafanaURL:          cfg.GrafanaURL,
 		BasePath:            s.basePath,
 		TokenBlessingDev:    s.tokenBlessingMode() == tokenBlessingDev,
+		GroupPolicy:         s.groupPolicy,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)

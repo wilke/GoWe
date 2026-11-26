@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/cancelseq"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/scheduler"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
@@ -210,6 +211,20 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
+	}
+
+	// Worker-group access fast-fail (#261): the groups known now (the
+	// worker_group label and the stored steps' hints) must all be allowed
+	// for the submitter. Dispatch re-checks authoritatively, including
+	// nested sub-workflows.
+	if err := s.groupPolicy.Check(userCtx.User.Username, groupacl.SubmissionGroups(req.Labels, wf.Steps)); err != nil {
+		s.logger.Warn("submission refused: worker group not allowed",
+			"user", userCtx.User.Username, "workflow_id", wf.ID, "error", err)
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    model.ErrForbidden,
+			Message: err.Error(),
+		})
+		return
 	}
 
 	// Provider-token policy fast-fail (SPECIFICATION.md §13.5): every step

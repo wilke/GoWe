@@ -29,7 +29,7 @@ gowe-db-copy --from <sqlite file> [--to postgres://...] [--config server.json] [
 |------|---------|-------------|
 | `--from` | (required) | The SQLite database file to copy. Must be a regular file: a copy, not the live database |
 | `--to` | `""` | The PostgreSQL target, a `postgres://` or `postgresql://` URL **without a password**. Default: `database.url` of `--config` |
-| `--config` | `""` | The server config file (JSON). Its `database` block supplies `url`, `password` and `schema`, exactly as for `gowe-server` |
+| `--config` | `""` | The server config file (JSON). Its `database` block supplies `url`, `password` and `schema`, exactly as for `gowe-server` (the server additionally refuses unknown top-level keys in this file; this tool ignores them) |
 | `--migrate-source` | `false` | Bring the SQLite file to the current schema before copying. This **writes to the file** |
 | `--debug` | `false` | Debug logging (the default level is WARN) |
 

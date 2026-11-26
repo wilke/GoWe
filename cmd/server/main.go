@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"github.com/me/gowe/internal/cwltool"
 	"github.com/me/gowe/internal/dbconfig"
 	"github.com/me/gowe/internal/executor"
+	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/logging"
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/scheduler"
@@ -77,7 +79,7 @@ func main() {
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
 	anonymousExecutors := flag.String("anonymous-executors", "local,docker,worker", "Comma-separated list of executors allowed for anonymous users")
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
-	configFile := flag.String("config", "", "Path to server config file (JSON: admins, and the PostgreSQL database block url/password/schema; with a password the file must be mode 0600)")
+	configFile := flag.String("config", "", "Path to server config file (JSON: admins, worker_groups access policy, and the PostgreSQL database block url/password/schema; with a password the file must be mode 0600)")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
 	insecureSkipTokenVerify := flag.Bool("insecure-skip-token-verify", false, "Disable cryptographic verification of provider token signatures (testing/air-gapped only); identities are then trusted as claimed")
 	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
@@ -186,6 +188,14 @@ func main() {
 	dbSel, err := dbconfig.Select(cfg.DBPath, *configFile, os.Getenv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "database configuration: %v\n", err)
+		os.Exit(1)
+	}
+	// Worker-group access policy (#261): the worker_groups block of --config,
+	// read strictly at start-up (a change needs a restart). The admin lookup
+	// is attached below, once the admin configuration exists.
+	groupPolicy, err := groupacl.Load(*configFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "worker group configuration: %v\n", err)
 		os.Exit(1)
 	}
 	var dbPath string
@@ -341,6 +351,12 @@ func main() {
 	if len(adminConfig.FileAdmins()) > 0 {
 		logger.Info("admin users from config", "admins", adminConfig.FileAdmins())
 	}
+
+	// The same policy (with the same admin lookup) is enforced by the
+	// submission handlers (early 403) and the scheduler (at dispatch).
+	groupPolicy = groupPolicy.WithAdmins(adminConfig.IsAdmin)
+	serverOpts = append(serverOpts, server.WithGroupPolicy(groupPolicy))
+	logGroupPolicy(logger, groupPolicy, *insecureSkipTokenVerify, *allowUnverifiedMGRAST)
 
 	// Configure anonymous access.
 	if *allowAnonymous {
@@ -551,6 +567,7 @@ func main() {
 	sched := scheduler.NewLoop(st, reg, schedCfg, logger)
 	sched.SetMetrics(metricsReg)
 	sched.SetInputValidation(inputValidationMode)
+	sched.SetGroupPolicy(groupPolicy)
 
 	// One Workspace stager serves both the scheduler (server-side pre/post
 	// staging, only in "server" mode) and the admin output verification /
@@ -695,6 +712,29 @@ func normalizeBasePath(p string) (string, error) {
 		return "", fmt.Errorf("must not be just \"/\" (omit --base-path/GOWE_BASE_PATH instead)")
 	}
 	return trimmed, nil
+}
+
+// logGroupPolicy logs the worker-group access policy (#261) at start-up:
+// one INFO line with the restricted group names (never the user lists) and
+// default_deny, or one saying there is no policy. With restrictions, it adds
+// one WARN when a flag makes the server accept unverified identities: the
+// policy is only as strong as the username it is given.
+func logGroupPolicy(logger *slog.Logger, p *groupacl.Policy, insecureSkipTokenVerify, allowUnverifiedMGRAST bool) {
+	if !p.Restricted() {
+		logger.Info("no worker group policy: every user may use every worker group")
+		return
+	}
+	logger.Info("worker group access restricted", "groups", p.Groups(), "default_deny", p.DefaultDeny())
+	var weakening []string
+	if insecureSkipTokenVerify {
+		weakening = append(weakening, "--insecure-skip-token-verify")
+	}
+	if allowUnverifiedMGRAST {
+		weakening = append(weakening, "--allow-unverified-mgrast")
+	}
+	if len(weakening) > 0 {
+		logger.Warn("worker group restrictions rely on verified usernames, but the server accepts unverified identities: a caller can claim a listed username", "flags", weakening)
+	}
 }
 
 // workerAPIIsKeyless reports whether the worker API (/api/v1/workers/*, guarded

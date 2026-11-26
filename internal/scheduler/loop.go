@@ -19,6 +19,7 @@ import (
 	"github.com/me/gowe/internal/executor"
 	"github.com/me/gowe/internal/exprtool"
 	"github.com/me/gowe/internal/fileliteral"
+	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/stepinput"
@@ -183,6 +184,18 @@ type Loop struct {
 	// the synchronous executors. Empty (unset) means warn — see
 	// validate.Mode.Effective.
 	inputValidation validate.Mode
+
+	// groupPolicy decides which submitters may send tasks to a worker group
+	// (#261, the worker_groups block of --config). nil allows everything.
+	// Checked in dispatchStep before any worker task is created, and in
+	// resubmitRetrying before a FAILED worker task is re-queued.
+	groupPolicy *groupacl.Policy
+}
+
+// SetGroupPolicy wires the worker-group access policy (#261) into the
+// scheduler. Not setting it (nil) allows every submitter every group.
+func (l *Loop) SetGroupPolicy(p *groupacl.Policy) {
+	l.groupPolicy = p
 }
 
 // SetMetrics wires the Prometheus metrics registry into the scheduler. Not
@@ -898,6 +911,20 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
 
+	// Worker-group access (#261): the submitter must be allowed to use the
+	// group the step's tasks would be routed to. Checked before the capacity
+	// preflight (a denial is permanent, not worth deferring) and before any
+	// task row exists: a QUEUED worker task is visible to CheckoutTask the
+	// moment it is stored. Only tasks the worker executor routes by group are
+	// checked; sub-workflow proxies (their child submission's own steps pass
+	// through here) and ExpressionTools (run inline) are not.
+	if execType == model.ExecutorTypeWorker && !isSubWorkflow(tmpTask.Tool) && !isExpressionTool(tmpTask.Tool) {
+		group := resolveWorkerGroup(tmpTask.RuntimeHints, step, sub)
+		if !l.groupPolicy.Allowed(sub.SubmittedBy, group) {
+			return l.failStepGroupDenied(ctx, si, sub, group)
+		}
+	}
+
 	// Pre-flight check: if executor is "worker", verify a capable worker exists.
 	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
 		caps := l.workerCapabilities()
@@ -1053,6 +1080,26 @@ func (l *Loop) preflightHints(tmpTask *model.Task, step *model.Step, sub *model.
 	hints.WorkerGroup = group
 	hints.Cores, hints.RamMB = req.Cores, req.RamMB
 	return hints
+}
+
+// failStepGroupDenied fails si because its submitter may not use the worker
+// group its tasks would be routed to (#261). Like a preflight failure at its
+// bound, the step is FAILED with the reason and no task is created, so
+// nothing can reach a worker and there is no task for the retry phase to
+// resubmit; finalize then FAILs the submission with the step's reason.
+func (l *Loop) failStepGroupDenied(ctx context.Context, si *model.StepInstance, sub *model.Submission, group string) error {
+	if group == "" {
+		group = defaultWorkerGroupKey
+	}
+	delete(l.deferredSteps, si.ID)
+	now := time.Now().UTC()
+	si.State = model.StepStateFailed
+	si.Error = fmt.Sprintf("submitter %q may not use worker group %q", sub.SubmittedBy, group)
+	si.CompletedAt = &now
+	l.logger.Warn("step failed: worker group not allowed for submitter",
+		"submission_id", sub.ID, "si_id", si.ID, "step_id", si.StepID,
+		"user", sub.SubmittedBy, "worker_group", group)
+	return l.updateStepInstance(ctx, si)
 }
 
 // deferOrFailPreflight records one more preflight deferral for si. Below
@@ -2348,6 +2395,18 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 		task.StageInMs = nil
 		task.StageOutMs = nil
 
+		// Worker-group access (#261): a retry puts the task back in the
+		// queue, so the submitter must still be allowed its group. A denial
+		// is permanent: failRetryingTaskNow exhausts the retry budget
+		// (MaxRetries = RetryCount), so markRetries never picks it up again.
+		if reason, denied := l.retryGroupDenied(ctx, task); denied {
+			l.logger.Warn("retry refused: worker group not allowed for submitter",
+				"task_id", task.ID, "submission_id", task.SubmissionID, "reason", reason)
+			l.failRetryingTaskNow(ctx, task, reason)
+			affected[task.SubmissionID] = true
+			continue
+		}
+
 		// Re-run the whole credential policy for the retry: the previous
 		// attempt's terminal scrub cleared the delivered token and secrets,
 		// and the blessing must be re-checked (it may have been revoked
@@ -2411,9 +2470,33 @@ func (l *Loop) reattachCredentialsForRetry(ctx context.Context, task *model.Task
 	return false
 }
 
+// retryGroupDenied reports whether the worker-group policy (#261) refuses
+// re-queueing task, with the reason. Only worker tasks are checked; the group
+// is the one stored on the task (nil hints or "" = the default group) and the
+// user is the submission's SubmittedBy. When the submission cannot be loaded
+// the check is left to reattachCredentialsForRetry, which fails a worker task
+// for that reason anyway.
+func (l *Loop) retryGroupDenied(ctx context.Context, task *model.Task) (string, bool) {
+	if l.groupPolicy == nil || task.ExecutorType != model.ExecutorTypeWorker {
+		return "", false
+	}
+	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
+	if err != nil || sub == nil {
+		return "", false
+	}
+	group := ""
+	if task.RuntimeHints != nil {
+		group = task.RuntimeHints.WorkerGroup
+	}
+	if l.groupPolicy.Allowed(sub.SubmittedBy, group) {
+		return "", false
+	}
+	return groupacl.DeniedReason(sub.SubmittedBy, group), true
+}
+
 // failRetryingTaskNow terminalizes a SCHEDULED (claimed-for-retry) task as
 // FAILED with no further retries, for use when reattachCredentialsForRetry
-// cannot proceed. Mirrors failTaskPreDispatch's task-side effects; unlike
+// cannot proceed or the worker-group policy denies the retry (#261). Mirrors failTaskPreDispatch's task-side effects; unlike
 // that helper it has no step instance in hand, so it persists through
 // persistSubmitOutcome (TerminalizeTask), same as submitAndUpdateTask's own
 // no-executor-found branch.

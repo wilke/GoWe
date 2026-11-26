@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/me/gowe/internal/bvbrc"
 	"github.com/me/gowe/internal/cancelseq"
+	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/metrics"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/internal/store"
@@ -81,7 +83,8 @@ type UI struct {
 	// copied from Config.InputValidation. Read through Effective() (never
 	// the zero value directly) so an unset mode means warn.
 	inputValidation  validate.Mode
-	tokenBlessingDev bool // --token-blessing=dev banner
+	tokenBlessingDev bool             // --token-blessing=dev banner
+	groupPolicy      *groupacl.Policy // worker-group access (#261); nil allows every group
 }
 
 // Config holds UI configuration.
@@ -113,6 +116,10 @@ type Config struct {
 	// --token-blessing=dev, so tools that request the user's token get it
 	// without an administrator blessing.
 	TokenBlessingDev bool
+	// GroupPolicy is the worker-group access policy (#261): the submission
+	// form refuses a submission using a group the user may not use. nil
+	// allows every group.
+	GroupPolicy *groupacl.Policy
 	// BasePath mounts the UI under this path prefix behind a reverse proxy.
 	// Empty (the default) is root-mounted, byte-identical to pre-#250
 	// behavior. Must already be normalized — see cmd/server's
@@ -146,6 +153,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		basePath:            cfg.BasePath,
 		inputValidation:     cfg.InputValidation,
 		tokenBlessingDev:    cfg.TokenBlessingDev,
+		groupPolicy:         cfg.GroupPolicy,
 	}
 }
 
@@ -813,6 +821,18 @@ func (ui *UI) HandleSubmissionCreatePost(w http.ResponseWriter, r *http.Request)
 		labels["worker_group"] = workerGroup
 	}
 
+	// Worker-group access fast-fail (#261, same check as the REST API): the
+	// scheduler would otherwise fail the step at dispatch.
+	username := ""
+	if sess != nil {
+		username = sess.Username
+	}
+	if err := ui.groupPolicy.Check(username, groupacl.SubmissionGroups(labels, wf.Steps)); err != nil {
+		ui.logger.Warn("submission refused: worker group not allowed", "user", username, "workflow_id", wf.ID, "error", err)
+		http.Redirect(w, r, ui.href("/submissions/new?workflow_id="+url.QueryEscape(workflowID)+"&error="+url.QueryEscape(string(model.ErrForbidden)+": "+err.Error())), http.StatusSeeOther)
+		return
+	}
+
 	// Provider-token policy fast-fail (same check as the REST API): a step
 	// whose tool requests the user's token must be admin-blessed. Without
 	// this the user would only see a pre-dispatch task failure.
@@ -1096,6 +1116,34 @@ func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (boo
 	return ui.store.TerminalizeTaskFrom(ctx, &task, model.TaskStateFailed)
 }
 
+// requeueGroupDenied returns the reason the worker-group policy (#261)
+// refuses putting task of sub back in the queue, or "" when it may go. Same
+// rule as the scheduler's retry check: only worker tasks are checked, with
+// the group stored on the task (nil hints or "" = the default group) and the
+// submission's submitter.
+func (ui *UI) requeueGroupDenied(sub *model.Submission, task *model.Task) string {
+	if task.ExecutorType != model.ExecutorTypeWorker {
+		return ""
+	}
+	group := ""
+	if task.RuntimeHints != nil {
+		group = task.RuntimeHints.WorkerGroup
+	}
+	if ui.groupPolicy.Allowed(sub.SubmittedBy, group) {
+		return ""
+	}
+	return groupacl.DeniedReason(sub.SubmittedBy, group)
+}
+
+// deniedSuffix formats the tasks a bulk requeue skipped under the
+// worker-group policy for the response body ("" when there are none).
+func deniedSuffix(n int, reasons []string) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(", denied %d: %s", n, strings.Join(reasons, "; "))
+}
+
 // HandleSubmissionResume resumes a failed submission.
 func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
@@ -1121,9 +1169,19 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 	// Reset failed tasks to QUEUED and their parent step instances to DISPATCHED.
 	requeuedCount := 0
 	skippedCount := 0
+	deniedCount := 0
+	var deniedReasons []string
 	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
 		if task.State != model.TaskStateFailed {
+			continue
+		}
+		if reason := ui.requeueGroupDenied(sub, &task); reason != "" {
+			deniedCount++
+			if !slices.Contains(deniedReasons, reason) {
+				deniedReasons = append(deniedReasons, reason)
+			}
+			ui.logger.Warn("resume: task not requeued: worker group not allowed for submitter", "task_id", task.ID, "submission_id", id, "reason", reason)
 			continue
 		}
 		applied, err := ui.resetFailedTaskForQueue(r.Context(), task)
@@ -1140,6 +1198,13 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 		if task.StepInstanceID != "" {
 			resetSteps[task.StepInstanceID] = true
 		}
+	}
+	// Every failed task refused by the worker-group policy: nothing to
+	// resume, the submission stays FAILED.
+	if requeuedCount == 0 && deniedCount > 0 {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprintf(w, "requeued 0, skipped %d%s", skippedCount, deniedSuffix(deniedCount, deniedReasons))
+		return
 	}
 	// Reset parent step instances so scheduler re-evaluates them.
 	for siID := range resetSteps {
@@ -1162,22 +1227,29 @@ func (ui *UI) HandleSubmissionResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ui.logger.Info("submission resumed", "id", id, "requeued", requeuedCount, "skipped", skippedCount)
+	ui.logger.Info("submission resumed", "id", id, "requeued", requeuedCount, "skipped", skippedCount, "denied", deniedCount)
 	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
 	// HTMX discards the body when HX-Redirect is set (it drives a full-page
 	// navigation instead), so this is purely for API/test observability of
 	// any CAS misses skipped above.
-	fmt.Fprintf(w, "requeued %d, skipped %d", requeuedCount, skippedCount)
+	fmt.Fprintf(w, "requeued %d, skipped %d%s", requeuedCount, skippedCount, deniedSuffix(deniedCount, deniedReasons))
 }
 
 // HandleRecomputeFailed recomputes all failed tasks in a submission.
 func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
 	id := ui.pathParam(r, "id")
 
 	sub, err := ui.store.GetSubmission(r.Context(), id)
 	if err != nil || sub == nil {
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Ownership check: non-admin users can only recompute their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -1192,9 +1264,19 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 	// Reset all failed tasks and their parent step instances.
 	recomputeCount := 0
 	skippedCount := 0
+	deniedCount := 0
+	var deniedReasons []string
 	resetSteps := map[string]bool{}
 	for _, task := range sub.Tasks {
 		if task.State != model.TaskStateFailed {
+			continue
+		}
+		if reason := ui.requeueGroupDenied(sub, &task); reason != "" {
+			deniedCount++
+			if !slices.Contains(deniedReasons, reason) {
+				deniedReasons = append(deniedReasons, reason)
+			}
+			ui.logger.Warn("recompute: task not requeued: worker group not allowed for submitter", "task_id", task.ID, "submission_id", id, "reason", reason)
 			continue
 		}
 		applied, err := ui.resetFailedTaskForQueue(r.Context(), task)
@@ -1211,6 +1293,12 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		if task.StepInstanceID != "" {
 			resetSteps[task.StepInstanceID] = true
 		}
+	}
+	// Every failed task refused by the worker-group policy: nothing changed.
+	if recomputeCount == 0 && deniedCount > 0 {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprintf(w, "recomputed 0, skipped %d%s", skippedCount, deniedSuffix(deniedCount, deniedReasons))
+		return
 	}
 	for siID := range resetSteps {
 		si, err := ui.store.GetStepInstance(r.Context(), siID)
@@ -1233,17 +1321,18 @@ func (ui *UI) HandleRecomputeFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount, "skipped", skippedCount)
+	ui.logger.Info("recomputed failed tasks", "id", id, "count", recomputeCount, "skipped", skippedCount, "denied", deniedCount)
 	w.Header().Set("HX-Redirect", ui.href("/submissions/"+id))
 	w.WriteHeader(http.StatusOK)
 	// HTMX discards the body when HX-Redirect is set (it drives a full-page
 	// navigation instead), so this is purely for API/test observability of
 	// any CAS misses skipped above.
-	fmt.Fprintf(w, "recomputed %d, skipped %d", recomputeCount, skippedCount)
+	fmt.Fprintf(w, "recomputed %d, skipped %d%s", recomputeCount, skippedCount, deniedSuffix(deniedCount, deniedReasons))
 }
 
 // HandleTaskRecompute recomputes a single task.
 func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
+	sess := SessionFromContext(r.Context())
 	subID := ui.pathParam(r, "id")
 	taskID := ui.pathParam(r, "tid")
 
@@ -1266,8 +1355,19 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	// Ownership check: non-admin users can only recompute their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	if sub.State == model.SubmissionStateCancelled {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if reason := ui.requeueGroupDenied(sub, task); reason != "" {
+		ui.logger.Warn("task recompute refused: worker group not allowed for submitter", "task_id", taskID, "submission_id", subID, "reason", reason)
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, reason)
 		return
 	}
 

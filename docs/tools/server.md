@@ -28,7 +28,7 @@ gowe-server [flags]
 | `--db` | `~/.gowe/gowe.db` | SQLite database path (`:memory:` for testing), or a `postgres://` / `postgresql://` URL without a password to use PostgreSQL (see [Database](#database)) |
 | `--default-executor` | `""` | Default executor type: `local`, `container`, `worker`, `bvbrc` (empty = hint-based) |
 | `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths in `DockerRequirement` |
-| `--config` | `""` | Path to the server config file (JSON): `admins`, and the PostgreSQL `database` block (see [Database](#database)) |
+| `--config` | `""` | Path to the server config file (JSON): `admins`, the PostgreSQL `database` block (see [Database](#database)) and the `worker_groups` access policy (see [Worker Group Access](#worker-group-access)); any other top-level key is a start-up error |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--checkout-hold-after` | `10m` | After a queued task has waited this long for capacity on a worker that runs several tasks, that worker stops taking later tasks that need the same capacity (`0` disables; see [Capacity accounting at checkout](#capacity-accounting-at-checkout)) |
 | `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
@@ -259,8 +259,9 @@ gowe-server --db postgres://gowe@127.0.0.1:5433/gowe --config /etc/gowe/server.j
 | `schema` | Optional schema to work in (sets `search_path`). Empty: the role's default schema |
 
 The `database` block is read strictly: when `--config` is given, the server does not start if the file cannot be
-read, is not valid JSON, or the `database` block has an unknown field or a field of the wrong type. A config file
-without a `database` block is fine. (The `admins` list is still read leniently.)
+read, is not valid JSON, has a top-level key other than `admins`, `database` and `worker_groups`, or the `database`
+block has an unknown field or a field of the wrong type. A config file without a `database` block is fine. (The
+`admins` list is still read leniently.)
 
 The server refuses to start, with an error that names the fix, when:
 - the config file holds `database.password` and is not a regular file, or has any permission bit for group or
@@ -372,6 +373,74 @@ gowe-server --worker-keys ~/.gowe/worker-keys.json
 ```
 
 Each static entry may carry an `id` (logged for attribution — the raw key is never logged), and optional `disabled` / `expires_at` lifecycle fields. A map key prefixed with `sha256:` is treated as an already-hashed key, so the raw secret need not live in the config file. Tasks target specific groups via `RuntimeHints.WorkerGroup`.
+
+### Worker Group Access
+
+Worker keys decide which **workers** may join a group. Which **submitters** may send tasks to a group (with
+`gowe:Execution.worker_group` on a tool or step, or the `worker_group` label: `gowe submit --group`, the UI form) is
+decided by the optional `worker_groups` block of the `--config` file:
+
+```json
+{
+  "worker_groups": {
+    "default_deny": false,
+    "groups": {
+      "model-router": {"users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true}
+    }
+  }
+}
+```
+
+- A group listed under `groups` is restricted: a submitter may use it only when their username is in `users`
+  (exact, case-sensitive match), or when `admins` is `true` and they are a server admin. An empty `users` list with
+  `admins: false` means nobody.
+- A group that is not listed is open, unless `default_deny` is `true`: then every unlisted group except the default
+  group is open to server admins only.
+- The default group (`""` or `"default"`, the same group) is open unless it is listed itself.
+- Anonymous submitters (unauthenticated REST submissions, stored as user `anonymous`) are never in a `users` list
+  and never admins; `"anonymous"` in a `users` list is a start-up error.
+- No block, or an empty one, means no restriction (the behaviour before this policy existed).
+
+The block is read strictly at start-up: an unreadable file, invalid JSON, an unknown top-level key in the file
+(anything other than `admins`, `database` and `worker_groups`), an unknown field in the block, a value of the wrong
+type, a group name that is not letters, digits, `.`, `_` or `-` starting with a letter or digit (the rule tool
+blessings use; no surrounding whitespace), or `"anonymous"` in a `users` list stops the server with an error naming
+the problem. The policy is read only at start-up; a change needs a restart. At start-up the server logs one INFO
+line: the restricted group names (never the user lists) and `default_deny`, or `no worker group policy: every user
+may use every worker group`.
+
+The policy is only as strong as the username it is given: with restrictions configured and
+`--insecure-skip-token-verify` or `--allow-unverified-mgrast` set, a caller can claim a listed username, and the
+server logs a WARN naming the flag.
+
+The policy is applied when a task is created or re-queued:
+
+- **At submission** (REST and UI): when the `worker_group` label or a step hint of the registered workflow names a
+  group the submitter may not use, `POST /api/v1/submissions` answers `403` with code `FORBIDDEN` and the message
+  `user "X" may not use worker group "Y"`, and nothing is stored; the UI shows the same message on the form.
+- **At dispatch** (authoritative for new tasks): before a worker task is created, the scheduler checks the group the
+  step will be routed to, for every step including scatter steps, those of nested sub-workflows and tool-level hints
+  in `run:` documents. A denied step FAILS with `submitter "X" may not use worker group "Y"` (no task is created,
+  nothing is retried) and the submission ends FAILED with that reason. `PUT /api/v1/submissions/{id}/retry`
+  re-dispatches failed steps through this check.
+- **At retry**: before the scheduler puts a FAILED worker task back in the queue, it checks the group stored on the
+  task against the submitter. A denied task stays FAILED with that reason and its retries are used up, so it is
+  not retried again.
+- **At UI resume / recompute**: *Resume*, *Recompute Failed* and a single task's *Recompute* refuse to re-queue a
+  worker task whose group the submitter may not use (`403` with the same message). When several tasks are
+  re-queued at once, the denied ones are skipped, the others proceed. The check uses the submission's submitter,
+  not the person clicking, so an admin cannot re-queue a denied user's task either. The reason is in the response
+  body and the server log; the page itself does not display it.
+
+Independently of any policy, *Recompute Failed* and a single task's *Recompute* are now limited to the submission's
+owner and server admins, like *Resume* (before, any logged-in user could re-queue another user's failed tasks).
+
+Only tasks that run on the `worker` executor are checked; tasks run by the server's own executors are not routed
+by group.
+
+The policy is not applied to tasks that are already QUEUED or RUNNING when the server restarts with a stricter
+policy (a running task that is handed back to the queue because its worker was lost is not re-checked either): to
+revoke access for work already admitted, cancel the user's submissions.
 
 ### Scheduler
 

@@ -23,6 +23,7 @@ Notes:
 - The UI never accepts a pasted token: the password is sent only to BV-BRC's own auth endpoint, and the token GoWe holds comes from that response. GoWe never stores passwords.
 - Session cookies are `HttpOnly`, `SameSite=Strict`, and `Secure` when TLS is configured (`--tls-cert/--tls-key`, `--secure-cookies`, or `--behind-proxy`).
 - Every authenticated request lazily creates/updates a GoWe user row (`GetOrCreateUser`; concurrent-safe upsert since v0.18.1).
+- Worker keys authorize **workers**: which groups a worker may join. They say nothing about who may send work to a group. Which **submitters** may target a worker group (CWL hint `gowe:Execution.worker_group` or the `worker_group` label) is authorized by the `worker_groups` block of the server `--config` file (`internal/groupacl`, #261): a listed group is usable only by its `users` (and server admins when `admins` is true). The policy is checked when a task is created or re-queued: the submission handlers refuse a denied group with 403, the scheduler re-checks at dispatch before any worker task is created and before it re-queues a failed worker task for retry, and the UI's resume/recompute actions refuse to re-queue a denied task. It is not applied to tasks already QUEUED before a restart with a stricter policy; to revoke access for work already queued, cancel the user's submissions. Anonymous submitters (stored as `anonymous`) are never listed and never admins. The policy is only as strong as the username: with `--insecure-skip-token-verify` or `--allow-unverified-mgrast` a caller can claim a listed username (the server logs a WARN at start-up). See [server.md, Worker Group Access](../tools/server.md#worker-group-access).
 
 ## 2. Token format and verification (since v0.18.1)
 
@@ -188,6 +189,7 @@ A per-submission `secrets_retention` in the create request overrides the server 
 | `--dev-image-dir <dir>` | dev mode: resolve relative `.sif` refs to pin the image digest |
 | `--workspace-staging server` | pre/post-stage `ws://` on the server (§4); a worker still gets a staging credential when it uploads to an output destination |
 | `--worker-keys <file>` | static worker keys (`X-Worker-Key`) |
+| `--config <file>` `worker_groups` | which submitters may use which worker groups (§1) |
 | `--admins` / `GOWE_ADMINS` | admin usernames |
 | `--allow-anonymous`, `--anonymous-executors` | anonymous access policy |
 | `--tls-cert/--tls-key`, `--behind-proxy`, `--secure-cookies` | transport & cookie security |

@@ -82,7 +82,7 @@ Pluggable backends implementing `Submit()`, `Status()`, `Cancel()`, `Logs()`. Se
 
 ### Worker Pull Model
 
-Workers poll the server for tasks (no push). The checkout process matches on: container runtime capability, worker group, and dataset affinity (prestage=require, cache=prefer). Workers execute via `toolexec/`, stage outputs, and report results.
+Workers poll the server for tasks (no push). The checkout process matches on: container runtime capability, worker group, and dataset affinity (prestage=require, cache=prefer). Workers execute via `toolexec/`, stage outputs, and report results. Worker keys restrict which workers join a group; the `worker_groups` block of the server `--config` (`internal/groupacl`, #261) restricts which submitters may target a group, checked early at submission (403), authoritatively in `dispatchStep` before any worker task is created (the step fails, no task), and again when a FAILED task is re-queued (scheduler retry, UI resume/recompute).
 
 **Token handling:** a worker holds the submitter's token only to stage data in/out and drops it when the task ends. It injects the token into a tool's environment only when the scheduler marked the task blessed (`TokenBlessingID`) AND the resolved image's sha256 is in `ImageSHA256s`; otherwise a blessed-less request is refused with a WARN and a digest mismatch fails the task pre-launch. See `internal/worker/tokenpolicy.go` and `docs/security/authentication.md` §6.
 
