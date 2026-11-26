@@ -190,6 +190,15 @@ func fillCopySource(t *testing.T, src *SQLStore) copyFixture {
 	}
 	fx.blessingID = b.ID
 
+	if err := src.UpsertWorkerGroupPolicy(ctx, &model.WorkerGroupPolicy{
+		Group: "gpu", Users: []string{"alice@bvbrc"}, Admins: true, UpdatedBy: "admin", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("create worker group policy: %v", err)
+	}
+	if err := src.SetServerSetting(ctx, "worker_groups.default_deny", "true", "admin"); err != nil {
+		t.Fatalf("set server setting: %v", err)
+	}
+
 	user, err := src.GetOrCreateUser(ctx, "alice@bvbrc", model.ProviderBVBRC)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -394,6 +403,22 @@ func checkCopy(t *testing.T, src, dst *SQLStore, fx copyFixture, pg bool) {
 		t.Fatalf("destination blessing: %v", err)
 	}
 	same("tool blessing", bS, bD)
+
+	gpS, err := src.ListWorkerGroupPolicies(ctx)
+	if err != nil {
+		t.Fatalf("source worker group policies: %v", err)
+	}
+	gpD, err := dst.ListWorkerGroupPolicies(ctx)
+	if err != nil {
+		t.Fatalf("destination worker group policies: %v", err)
+	}
+	same("worker group policies", gpS, gpD)
+
+	for _, s := range []*SQLStore{src, dst} {
+		if v, found, err := s.GetServerSetting(ctx, "worker_groups.default_deny"); err != nil || !found || v != "true" {
+			t.Errorf("server setting = %q, %v, %v; want \"true\" in source and destination", v, found, err)
+		}
+	}
 
 	uS, err := src.GetUser(ctx, fx.username)
 	if err != nil {

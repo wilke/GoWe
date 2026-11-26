@@ -209,6 +209,17 @@ func (m *mockStore) RevokeToolBlessing(context.Context, string, string, string) 
 func (m *mockStore) AddToolBlessingImageSHA256(context.Context, string, string) error { return nil }
 func (m *mockStore) CountWorkerKeys(context.Context) (int, error)                     { return 0, nil }
 func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error          { return nil }
+func (m *mockStore) ListWorkerGroupPolicies(context.Context) ([]*model.WorkerGroupPolicy, error) {
+	return nil, nil
+}
+func (m *mockStore) UpsertWorkerGroupPolicy(context.Context, *model.WorkerGroupPolicy) error {
+	return nil
+}
+func (m *mockStore) DeleteWorkerGroupPolicy(context.Context, string) (bool, error) { return false, nil }
+func (m *mockStore) GetServerSetting(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+func (m *mockStore) SetServerSetting(context.Context, string, string, string) error { return nil }
 
 func (m *mockStore) GetUser(context.Context, string) (*model.User, error) { return nil, nil }
 func (m *mockStore) GetOrCreateUser(context.Context, string, model.AuthProvider) (*model.User, error) {

@@ -60,6 +60,7 @@ func newAdminCmd() *cobra.Command {
 		newAdminBlessCmd(),
 		newAdminBlessingsCmd(),
 		newAdminUnblessCmd(),
+		newAdminWorkerGroupsCmd(),
 	)
 	return cmd
 }

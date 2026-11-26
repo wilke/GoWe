@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -90,17 +91,26 @@ func isPostgresURL(s string) bool {
 // Select decides which database gowe-server opens from the --db value and
 // the "database" block of the --config file (configPath, "" = none). A
 // non-empty --db wins over database.url. getenv is injected for testing.
+// As the server's own config file, the file may hold no top-level key other
+// than admins and database (see checkTopLevelKeys).
 //
 // No error it returns contains the URL or the password.
 func Select(dbFlag, configPath string, getenv func(string) string) (*Selection, error) {
-	return SelectFor("--db", dbFlag, configPath, getenv)
+	return selectFor("--db", dbFlag, configPath, getenv, true)
 }
 
 // SelectFor is Select for a program whose database flag is called flagName
 // (for example "--to"): the flag value plays the role of --db, and error
-// messages about the flag name it. Select is SelectFor("--db", ...).
+// messages about the flag name it. Unlike Select it leaves the other
+// top-level keys of the file alone.
 func SelectFor(flagName, dbFlag, configPath string, getenv func(string) string) (*Selection, error) {
-	fileCfg, err := readDatabaseConfig(configPath)
+	return selectFor(flagName, dbFlag, configPath, getenv, false)
+}
+
+// selectFor is Select and SelectFor; strictKeys refuses unknown top-level
+// keys in the config file.
+func selectFor(flagName, dbFlag, configPath string, getenv func(string) string, strictKeys bool) (*Selection, error) {
+	fileCfg, err := readDatabaseConfig(configPath, strictKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -157,17 +167,46 @@ func SelectFor(flagName, dbFlag, configPath string, getenv func(string) string) 
 	}, nil
 }
 
+// knownTopLevelKeys are the top-level keys of the --config file: admins
+// (internal/server/admin_config.go) and database (this package). Any other
+// key is an error, so a misspelt block cannot be silently ignored.
+var knownTopLevelKeys = map[string]bool{"admins": true, "database": true}
+
+// workerGroupsMovedMsg is the error for the worker_groups block, read from
+// the config file before the worker-group policy moved into the database.
+const workerGroupsMovedMsg = `worker_groups is no longer read from the config file; manage it with "gowe admin worker-groups" (stored in the database)`
+
+// checkTopLevelKeys refuses a top-level key of the config file other than
+// knownTopLevelKeys. Only key names are reported, never values.
+func checkTopLevelKeys(path string, top map[string]json.RawMessage) error {
+	if _, ok := top["worker_groups"]; ok {
+		return fmt.Errorf("config file %s: %s", path, workerGroupsMovedMsg)
+	}
+	var unknown []string
+	for key := range top {
+		if !knownTopLevelKeys[key] {
+			unknown = append(unknown, fmt.Sprintf("%q", key))
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("config file %s: unknown top-level key %s (allowed: admins, database)", path, strings.Join(unknown, ", "))
+}
+
 // readDatabaseConfig reads the "database" block of the --config file at path
-// strictly: an unreadable file, invalid JSON, or an unknown or ill-typed field
-// in the block is an error. Other top-level keys are left to their own
-// readers. No path, or no block, yields the zero value. When the block holds
-// a non-empty password, the file must be a regular file with no permission
+// strictly: an unreadable file, invalid JSON, or an unknown or ill-typed
+// field in the block is an error, and so is, with strictKeys, a top-level key
+// other than admins and database. The admins list is left to its own reader.
+// No path, or no block, yields the zero value. When the block holds a
+// non-empty password, the file must be a regular file with no permission
 // bits for group or others.
 //
 // JSON errors are reported by position and field name only: the decoder's
 // own messages can quote characters or numbers from the file, which may be
 // part of the password.
-func readDatabaseConfig(path string) (databaseFileConfig, error) {
+func readDatabaseConfig(path string, strictKeys bool) (databaseFileConfig, error) {
 	var dc databaseFileConfig
 	if path == "" {
 		return dc, nil
@@ -197,17 +236,24 @@ func readDatabaseConfig(path string) (databaseFileConfig, error) {
 		return dc, fmt.Errorf("config file %s is larger than %d bytes", path, maxConfigFileSize)
 	}
 
-	var top struct {
-		Database json.RawMessage `json:"database"`
-	}
+	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {
 		return dc, jsonError(path, "", err)
 	}
-	if len(top.Database) == 0 || string(top.Database) == "null" {
+	if strictKeys {
+		if err := checkTopLevelKeys(path, top); err != nil {
+			return dc, err
+		}
+	}
+	block, err := databaseBlock(path, top, strictKeys)
+	if err != nil {
+		return dc, err
+	}
+	if len(block) == 0 || string(block) == "null" {
 		return dc, nil
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(top.Database))
+	dec := json.NewDecoder(bytes.NewReader(block))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&dc); err != nil {
 		return databaseFileConfig{}, jsonError(path, "database", err)
@@ -219,6 +265,36 @@ func readDatabaseConfig(path string) (databaseFileConfig, error) {
 		}
 	}
 	return dc, nil
+}
+
+// databaseBlock returns the "database" block of the top-level object (nil
+// when there is none). With strictKeys (the server) the key must be written
+// exactly so; checkTopLevelKeys refuses any other spelling. Without it
+// (gowe-db-copy) the key is matched case-insensitively, as the struct decode
+// of 0.30.0 did; several keys matching it are refused, since the map cannot
+// tell which one came last in the file (the one the struct decode used).
+// Only key names are reported, never values.
+func databaseBlock(path string, top map[string]json.RawMessage, strictKeys bool) (json.RawMessage, error) {
+	if strictKeys {
+		return top["database"], nil
+	}
+	var keys []string
+	for key := range top {
+		if strings.EqualFold(key, "database") {
+			keys = append(keys, key)
+		}
+	}
+	switch len(keys) {
+	case 0:
+		return nil, nil
+	case 1:
+		return top[keys[0]], nil
+	}
+	sort.Strings(keys)
+	for i, key := range keys {
+		keys[i] = fmt.Sprintf("%q", key)
+	}
+	return nil, fmt.Errorf("config file %s: top-level keys %s all name the database block; keep one", path, strings.Join(keys, ", "))
 }
 
 // jsonError turns a decoding error of the config file into a message that

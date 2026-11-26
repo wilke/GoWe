@@ -2,32 +2,44 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/me/gowe/internal/groupacl"
+	"github.com/me/gowe/pkg/model"
 )
 
 // The start-up log of the worker-group policy (#261): always one INFO line,
 // and one WARN when restrictions meet a flag that accepts unverified
 // identities.
 func TestLogGroupPolicy(t *testing.T) {
-	load := func(t *testing.T, content string) *groupacl.Policy {
+	// load stores the rules (and default_deny when set) in a fresh database
+	// and loads them as main does.
+	load := func(t *testing.T, defaultDeny bool, rules ...*model.WorkerGroupPolicy) *groupacl.Policy {
 		t.Helper()
-		path := filepath.Join(t.TempDir(), "server.json")
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
+		ctx := context.Background()
+		st := testMainStore(t)
+		for _, r := range rules {
+			if err := st.UpsertWorkerGroupPolicy(ctx, r); err != nil {
+				t.Fatal(err)
+			}
 		}
-		p, err := groupacl.Load(path)
-		if err != nil {
+		if defaultDeny {
+			if err := st.SetServerSetting(ctx, groupacl.DefaultDenyKey, "true", "root"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p := groupacl.New()
+		if err := p.Reload(ctx, st); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	const restricted = `{"worker_groups": {"default_deny": true, "groups": {"gpu": {"users": ["alice"]}}}}`
+	restricted := func(t *testing.T) *groupacl.Policy {
+		return load(t, true, &model.WorkerGroupPolicy{Group: "gpu", Users: []string{"alice"}})
+	}
 	const noPolicyMsg = "no worker group policy: every user may use every worker group"
 	const restrictedMsg = "worker group access restricted"
 	const warnMsg = "worker group restrictions rely on verified usernames"
@@ -41,13 +53,14 @@ func TestLogGroupPolicy(t *testing.T) {
 		wantWarn  []string // flags named in the WARN; nil = no WARN
 		wantInLog []string
 	}{
-		{"no config", nil, false, false, noPolicyMsg, nil, nil},
-		{"no config, unverified flags", nil, true, true, noPolicyMsg, nil, nil},
-		{"empty block", load(t, `{"worker_groups": {}}`), false, false, noPolicyMsg, nil, nil},
-		{"restricted", load(t, restricted), false, false, restrictedMsg, nil, []string{"groups=[gpu]", "default_deny=true"}},
-		{"restricted, skip verify", load(t, restricted), true, false, restrictedMsg, []string{"--insecure-skip-token-verify"}, nil},
-		{"restricted, unverified MG-RAST", load(t, restricted), false, true, restrictedMsg, []string{"--allow-unverified-mgrast"}, nil},
-		{"restricted, both", load(t, restricted), true, true, restrictedMsg, []string{"--insecure-skip-token-verify", "--allow-unverified-mgrast"}, nil},
+		{"no policy handle", nil, false, false, noPolicyMsg, nil, nil},
+		{"no policy handle, unverified flags", nil, true, true, noPolicyMsg, nil, nil},
+		{"nothing stored", load(t, false), false, false, noPolicyMsg, nil, nil},
+		{"nothing stored, unverified flags", load(t, false), true, true, noPolicyMsg, nil, nil},
+		{"restricted", restricted(t), false, false, restrictedMsg, nil, []string{"groups=[gpu]", "default_deny=true"}},
+		{"restricted, skip verify", restricted(t), true, false, restrictedMsg, []string{"--insecure-skip-token-verify"}, nil},
+		{"restricted, unverified MG-RAST", restricted(t), false, true, restrictedMsg, []string{"--allow-unverified-mgrast"}, nil},
+		{"restricted, both", restricted(t), true, true, restrictedMsg, []string{"--insecure-skip-token-verify", "--allow-unverified-mgrast"}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

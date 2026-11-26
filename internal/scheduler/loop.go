@@ -186,7 +186,8 @@ type Loop struct {
 	inputValidation validate.Mode
 
 	// groupPolicy decides which submitters may send tasks to a worker group
-	// (#261, the worker_groups block of --config). nil allows everything.
+	// (#261, stored in the database; admins change it at runtime and the
+	// handle is reloaded in place). nil allows everything.
 	// Checked in dispatchStep before any worker task is created, and in
 	// resubmitRetrying before a FAILED worker task is re-queued.
 	groupPolicy *groupacl.Policy

@@ -158,6 +158,28 @@ var schema = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_blessed_tools_active ON blessed_tools(tool_hash) WHERE revoked_at IS NULL`,
 	`CREATE INDEX IF NOT EXISTS idx_blessed_tools_hash ON blessed_tools(tool_hash)`,
 
+	// Worker-group access policy (#261): which submitters may send tasks to
+	// a worker group. users is a JSON array of usernames; the default group
+	// is stored as 'default'. Managed through the admin API, loaded into
+	// internal/groupacl at start-up and after every change.
+	`CREATE TABLE IF NOT EXISTS worker_group_policies (
+		group_name   TEXT PRIMARY KEY,
+		users        TEXT NOT NULL DEFAULT '[]',
+		allow_admins INTEGER NOT NULL DEFAULT 0,
+		updated_by   TEXT NOT NULL DEFAULT '',
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL
+	)`,
+
+	// Server-wide settings changed at runtime by admins, one row per key
+	// (today only worker_groups.default_deny = 'true' / 'false').
+	`CREATE TABLE IF NOT EXISTS server_settings (
+		key        TEXT PRIMARY KEY,
+		value      TEXT NOT NULL,
+		updated_by TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL
+	)`,
+
 	// Linked providers for multi-provider authentication
 	`CREATE TABLE IF NOT EXISTS linked_providers (
 		user_id   TEXT NOT NULL,

@@ -28,7 +28,7 @@ gowe-server [flags]
 | `--db` | `~/.gowe/gowe.db` | SQLite database path (`:memory:` for testing), or a `postgres://` / `postgresql://` URL without a password to use PostgreSQL (see [Database](#database)) |
 | `--default-executor` | `""` | Default executor type: `local`, `container`, `worker`, `bvbrc` (empty = hint-based) |
 | `--image-dir` | `""` | Base directory for resolving relative `.sif` image paths in `DockerRequirement` |
-| `--config` | `""` | Path to the server config file (JSON): `admins`, the PostgreSQL `database` block (see [Database](#database)) and the `worker_groups` access policy (see [Worker Group Access](#worker-group-access)); any other top-level key is a start-up error |
+| `--config` | `""` | Path to the server config file (JSON): `admins` and the PostgreSQL `database` block (see [Database](#database)); any other top-level key is a start-up error. The worker group access policy is stored in the database, not here (see [Worker Group Access](#worker-group-access)) |
 | `--scheduler-poll` | `2s` | Scheduler poll interval |
 | `--checkout-hold-after` | `10m` | After a queued task has waited this long for capacity on a worker that runs several tasks, that worker stops taking later tasks that need the same capacity (`0` disables; see [Capacity accounting at checkout](#capacity-accounting-at-checkout)) |
 | `--workspace-staging` | `""` | Workspace staging mode: `server` (pre/post-stage `ws://` on server) or empty (passthrough to workers) |
@@ -259,9 +259,11 @@ gowe-server --db postgres://gowe@127.0.0.1:5433/gowe --config /etc/gowe/server.j
 | `schema` | Optional schema to work in (sets `search_path`). Empty: the role's default schema |
 
 The `database` block is read strictly: when `--config` is given, the server does not start if the file cannot be
-read, is not valid JSON, has a top-level key other than `admins`, `database` and `worker_groups`, or the `database`
-block has an unknown field or a field of the wrong type. A config file without a `database` block is fine. (The
-`admins` list is still read leniently.)
+read, is not valid JSON, has a top-level key other than `admins` and `database`, or the `database` block has an
+unknown field or a field of the wrong type. A config file without a `database` block is fine. (The `admins` list is
+still read leniently.) A `worker_groups` key is refused with `worker_groups is no longer read from the config file;
+manage it with "gowe admin worker-groups" (stored in the database)`. (`gowe-db-copy` reads only the `database`
+block of the same file and ignores the other keys.)
 
 The server refuses to start, with an error that names the fix, when:
 - the config file holds `database.password` and is not a regular file, or has any permission bit for group or
@@ -378,40 +380,57 @@ Each static entry may carry an `id` (logged for attribution — the raw key is n
 
 Worker keys decide which **workers** may join a group. Which **submitters** may send tasks to a group (with
 `gowe:Execution.worker_group` on a tool or step, or the `worker_group` label: `gowe submit --group`, the UI form) is
-decided by the optional `worker_groups` block of the `--config` file:
+decided by the worker group access policy. It is stored in the database (tables `worker_group_policies` and
+`server_settings`, SQLite or PostgreSQL alike) and server admins read and change it while the server runs, with
+`gowe admin worker-groups` (see [cli.md](cli.md#admin)) or the [admin API](#admin):
 
-```json
-{
-  "worker_groups": {
-    "default_deny": false,
-    "groups": {
-      "model-router": {"users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true}
-    }
-  }
-}
+```bash
+gowe admin worker-groups set model-router --user awilke@bvbrc --user svc-router@bvbrc --admins
+gowe admin worker-groups default-deny true
+gowe admin worker-groups list
+gowe admin worker-groups delete model-router
 ```
 
-- A group listed under `groups` is restricted: a submitter may use it only when their username is in `users`
-  (exact, case-sensitive match), or when `admins` is `true` and they are a server admin. An empty `users` list with
+- A group with a rule is restricted: a submitter may use it only when their username is in its `users` (exact,
+  case-sensitive match), or when `admins` is `true` and they are a server admin. An empty `users` list with
   `admins: false` means nobody.
-- A group that is not listed is open, unless `default_deny` is `true`: then every unlisted group except the default
-  group is open to server admins only.
-- The default group (`""` or `"default"`, the same group) is open unless it is listed itself.
+- A group without a rule is open, unless `default_deny` is `true`: then every group without a rule except the
+  default group is open to server admins only.
+- The default group (`""` or `"default"`, the same group) is open unless it has a rule itself, written for the
+  group name `default`.
 - Anonymous submitters (unauthenticated REST submissions, stored as user `anonymous`) are never in a `users` list
-  and never admins; `"anonymous"` in a `users` list is a start-up error.
-- No block, or an empty one, means no restriction (the behaviour before this policy existed).
+  and never admins; `anonymous` cannot be put in a `users` list.
+- Nothing stored (no rules, no `default_deny`) means no restriction (the behaviour before this policy existed).
 
-The block is read strictly at start-up: an unreadable file, invalid JSON, an unknown top-level key in the file
-(anything other than `admins`, `database` and `worker_groups`), an unknown field in the block, a value of the wrong
-type, a group name that is not letters, digits, `.`, `_` or `-` starting with a letter or digit (the rule tool
-blessings use; no surrounding whitespace), or `"anonymous"` in a `users` list stops the server with an error naming
-the problem. The policy is read only at start-up; a change needs a restart. At start-up the server logs one INFO
-line: the restricted group names (never the user lists) and `default_deny`, or `no worker group policy: every user
-may use every worker group`.
+The API refuses (400) a group name that is not letters, digits, `.`, `_` or `-` starting with a letter or digit (the
+rule tool blessings use; no surrounding whitespace, `default` for the default group) or is longer than 64 bytes, an
+empty username, a username longer than 256 bytes, with leading or trailing whitespace or with a control character,
+`anonymous`, and a `users` list of more than 1000 entries; duplicate usernames are dropped. A change is written to the
+database and then loaded into the policy the server enforces, so it **takes effect at once** for new submissions,
+for dispatch and for re-queued tasks; tasks already QUEUED or RUNNING are not checked again (to revoke access for
+work already queued, cancel the user's submissions). The write and the reload run to completion even when the client
+disconnects meanwhile. Each change logs one INFO line with the acting admin, the group and the number of users (never
+the user names).
 
-The policy is only as strong as the username it is given: with restrictions configured and
-`--insecure-skip-token-verify` or `--allow-unverified-mgrast` set, a caller can claim a listed username, and the
-server logs a WARN naming the flag.
+If the stored policy cannot be loaded after a write, the API answers `500` ("stored but ... could not be reloaded")
+and logs an ERROR. The change **is stored, but not enforced**: the server keeps enforcing the previous policy, so the
+stored and the enforced policy differ — and when the change restricted access (a rule deleted under `default_deny`,
+a user removed, `default_deny` set to `true`), access you meant to revoke is still granted.
+`gowe admin worker-groups list` (`GET /api/v1/admin/worker-groups`) reloads the stored policy before listing it, so
+once the cause is fixed, running it re-syncs the enforced policy with the store; while the cause remains it fails
+with `500` as well. The usual cause is a row the API would refuse, written by a direct SQL edit;
+`gowe admin worker-groups delete` removes a rule whatever its name.
+
+The server loads the policy from the database at start-up and refuses to start when a stored rule is invalid (fail
+closed). It does not watch the tables: a direct SQL edit is only seen after a restart, the next change through the
+API, or the next `gowe admin worker-groups list`. At start-up the server logs one INFO line: the restricted group names (never the user lists) and
+`default_deny`, or `no worker group policy: every user may use every worker group`. The `worker_groups` block of
+the `--config` file, read by earlier development builds, is no longer read: the server refuses to start while the
+file has one (move the rules over with the commands above).
+
+The policy is only as strong as the username it is given: with `--insecure-skip-token-verify` or
+`--allow-unverified-mgrast` set, a caller can claim a listed username. When the policy loaded at start-up has
+restrictions, the server logs a WARN naming the flag (restrictions added later through the API do not repeat it).
 
 The policy is applied when a task is created or re-queued:
 
@@ -1325,6 +1344,52 @@ Permanently revoke (delete) a key. Use this for a compromised worker — other w
 curl -X DELETE http://localhost:8080/api/v1/admin/worker-keys/wk_1f2e... \
   -H "Authorization: $ADMIN_TOKEN"
 ```
+
+#### `GET /api/v1/admin/worker-groups`
+
+The [worker group access policy](#worker-group-access) as stored: `default_deny` and every rule, sorted by group name.
+It first reloads the stored policy into the enforced one, so the listing is what is in force, and it re-syncs the two
+after a write answered `500` "stored but not reloaded". `500` when the stored policy cannot be loaded (the previous
+policy then stays in force).
+
+```json
+{
+  "default_deny": false,
+  "groups": [
+    {"group": "model-router", "users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true,
+     "updated_by": "root@bvbrc", "created_at": "2026-11-25T10:00:00Z", "updated_at": "2026-11-25T10:00:00Z"}
+  ]
+}
+```
+
+#### `PUT /api/v1/admin/worker-groups/{group}`
+
+Create or replace the rule of `{group}` (`default` for the default group). The body is `{"users": [...], "admins": bool}`;
+`users` replaces the previous list, duplicates are dropped, unknown fields are refused. Answers with the stored rule.
+Takes effect at once.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/admin/worker-groups/model-router \
+  -H "Authorization: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true}'
+```
+
+#### `DELETE /api/v1/admin/worker-groups/{group}`
+
+Remove the rule of `{group}`: the group becomes open, or admin-only when `default_deny` is `true`. `404` when the
+group has no rule. The name is not checked against the group name rule, so a stored row with an invalid name (which
+makes every reload fail) can be removed.
+
+#### `PUT /api/v1/admin/worker-groups-default-deny`
+
+Set `default_deny` with the body `{"default_deny": true}` or `{"default_deny": false}` (required).
+
+All three writes answer `400` (`VALIDATION_ERROR`) for an invalid group name (DELETE: an empty one), username or body
+(a body larger than 1 MiB or with data after the JSON value is invalid), `503` "worker group policy is not enabled on
+this server" when the server runs without a policy handle, and `500` (with an ERROR in the server log) when the change
+was stored but could not be loaded; the previous policy then stays in force until a reload succeeds, so the stored
+and the enforced policy differ: `GET /api/v1/admin/worker-groups` (`gowe admin worker-groups list`) re-syncs them
+(see [Worker Group Access](#worker-group-access)).
 
 #### `POST /api/v1/admin/submissions/{id}/verify-outputs`
 

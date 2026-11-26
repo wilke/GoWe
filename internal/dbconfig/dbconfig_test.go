@@ -80,7 +80,9 @@ func TestSelectDatabase(t *testing.T) {
 			wantBack: BackendSQLite, wantPath: ""},
 		{name: "config with database null", config: `{"database": null}`, mode: 0o644,
 			wantBack: BackendSQLite, wantPath: ""},
-		{name: "other top-level keys and ill-typed admins are not checked", config: `{"admins": "alice", "x": 1}`, mode: 0o644,
+		{name: "ill-typed admins is not checked", config: `{"admins": "alice"}`, mode: 0o644,
+			wantBack: BackendSQLite, wantPath: ""},
+		{name: "top level null", config: `null`, mode: 0o644,
 			wantBack: BackendSQLite, wantPath: ""},
 		{name: "config 0644 without password", db: "", config: `{"database": {"url": "` + pgURL + `"}}`, mode: 0o644,
 			wantBack: BackendPostgres, wantURL: pgURL},
@@ -214,6 +216,22 @@ func TestSelectDatabase_Refusals(t *testing.T) {
 			want: []string{"not valid JSON"}, secrets: []string{testFilePW, "q"}},
 		{name: "top level not an object", config: `["alice"]`, mode: 0o600,
 			want: []string{"top level must be a JSON object"}},
+		{name: "worker_groups moved to the database", config: `{"admins": [], "worker_groups": {"groups": {"gpu": {"users": ["alice"]}}}}`, mode: 0o644,
+			want: []string{`worker_groups is no longer read from the config file; manage it with "gowe admin worker-groups" (stored in the database)`}},
+		{name: "worker_groups null is refused too", config: `{"worker_groups": null}`, mode: 0o644,
+			want: []string{"worker_groups is no longer read from the config file"}},
+		{name: "worker_groups refused with a postgres --db", db: pgURL, config: `{"worker_groups": {"groups": {}}}`, mode: 0o644,
+			want: []string{"worker_groups is no longer read from the config file"}},
+		{name: "worker_groups refused with a sqlite --db", db: "/var/lib/gowe/gowe.db", config: `{"admins": ["alice"], "worker_groups": {}}`, mode: 0o644,
+			want: []string{"worker_groups is no longer read from the config file"}},
+		{name: "database block spelt otherwise is unknown to the server", db: pgURL, config: `{"Database": {"schema": "gowe"}}`, mode: 0o644,
+			want: []string{`unknown top-level key "Database"`}},
+		{name: "unknown top-level key", config: `{"databse": {"url": "` + pgURL + `"}}`, mode: 0o644,
+			want: []string{`unknown top-level key "databse" (allowed: admins, database)`}},
+		{name: "top-level keys are case-sensitive", config: `{"Admins": ["alice"]}`, mode: 0o644,
+			want: []string{`unknown top-level key "Admins"`}},
+		{name: "several unknown top-level keys, sorted, no values", config: `{"zz": "` + testFilePW + `", "aa": 2, "database": {}}`, mode: 0o600,
+			want: []string{`unknown top-level key "aa", "zz"`}, secrets: []string{testFilePW}},
 		{name: "config file missing", noFile: true,
 			want: []string{"config file"}},
 	}
@@ -291,6 +309,81 @@ func TestSelectFor_FlagName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSelectFor_OtherTopLevelKeysIgnored: only the server (Select) refuses
+// top-level keys other than admins and database; gowe-db-copy (SelectFor)
+// reads the database block of the same file and leaves the rest alone.
+func TestSelectFor_OtherTopLevelKeysIgnored(t *testing.T) {
+	clearPGEnv(t)
+	const pgURL = "postgres://gowe@127.0.0.1:5433/gowe"
+	cfg := writeConfig(t, `{"database": {"url": "`+pgURL+`"}, "worker_groups": {}, "x": 1}`, 0o644)
+	sel, err := SelectFor("--to", "", cfg, os.Getenv)
+	if err != nil {
+		t.Fatalf("SelectFor: %v", err)
+	}
+	if sel.Backend != BackendPostgres || sel.Postgres.URL != pgURL {
+		t.Errorf("selection = %+v", sel)
+	}
+	if _, err := Select("", cfg, os.Getenv); err == nil || !strings.Contains(err.Error(), "worker_groups is no longer read") {
+		t.Errorf("Select error = %v, want the worker_groups error", err)
+	}
+}
+
+// TestSelectFor_DatabaseKeyCaseInsensitive: gowe-db-copy (SelectFor) finds
+// the database block whatever the case of its key, as 0.30.0 did; the
+// password rules apply to it all the same, and several spellings at once are
+// refused.
+func TestSelectFor_DatabaseKeyCaseInsensitive(t *testing.T) {
+	const pgURL = "postgres://gowe@127.0.0.1:5433/gowe"
+	for _, key := range []string{"database", "Database", "DATABASE", "dataBase"} {
+		t.Run(key, func(t *testing.T) {
+			clearPGEnv(t)
+			cfg := writeConfig(t, `{"`+key+`": {"url": "`+pgURL+`", "password": "`+testFilePW+`", "schema": "gowe"}}`, 0o600)
+			sel, err := SelectFor("--to", "", cfg, os.Getenv)
+			if err != nil {
+				t.Fatalf("SelectFor: %v", err)
+			}
+			if sel.Backend != BackendPostgres || sel.Postgres.URL != pgURL || sel.Postgres.Schema != "gowe" {
+				t.Errorf("selection = %s %q %q, want postgres %q gowe", sel.Backend, sel.Postgres.URL, sel.Postgres.Schema, pgURL)
+			}
+			if sel.Postgres.Password != testFilePW {
+				t.Error("password differs from the expected one")
+			}
+		})
+	}
+
+	t.Run("password needs mode 0600 whatever the key", func(t *testing.T) {
+		clearPGEnv(t)
+		cfg := writeConfig(t, `{"Database": {"password": "`+testFilePW+`"}}`, 0o644)
+		_, err := SelectFor("--to", pgURL, cfg, os.Getenv)
+		if err == nil || !strings.Contains(err.Error(), "chmod 600 ") {
+			t.Fatalf("err = %v, want the mode error", err)
+		}
+		if strings.Contains(strings.ReplaceAll(err.Error(), cfg, "<config>"), testFilePW) {
+			t.Error("error leaks the password")
+		}
+	})
+
+	t.Run("several spellings refused", func(t *testing.T) {
+		clearPGEnv(t)
+		cfg := writeConfig(t, `{"database": {"url": "`+pgURL+`"}, "Database": {"password": "`+testFilePW+`"}}`, 0o600)
+		_, err := SelectFor("--to", "", cfg, os.Getenv)
+		if err == nil || !strings.Contains(err.Error(), `top-level keys "Database", "database" all name the database block`) {
+			t.Fatalf("err = %v, want the several-keys error", err)
+		}
+		if strings.Contains(strings.ReplaceAll(err.Error(), cfg, "<config>"), testFilePW) {
+			t.Error("error leaks the password")
+		}
+	})
+
+	t.Run("server keeps the exact key", func(t *testing.T) {
+		clearPGEnv(t)
+		cfg := writeConfig(t, `{"Database": {"url": "`+pgURL+`"}}`, 0o644)
+		if _, err := Select("", cfg, os.Getenv); err == nil || !strings.Contains(err.Error(), `unknown top-level key "Database"`) {
+			t.Errorf("Select err = %v, want the unknown-key error", err)
+		}
+	})
 }
 
 // TestSelectDatabase_EnvIgnoredForSQLite: the PG* variables only matter when

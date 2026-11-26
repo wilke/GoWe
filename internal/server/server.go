@@ -56,7 +56,11 @@ type Server struct {
 	secretsRetention      model.SecretsRetentionPolicy // default secrets_retention applied to a submission that doesn't specify one (see WithSecretsRetention); zero value is SecretsRetentionKeep
 	inputValidation       validate.Mode                // --input-validation mode (#273); empty means warn (see validate.Mode.Effective)
 	tokenBlessing         string                       // --token-blessing mode: "enforce" (default) or "dev" (see WithTokenBlessingMode)
-	groupPolicy           *groupacl.Policy             // optional; worker_groups block of --config (#261); nil allows every group
+	groupPolicy           *groupacl.Policy             // optional; live worker-group access policy (#261), reloaded by the admin API; nil allows every group
+
+	// groupPolicyMu serialises "store write + reload" of the worker-group
+	// admin handlers, and their reload + read on GET.
+	groupPolicyMu sync.Mutex
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
 	// re-delivery endpoint may read originals from; empty refuses file://
@@ -164,7 +168,9 @@ func WithAdminConfig(cfg *AdminConfig) Option {
 // WithGroupPolicy sets the worker-group access policy (#261): submissions
 // that would use a group their submitter may not use are refused with 403
 // (REST) or an error on the form (UI). The scheduler enforces the same policy
-// at dispatch. nil (the default) allows every group.
+// at dispatch. The admin worker-groups endpoints write the store and reload
+// this policy, so it must be the handle the scheduler holds too. nil (the
+// default) allows every group and the admin endpoints answer 503.
 func WithGroupPolicy(p *groupacl.Policy) Option {
 	return func(s *Server) {
 		s.groupPolicy = p
@@ -540,6 +546,7 @@ func (s *Server) routes() {
 					})
 				})
 				r.Route("/tool-blessings", s.toolBlessingRoutes)
+				s.workerGroupRoutes(r)
 				r.Route("/labels", func(r chi.Router) {
 					r.Get("/", s.handleListLabelVocabulary)
 					r.Post("/", s.handleCreateLabelVocabulary)

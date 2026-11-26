@@ -226,6 +226,23 @@ type Store interface {
 	RevokeToolBlessing(ctx context.Context, id, revokedBy, reason string) error
 	AddToolBlessingImageSHA256(ctx context.Context, id, sha256 string) error
 
+	// Worker-group access policy (#261) and server settings, managed by
+	// admins at runtime and loaded into internal/groupacl.
+	// ListWorkerGroupPolicies returns every rule sorted by group name; a row
+	// that cannot be read is an error, never skipped (the policy fails closed).
+	ListWorkerGroupPolicies(ctx context.Context) ([]*model.WorkerGroupPolicy, error)
+	// UpsertWorkerGroupPolicy creates the rule of p.Group or replaces its
+	// users, admins, updated_by and updated_at (created_at is kept).
+	UpsertWorkerGroupPolicy(ctx context.Context, p *model.WorkerGroupPolicy) error
+	// DeleteWorkerGroupPolicy removes the rule of group and reports whether
+	// one existed.
+	DeleteWorkerGroupPolicy(ctx context.Context, group string) (bool, error)
+	// GetServerSetting returns the value stored under key; found is false
+	// (no error) when there is none.
+	GetServerSetting(ctx context.Context, key string) (value string, found bool, err error)
+	// SetServerSetting creates or replaces the value of key.
+	SetServerSetting(ctx context.Context, key, value, updatedBy string) error
+
 	// User operations
 	GetUser(ctx context.Context, username string) (*model.User, error)
 	GetOrCreateUser(ctx context.Context, username string, provider model.AuthProvider) (*model.User, error)

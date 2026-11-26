@@ -1,29 +1,56 @@
 package groupacl
 
 import (
-	"os"
-	"path/filepath"
+	"context"
+	"errors"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/me/gowe/pkg/model"
 )
 
-func writeConfig(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "server.json")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
+// memSource is an in-memory Source.
+type memSource struct {
+	defaultDeny string // stored value; "" = no row
+	rules       []*model.WorkerGroupPolicy
+	listErr     error
+	settingErr  error
 }
 
-func mustLoad(t *testing.T, content string) *Policy {
+func (m *memSource) ListWorkerGroupPolicies(context.Context) ([]*model.WorkerGroupPolicy, error) {
+	return m.rules, m.listErr
+}
+
+func (m *memSource) GetServerSetting(_ context.Context, key string) (string, bool, error) {
+	if m.settingErr != nil {
+		return "", false, m.settingErr
+	}
+	if key != DefaultDenyKey || m.defaultDeny == "" {
+		return "", false, nil
+	}
+	return m.defaultDeny, true, nil
+}
+
+func gp(group string, admins bool, users ...string) *model.WorkerGroupPolicy {
+	return &model.WorkerGroupPolicy{Group: group, Users: users, Admins: admins}
+}
+
+// testRules: model-router for two users and admins, gpu for alice, nobody
+// for nobody.
+var testRules = []*model.WorkerGroupPolicy{
+	gp("model-router", true, "awilke@bvbrc", "svc-router@bvbrc"),
+	gp("gpu", false, "alice"),
+	gp("nobody", false),
+}
+
+func mustPolicy(t *testing.T, src *memSource) *Policy {
 	t.Helper()
-	p, err := Load(writeConfig(t, content))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	p := New()
+	if err := p.Reload(context.Background(), src); err != nil {
+		t.Fatalf("Reload: %v", err)
 	}
 	return p
 }
@@ -39,27 +66,15 @@ func adminsOf(names ...string) IsAdminFunc {
 	}
 }
 
-const testConfig = `{
-  "admins": ["root@bvbrc"],
-  "database": {"url": "postgres://db.example/gowe"},
-  "worker_groups": {
-    "groups": {
-      "model-router": {"users": ["awilke@bvbrc", "svc-router@bvbrc"], "admins": true},
-      "gpu": {"users": ["alice"]},
-      "nobody": {"users": []}
-    }
-  }
-}`
-
 func TestAllowed(t *testing.T) {
-	base := mustLoad(t, testConfig).WithAdmins(adminsOf("root@bvbrc"))
-	denyCfg := mustLoad(t, `{"worker_groups": {"default_deny": true, "groups": {"gpu": {"users": ["alice"]}}}}`).
+	base := mustPolicy(t, &memSource{rules: testRules}).WithAdmins(adminsOf("root@bvbrc"))
+	denyCfg := mustPolicy(t, &memSource{defaultDeny: "true", rules: []*model.WorkerGroupPolicy{gp("gpu", false, "alice")}}).
 		WithAdmins(adminsOf("root@bvbrc"))
-	defaultListed := mustLoad(t, `{"worker_groups": {"groups": {"default": {"users": ["alice"]}}}}`)
+	defaultListed := mustPolicy(t, &memSource{rules: []*model.WorkerGroupPolicy{gp("default", false, "alice")}})
 	// An admin lookup that (wrongly) calls "anonymous" an admin: the policy
 	// must still never treat the anonymous submitter as one (F4).
-	anonAdmin := mustLoad(t, testConfig).WithAdmins(adminsOf("anonymous", ""))
-	anonAdminDeny := mustLoad(t, `{"worker_groups": {"default_deny": true}}`).WithAdmins(adminsOf("anonymous", ""))
+	anonAdmin := mustPolicy(t, &memSource{rules: testRules}).WithAdmins(adminsOf("anonymous", ""))
+	anonAdminDeny := mustPolicy(t, &memSource{defaultDeny: "true"}).WithAdmins(adminsOf("anonymous", ""))
 
 	tests := []struct {
 		name  string
@@ -88,7 +103,7 @@ func TestAllowed(t *testing.T) {
 		{"default listed: empty spelling restricted", defaultListed, "mallory", "", false},
 		{"default listed: named spelling restricted", defaultListed, "mallory", "default", false},
 		{"default listed: listed user (empty spelling)", defaultListed, "alice", "", true},
-		{"no admin func: nobody is admin", mustLoad(t, testConfig), "root@bvbrc", "model-router", false},
+		{"no admin func: nobody is admin", mustPolicy(t, &memSource{rules: testRules}), "root@bvbrc", "model-router", false},
 		{"anonymous username: listed group denied", base, "anonymous", "gpu", false},
 		{"anonymous username: unlisted group open", base, "anonymous", "esmfold", true},
 		{"anonymous username: default group open", base, "anonymous", "", true},
@@ -97,6 +112,7 @@ func TestAllowed(t *testing.T) {
 		{"anonymous username: default_deny keeps default open", anonAdminDeny, "anonymous", "default", true},
 		{"nil policy", nil, "mallory", "model-router", true},
 		{"zero policy", &Policy{}, "mallory", "model-router", true},
+		{"new policy, never reloaded", New(), "mallory", "model-router", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,7 +124,7 @@ func TestAllowed(t *testing.T) {
 }
 
 func TestCheck(t *testing.T) {
-	p := mustLoad(t, testConfig)
+	p := mustPolicy(t, &memSource{rules: testRules})
 	tests := []struct {
 		name    string
 		p       *Policy
@@ -137,75 +153,282 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-func TestLoad(t *testing.T) {
+func TestReload(t *testing.T) {
+	dbErr := errors.New("database is gone")
 	tests := []struct {
-		name           string
-		content        string
-		wantErr        string // substring; "" = success
-		wantRestricted bool
+		name            string
+		src             *memSource
+		wantErr         string // substring; "" = success
+		wantRestricted  bool
+		wantDefaultDeny bool
 	}{
-		{"missing block", `{"admins": ["a"]}`, "", false},
-		{"null block", `{"worker_groups": null}`, "", false},
-		{"empty block", `{"worker_groups": {}}`, "", false},
-		{"default_deny only", `{"worker_groups": {"default_deny": true}}`, "", true},
-		{"groups", testConfig, "", true},
-		{"unknown field in block", `{"worker_groups": {"defaultDeny": true}}`, `unknown field "defaultDeny" in worker_groups`, false},
-		{"unknown field in group", `{"worker_groups": {"groups": {"g": {"user": ["a"]}}}}`, `unknown field "user" in worker_groups`, false},
-		{"wrong type default_deny", `{"worker_groups": {"default_deny": "yes"}}`, "worker_groups.default_deny must be a bool", false},
-		{"wrong type users", `{"worker_groups": {"groups": {"g": {"users": "alice"}}}}`, "must be a []string", false},
-		{"wrong type block", `{"worker_groups": []}`, "worker_groups must be a JSON object", false},
-		{"top level not an object", `[1, 2]`, "the top level must be a JSON object", false},
-		{"invalid JSON", `{"worker_groups": {`, "not valid JSON", false},
-		{"empty group name", `{"worker_groups": {"groups": {"": {"users": ["a"]}}}}`, "empty group name", false},
-		{"empty username", `{"worker_groups": {"groups": {"g": {"users": [""]}}}}`, "empty username", false},
-		{"known top-level keys only", `{"admins": [], "database": {}, "worker_groups": {"groups": {"g": {"users": ["a"]}}}}`, "", true},
-		{"unknown top-level key", `{"worker_group": {"groups": {"gpu": {"users": ["alice"]}}}}`, `unknown top-level key "worker_group" (allowed: admins, database, worker_groups)`, false},
-		{"unknown top-level key next to the block", `{"worker_groups": {}, "workers": 1}`, `unknown top-level key "workers"`, false},
-		{"top-level keys are case-sensitive", `{"Worker_Groups": {"default_deny": true}}`, `unknown top-level key "Worker_Groups"`, false},
-		{"several unknown top-level keys, sorted", `{"zz": 1, "aa": 2}`, `unknown top-level key "aa", "zz"`, false},
-		{"group name with leading space", `{"worker_groups": {"groups": {" gpu": {"users": ["a"]}}}}`, `" gpu" is not a valid group name`, false},
-		{"group name with trailing space", `{"worker_groups": {"groups": {"gpu ": {"users": ["a"]}}}}`, `"gpu " is not a valid group name`, false},
-		{"group name with inner space", `{"worker_groups": {"groups": {"gpu group": {"users": ["a"]}}}}`, "is not a valid group name", false},
-		{"group name with slash", `{"worker_groups": {"groups": {"a/b": {"users": ["a"]}}}}`, "is not a valid group name", false},
-		{"group name starting with a dot", `{"worker_groups": {"groups": {".gpu": {"users": ["a"]}}}}`, "is not a valid group name", false},
-		{"valid group name characters", `{"worker_groups": {"groups": {"GPU_a100.v2-x": {"users": ["a"]}}}}`, "", true},
-		{"anonymous in users", `{"worker_groups": {"groups": {"gpu": {"users": ["alice", "anonymous"]}}}}`, `worker_groups.groups.gpu.users holds "anonymous"`, false},
+		{"nothing stored", &memSource{}, "", false, false},
+		{"default_deny false", &memSource{defaultDeny: "false"}, "", false, false},
+		{"default_deny only", &memSource{defaultDeny: "true"}, "", true, true},
+		{"default_deny not a bool", &memSource{defaultDeny: "yes"}, `worker_groups.default_deny holds "yes"`, false, false},
+		{"default_deny wrong case", &memSource{defaultDeny: "True"}, `holds "True"`, false, false},
+		{"rules", &memSource{rules: testRules}, "", true, false},
+		{"rules and default_deny", &memSource{defaultDeny: "true", rules: testRules}, "", true, true},
+		{"stored duplicates are tolerated", &memSource{rules: []*model.WorkerGroupPolicy{gp("gpu", false, "alice", "alice")}}, "", true, false},
+		{"valid group name characters", &memSource{rules: []*model.WorkerGroupPolicy{gp("GPU_a100.v2-x", false, "a")}}, "", true, false},
+		{"empty group name", &memSource{rules: []*model.WorkerGroupPolicy{gp("", false, "a")}}, "group name is empty", false, false},
+		{"group name with leading space", &memSource{rules: []*model.WorkerGroupPolicy{gp(" gpu", false, "a")}}, `" gpu" is not a valid group name`, false, false},
+		{"group name with slash", &memSource{rules: []*model.WorkerGroupPolicy{gp("a/b", false, "a")}}, "is not a valid group name", false, false},
+		{"group name starting with a dot", &memSource{rules: []*model.WorkerGroupPolicy{gp(".gpu", false, "a")}}, "is not a valid group name", false, false},
+		{"empty username", &memSource{rules: []*model.WorkerGroupPolicy{gp("g", false, "")}}, `group "g": users holds an empty username`, false, false},
+		{"anonymous in users", &memSource{rules: []*model.WorkerGroupPolicy{gp("gpu", false, "alice", "anonymous")}}, `users holds "anonymous"`, false, false},
+		{"username with whitespace", &memSource{rules: []*model.WorkerGroupPolicy{gp("gpu", false, "alice ")}}, "leading or trailing whitespace", false, false},
+		{"list error", &memSource{listErr: dbErr}, "list rules: database is gone", false, false},
+		{"setting error", &memSource{settingErr: dbErr}, "read worker_groups.default_deny: database is gone", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := Load(writeConfig(t, tt.content))
+			p := New()
+			err := p.Reload(context.Background(), tt.src)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("Load error = %v, want it to contain %q", err, tt.wantErr)
+					t.Fatalf("Reload error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				if p.Restricted() {
+					t.Error("a failed first Reload must leave the policy without rules")
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("Load: %v", err)
+				t.Fatalf("Reload: %v", err)
 			}
 			if got := p.Restricted(); got != tt.wantRestricted {
 				t.Errorf("Restricted() = %v, want %v", got, tt.wantRestricted)
+			}
+			if got := p.DefaultDeny(); got != tt.wantDefaultDeny {
+				t.Errorf("DefaultDeny() = %v, want %v", got, tt.wantDefaultDeny)
 			}
 		})
 	}
 }
 
-func TestLoad_NoPathAndUnreadable(t *testing.T) {
-	p, err := Load("")
-	if err != nil || p != nil {
-		t.Fatalf("Load(\"\") = %v, %v; want nil, nil", p, err)
+// A Reload replaces the whole rule set; a failed one keeps the old rules.
+func TestReload_SwapAndFailure(t *testing.T) {
+	ctx := context.Background()
+	p := mustPolicy(t, &memSource{rules: testRules})
+	if p.Allowed("mallory", "gpu") {
+		t.Fatal("setup: gpu must be restricted")
 	}
-	if !p.Allowed("anyone", "gpu") || p.Restricted() || p.Check("anyone", []string{"gpu"}) != nil {
+
+	// A failing source changes nothing.
+	if err := p.Reload(ctx, &memSource{listErr: errors.New("boom")}); err == nil {
+		t.Fatal("Reload with a failing source succeeded")
+	}
+	if err := p.Reload(ctx, &memSource{rules: []*model.WorkerGroupPolicy{gp("gpu", false, "anonymous")}}); err == nil {
+		t.Fatal("Reload with an invalid stored rule succeeded")
+	}
+	if p.Allowed("mallory", "gpu") || !p.Allowed("alice", "gpu") {
+		t.Error("a failed Reload must keep the previous rules")
+	}
+	if got, want := p.Groups(), []string{"gpu", "model-router", "nobody"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Groups() after failed Reload = %v, want %v", got, want)
+	}
+
+	// The new set replaces the old one entirely: gpu is no longer listed.
+	if err := p.Reload(ctx, &memSource{defaultDeny: "true", rules: []*model.WorkerGroupPolicy{gp("esmfold", false, "bob")}}); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got, want := p.Groups(), []string{"esmfold"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Groups() = %v, want %v", got, want)
+	}
+	if p.Allowed("alice", "gpu") {
+		t.Error("gpu is unlisted under default_deny now: alice must be denied")
+	}
+	if !p.Allowed("bob", "esmfold") || !p.Allowed("mallory", "") {
+		t.Error("new rules not applied")
+	}
+
+	// Back to nothing stored: everything open.
+	if err := p.Reload(ctx, &memSource{}); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if p.Restricted() || !p.Allowed("mallory", "esmfold") {
+		t.Error("an empty store must open every group")
+	}
+}
+
+// The copies WithAdmins returns share the rules: one Reload changes all.
+func TestReload_SharedByWithAdminsCopies(t *testing.T) {
+	ctx := context.Background()
+	p := New()
+	q := p.WithAdmins(adminsOf("root"))
+	if err := p.Reload(ctx, &memSource{rules: []*model.WorkerGroupPolicy{gp("gpu", true, "alice")}}); err != nil {
+		t.Fatal(err)
+	}
+	if !q.Restricted() || q.Allowed("mallory", "gpu") || !q.Allowed("root", "gpu") {
+		t.Error("the WithAdmins copy must see the reloaded rules, with its admin lookup")
+	}
+	if p.Allowed("root", "gpu") {
+		t.Error("the original has no admin lookup")
+	}
+	if err := q.Reload(ctx, &memSource{}); err != nil {
+		t.Fatal(err)
+	}
+	if p.Restricted() {
+		t.Error("a Reload through the copy must change the original too")
+	}
+}
+
+func TestReload_NilAndZeroPolicy(t *testing.T) {
+	var p *Policy
+	if err := p.Reload(context.Background(), &memSource{}); err == nil {
+		t.Error("Reload on a nil policy must fail")
+	}
+	if err := (&Policy{}).Reload(context.Background(), &memSource{}); err == nil {
+		t.Error("Reload on a zero policy must fail")
+	}
+	if !p.Allowed("anyone", "gpu") || p.Restricted() || p.DefaultDeny() || p.Groups() != nil || p.Check("anyone", []string{"gpu"}) != nil {
 		t.Error("nil policy must allow everything")
 	}
 	if p.WithAdmins(adminsOf("x")) != nil {
 		t.Error("WithAdmins on nil must stay nil")
 	}
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.json")); err == nil {
-		t.Error("missing file must be an error")
+}
+
+// Readers run while the rules are swapped (meaningful under -race).
+func TestReload_ConcurrentReaders(t *testing.T) {
+	ctx := context.Background()
+	p := New().WithAdmins(adminsOf("root"))
+	open := &memSource{}
+	closed := &memSource{defaultDeny: "true", rules: testRules}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = p.Allowed("alice", "gpu")
+				_ = p.Check("mallory", []string{"gpu", "esmfold"})
+				_ = p.Groups()
+				_ = p.Restricted()
+			}
+		}()
 	}
-	if _, err := Load(t.TempDir()); err == nil {
-		t.Error("a directory must be an error")
+	for i := 0; i < 200; i++ {
+		src := open
+		if i%2 == 0 {
+			src = closed
+		}
+		if err := p.Reload(ctx, src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestValidateGroupName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr string
+	}{
+		{"gpu", ""},
+		{"default", ""},
+		{"GPU_a100.v2-x", ""},
+		{"0gpu", ""},
+		{"", "group name is empty"},
+		{" gpu", "is not a valid group name"},
+		{"gpu ", "is not a valid group name"},
+		{"gpu group", "is not a valid group name"},
+		{"a/b", "is not a valid group name"},
+		{".gpu", "is not a valid group name"},
+		{"-gpu", "is not a valid group name"},
+		{strings.Repeat("g", MaxGroupNameBytes), ""},
+		{strings.Repeat("g", MaxGroupNameBytes+1), "65 bytes long; at most 64 are allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateGroupName(tt.name)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateGroupName(%q) = %v", tt.name, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateGroupName(%q) = %v, want %q", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateUsers(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      []string
+		want    []string
+		wantErr string
+	}{
+		{"nil", nil, []string{}, ""},
+		{"empty", []string{}, []string{}, ""},
+		{"kept in order", []string{"bob", "alice"}, []string{"bob", "alice"}, ""},
+		{"duplicates removed", []string{"alice", "bob", "alice"}, []string{"alice", "bob"}, ""},
+		{"case is significant", []string{"alice", "Alice"}, []string{"alice", "Alice"}, ""},
+		{"empty name", []string{"alice", ""}, nil, "empty username"},
+		{"anonymous", []string{"anonymous"}, nil, `users holds "anonymous"`},
+		{"leading space", []string{" alice"}, nil, "leading or trailing whitespace"},
+		{"trailing tab", []string{"alice\t"}, nil, "leading or trailing whitespace"},
+		{"whitespace only", []string{" "}, nil, "leading or trailing whitespace"},
+		{"newline inside", []string{"ali\nce"}, nil, "contains a control character"},
+		{"NUL inside", []string{"ali\x00ce"}, nil, "contains a control character"},
+		{"DEL inside", []string{"ali\x7fce"}, nil, "contains a control character"},
+		{"C1 control inside", []string{"ali\u0085ce"}, nil, "contains a control character"},
+		{"longest name", []string{strings.Repeat("u", MaxUsernameBytes)}, []string{strings.Repeat("u", MaxUsernameBytes)}, ""},
+		{"name too long", []string{strings.Repeat("u", MaxUsernameBytes+1)}, nil, "username of 257 bytes; at most 256 are allowed"},
+		{"name too long in bytes", []string{strings.Repeat("é", MaxUsernameBytes/2) + "x"}, nil, "at most 256 are allowed"},
+		{"most users", manyUsers(MaxUsers), manyUsers(MaxUsers), ""},
+		{"too many users", manyUsers(MaxUsers + 1), nil, "1001 entries; at most 1000 are allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidateUsers(tt.in)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ValidateUsers(%q) error = %v, want %q", tt.in, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateUsers(%q): %v", tt.in, err)
+			}
+			if got == nil || !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ValidateUsers(%q) = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// manyUsers returns n distinct usernames.
+func manyUsers(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "user" + strconv.Itoa(i)
+	}
+	return out
+}
+
+func TestParseDefaultDeny(t *testing.T) {
+	for in, want := range map[string]bool{"true": true, "false": false} {
+		if got, err := ParseDefaultDeny(in); err != nil || got != want {
+			t.Errorf("ParseDefaultDeny(%q) = %v, %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "1", "TRUE", " true"} {
+		if _, err := ParseDefaultDeny(in); err == nil {
+			t.Errorf("ParseDefaultDeny(%q) must fail", in)
+		}
 	}
 }
 
@@ -219,7 +442,7 @@ func TestDeniedReason(t *testing.T) {
 }
 
 func TestGroups(t *testing.T) {
-	p := mustLoad(t, testConfig)
+	p := mustPolicy(t, &memSource{rules: testRules})
 	if got, want := p.Groups(), []string{"gpu", "model-router", "nobody"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Groups() = %v, want %v", got, want)
 	}

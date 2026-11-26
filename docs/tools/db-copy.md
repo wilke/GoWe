@@ -171,19 +171,21 @@ copying /path/copy.db into PostgreSQL (one transaction, verified before commit)
 The report goes to stdout:
 
 ```
-table             rows   timestamps fixed  text sanitised
-users             12     0                 0
-linked_providers  3      0                 0
-workflows         240    240               0
-submissions       5120   9876              0
-step_instances    20480  30122             0
-tasks             40961  120544            17
-workers           8      16                0
-worker_keys       4      4                 0
-blessed_tools     2      2                 0
-sessions          30     0                 0
-label_vocabulary  6      6                 0
-copy verified: 66866 rows in 11 tables
+table                  rows   timestamps fixed  text sanitised
+users                  12     0                 0
+linked_providers       3      0                 0
+workflows              240    240               0
+submissions            5120   9876              0
+step_instances         20480  30122             0
+tasks                  40961  120544            17
+workers                8      16                0
+worker_keys            4      4                 0
+blessed_tools          2      2                 0
+worker_group_policies  3      0                 0
+server_settings        1      0                 0
+sessions               30     0                 0
+label_vocabulary       6      6                 0
+copy verified: 66870 rows in 13 tables
 
 Reminder: start gowe-server on PostgreSQL with the same token key (--token-key-file or GOWE_TOKEN_KEY)
 as before: encrypted provider tokens and secrets were copied as they are and only that key decrypts them.

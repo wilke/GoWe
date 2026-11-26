@@ -79,7 +79,7 @@ func main() {
 	allowAnonymous := flag.Bool("allow-anonymous", false, "Allow unauthenticated access as anonymous user")
 	anonymousExecutors := flag.String("anonymous-executors", "local,docker,worker", "Comma-separated list of executors allowed for anonymous users")
 	admins := flag.String("admins", "", "Comma-separated list of admin usernames (also: GOWE_ADMINS env)")
-	configFile := flag.String("config", "", "Path to server config file (JSON: admins, worker_groups access policy, and the PostgreSQL database block url/password/schema; with a password the file must be mode 0600)")
+	configFile := flag.String("config", "", "Path to server config file (JSON: admins and the PostgreSQL database block url/password/schema; with a password the file must be mode 0600). The worker group access policy is stored in the database: gowe admin worker-groups")
 	workerKeyFile := flag.String("worker-keys", "", "Path to worker keys JSON file")
 	insecureSkipTokenVerify := flag.Bool("insecure-skip-token-verify", false, "Disable cryptographic verification of provider token signatures (testing/air-gapped only); identities are then trusted as claimed")
 	allowUnverifiedMGRAST := flag.Bool("allow-unverified-mgrast", false, "Allow the X-MG-RAST-Token header path, which is never cryptographically verified, even when provider token verification is enabled")
@@ -185,17 +185,11 @@ func main() {
 
 	// Select the database: SQLite (--db path) or PostgreSQL (postgres:// URL
 	// in --db or database.url in --config; password only from --config).
+	// This also refuses a --config file with a top-level key other than
+	// admins and database (worker_groups included: it lives in the database).
 	dbSel, err := dbconfig.Select(cfg.DBPath, *configFile, os.Getenv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "database configuration: %v\n", err)
-		os.Exit(1)
-	}
-	// Worker-group access policy (#261): the worker_groups block of --config,
-	// read strictly at start-up (a change needs a restart). The admin lookup
-	// is attached below, once the admin configuration exists.
-	groupPolicy, err := groupacl.Load(*configFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "worker group configuration: %v\n", err)
 		os.Exit(1)
 	}
 	var dbPath string
@@ -352,9 +346,16 @@ func main() {
 		logger.Info("admin users from config", "admins", adminConfig.FileAdmins())
 	}
 
-	// The same policy (with the same admin lookup) is enforced by the
-	// submission handlers (early 403) and the scheduler (at dispatch).
-	groupPolicy = groupPolicy.WithAdmins(adminConfig.IsAdmin)
+	// Worker-group access policy (#261), stored in the database. The same
+	// handle (with the same admin lookup) is enforced by the submission
+	// handlers (early 403), the UI and the scheduler (at dispatch and
+	// re-queue); the admin API reloads it in place after every change. A
+	// stored rule that cannot be loaded stops the server (fail closed).
+	groupPolicy := groupacl.New().WithAdmins(adminConfig.IsAdmin)
+	if err := groupPolicy.Reload(context.Background(), st); err != nil {
+		logger.Error("cannot load the worker group policy from the database; refusing to start", "error", err)
+		os.Exit(1)
+	}
 	serverOpts = append(serverOpts, server.WithGroupPolicy(groupPolicy))
 	logGroupPolicy(logger, groupPolicy, *insecureSkipTokenVerify, *allowUnverifiedMGRAST)
 
@@ -714,11 +715,12 @@ func normalizeBasePath(p string) (string, error) {
 	return trimmed, nil
 }
 
-// logGroupPolicy logs the worker-group access policy (#261) at start-up:
-// one INFO line with the restricted group names (never the user lists) and
-// default_deny, or one saying there is no policy. With restrictions, it adds
-// one WARN when a flag makes the server accept unverified identities: the
-// policy is only as strong as the username it is given.
+// logGroupPolicy logs the worker-group access policy (#261) as loaded from
+// the database at start-up: one INFO line with the restricted group names
+// (never the user lists) and default_deny, or one saying there is no policy.
+// With restrictions, it adds one WARN when a flag makes the server accept
+// unverified identities: the policy is only as strong as the username it is
+// given. Later changes through the admin API log their own INFO lines.
 func logGroupPolicy(logger *slog.Logger, p *groupacl.Policy, insecureSkipTokenVerify, allowUnverifiedMGRAST bool) {
 	if !p.Restricted() {
 		logger.Info("no worker group policy: every user may use every worker group")
