@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -160,6 +161,7 @@ func TestBasePathCompleteness(t *testing.T) {
 	u := New(st, logger, Config{
 		BasePath:   basePathUnderTest,
 		GrafanaURL: "https://grafana.example.com/d/gowe-overview",
+		GroupAdmin: fakeGroupAdmin{},
 	})
 
 	wf, root, proxyTask, _ := seedCompletenessData(t, st)
@@ -215,6 +217,9 @@ func TestBasePathCompleteness(t *testing.T) {
 		"admin/keys":             "/admin/worker-keys",
 		"admin/outputs":          "/admin/outputs",
 		"admin/blessings":        "/admin/tool-blessings",
+		"admin/worker_groups":    "/admin/worker-groups?edit=g",
+		"worker_groups/list":     "/worker-groups",
+		"worker_groups/detail":   "/worker-groups/g",
 		"error (workflow 404)":   "/workflows/does-not-exist",
 		"error (submission 404)": "/submissions/does-not-exist",
 	}
@@ -226,6 +231,36 @@ func TestBasePathCompleteness(t *testing.T) {
 				t.Fatalf("GET %s: status=%d, body=%s", path, rec.Code, rec.Body.String())
 			}
 			scanForUnprefixedURLs(t, name+" ("+path+")", rec.Body.String(), basePathUnderTest)
+		})
+	}
+
+	// The worker group forms whose answer is a page (the kept keys after a
+	// rule change, the raw key after issuing one, an operation's error) and
+	// the redirects of the others.
+	for _, c := range []struct {
+		name, path string
+		form       url.Values
+	}{
+		{"admin/worker_groups after put", "/admin/worker-groups", url.Values{"group": {"g"}, "users": {"alice"}}},
+		{"admin/worker_groups after delete", "/admin/worker-groups/delete", url.Values{"group": {"g"}}},
+		{"admin/worker_groups default-deny", "/admin/worker-groups/default-deny", url.Values{"default_deny": {"true"}}},
+		{"worker_groups/detail after key create", "/worker-groups/g/keys", url.Values{"label": {"n"}}},
+		{"worker_groups/detail after refused removal", "/worker-groups/g/workers/remove", url.Values{"id": {"wrk_on"}}},
+		{"worker_groups/detail add user", "/worker-groups/g/users", url.Values{"username": {"carol"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, c.path, strings.NewReader(c.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(adminCookie)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if rec.Code >= 500 {
+				t.Fatalf("POST %s: status=%d, body=%s", c.path, rec.Code, rec.Body.String())
+			}
+			if loc := rec.Header().Get("Location"); loc != "" && !strings.HasPrefix(loc, basePathUnderTest+"/") {
+				t.Errorf("POST %s: redirect to %q, want it under %q", c.path, loc, basePathUnderTest)
+			}
+			scanForUnprefixedURLs(t, c.name+" (POST "+c.path+")", rec.Body.String(), basePathUnderTest)
 		})
 	}
 

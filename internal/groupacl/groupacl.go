@@ -213,6 +213,21 @@ func (p *Policy) Reload(ctx context.Context, src Source) error {
 	return nil
 }
 
+// invalidStoredRuleError marks an error of load caused by a stored rule that
+// fails validation; its message is the cause's.
+type invalidStoredRuleError struct{ err error }
+
+func (e *invalidStoredRuleError) Error() string { return e.err.Error() }
+func (e *invalidStoredRuleError) Unwrap() error { return e.err }
+
+// IsInvalidStoredRule reports whether err (of Reload) was caused by a stored
+// rule that fails validation, which removing that rule repairs; false for a
+// read error or an invalid default_deny value.
+func IsInvalidStoredRule(err error) bool {
+	var e *invalidStoredRuleError
+	return errors.As(err, &e)
+}
+
 // load builds a snapshot from src.
 func load(ctx context.Context, src Source) (*snapshot, error) {
 	s := &snapshot{}
@@ -232,18 +247,18 @@ func load(ctx context.Context, src Source) (*snapshot, error) {
 	s.groups = make(map[string]rule, len(rows))
 	for _, gp := range rows {
 		if err := ValidateGroupName(gp.Group); err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule: %w", err)
+			return nil, fmt.Errorf("worker group policy: stored rule: %w", &invalidStoredRuleError{err})
 		}
 		users, err := ValidateUsers(gp.Users)
 		if err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, err)
+			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, &invalidStoredRuleError{err})
 		}
 		managers, err := ValidateManagers(gp.Managers)
 		if err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, err)
+			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, &invalidStoredRuleError{err})
 		}
 		if err := CheckManagersGroup(gp.Group, managers); err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule: %w", err)
+			return nil, fmt.Errorf("worker group policy: stored rule: %w", &invalidStoredRuleError{err})
 		}
 		r := rule{users: make(map[string]bool, len(users)), managers: make(map[string]bool, len(managers)), admins: gp.Admins}
 		for _, u := range users {

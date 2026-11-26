@@ -286,12 +286,14 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		InputValidation:     s.inputValidation,
 		SecureCookies:       cfg.SecureCookies || cfg.TLSEnabled(),
 		TrustForwardedProto: cfg.BehindProxy,
+		BehindProxy:         cfg.BehindProxy,
 		WorkspaceURL:        s.workspaceURL,
 		UploadMaxSize:       s.uiUploadMaxSize,
 		GrafanaURL:          cfg.GrafanaURL,
 		BasePath:            s.basePath,
 		TokenBlessingDev:    s.tokenBlessingMode() == tokenBlessingDev,
 		GroupPolicy:         s.groupPolicy,
+		GroupAdmin:          s, // the worker group pages use the REST routes' operations (group_admin.go)
 		WorkerTimeout:       defaultWorkerTimeout,
 	})
 	if s.bvbrcCaller != nil {

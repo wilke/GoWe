@@ -475,6 +475,57 @@ What a manager can do, and what removing one does not undo:
   non-admin created, the server logs a WARN (it does not refuse).
 - Static keys (`--worker-keys`, `GOWE_WORKER_KEYS`) are outside manager control.
 
+#### Web UI pages
+
+The web UI has two pages for the policy. They run the same server code as the REST routes (the same checks,
+limits, `409`s, log lines and lock-reload-recheck). Whether the signed-in user is a server admin is decided on every
+request to these pages and to every `/admin` page, by the rule the REST API applies: a configured admin
+(`--admins`, `GOWE_ADMINS`, config file) or a user whose stored role is `admin`
+(`PUT /api/v1/admin/users/{username}/role`); the role recorded in the session at login is not used. An admin who is
+demoted (stored role `user` and not configured) gets `403` on the next request and is no longer an admin for the
+group operations; a user who is promoted gains access without logging in again. As on the REST API, removing a user
+from the configured admins alone does not demote them while their stored role is `admin`. Unlike the REST API, the UI
+does not consult `--auth-denylist`. The pages:
+
+- **`/admin/worker-groups`** (server admins only; *Worker groups* tab of the admin pages): every rule with its
+  users (expandable), managers, *admins allowed*, the number of worker keys valid for exactly the group, the
+  group's workers online / total, and who changed it last and when; `default_deny` with a switch; a form to create
+  or replace a rule (group, users and managers one per line, *admins allowed*; *Edit* pre-fills it with the stored
+  rule, and saving replaces both lists as submitted: users a manager added or removed since the page was loaded are
+  overwritten, and an empty managers box removes the managers); a *Delete* button per rule
+  (with a confirmation). After managers or a rule were removed, the page lists the ids of the group's keys that
+  stay valid (`group_key_ids`). Each group name links to the group page.
+- **`/worker-groups`** and **`/worker-groups/{group}`** (the managers of the group, and server admins): the list
+  shows the groups the user manages (server admins: every rule); a user who manages none gets `403`. The navigation
+  link *Worker groups* is shown only to server admins and to users who manage at least one group (and not at all
+  when the server runs without the group operations). The page of a
+  group has three sections: *Users* (add, remove; managers and *admins allowed* shown read-only), *Worker keys*
+  (label, prefix, created by / at, expiry, last use; issue with label, description and optional expiry date — the key
+  expires at 00:00 UTC at the start of that day —, revoke with a confirmation; a new key's raw value is shown once, in
+  the answer to the issue form, which is sent with `Cache-Control: no-store`, and never again; reloading that answer
+  submits the form again and issues another key, as on the admin *Keys* page; if the page cannot be read after the
+  key was issued, the key is still shown, on a minimal page with the error), and *Workers* (id, name, state,
+  hostname, peer address, last seen, version; *Remove* is enabled only for workers the server would remove, and the
+  server's message is shown when it refuses one). A manager of one group gets `403` on any other group's page and on `/admin/worker-groups`.
+
+Like the other admin forms, the pages' changes are plain form POSTs that need the UI session cookie (`HttpOnly`,
+`SameSite=Strict`); without it the request is redirected to the login page and nothing changes. When a stored rule is
+invalid (written by a direct SQL edit), `/admin/worker-groups` is an error page (`500`) that names the rule and ends
+with `Remove the invalid rule with "gowe admin worker-groups delete <group>".`; the page itself cannot remove it.
+
+**Request-forgery protection.** Every state-changing request to the web UI's signed-in pages (any method other than
+`GET`, `HEAD` and `OPTIONS`: the worker group forms, the admin forms, the htmx buttons, workspace uploads) is
+refused with `403` when a browser sent it from another site: when its `Sec-Fetch-Site` header is present and is not
+`same-origin` or `none`, or else when its `Origin` header names a host (host:port) other than the request's `Host`
+(with `--behind-proxy`, the first `X-Forwarded-Host` value is accepted too). Each refusal logs a WARN with the path
+and those headers. A request with neither header (a non-browser client) is let through. (The session cookie is
+`SameSite=Strict`, so a browser does not send it with a cross-site request, but it does with a same-site one, e.g.
+from another subdomain of the same site; this check refuses those.) Behind a reverse proxy, the proxy
+must pass the browser's host on as `Host`, or as `X-Forwarded-Host` with `--behind-proxy`; otherwise same-origin
+forms are refused too. The limit: the check tells sites apart by origin only, so another application served from the
+**same origin** (same scheme, host and port, e.g. under another path of the same proxy) is not covered; serve GoWe
+from an origin of its own. The login form is outside this check.
+
 The policy is applied when a task is created or re-queued:
 
 - **At submission** (REST and UI): when the `worker_group` label or a step hint of the registered workflow names a
@@ -1030,7 +1081,8 @@ from (`peer_addr`), as its own connection saw it: printable ASCII, at most 64 by
 **behind a reverse proxy the value is the proxy's address**, not the worker's. An empty address, or `@` (the server
 listens on a unix socket), is unknown: a registration stores it as empty, and a heartbeat with an unknown address
 keeps the stored one. It is shown only to server admins and to managers of the worker's group
-(`GET /api/v1/worker-groups/{group}/workers`, `gowe worker-groups workers`; no web page shows it yet); the worker
+(`GET /api/v1/worker-groups/{group}/workers`, `gowe worker-groups workers`, the group's page `/worker-groups/{group}`
+in the web UI, and the *Peer address* column of the `/workers` page, which only server admins see); the worker
 routes (`POST`/`GET /api/v1/workers`), `/api/v1/fleet`, `/api/v1/hosts` and the `/workers` page for non-admins never
 carry it. The server's INFO log line `worker registered` contains it (`peer_addr=`): server logs are for operators
 and admins, so give access to them accordingly.
@@ -1042,7 +1094,8 @@ row **stays listed**, so operators see which worker stopped. "Offline" does not 
 missed heartbeats becomes online again with its next one. Removing the row is an explicit action:
 
 - managers of the group and server admins: `DELETE /api/v1/worker-groups/{group}/workers/{id}`
-  (`gowe worker-groups remove-worker <group> <worker-id>`);
+  (`gowe worker-groups remove-worker <group> <worker-id>`), or the *Remove* buttons of the group's page
+  `/worker-groups/{group}` in the web UI;
 - server admins, any group: `DELETE /api/v1/admin/workers/{id}` (`gowe admin remove-worker <worker-id>`), or the
   delete buttons of the `/workers` page.
 

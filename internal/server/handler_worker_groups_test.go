@@ -372,7 +372,9 @@ func TestAdminWorkerGroups_PutReadBackFailure(t *testing.T) {
 // callHandler calls h directly as the admin "admin", with the route
 // parameter group ("" = none), optionally on an already cancelled context
 // (going through ServeHTTP would stop at the auth middleware, which reads
-// the store with the request context).
+// the store with the request context). The user carries the admin role, as
+// requireAdmin guarantees on these routes: the operations behind the
+// handlers check it themselves.
 func callHandler(t *testing.T, h http.HandlerFunc, method, path, group, body string, cancelled bool) (*httptest.ResponseRecorder, envelope) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -381,7 +383,7 @@ func callHandler(t *testing.T, h http.HandlerFunc, method, path, group, body str
 		rctx.URLParams.Add("group", group)
 	}
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
-	ctx = context.WithValue(ctx, ctxKeyUserAuth, &UserContext{User: &model.User{Username: "admin"}})
+	ctx = context.WithValue(ctx, ctxKeyUserAuth, &UserContext{User: &model.User{Username: "admin", Role: model.RoleAdmin}})
 	if cancelled {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)

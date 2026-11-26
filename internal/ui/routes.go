@@ -12,16 +12,19 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 	r.Get("/login", ui.HandleLogin)
 	r.Post("/login", ui.HandleLoginPost)
 
+	// Every authenticated route refuses a state-changing request sent from
+	// another site (SameOriginMiddleware) before anything else.
+
 	// Worker management routes (admin required for destructive actions).
 	r.Group(func(r chi.Router) {
-		r.Use(ui.AuthMiddleware, ui.AdminMiddleware)
+		r.Use(ui.SameOriginMiddleware, ui.AuthMiddleware, ui.AdminMiddleware)
 		r.Delete("/workers/{id}", ui.HandleWorkerDelete)
 		r.Post("/workers/purge-offline", ui.HandleWorkerPurgeOffline)
 	})
 
 	// Protected routes (auth required).
 	r.Group(func(r chi.Router) {
-		r.Use(ui.AuthMiddleware)
+		r.Use(ui.SameOriginMiddleware, ui.AuthMiddleware)
 
 		// Dashboard
 		r.Get("/", ui.HandleDashboard)
@@ -62,6 +65,22 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			})
 		})
 
+		// Worker groups the user manages (server admins: all). Who may see
+		// or change a group is decided by the group operations (GroupAdmin),
+		// not here; LiveRoleMiddleware gives them the user's current role.
+		r.Route("/worker-groups", func(r chi.Router) {
+			r.Use(ui.LiveRoleMiddleware)
+			r.Get("/", ui.HandleWorkerGroups)
+			r.Route("/{group}", func(r chi.Router) {
+				r.Get("/", ui.HandleWorkerGroup)
+				r.Post("/users", ui.HandleWorkerGroupUserAdd)
+				r.Post("/users/remove", ui.HandleWorkerGroupUserRemove)
+				r.Post("/keys", ui.HandleWorkerGroupKeyCreate)
+				r.Post("/keys/revoke", ui.HandleWorkerGroupKeyRevoke)
+				r.Post("/workers/remove", ui.HandleWorkerGroupWorkerRemove)
+			})
+		})
+
 		// Workspace
 		r.Get("/workspace", ui.HandleWorkspace)
 		r.Route("/api/workspace", func(r chi.Router) {
@@ -69,7 +88,7 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Post("/upload", ui.HandleWorkspaceUpload)
 		})
 
-		// Admin routes (admin role required).
+		// Admin routes (admin now, by the REST API's rule: AdminMiddleware).
 		r.Route("/admin", func(r chi.Router) {
 			r.Use(ui.AdminMiddleware)
 			r.Get("/", ui.HandleAdminStats)
@@ -87,6 +106,12 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Get("/worker-keys", ui.HandleAdminWorkerKeys)
 			r.Post("/worker-keys", ui.HandleAdminWorkerKeyCreate)
 			r.Delete("/worker-keys/{id}", ui.HandleAdminWorkerKeyRevoke)
+
+			// Worker group access policy (rules, default_deny).
+			r.Get("/worker-groups", ui.HandleAdminWorkerGroups)
+			r.Post("/worker-groups", ui.HandleAdminWorkerGroupPut)
+			r.Post("/worker-groups/delete", ui.HandleAdminWorkerGroupDelete)
+			r.Post("/worker-groups/default-deny", ui.HandleAdminWorkerGroupsDefaultDeny)
 
 			// Tool blessings (recorded, not yet enforced).
 			r.Get("/tool-blessings", ui.HandleAdminToolBlessings)

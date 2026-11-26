@@ -151,6 +151,9 @@ func TestBasePathAdminOutputsSelfCallThroughPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	// The UI's AdminMiddleware checks the admin role now, like the REST API
+	// (configured admins or the stored role), not the session's role.
+	setUserRole(t, st, "admin", model.RoleAdmin)
 
 	client := ts.Client()
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
