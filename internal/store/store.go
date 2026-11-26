@@ -241,6 +241,22 @@ type Store interface {
 	CountWorkerKeys(ctx context.Context) (int, error)
 	TouchWorkerKey(ctx context.Context, id string, when time.Time) error
 
+	// Service tokens (GoWe-issued identities of programs, hashed at rest).
+	// CreateServiceToken returns ErrServiceTokenLimit (wrapped) beyond
+	// model.MaxServiceTokensPerName tokens of one name or model.MaxServiceTokens
+	// in total, and ErrDuplicate (wrapped) for an existing id or hash.
+	CreateServiceToken(ctx context.Context, t *model.ServiceToken) error
+	// ListServiceTokens returns every token, newest first, without the hash.
+	ListServiceTokens(ctx context.Context) ([]*model.ServiceToken, error)
+	// GetServiceTokenByHash returns the token with the hash, nil when none.
+	GetServiceTokenByHash(ctx context.Context, hash string) (*model.ServiceToken, error)
+	// DeleteServiceToken removes the token id and returns its name; found is
+	// false (no error) when there is no such token.
+	DeleteServiceToken(ctx context.Context, id string) (name string, found bool, err error)
+	// TouchServiceToken sets last_used_at of the token id (a missing token is
+	// not an error).
+	TouchServiceToken(ctx context.Context, id string, when time.Time) error
+
 	// Tool blessing operations (admin-approved token injection; rows are never deleted)
 	CreateToolBlessing(ctx context.Context, b *model.ToolBlessing) error
 	GetToolBlessing(ctx context.Context, id string) (*model.ToolBlessing, error)

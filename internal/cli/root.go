@@ -13,6 +13,7 @@ var (
 	flagDebug     bool
 	flagLogLevel  string
 	flagLogFormat string
+	flagTokenFile string
 
 	logger *slog.Logger
 	client *Client
@@ -45,12 +46,22 @@ func NewRootCmd() *cobra.Command {
 		Short:   "GoWe — CWL workflow engine for BV-BRC",
 		Long:    "GoWe submits, monitors, and manages CWL workflows on BV-BRC.",
 		Version: buildVersion,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if flagDebug {
 				flagLogLevel = "debug"
 			}
 			logger = logging.NewLogger(logging.ParseLevel(flagLogLevel), flagLogFormat)
 			client = NewClient(flagServer, logger)
+			// The single place the CLI's token is resolved: --token-file
+			// wins over the stored credentials.
+			if flagTokenFile != "" {
+				token, err := resolveToken(flagTokenFile)
+				if err != nil {
+					return err
+				}
+				client.Token = token
+			}
+			return nil
 		},
 		SilenceUsage: true,
 	}
@@ -59,6 +70,7 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&flagDebug, "debug", false, "Enable debug logging")
 	root.PersistentFlags().StringVar(&flagLogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	root.PersistentFlags().StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json)")
+	root.PersistentFlags().StringVar(&flagTokenFile, "token-file", "", "Read the API token (e.g. a GoWe service token) from this file (regular file, not a symlink, owned by you, mode 0600 or stricter, at most 4096 bytes); takes precedence over gowe login")
 
 	root.AddCommand(
 		newLoginCmd(),

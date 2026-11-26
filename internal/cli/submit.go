@@ -341,6 +341,11 @@ func uploadInputsToWorkspace(inputs map[string]any, token, workspaceURL string) 
 	if token == "" {
 		return nil, fmt.Errorf("BV-BRC token required for workspace upload (run 'gowe login')")
 	}
+	// A GoWe service token is not a BV-BRC token: it is never parsed as one
+	// nor sent to the Workspace.
+	if model.LooksLikeServiceToken(token) {
+		return nil, fmt.Errorf("workspace upload needs a BV-BRC token; a GoWe service token has no Workspace access (upload to the server instead, without --workspace-upload)")
+	}
 
 	tokenInfo := bvbrc.ParseToken(token)
 	if tokenInfo.Username == "" {

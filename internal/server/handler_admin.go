@@ -74,6 +74,15 @@ func (s *Server) handleSetUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A service identity is never an admin (model.User.IsAdmin).
+	if role == model.RoleAdmin && model.IsServiceUsername(username) {
+		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
+			Code:    model.ErrValidation,
+			Message: "a service identity cannot be an admin",
+		})
+		return
+	}
+
 	// Get user.
 	user, err := s.store.GetUser(r.Context(), username)
 	if err != nil {

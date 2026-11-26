@@ -7,20 +7,61 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
+// loadAccessibleSubmission checks that submission subID exists and that the
+// caller may access it. Otherwise it answers the request and returns false:
+// 500 when the submission cannot be read (never a skipped check), 404 when it
+// does not exist, 403 without access.
+func (s *Server) loadAccessibleSubmission(w http.ResponseWriter, r *http.Request, subID string) bool {
+	reqID := RequestIDFromContext(r.Context())
+	sub, err := s.store.GetSubmission(r.Context(), subID)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return false
+	}
+	if sub == nil {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", subID))
+		return false
+	}
+	if !requireSubmissionAccess(sub, UserFromContext(r.Context())) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden, Message: "access denied",
+		})
+		return false
+	}
+	return true
+}
+
+// loadSubmissionTask returns task tid of submission subID for a task read
+// endpoint. It answers the request and returns nil unless the submission
+// passes loadAccessibleSubmission and the task exists and belongs to it (404
+// otherwise, the same answer for an unknown task and for a task of another
+// submission).
+func (s *Server) loadSubmissionTask(w http.ResponseWriter, r *http.Request, subID, tid string) *model.Task {
+	if !s.loadAccessibleSubmission(w, r, subID) {
+		return nil
+	}
+	reqID := RequestIDFromContext(r.Context())
+	task, err := s.store.GetTask(r.Context(), tid)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return nil
+	}
+	if task == nil || task.SubmissionID != subID {
+		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
+		return nil
+	}
+	return task
+}
+
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	subID := chi.URLParam(r, "id")
 
-	// Ownership check: verify the caller can access the parent submission.
-	sub, err := s.store.GetSubmission(r.Context(), subID)
-	if err == nil && sub != nil {
-		userCtx := UserFromContext(r.Context())
-		if !requireSubmissionAccess(sub, userCtx) {
-			respondError(w, reqID, http.StatusForbidden, &model.APIError{
-				Code: model.ErrForbidden, Message: "access denied",
-			})
-			return
-		}
+	// The submission must exist and be the caller's (or the caller an admin).
+	if !s.loadAccessibleSubmission(w, r, subID) {
+		return
 	}
 
 	opts := parseListOptions(r)
@@ -43,29 +84,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
-	subID := chi.URLParam(r, "id")
-	tid := chi.URLParam(r, "tid")
-
-	// Ownership check: verify the caller can access the parent submission.
-	sub, err := s.store.GetSubmission(r.Context(), subID)
-	if err == nil && sub != nil {
-		userCtx := UserFromContext(r.Context())
-		if !requireSubmissionAccess(sub, userCtx) {
-			respondError(w, reqID, http.StatusForbidden, &model.APIError{
-				Code: model.ErrForbidden, Message: "access denied",
-			})
-			return
-		}
-	}
-
-	task, err := s.store.GetTask(r.Context(), tid)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
-	}
+	// The submission must exist and be accessible, and the task must belong
+	// to it: a task id alone (visible in /api/v1/fleet) reads nothing.
+	task := s.loadSubmissionTask(w, r, chi.URLParam(r, "id"), chi.URLParam(r, "tid"))
 	if task == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
 		return
 	}
 	respondOK(w, reqID, sanitizeTaskCredentials(task))
@@ -132,29 +154,9 @@ func scrubRuntimeHintsCopy(h *model.RuntimeHints) *model.RuntimeHints {
 
 func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
-	subID := chi.URLParam(r, "id")
-	tid := chi.URLParam(r, "tid")
-
-	// Ownership check: verify the caller can access the parent submission.
-	sub, err := s.store.GetSubmission(r.Context(), subID)
-	if err == nil && sub != nil {
-		userCtx := UserFromContext(r.Context())
-		if !requireSubmissionAccess(sub, userCtx) {
-			respondError(w, reqID, http.StatusForbidden, &model.APIError{
-				Code: model.ErrForbidden, Message: "access denied",
-			})
-			return
-		}
-	}
-
-	task, err := s.store.GetTask(r.Context(), tid)
-	if err != nil {
-		respondError(w, reqID, http.StatusInternalServerError,
-			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-		return
-	}
+	// Same checks as handleGetTask.
+	task := s.loadSubmissionTask(w, r, chi.URLParam(r, "id"), chi.URLParam(r, "tid"))
 	if task == nil {
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
 		return
 	}
 
@@ -168,10 +170,10 @@ func (s *Server) handleGetTaskLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListTaskAttempts returns the archived earlier attempts of a task
-// (exit code, stdout/stderr, worker, times), oldest first. Same access check
-// as handleGetTask (requireSubmissionAccess), except that a submission that
-// cannot be read is an error, never a skipped check; 404 when the task does
-// not belong to the submission. stdout/stderr go out as the task logs
+// (exit code, stdout/stderr, worker, times), oldest first. Same checks as
+// handleGetTask (loadSubmissionTask): a submission that cannot be read is an
+// error, never a skipped check; 404 for an unknown submission and when the
+// task does not belong to the submission. stdout/stderr go out as the task logs
 // handler sends the task's own: as stored, no redaction.
 // GET /api/v1/submissions/{id}/tasks/{tid}/attempts
 func (s *Server) handleListTaskAttempts(w http.ResponseWriter, r *http.Request) {

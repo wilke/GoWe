@@ -102,11 +102,26 @@ func doPost(t *testing.T, srv *Server, path, body string) (*httptest.ResponseRec
 	return w, env
 }
 
+// loadPackedCWL returns testdata/packed/pipeline-packed.cwl with its steps
+// moved from the BV-BRC executor to the local one: most tests here submit it
+// anonymously, and the BV-BRC executor refuses a submission without the
+// submitter's token (403). Tests about the BV-BRC executor use
+// loadPackedBVBRCCWL.
 func loadPackedCWL(t *testing.T) string {
+	t.Helper()
+	return strings.ReplaceAll(loadPackedBVBRCCWL(t), "executor: bvbrc", "executor: local")
+}
+
+// loadPackedBVBRCCWL returns testdata/packed/pipeline-packed.cwl as is (both
+// steps on the BV-BRC executor).
+func loadPackedBVBRCCWL(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "packed", "pipeline-packed.cwl"))
 	if err != nil {
 		t.Fatalf("load packed CWL: %v", err)
+	}
+	if !strings.Contains(string(data), "executor: bvbrc") {
+		t.Fatal("pipeline-packed.cwl no longer routes its steps to the BV-BRC executor; update loadPackedCWL")
 	}
 	return string(data)
 }
@@ -964,7 +979,16 @@ func TestCreateSubmission_DryRun_WithRegistry(t *testing.T) {
 	// No bvbrc executor registered — pipeline steps should show unavailable.
 
 	srv := testServer(WithExecutorRegistry(reg))
-	wfID := createTestWorkflow(t, srv)
+	// The pipeline as is (BV-BRC steps), dry-run by a caller with a token: a
+	// token-less caller is refused the BV-BRC executor (403).
+	regBody, _ := json.Marshal(map[string]string{"name": "test-workflow-bvbrc", "cwl": loadPackedBVBRCCWL(t)})
+	rw, renv := doPost(t, srv, "/api/v1/workflows/", string(regBody))
+	if rw.Code != http.StatusCreated {
+		t.Fatalf("create workflow: status=%d, body=%s", rw.Code, rw.Body.String())
+	}
+	var wfData map[string]any
+	json.Unmarshal(renv.Data, &wfData)
+	wfID, _ := wfData["id"].(string)
 
 	bodyJSON, _ := json.Marshal(map[string]any{
 		"workflow_id": wfID,
@@ -972,6 +996,7 @@ func TestCreateSubmission_DryRun_WithRegistry(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/submissions/?dry_run=true", strings.NewReader(string(bodyJSON)))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer un=dryrun@bvbrc|tokenid=d1|expiry=4102444800|sig=x")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
@@ -1280,14 +1305,15 @@ func TestListTasks(t *testing.T) {
 	}
 }
 
-func TestListTasks_Empty(t *testing.T) {
+// The task list of an unknown submission is 404, not an empty list: the
+// access check needs the submission.
+func TestListTasks_UnknownSubmission(t *testing.T) {
 	srv := testServer()
-	env := doGet(t, srv, "/api/v1/submissions/sub_nonexistent/tasks/")
-	if env.Pagination == nil {
-		t.Fatal("expected pagination")
-	}
-	if env.Pagination.Total != 0 {
-		t.Errorf("total = %d, want 0", env.Pagination.Total)
+	req := httptest.NewRequest("GET", "/api/v1/submissions/sub_nonexistent/tasks/", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404, body=%s", w.Code, w.Body.String())
 	}
 }
 

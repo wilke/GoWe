@@ -562,6 +562,12 @@ func (s *Server) routes() {
 						r.Delete("/", s.handleRevokeWorkerKey)
 					})
 				})
+				// Service tokens: identities of programs ("<name>@service.gowe").
+				r.Route("/service-tokens", func(r chi.Router) {
+					r.Get("/", s.handleListServiceTokens)
+					r.Post("/", s.handleCreateServiceToken)
+					r.Delete("/{id}", s.handleRevokeServiceToken)
+				})
 				r.Delete("/workers/{id}", s.handleAdminRemoveWorker)
 				r.Route("/tool-blessings", s.toolBlessingRoutes)
 				s.workerGroupRoutes(r)

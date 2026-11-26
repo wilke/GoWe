@@ -28,6 +28,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -91,6 +92,14 @@ func cloneRuntimeHints(h *model.RuntimeHints) *model.RuntimeHints {
 // callers fail it pre-dispatch (failTaskPreDispatch / failRetryingTaskNow).
 func (l *Loop) attachCredentials(ctx context.Context, task *model.Task, step *model.Step, wf *model.Workflow, sub *model.Submission) error {
 	task.RuntimeHints = cloneRuntimeHints(task.RuntimeHints)
+
+	// The BV-BRC executor starts a job only with the submitter's own token
+	// (never the server's account). Without one the task can never run:
+	// fail it now, permanently, instead of letting Submit refuse it on every
+	// retry.
+	if task.ExecutorType == model.ExecutorTypeBVBRC && sub.UserToken == "" {
+		return errors.New(model.BVBRCTokenRequired)
+	}
 
 	if err := l.applyTokenGrant(ctx, task, step, wf, sub); err != nil {
 		return err

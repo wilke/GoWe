@@ -67,6 +67,9 @@ var copyTables = []copyTable{
 	{name: "task_attempts", pk: []string{"task_id", "attempt"}},
 	{name: "workers", pk: []string{"id"}},
 	{name: "worker_keys", pk: []string{"id"}},
+	// Like worker_keys: the key (id) is not a credential, the hash is a
+	// column, so errors may name the id.
+	{name: "service_tokens", pk: []string{"id"}},
 	{name: "blessed_tools", pk: []string{"id"}},
 	{name: "worker_group_policies", pk: []string{"group_name"}},
 	{name: "server_settings", pk: []string{"key"}},

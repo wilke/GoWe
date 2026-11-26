@@ -72,11 +72,15 @@ func respondGroupError(w http.ResponseWriter, reqID string, err error) {
 
 // requestActor returns the caller of r as the actor of a group operation;
 // no user or the anonymous user is the zero actor (refused with 401 by the
-// operations on one group).
+// operations on one group). A service identity is never an admin here, and
+// mayManageGroup gives it no manager right.
 func requestActor(r *http.Request) ui.GroupActor {
 	uc := UserFromContext(r.Context())
 	if uc == nil || uc.User == nil || uc.User.IsAnonymous() {
 		return ui.GroupActor{}
+	}
+	if isServiceCaller(uc) {
+		return ui.GroupActor{Username: uc.User.Username}
 	}
 	return ui.GroupActor{Username: uc.User.Username, IsAdmin: uc.User.IsAdmin()}
 }
@@ -123,8 +127,12 @@ func errUnauthenticated(actor ui.GroupActor) *ui.GroupError {
 }
 
 // mayManageGroup reports whether actor may manage group by the live policy:
-// a server admin, or a manager of group.
+// a server admin, or a manager of group. A service identity never may (it
+// cannot be an admin, and groupacl never loads it as a manager).
 func (s *Server) mayManageGroup(actor ui.GroupActor, group string) bool {
+	if model.IsServiceUsername(actor.Username) {
+		return false
+	}
 	return actor.IsAdmin || s.groupPolicy.IsManager(actor.Username, group)
 }
 

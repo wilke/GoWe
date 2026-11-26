@@ -26,6 +26,15 @@ gowe [command] [flags]
 | `--debug` | `false` | Enable debug logging |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--log-format` | `text` | Log format: text, json |
+| `--token-file` | `""` | Read the API token from this file instead of `~/.gowe/credentials.json` |
+
+`--token-file FILE` is how a program uses a [service token](#service-tokens) (or any token):
+the file must be a regular file (a symbolic link is refused, never followed), owned by the
+user running `gowe`, with mode 0600 or stricter and at most 4096 bytes (otherwise the command
+fails before any request); its content is the token, surrounding white space is trimmed. It takes
+precedence over the stored credentials of `gowe login`. There is deliberately no environment
+variable or command-line argument for the token itself. `submit --workspace-upload` refuses a
+service token (it is not a BV-BRC token and is never sent to the Workspace).
 
 ## Commands
 
@@ -410,6 +419,7 @@ gowe admin verify-outputs <submission_id> | --all [--output-state delivered,uplo
 gowe admin redeliver <submission_id> [--dry-run] [--json]
 gowe admin worker-groups list|set|delete|default-deny ...   # see below
 gowe admin remove-worker <worker-id>
+gowe admin service-tokens create|list|revoke ...            # see below
 ```
 
 **remove-worker** removes a worker of any group from the worker list. Only a worker that is
@@ -485,6 +495,40 @@ change or server restart.
 gowe admin worker-groups set gpu --user alice@bvbrc --user bob@bvbrc --admins --manager lead@bvbrc
 gowe admin worker-groups default-deny true
 gowe admin worker-groups list
+```
+
+#### service-tokens
+
+Service tokens give a program (such as the model router) an identity of its own: a request
+made with a token of name `N` is the user `N@service.gowe`, role user, **never an admin** and
+never a worker group manager, with no BV-BRC token (so no Workspace staging) and **no BV-BRC
+executor** (a workflow with a step on it is refused with `403`). What a token holder can do is
+listed in the trust statement of
+[authentication.md, Service tokens](../security/authentication.md#service-tokens).
+
+```bash
+gowe admin service-tokens create <name> [--description TEXT] [--expires DURATION] --out FILE
+gowe admin service-tokens list [--json]
+gowe admin service-tokens revoke <id>
+```
+
+**create** issues a token for `<name>` (1-64 characters: a lower-case letter or digit, then
+lower-case letters, digits, `.`, `_` or `-`; several tokens may share a name, for rotation).
+`--out` is **required**: the token is written only to that file, which is created with mode
+0600 and must not exist (it is never overwritten); the file is created before the request, so
+a file that cannot be created costs no token. The token is never printed, also not with
+`--debug` (the answer holding it is not logged). The command prints the token id, the username
+to put into a worker group rule, the prefix, the expiry and the file. `--expires` is a duration
+from now between `1h` and `8760h` (default: no expiry). **list** shows id, name, username,
+prefix, created, expires and last used (written at most once a minute), never the token.
+**revoke** deletes a token; the next request made with it is refused.
+
+```bash
+gowe admin service-tokens create model-router --expires 2160h --out /etc/model-router/gowe.token
+gowe admin worker-groups set model-router --user model-router@service.gowe
+# on the router's host:
+gowe --token-file /etc/model-router/gowe.token submit pipeline.cwl -i job.yaml --group model-router
+gowe admin service-tokens revoke svt_6d1c...
 ```
 
 ### worker-groups
@@ -673,6 +717,7 @@ gowe logs sub_xyz789 task_001
 | File | Description |
 |------|-------------|
 | `~/.gowe/credentials.json` | Stored BV-BRC token from `gowe login` |
+| `--token-file FILE` | A token (e.g. a service token) in a file of your own, mode 0600 or stricter, not a symlink, at most 4096 bytes; takes precedence over the stored token |
 
 ## Troubleshooting
 

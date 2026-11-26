@@ -41,7 +41,7 @@ func TestBVBRCExecutor_WorkspaceURIRoundTrip(t *testing.T) {
 	// 3. Submit through the BV-BRC executor; it flattens File/Directory → string.
 	mock := &mockRPCCaller{result: json.RawMessage(`[{"id":"j1","status":"queued"}]`)}
 	e := newTestBVBRCExecutor(mock)
-	task := &model.Task{ID: "task_1", BVBRCAppID: "GenomeAssembly2", Inputs: resolvedInputs}
+	task := &model.Task{ID: "task_1", BVBRCAppID: "GenomeAssembly2", Inputs: resolvedInputs, RuntimeHints: tokenHints()}
 
 	if _, err := e.Submit(context.Background(), task); err != nil {
 		t.Fatalf("submit: %v", err)

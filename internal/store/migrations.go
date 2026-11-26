@@ -136,6 +136,23 @@ var schema = []string{
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_keys_hash ON worker_keys(key_hash)`,
 
+	// Service tokens: identities GoWe issues to programs (the model router).
+	// A token of name N authenticates as "N@service.gowe". Only the SHA-256
+	// hash of the raw token is stored; the raw token is returned once at
+	// creation. Several tokens may share a name (rotation).
+	`CREATE TABLE IF NOT EXISTS service_tokens (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		token_hash   TEXT NOT NULL UNIQUE,
+		token_prefix TEXT NOT NULL,
+		description  TEXT NOT NULL DEFAULT '',
+		created_by   TEXT NOT NULL,
+		created_at   TEXT NOT NULL,
+		expires_at   TEXT,
+		last_used_at TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_service_tokens_name ON service_tokens(name)`,
+
 	// Tool blessings: administrator decisions that a tool (by content hash)
 	// may receive the user's token. Rows are never deleted; revocation sets
 	// revoked_at. At most one active blessing per tool hash.

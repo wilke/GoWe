@@ -4,6 +4,47 @@ Version-specific operator guidance. Routine upgrades (stop server, replace binar
 restart) need no special steps — schema migrations run automatically at startup. Entries
 below cover the exceptions.
 
+## 0.32.x → next
+
+GoWe-issued service tokens give programs such as the model router an identity of their own (`<name>@service.gowe`;
+see [Service tokens](security/authentication.md#service-tokens)). The new table `service_tokens` is created
+automatically at startup on SQLite and PostgreSQL; no manual steps. `gowe-db-copy` copies it.
+
+- **Behaviour change**: usernames ending in `@service.gowe` are now reserved. A BV-BRC or MG-RAST token claiming such a
+  username is refused with `401` (also with `--insecure-skip-token-verify`), and the web UI login refuses it. Such a
+  username is never an admin, even when listed in `--admins`, `GOWE_ADMINS` or the config file.
+- A credential containing `gowe_svc_` is now handled only as a service token, never as a BV-BRC token.
+- `gowe --token-file FILE` reads the CLI's token from a file and takes precedence over `gowe login`. The file must be a
+  regular file (a symbolic link is refused, never followed), owned by the user running `gowe`, mode 0600 or stricter,
+  at most 4096 bytes.
+- **Behaviour change**: the BV-BRC executor no longer falls back to the server's own BV-BRC account to **start** a job
+  whose task carries no submitter token; such a task fails with `no user token for BV-BRC submission`. Before, an
+  anonymous submission on a server whose `--anonymous-executors` listed `bvbrc` ran BV-BRC apps as the server's
+  account (a combination that was neither documented nor tested). The server account still answers `/apps` and polls,
+  cancels and reads logs of existing jobs. Service identities are refused the BV-BRC executor at submission (`403`), at
+  dispatch and on retry.
+- **Behaviour change**: a request with more than one `Authorization` header (or more than one `X-MG-RAST-Token`
+  header) is refused with `401`. Before, only the first was read.
+- **Behaviour change**: a submission without the submitter's BV-BRC token (anonymous, or a service identity) that
+  needs the BV-BRC executor is refused at submission with `403`; remove `bvbrc` from `--anonymous-executors` (the
+  server logs a WARN at start-up while it is listed). If such a task still reaches the scheduler it fails once,
+  without retries. Rolling back to an older server restores the old fallback to the server's own BV-BRC account.
+- **Behaviour change (security fix)**: `GET /api/v1/submissions/{id}/tasks/{tid}` and `.../logs` now answer `404`
+  when the submission does not exist or the task belongs to another submission. Before, an unknown submission id
+  skipped the ownership check, so a logged-in user who knew a task id could read another user's task and its output.
+  The web UI's task pages check the same way.
+- **Behaviour change**: an `Authorization` (or `X-MG-RAST-Token`) header that is present but empty is refused with
+  `401`. Before, it was treated as no credential, which is anonymous access on a server with `--allow-anonymous`.
+- A service identity cannot be a worker group manager: the admin API refuses it in `managers` (`400`); a stored rule
+  that names one is loaded with that entry ignored (one WARN per reload), not refused at start-up.
+- At start-up the server logs one WARN naming user rows in the `@service.gowe` realm that a service token did not create.
+- **Before rolling back** to an older server binary, remove every `…@service.gowe` name from the worker group rules
+  (`users` and `managers`): an older server does not reserve the realm, so with `--insecure-skip-token-verify` or
+  `--allow-unverified-mgrast` anyone could claim such a name and its group access.
+- Revoking every token of a name does not remove the identity: its user row, the worker group rules that name it and
+  its submissions stay, and a new token with the same name is the same user and inherits them. Remove the name from the
+  rules to retire an identity.
+
 ## 0.31.x → next
 
 A task that runs again starts in a fresh task directory (#368). No manual steps; roll workers to get it.

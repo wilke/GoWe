@@ -24,6 +24,9 @@ const (
 	ProviderMGRAST AuthProvider = "mgrast"
 	// ProviderLocal is used for the built-in anonymous user.
 	ProviderLocal AuthProvider = "local"
+	// ProviderService is a GoWe-issued service token (see ServiceToken). It
+	// carries no provider token.
+	ProviderService AuthProvider = "service"
 )
 
 // User represents a GoWe user account.
@@ -44,9 +47,11 @@ type LinkedProvider struct {
 	Username string       `json:"username"`
 }
 
-// IsAdmin returns true if the user has admin role.
+// IsAdmin returns true if the user has admin role. A username in the
+// reserved service realm (IsServiceUsername) is never an admin, whatever its
+// stored role.
 func (u *User) IsAdmin() bool {
-	return u.Role == RoleAdmin
+	return u.Role == RoleAdmin && !IsServiceUsername(u.Username)
 }
 
 // IsAnonymous returns true if the user is the anonymous user.

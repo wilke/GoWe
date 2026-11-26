@@ -57,7 +57,13 @@ func NewAdminConfig(st store.Store, envVar string, configFile string) *AdminConf
 
 // IsAdmin checks if the given username should have admin role.
 // Checks in priority order: database > environment > config file.
+// A username in the reserved service realm is never an admin, even when
+// listed (the same rule as model.User.IsAdmin).
 func (c *AdminConfig) IsAdmin(username string) bool {
+	if model.IsServiceUsername(username) {
+		return false
+	}
+
 	// 1. Check database (highest priority).
 	if c.store != nil {
 		user, err := c.store.GetUser(context.Background(), username)

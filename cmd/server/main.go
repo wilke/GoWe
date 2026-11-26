@@ -352,12 +352,27 @@ func main() {
 	// re-queue); the admin API reloads it in place after every change. A
 	// stored rule that cannot be loaded stops the server (fail closed).
 	groupPolicy := groupacl.New().WithAdmins(adminConfig.IsAdmin)
+	groupPolicy.SetLogger(logger)
 	if err := groupPolicy.Reload(context.Background(), st); err != nil {
 		logger.Error("cannot load the worker group policy from the database; refusing to start", "error", err)
 		os.Exit(1)
 	}
 	serverOpts = append(serverOpts, server.WithGroupPolicy(groupPolicy))
 	logGroupPolicy(logger, groupPolicy, *insecureSkipTokenVerify, *allowUnverifiedMGRAST)
+	// User rows in the reserved service realm not made by a service token
+	// (e.g. claimed before the realm was reserved): one WARN, never fatal.
+	server.WarnServiceRealmUsers(context.Background(), st, logger)
+
+	// Listing bvbrc in --anonymous-executors has no effect any more: the
+	// BV-BRC executor needs the submitter's token, so anonymous submissions
+	// that use it are refused (403). Say so once.
+	for _, exec := range strings.Split(*anonymousExecutors, ",") {
+		if strings.EqualFold(strings.TrimSpace(exec), string(model.ExecutorTypeBVBRC)) {
+			logger.Warn("--anonymous-executors lists bvbrc: anonymous submissions cannot use the BV-BRC executor (it needs the submitter's token); remove it from the list",
+				"anonymous_executors", *anonymousExecutors)
+			break
+		}
+	}
 
 	// Configure anonymous access.
 	if *allowAnonymous {

@@ -213,6 +213,37 @@ func (s *Server) handleCreateSubmission(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// A service identity has no BV-BRC token and may not use the BV-BRC
+	// executor (never the server's own account). Dispatch re-checks
+	// authoritatively, nested sub-workflows included.
+	if isServiceCaller(userCtx) {
+		if err := s.validateServiceSubmission(wf); err != nil {
+			s.logger.Warn("submission refused: service identity and BV-BRC executor",
+				"user", userCtx.User.Username, "workflow_id", wf.ID)
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code:    model.ErrForbidden,
+				Message: err.Error(),
+			})
+			return
+		}
+	}
+
+	// The BV-BRC executor needs the submitter's own token: a caller without
+	// a provider token (anonymous, whatever --anonymous-executors says, or
+	// any other token-less identity) is refused up front instead of having
+	// the task fail at dispatch. The scheduler re-checks authoritatively.
+	if userCtx.Token == "" {
+		if err := s.validateTokenlessSubmission(wf); err != nil {
+			s.logger.Warn("submission refused: BV-BRC executor without a provider token",
+				"user", userCtx.User.Username, "workflow_id", wf.ID)
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code:    model.ErrForbidden,
+				Message: err.Error(),
+			})
+			return
+		}
+	}
+
 	// Worker-group access fast-fail (#261): the groups known now (the
 	// worker_group label and the stored steps' hints) must all be allowed
 	// for the submitter. Dispatch re-checks authoritatively, including
@@ -813,6 +844,37 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A retry re-runs the submission for its submitter: a service identity
+	// (the caller or the submitter) may not use the BV-BRC executor, and
+	// neither may a retry by a caller without a provider token or of a
+	// submission that carries none, as at creation. Dispatch re-checks
+	// authoritatively.
+	serviceRetry := isServiceCaller(userCtx) || model.IsServiceUsername(sub.SubmittedBy)
+	tokenlessRetry := userCtx == nil || userCtx.Token == "" || sub.UserToken == ""
+	if serviceRetry || tokenlessRetry {
+		wf, err := s.store.GetWorkflow(r.Context(), sub.WorkflowID)
+		if err != nil {
+			respondError(w, reqID, http.StatusInternalServerError,
+				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+			return
+		}
+		if wf == nil {
+			respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", sub.WorkflowID))
+			return
+		}
+		check := s.validateTokenlessSubmission
+		if serviceRetry {
+			check = s.validateServiceSubmission
+		}
+		if err := check(wf); err != nil {
+			respondError(w, reqID, http.StatusForbidden, &model.APIError{
+				Code:    model.ErrForbidden,
+				Message: err.Error(),
+			})
+			return
+		}
+	}
+
 	// Secrets purged (retention sweep or manual DELETE .../secrets) means the
 	// scheduler has nothing to re-attach to the retried tasks: refuse rather
 	// than silently run without them. Resubmitting (with secrets again) is
@@ -1191,9 +1253,52 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 		return nil
 	}
 
+	for _, execType := range s.submissionExecutorTypes(wf) {
+		if !s.anonConfig.IsExecutorAllowed(execType) {
+			return fmt.Errorf("anonymous users cannot use executor type %q; authentication required", execType)
+		}
+	}
+
+	return nil
+}
+
+// validateServiceSubmission refuses a workflow of which any step resolves to
+// the BV-BRC executor as far as known at submission time
+// (submissionExecutorTypes): a service identity has no BV-BRC token. The
+// scheduler re-checks at dispatch (nested sub-workflows included) and on
+// retry, and the executor refuses a task without a token.
+func (s *Server) validateServiceSubmission(wf *model.Workflow) error {
+	for _, execType := range s.submissionExecutorTypes(wf) {
+		if execType == model.ExecutorTypeBVBRC {
+			return errors.New(model.ServiceBVBRCDenied)
+		}
+	}
+	return nil
+}
+
+// validateTokenlessSubmission refuses, for a submission without the
+// submitter's provider token, a workflow of which any step resolves to the
+// BV-BRC executor as far as known at submission time: that executor starts a
+// job only with the submitter's own token. The scheduler fails such a task
+// permanently at dispatch and on retry (nested sub-workflows included).
+func (s *Server) validateTokenlessSubmission(wf *model.Workflow) error {
+	for _, execType := range s.submissionExecutorTypes(wf) {
+		if execType == model.ExecutorTypeBVBRC {
+			return errors.New(model.BVBRCTokenRequired)
+		}
+	}
+	return nil
+}
+
+// submissionExecutorTypes returns, for every top-level step of wf, the
+// executor it resolves to as far as known at submission time, in step order.
+// Executor selection: force > hint > DockerRequirement (worker) > default >
+// local, as the scheduler's determineExecutorType applies it (which promotes
+// a DockerRequirement step to worker only while workers are online).
+func (s *Server) submissionExecutorTypes(wf *model.Workflow) []model.ExecutorType {
+	out := make([]model.ExecutorType, 0, len(wf.Steps))
 	for _, step := range wf.Steps {
 		execType := model.ExecutorTypeLocal
-		// Executor selection: force > hint > auto-promote > default > local.
 		if s.config.ForceExecutor != "" {
 			execType = model.ExecutorType(s.config.ForceExecutor)
 		} else if step.Hints != nil && step.Hints.ExecutorType != "" && step.Hints.ExecutorType != model.ExecutorTypeContainer {
@@ -1203,13 +1308,16 @@ func (s *Server) validateAnonymousSubmission(wf *model.Workflow) error {
 		} else if s.config.DefaultExecutor != "" {
 			execType = model.ExecutorType(s.config.DefaultExecutor)
 		}
-
-		if !s.anonConfig.IsExecutorAllowed(execType) {
-			return fmt.Errorf("anonymous users cannot use executor type %q; authentication required", execType)
-		}
+		out = append(out, execType)
 	}
+	return out
+}
 
-	return nil
+// isServiceCaller reports whether the request is made by a service identity:
+// authenticated with a service token, or (defensively) a username in the
+// reserved service realm.
+func isServiceCaller(uc *UserContext) bool {
+	return uc != nil && (uc.IsService || (uc.User != nil && model.IsServiceUsername(uc.User.Username)))
 }
 
 // resolveWorkflow looks up a workflow by ID first, then falls back to name lookup.

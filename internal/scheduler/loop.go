@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -912,6 +913,16 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
 
+	// A service identity has no BV-BRC token and may never use the BV-BRC
+	// executor (never the server's own account). Authoritative, before any
+	// task row exists: the step fails like a worker-group denial, so no task
+	// reaches the executor. Checked for every step that resolves to bvbrc,
+	// scatter steps, sub-workflow proxies and ExpressionTools included (fail
+	// closed; the submission handler refuses such workflows up front).
+	if execType == model.ExecutorTypeBVBRC && model.IsServiceUsername(sub.SubmittedBy) {
+		return l.failStepServiceBVBRC(ctx, si, sub)
+	}
+
 	// Worker-group access (#261): the submitter must be allowed to use the
 	// group the step's tasks would be routed to. Checked before the capacity
 	// preflight (a denial is permanent, not worth deferring) and before any
@@ -1100,6 +1111,21 @@ func (l *Loop) failStepGroupDenied(ctx context.Context, si *model.StepInstance, 
 	l.logger.Warn("step failed: worker group not allowed for submitter",
 		"submission_id", sub.ID, "si_id", si.ID, "step_id", si.StepID,
 		"user", sub.SubmittedBy, "worker_group", group)
+	return l.updateStepInstance(ctx, si)
+}
+
+// failStepServiceBVBRC fails si because its submitter is a service identity
+// and the step would run on the BV-BRC executor. Same mechanism as
+// failStepGroupDenied: FAILED with the reason, no task created; finalize then
+// FAILs the submission with the step's reason.
+func (l *Loop) failStepServiceBVBRC(ctx context.Context, si *model.StepInstance, sub *model.Submission) error {
+	delete(l.deferredSteps, si.ID)
+	now := time.Now().UTC()
+	si.State = model.StepStateFailed
+	si.Error = model.ServiceBVBRCDenied
+	si.CompletedAt = &now
+	l.logger.Warn("step failed: service identities cannot use the BV-BRC executor",
+		"submission_id", sub.ID, "si_id", si.ID, "step_id", si.StepID, "user", sub.SubmittedBy)
 	return l.updateStepInstance(ctx, si)
 }
 
@@ -2158,6 +2184,12 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		if validate.IsPermanent(submitErr) {
 			task.MaxRetries = task.RetryCount
 		}
+		// The BV-BRC executor refused a task without the submitter's token
+		// (attachCredentials normally fails it before this point): every
+		// retry would be refused the same way.
+		if errors.Is(submitErr, executor.ErrNoBVBRCToken) {
+			task.MaxRetries = task.RetryCount
+		}
 		// H2: this is a THIRD terminal-marking branch (beyond the
 		// newState.IsTerminal() success-path branch scrubTaskToken
 		// previously lived in exclusively) — a synchronous executor
@@ -2431,6 +2463,17 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 			continue
 		}
 
+		// A BV-BRC task of a service identity is never resubmitted (a task
+		// created before this check existed, or by any other path). Permanent,
+		// like the group denial above.
+		if l.retryServiceBVBRCDenied(ctx, task) {
+			l.logger.Warn("retry refused: service identities cannot use the BV-BRC executor",
+				"task_id", task.ID, "submission_id", task.SubmissionID)
+			l.failRetryingTaskNow(ctx, task, model.ServiceBVBRCDenied)
+			affected[task.SubmissionID] = true
+			continue
+		}
+
 		// Re-run the whole credential policy for the retry: the previous
 		// attempt's terminal scrub cleared the delivered token and secrets,
 		// and the blessing must be re-checked (it may have been revoked
@@ -2516,6 +2559,21 @@ func (l *Loop) retryGroupDenied(ctx context.Context, task *model.Task) (string, 
 		return "", false
 	}
 	return groupacl.DeniedReason(sub.SubmittedBy, group), true
+}
+
+// retryServiceBVBRCDenied reports whether task is a BV-BRC task of a
+// submission by a service identity, which must not be resubmitted. When the
+// submission cannot be loaded the check is left to
+// reattachCredentialsForRetry, which fails every BV-BRC task for that reason.
+func (l *Loop) retryServiceBVBRCDenied(ctx context.Context, task *model.Task) bool {
+	if task.ExecutorType != model.ExecutorTypeBVBRC {
+		return false
+	}
+	sub, err := l.cache.getSubmission(ctx, l.store, task.SubmissionID)
+	if err != nil || sub == nil {
+		return false
+	}
+	return model.IsServiceUsername(sub.SubmittedBy)
 }
 
 // failRetryingTaskNow terminalizes a SCHEDULED (claimed-for-retry) task as
