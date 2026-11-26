@@ -177,18 +177,26 @@ type Store interface {
 	CreateWorker(ctx context.Context, w *model.Worker) error
 	GetWorker(ctx context.Context, id string) (*model.Worker, error)
 	UpdateWorker(ctx context.Context, w *model.Worker) error
-	// TouchWorker records a heartbeat in one UPDATE of state and last_seen,
+	// TouchWorker records a heartbeat in one UPDATE of state, last_seen and
+	// peer_addr (only when peerAddr is not empty: "" keeps the stored value),
 	// plus host_usage/host_usage_at (= lastSeen) only when usage is non-nil.
 	// It never writes current_task, so it cannot clobber a concurrent
 	// CheckoutTask the way a full-row UpdateWorker can.
-	TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, usage *model.WorkerUsage) error
+	TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, peerAddr string, usage *model.WorkerUsage) error
 	// DeleteWorker removes the worker and requeues its RUNNING worker-executor tasks atomically.
 	DeleteWorker(ctx context.Context, id string) error
+	// DeleteOfflineWorker is DeleteWorker restricted, inside its transaction,
+	// to a worker that is offline, whose last_seen is older than now -
+	// silentFor and, when group != "", whose group is group ("" and
+	// "default" fold together). It reports whether the worker was deleted.
+	DeleteOfflineWorker(ctx context.Context, id, group string, silentFor time.Duration) (bool, error)
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	ListWorkerGroups(ctx context.Context) ([]string, error)
 	// AdoptWorkerKey binds a legacy worker (key_id='') to keyID; CAS, true if bound by this call.
 	AdoptWorkerKey(ctx context.Context, id, keyID string) (bool, error)
 	ListWorkersByKey(ctx context.Context, keyID string) ([]*model.Worker, error)
+	// CheckoutTask hands the worker a QUEUED task (nil when none). It returns
+	// nil, changing no task, when the worker row does not exist.
 	CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error)
 	MarkStaleWorkersOffline(ctx context.Context, timeout time.Duration) ([]*model.Worker, error)
 	// ReapStaleWorkers marks online workers whose last_seen is older than

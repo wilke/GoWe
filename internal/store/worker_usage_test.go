@@ -61,10 +61,10 @@ func TestTouchWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			// An earlier heartbeat stored usage.
-			if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOffline, t0, testUsage(1)); err != nil {
+			if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOffline, t0, "192.0.2.1", testUsage(1)); err != nil {
 				t.Fatal(err)
 			}
-			if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOnline, t1, tt.usage); err != nil {
+			if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOnline, t1, "192.0.2.2", tt.usage); err != nil {
 				t.Fatal(err)
 			}
 
@@ -74,6 +74,9 @@ func TestTouchWorker(t *testing.T) {
 			}
 			if got.State != model.WorkerStateOnline || !got.LastSeen.Equal(t1) {
 				t.Errorf("state/last_seen = %s/%v, want online/%v", got.State, got.LastSeen, t1)
+			}
+			if got.PeerAddr != "192.0.2.2" {
+				t.Errorf("peer_addr = %q, want the latest heartbeat's 192.0.2.2", got.PeerAddr)
 			}
 			if g, w := usageJSONOf(t, got.Usage), usageJSONOf(t, tt.wantUsage); g != w {
 				t.Errorf("usage = %s, want %s", g, w)
@@ -96,7 +99,7 @@ func TestTouchWorker_NeverReportedStaysNull(t *testing.T) {
 	if err := st.CreateWorker(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOnline, time.Now().UTC(), nil); err != nil {
+	if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOnline, time.Now().UTC(), "", nil); err != nil {
 		t.Fatal(err)
 	}
 	var usageNull, usageAtNull bool
@@ -119,7 +122,7 @@ func TestTouchWorker_NeverReportedStaysNull(t *testing.T) {
 
 func TestTouchWorker_NotFound(t *testing.T) {
 	st := testStore(t)
-	if err := st.TouchWorker(context.Background(), "wrk_missing", model.WorkerStateOnline, time.Now().UTC(), nil); err == nil {
+	if err := st.TouchWorker(context.Background(), "wrk_missing", model.WorkerStateOnline, time.Now().UTC(), "", nil); err == nil {
 		t.Error("TouchWorker on a missing worker: want error")
 	}
 }
@@ -144,7 +147,7 @@ func TestTouchWorker_KeepsCheckedOutTask(t *testing.T) {
 	if err != nil || task == nil {
 		t.Fatalf("CheckoutTask = %v, %v; want t1", task, err)
 	}
-	if err := st.TouchWorker(ctx, snapshot.ID, snapshot.State, time.Now().UTC(), testUsage(1)); err != nil {
+	if err := st.TouchWorker(ctx, snapshot.ID, snapshot.State, time.Now().UTC(), snapshot.PeerAddr, testUsage(1)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.GetWorker(ctx, w.ID)
@@ -164,7 +167,7 @@ func TestUpdateWorker_LeavesUsageIntact(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOnline, at, testUsage(1)); err != nil {
+	if err := st.TouchWorker(ctx, w.ID, model.WorkerStateOnline, at, "192.0.2.9", testUsage(1)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.GetWorker(ctx, w.ID)
@@ -172,6 +175,7 @@ func TestUpdateWorker_LeavesUsageIntact(t *testing.T) {
 		t.Fatalf("GetWorker: %v %v", got, err)
 	}
 	got.Name = "renamed"
+	got.PeerAddr = ""
 	got.Usage, got.UsageAt = nil, nil
 	if err := st.UpdateWorker(ctx, got); err != nil {
 		t.Fatal(err)
@@ -188,6 +192,10 @@ func TestUpdateWorker_LeavesUsageIntact(t *testing.T) {
 	}
 	if again.UsageAt == nil || !again.UsageAt.Equal(at) {
 		t.Errorf("usage_at after UpdateWorker = %v, want %v", again.UsageAt, at)
+	}
+	// peer_addr belongs to the heartbeat, not to the full-row write.
+	if again.PeerAddr != "192.0.2.9" {
+		t.Errorf("peer_addr after UpdateWorker = %q, want 192.0.2.9", again.PeerAddr)
 	}
 }
 

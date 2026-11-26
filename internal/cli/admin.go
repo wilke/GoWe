@@ -61,8 +61,29 @@ func newAdminCmd() *cobra.Command {
 		newAdminBlessingsCmd(),
 		newAdminUnblessCmd(),
 		newAdminWorkerGroupsCmd(),
+		newAdminRemoveWorkerCmd(),
 	)
 	return cmd
+}
+
+func newAdminRemoveWorkerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove-worker <worker-id>",
+		Short: "Remove an offline worker of any group",
+		Long:  "Removes a worker of any group from the worker list.\n\n" + workerRetireHelp,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+			if id == "" {
+				return errors.New("worker id is empty")
+			}
+			if _, err := client.Delete("/api/v1/admin/workers/"+url.PathEscape(id), nil); err != nil {
+				return fmt.Errorf("remove worker %s: %w", id, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed worker %s\n", id)
+			return nil
+		},
+	}
 }
 
 // validateAdminVerifyArgs enforces "exactly one submission ID, or --all".

@@ -125,6 +125,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		Labels:       req.Labels,
 		LastSeen:     now,
 		RegisteredAt: now,
+		PeerAddr:     peerAddr(r),
 	}
 	// Self-reported capacity; non-positive or above the sane range means "not
 	// reported" (legacy), so per-host claimed sums cannot overflow.
@@ -204,9 +205,14 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("worker registered", "id", worker.ID, "name", worker.Name, "group", worker.Group, "runtime", worker.Runtime, "gpu", worker.GPUEnabled, "gpu_device", worker.GPUDevice, "datasets", len(worker.Datasets),
 		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB),
 		"default_task_cores", capLog(worker.DefaultTaskCores), "default_task_ram_mb", capLog(worker.DefaultTaskRamMB),
-		"host_id", worker.HostID, "host_cpus", capLog(worker.HostCPUs), "host_mem_mb", capLog(worker.HostMemMB), "gpus", len(worker.GPUs))
+		"host_id", worker.HostID, "host_cpus", capLog(worker.HostCPUs), "host_mem_mb", capLog(worker.HostMemMB), "gpus", len(worker.GPUs),
+		"peer_addr", worker.PeerAddr)
 	s.warnGPUOverlap(r.Context(), worker)
-	respondCreated(w, reqID, worker)
+	// The caller is a worker, never a server admin or group manager: the
+	// peer address is not shown to it.
+	resp := *worker
+	resp.PeerAddr = ""
+	respondCreated(w, reqID, &resp)
 }
 
 // warnGPUOverlap logs a WARN for every online worker on the registering GPU
@@ -367,10 +373,11 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		usage = s.heartbeatUsage(worker, req)
 	}
 
-	// One targeted UPDATE of state, last_seen and (when sent) usage: a
-	// full-row UpdateWorker here races with CheckoutTask's current_task write.
+	// One targeted UPDATE of state, last_seen, peer_addr and (when sent)
+	// usage: a full-row UpdateWorker here races with CheckoutTask's
+	// current_task write.
 	worker.LastSeen = time.Now().UTC()
-	if err := s.store.TouchWorker(r.Context(), worker.ID, worker.State, worker.LastSeen, usage); err != nil {
+	if err := s.store.TouchWorker(r.Context(), worker.ID, worker.State, worker.LastSeen, peerAddr(r), usage); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
 		return
@@ -894,7 +901,10 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 
 	opts := parseListOptions(r)
 
-	// In-memory filtering.
+	// In-memory filtering. The callers of this route are workers (worker
+	// key, or none when worker auth is off), never server admins or group
+	// managers: the peer address is blanked, on copies (never on the objects
+	// the store returned).
 	searchLower := strings.ToLower(opts.Search)
 	filtered := workers[:0:0]
 	for _, w := range workers {
@@ -907,7 +917,9 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		filtered = append(filtered, w)
+		cp := *w
+		cp.PeerAddr = ""
+		filtered = append(filtered, &cp)
 	}
 
 	total := len(filtered)

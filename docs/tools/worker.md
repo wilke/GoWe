@@ -312,7 +312,9 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://gowe-server:8080/api/v1/admin/worker-keys/wk_...
 ```
 
-If a worker's key is revoked or expires, its next poll/heartbeat is rejected with `401`; the server's reaper eventually marks it offline and requeues its in-flight tasks.
+If a worker's key is revoked or expires, its next poll/heartbeat is rejected with `401`; the server's reaper eventually marks it offline and requeues its in-flight tasks. Revoking a key does not stop a task already running on the worker.
+
+**Offline workers and retiring a worker:** a worker that sends no heartbeat for 30 s is marked offline and stays in the worker list (so operators see which worker stopped) until it is removed; a heartbeat brings it back online. To retire a worker: stop it on its host (or revoke its key), wait until it is offline, then remove it with `gowe worker-groups remove-worker <group> <worker-id>` (group managers and server admins) or `gowe admin remove-worker <worker-id>`. The server removes only a worker that is offline and has sent no heartbeat for 3 x the worker timeout (90 s). A worker process that is still running when it is removed (it had not reached the server for 90 s) does **not** register again by itself: its heartbeats, polls and task reports are answered `404` from then on, and it must be restarted. A removed worker that is started again with a valid key registers again as a new worker. The server records the address each registration and heartbeat came from (`peer_addr`, shown to admins and group managers, and in the server's `worker registered` log line; a heartbeat over a unix-socket listener keeps the stored address); behind a reverse proxy it is the proxy's address. See [server.md, Offline workers and removing them](server.md#offline-workers-and-removing-them).
 
 **Open access for dev:** if no keys are configured at all (no static config **and** no minted keys), worker endpoints are open. This is convenient for local/dev but production deployments SHOULD configure keys (see `SPECIFICATION.md` §13.3).
 

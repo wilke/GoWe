@@ -85,6 +85,9 @@ type UI struct {
 	inputValidation  validate.Mode
 	tokenBlessingDev bool             // --token-blessing=dev banner
 	groupPolicy      *groupacl.Policy // worker-group access (#261); nil allows every group
+	// workerTimeout is the server reaper's heartbeat timeout; a worker may be
+	// deleted once it has sent no heartbeat for removalSilence (3 x this).
+	workerTimeout time.Duration
 }
 
 // Config holds UI configuration.
@@ -125,10 +128,19 @@ type Config struct {
 	// behavior. Must already be normalized — see cmd/server's
 	// normalizeBasePath (leading "/", no trailing "/", never just "/").
 	BasePath string
+	// WorkerTimeout is the server reaper's heartbeat timeout: a worker is
+	// deleted only when it is offline and has sent no heartbeat for
+	// model.WorkerRemovalSilence(WorkerTimeout) (3 x this). Zero selects
+	// DefaultWorkerTimeout.
+	WorkerTimeout time.Duration
 }
 
 // DefaultUploadMaxSize is the workspace upload cap when none is configured.
 const DefaultUploadMaxSize int64 = 1 << 30
+
+// DefaultWorkerTimeout is Config.WorkerTimeout when none is configured; the
+// server passes its reaper timeout, which is the same value.
+const DefaultWorkerTimeout = 30 * time.Second
 
 // New creates a new UI handler.
 func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
@@ -139,6 +151,10 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 	uploadMaxSize := cfg.UploadMaxSize
 	if uploadMaxSize <= 0 {
 		uploadMaxSize = DefaultUploadMaxSize
+	}
+	workerTimeout := cfg.WorkerTimeout
+	if workerTimeout <= 0 {
+		workerTimeout = DefaultWorkerTimeout
 	}
 	return &UI{
 		store:               st,
@@ -154,6 +170,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		inputValidation:     cfg.InputValidation,
 		tokenBlessingDev:    cfg.TokenBlessingDev,
 		groupPolicy:         cfg.GroupPolicy,
+		workerTimeout:       workerTimeout,
 	}
 }
 
@@ -1426,6 +1443,12 @@ func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
 		ui.renderError(w, "Failed to load workers", err)
 		return
 	}
+	// Every signed-in user sees this page, for every group: the peer address
+	// is for server admins (and group managers, through the API) only. It is
+	// blanked on copies, never on the objects the store returned.
+	if sess == nil || !sess.IsAdmin() {
+		allWorkers = workersWithoutPeerAddr(allWorkers)
+	}
 
 	// Parse filters.
 	searchQuery := strings.TrimSpace(r.URL.Query().Get("search"))
@@ -1482,10 +1505,31 @@ func (ui *UI) HandleWorkerList(w http.ResponseWriter, r *http.Request) {
 	ui.render(w, "workers", data)
 }
 
+// workersWithoutPeerAddr returns shallow copies of ws with PeerAddr blanked;
+// ws and the workers it points to are not modified.
+func workersWithoutPeerAddr(ws []*model.Worker) []*model.Worker {
+	out := make([]*model.Worker, len(ws))
+	for i, wk := range ws {
+		cp := *wk
+		cp.PeerAddr = ""
+		out[i] = &cp
+	}
+	return out
+}
+
+// removalSilence is how long a worker must have sent no heartbeat before it
+// may be deleted: model.WorkerRemovalSilence (3 x the reaper's timeout).
+func (ui *UI) removalSilence() time.Duration {
+	return model.WorkerRemovalSilence(ui.workerTimeout)
+}
+
 // HandleWorkerDelete removes a single worker (HTMX). Only an offline worker
+// that has sent no heartbeat for removalSilence (3 x the reaper's timeout)
 // can be deleted: deleting requeues the worker's running tasks, and a worker
 // that is still alive would keep executing them alongside whichever worker
-// picks them up next.
+// picks them up next. The check is part of the store's delete
+// (DeleteOfflineWorker), so a heartbeat between a read and the delete cannot
+// slip through.
 func (ui *UI) HandleWorkerDelete(w http.ResponseWriter, r *http.Request) {
 	id := ui.pathParam(r, "id")
 
@@ -1495,23 +1539,48 @@ func (ui *UI) HandleWorkerDelete(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if wk.State != model.WorkerStateOffline {
-		w.Header().Set("HX-Reswap", "none")
-		http.Error(w, "worker is "+string(wk.State)+"; stop it first, it can be deleted once it is offline", http.StatusConflict)
-		return
-	}
 
-	if err := ui.store.DeleteWorker(r.Context(), id); err != nil {
+	deleted, err := ui.store.DeleteOfflineWorker(r.Context(), id, "", ui.removalSilence())
+	if err != nil {
 		w.Header().Set("HX-Reswap", "none")
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	if !deleted {
+		// The delete decided; a fresh read only explains why.
+		cur, err := ui.store.GetWorker(r.Context(), id)
+		if err == nil && cur == nil {
+			w.Header().Set("HX-Reswap", "none")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err == nil {
+			wk = cur
+		}
+		w.Header().Set("HX-Reswap", "none")
+		if wk.State != model.WorkerStateOffline {
+			http.Error(w, fmt.Sprintf("worker is %s; stop it first, it can be deleted once it is offline and has sent no heartbeat for %s (3 x the worker timeout)",
+				wk.State, ui.removalSilence()), http.StatusConflict)
+			return
+		}
+		http.Error(w, fmt.Sprintf("worker is offline but was last seen %s ago; it can be deleted once it has sent no heartbeat for %s (3 x the worker timeout)",
+			time.Since(wk.LastSeen).Truncate(time.Second), ui.removalSilence()), http.StatusConflict)
+		return
+	}
 
-	ui.logger.Info("worker deleted via UI", "id", id)
+	actor := ""
+	if sess := SessionFromContext(r.Context()); sess != nil {
+		actor = sess.Username
+	}
+	ui.logger.Info("worker deleted via UI", "actor", actor, "id", id, "group", wk.Group)
 	w.WriteHeader(http.StatusOK)
 }
 
-// HandleWorkerPurgeOffline deletes all offline workers (HTMX).
+// HandleWorkerPurgeOffline deletes all offline workers that have sent no
+// heartbeat for removalSilence (HTMX), each with the same in-store check as
+// HandleWorkerDelete. It logs at INFO how many were removed and how many
+// offline workers were skipped (not removable yet), and at WARN each store
+// error.
 func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 	workers, err := ui.store.ListWorkers(r.Context())
 	if err != nil {
@@ -1519,16 +1588,26 @@ func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count := 0
+	removed, skipped, failed := 0, 0, 0
+	silence := ui.removalSilence()
 	for _, wk := range workers {
-		if wk.State == model.WorkerStateOffline {
-			if err := ui.store.DeleteWorker(r.Context(), wk.ID); err == nil {
-				count++
-			}
+		if wk.State != model.WorkerStateOffline {
+			continue
+		}
+		deleted, err := ui.store.DeleteOfflineWorker(r.Context(), wk.ID, "", silence)
+		switch {
+		case err != nil:
+			failed++
+			ui.logger.Warn("purge offline workers via UI: delete failed", "worker_id", wk.ID, "error", err)
+		case deleted:
+			removed++
+		default:
+			skipped++
 		}
 	}
 
-	ui.logger.Info("purged offline workers via UI", "count", count)
+	ui.logger.Info("purged offline workers via UI", "removed", removed,
+		"skipped_not_removable", skipped, "failed", failed, "removal_silence", silence)
 	w.Header().Set("HX-Redirect", ui.href("/workers"))
 	w.WriteHeader(http.StatusOK)
 }

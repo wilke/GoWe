@@ -163,8 +163,11 @@ func (m *mockStore) AdoptWorkerKey(context.Context, string, string) (bool, error
 func (m *mockStore) ListWorkersByKey(context.Context, string) ([]*model.Worker, error) {
 	return nil, nil
 }
-func (m *mockStore) TouchWorker(context.Context, string, model.WorkerState, time.Time, *model.WorkerUsage) error {
+func (m *mockStore) TouchWorker(context.Context, string, model.WorkerState, time.Time, string, *model.WorkerUsage) error {
 	return nil
+}
+func (m *mockStore) DeleteOfflineWorker(context.Context, string, string, time.Duration) (bool, error) {
+	return false, nil
 }
 func (m *mockStore) ListWorkerGroups(context.Context) ([]string, error) { return nil, nil }
 func (m *mockStore) CheckoutTask(context.Context, string, string, model.ContainerRuntime) (*model.Task, error) {
