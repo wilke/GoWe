@@ -448,6 +448,9 @@ A rule may name **managers** (`managers`, appointed by server admins: `gowe admi
   such a key (`gowe-worker --group <group> --worker-key-file FILE`) is how a manager adds resources to the group.
   A manager cannot revoke a key with any other groups, and cannot issue keys before a server admin has created the
   first worker key (worker authentication must already be on; `409` otherwise).
+- lists the group's workers (those whose group is `<group>`, whatever key they registered with), with their
+  [peer address](#worker-peer-address), and removes offline ones (`gowe worker-groups workers` / `remove-worker`; see
+  [Offline workers and removing them](#offline-workers-and-removing-them)).
 
 Managers, the `admins` switch, `default_deny` and deleting a rule stay admin-only (the `/api/v1/admin/...` routes);
 managers cannot appoint managers. The default group cannot have managers (`400`): its workers receive every
@@ -901,10 +904,12 @@ Response (201):
 }
 ```
 
+The server records the worker's [peer address](#worker-peer-address) at registration; it is not part of this answer.
+
 #### `GET /api/v1/workers`
 
 List all registered workers with state, group, runtime, GPU, and dataset info, plus the latest heartbeat usage
-(`usage`, `usage_at`; see below).
+(`usage`, `usage_at`; see below). The callers of this route are workers, so `peer_addr` is never included.
 
 ```bash
 curl http://localhost:8080/api/v1/workers
@@ -912,7 +917,10 @@ curl http://localhost:8080/api/v1/workers
 
 #### `PUT /api/v1/workers/{id}/heartbeat`
 
-Worker keep-alive. Updates `last_seen`. Workers are marked offline after 30s without heartbeat.
+Worker keep-alive. Updates `last_seen` and the worker's [peer address](#worker-peer-address). Workers are marked
+offline after 30s without heartbeat and stay listed until removed (see
+[Offline workers and removing them](#offline-workers-and-removing-them)); a heartbeat from an offline worker brings it
+back online.
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/workers/wrk_abc123/heartbeat \
@@ -1013,6 +1021,48 @@ Deregister a worker.
 curl -X DELETE http://localhost:8080/api/v1/workers/wrk_abc123 \
   -H "X-Worker-Key: secret-key-1"
 ```
+
+#### Worker peer address
+
+The server records, at registration and on every heartbeat, the host part of the network address the request came
+from (`peer_addr`), as its own connection saw it: printable ASCII, at most 64 bytes. It is **never** taken from
+`X-Forwarded-For`, `X-Real-IP` or `True-Client-IP` (any client can set them), whatever `--behind-proxy` says, so
+**behind a reverse proxy the value is the proxy's address**, not the worker's. An empty address, or `@` (the server
+listens on a unix socket), is unknown: a registration stores it as empty, and a heartbeat with an unknown address
+keeps the stored one. It is shown only to server admins and to managers of the worker's group
+(`GET /api/v1/worker-groups/{group}/workers`, `gowe worker-groups workers`; no web page shows it yet); the worker
+routes (`POST`/`GET /api/v1/workers`), `/api/v1/fleet`, `/api/v1/hosts` and the `/workers` page for non-admins never
+carry it. The server's INFO log line `worker registered` contains it (`peer_addr=`): server logs are for operators
+and admins, so give access to them accordingly.
+
+#### Offline workers and removing them
+
+A worker that sends no heartbeat for 30 s is marked offline by the reaper (its RUNNING tasks are requeued) and its
+row **stays listed**, so operators see which worker stopped. "Offline" does not mean stopped: a worker that only
+missed heartbeats becomes online again with its next one. Removing the row is an explicit action:
+
+- managers of the group and server admins: `DELETE /api/v1/worker-groups/{group}/workers/{id}`
+  (`gowe worker-groups remove-worker <group> <worker-id>`);
+- server admins, any group: `DELETE /api/v1/admin/workers/{id}` (`gowe admin remove-worker <worker-id>`), or the
+  delete buttons of the `/workers` page.
+
+A worker is removed only when it is offline **and** has sent no heartbeat for 3 x the worker timeout (90 s); otherwise
+the answer is `409` (the UI: an error message). The margin over the 30 s after which the reaper marks a worker
+offline keeps a worker with a short heartbeat gap from being removable the moment it is marked offline. The check is
+made in the same database transaction as the delete, which also requeues any RUNNING task still attributed to the
+worker, so a worker whose heartbeat reached the server before the delete is not removed. The server cannot tell a
+stopped worker from one that is still running but has not reached it for 90 s (a network partition, a suspended
+process): such a worker is removed, its tasks are requeued and may run a second time elsewhere, and from then on its
+requests (heartbeat, checkout, task reports) are answered `404`. **It does not register again by itself**: restart
+it, and it registers as a new worker. After its row is removed a checkout never hands it a task. To retire a worker:
+
+1. stop it on its host (or revoke its key, which refuses its next heartbeat);
+2. wait until it is offline (30 s without heartbeat, then up to 10 s for the reaper), and until it has sent no
+   heartbeat for 90 s in all;
+3. remove it.
+
+A removed worker that is started again with a valid key registers again, as a new worker with a new id. Revoking a
+key does not stop a task already running on a worker, nor recall the token that task received.
 
 ---
 
@@ -1122,7 +1172,7 @@ while no GPU worker is online. GPU workers are still preferred for GPU tasks at 
 When a GPU worker registers with GPU UUIDs that another **online** worker with the same `host_id` also reports, the
 server logs a WARN naming both workers and the shared UUIDs: the two would hand out the same devices (give each worker
 its own GPUs with `--gpu-id`). The registration is not rejected, since a restarted worker's previous row stays online
-until the reaper removes it.
+until the reaper marks it offline.
 
 **Holding capacity for a waiting task** (`--checkout-hold-after`, default `10m`, `0` disables). On a worker that runs
 several tasks at once, a large task could otherwise wait forever: whenever one of the worker's tasks ends, smaller
@@ -1492,6 +1542,34 @@ curl -X POST http://localhost:8080/api/v1/worker-groups/model-router/keys \
 
 Revoke (delete) a key whose groups are exactly `[{group}]`; `404` when the key does not exist or has any other
 groups. A task already running with it is not stopped.
+
+#### `GET /api/v1/worker-groups/{group}/workers`
+
+The workers of `{group}` (worker group `{group}`, an empty stored group counting as `default`, whatever key they
+registered with), offline ones included, sorted by name: `{"total": N, "workers": [...]}`. Each entry is a summary,
+not the full worker record:
+
+```json
+{"id": "wrk_abc123", "name": "gpu-node-07", "hostname": "gpu-node-07.example.com", "peer_addr": "192.0.2.17",
+ "state": "online", "last_seen": "2026-11-25T10:00:00Z", "registered_at": "2026-11-20T08:00:00Z",
+ "version": "abc1234", "runtime": "apptainer", "gpu_enabled": true, "current_task": "task_456", "key_id": "wk_1f2e..."}
+```
+
+`peer_addr` is the [peer address](#worker-peer-address) (the proxy's behind a reverse proxy). `key_id` is the id of
+the key the worker registered with when that key's groups are exactly `[{group}]`, `"other"` for any other key, and
+`""` for a worker bound to no key (registered while worker authentication was off).
+
+#### `DELETE /api/v1/worker-groups/{group}/workers/{id}`
+
+Remove a worker of `{group}` that is offline and has sent no heartbeat for 3 x the worker timeout (90 s), requeueing
+any RUNNING task still attributed to it (see [Offline workers and removing them](#offline-workers-and-removing-them)).
+Answers `{"id": "...", "removed": true}`; `404` when there is no such worker in `{group}`; `409` (`CONFLICT`) when the
+worker exists but is online, draining, or silent for less than 90 s (the message says which). Logs one INFO line
+`worker removed` with the actor, the worker id and the group.
+
+#### `DELETE /api/v1/admin/workers/{id}`
+
+Server admins only: the same removal for a worker of any group (`404` when there is no such worker, `409` as above).
 
 #### `POST /api/v1/admin/submissions/{id}/verify-outputs`
 

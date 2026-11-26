@@ -292,6 +292,7 @@ func New(cfg config.ServerConfig, st store.Store, sched scheduler.Scheduler, log
 		BasePath:            s.basePath,
 		TokenBlessingDev:    s.tokenBlessingMode() == tokenBlessingDev,
 		GroupPolicy:         s.groupPolicy,
+		WorkerTimeout:       defaultWorkerTimeout,
 	})
 	if s.bvbrcCaller != nil {
 		s.ui.WithBVBRCCaller(s.bvbrcCaller)
@@ -320,6 +321,12 @@ func (s *Server) StartScheduler(ctx context.Context) {
 // defaultWorkerTimeout is the duration after which a worker with no heartbeat
 // is marked offline. Workers heartbeat every 5s, so 30s = 6 missed beats.
 const defaultWorkerTimeout = 30 * time.Second
+
+// workerRemovalSilence is how long a worker must have sent no heartbeat
+// before the removal routes remove it (model.WorkerRemovalSilence: 3 x
+// defaultWorkerTimeout). The UI applies the same rule to the timeout it is
+// given (ui.Config.WorkerTimeout).
+var workerRemovalSilence = model.WorkerRemovalSilence(defaultWorkerTimeout)
 
 // StartWorkerReaper runs a background loop that marks workers as offline
 // when their heartbeat times out, and requeues their running tasks.
@@ -410,7 +417,9 @@ func withBasePath(base string, next http.Handler) http.Handler {
 func (s *Server) routes() {
 	r := s.router
 
-	// Global middleware
+	// Global middleware. peerAddrMiddleware keeps the connection's address
+	// before RealIP replaces it with client-supplied header values.
+	r.Use(peerAddrMiddleware)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(requestIDMiddleware)
@@ -550,6 +559,7 @@ func (s *Server) routes() {
 						r.Delete("/", s.handleRevokeWorkerKey)
 					})
 				})
+				r.Delete("/workers/{id}", s.handleAdminRemoveWorker)
 				r.Route("/tool-blessings", s.toolBlessingRoutes)
 				s.workerGroupRoutes(r)
 				r.Route("/labels", func(r chi.Router) {

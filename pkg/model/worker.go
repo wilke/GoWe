@@ -62,6 +62,22 @@ type Worker struct {
 	// legacy rows (adopted on first authorized touch) and when worker auth is
 	// disabled.
 	KeyID string `json:"key_id,omitempty"`
+	// PeerAddr is the host part of the network address the worker's last
+	// registration or heartbeat came from, as the server's connection saw it
+	// (never taken from forwarding headers; behind a reverse proxy it is the
+	// proxy's address). Shown only to server admins and to managers of the
+	// worker's group; every other answer blanks it.
+	PeerAddr string `json:"peer_addr,omitempty"`
+}
+
+// WorkerRemovalSilence is how long a worker must have sent no heartbeat
+// before it may be removed (the server's removal routes, the UI delete and
+// purge), given the server reaper's heartbeat timeout: 3 x timeout. The
+// reaper marks a worker offline after one timeout; the margin keeps a worker
+// with a short heartbeat gap from being removable the moment it is marked
+// offline.
+func WorkerRemovalSilence(workerTimeout time.Duration) time.Duration {
+	return 3 * workerTimeout
 }
 
 // EffectiveMaxCPUs is the most cores one task can ever get on this worker:

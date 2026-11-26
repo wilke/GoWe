@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/pkg/model"
@@ -55,6 +56,8 @@ admins (gowe admin worker-groups).`,
 		newWorkerGroupsKeysCmd(),
 		newWorkerGroupsCreateKeyCmd(),
 		newWorkerGroupsRevokeKeyCmd(),
+		newWorkerGroupsWorkersCmd(),
+		newWorkerGroupsRemoveWorkerCmd(),
 	)
 	return cmd
 }
@@ -412,6 +415,119 @@ token it received.`,
 				return fmt.Errorf("revoke worker key %s of group %s: %w", id, group, err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Revoked worker key %s of group %s\n", id, group)
+			return nil
+		},
+	}
+}
+
+// groupWorkerRow is a worker as listed by GET /worker-groups/{group}/workers.
+type groupWorkerRow struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Hostname string    `json:"hostname"`
+	PeerAddr string    `json:"peer_addr"`
+	State    string    `json:"state"`
+	LastSeen time.Time `json:"last_seen"`
+	Version  string    `json:"version"`
+}
+
+// workerRetireHelp is the order to retire a worker, shared by the removal
+// commands.
+const workerRetireHelp = `To retire a worker: stop it on its host (or revoke its key), wait until it is
+offline, then remove it. Only a worker that is offline and has sent no
+heartbeat for 3 x the server's worker timeout (90s by default) can be
+removed; removing it requeues its running tasks. A worker process still
+running when it is removed does not register again by itself (its requests
+are answered 404): restart it. A removed worker that is started again with a
+valid key registers again as a new worker. Revoking a key does not stop a
+task already running.`
+
+func newWorkerGroupsWorkersCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "workers <group>",
+		Short: "List the workers of a worker group you manage (offline ones included)",
+		Long: `Lists the workers of the group, whatever key they registered with, sorted by
+name. A worker that stops heartbeating is shown offline and stays listed until
+it is removed (remove-worker). The peer address is the address the server saw
+the worker's last heartbeat come from; behind a reverse proxy it is the proxy's.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			group := args[0]
+			if err := groupacl.ValidateGroupName(group); err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			resp, err := client.Get(managedGroupPath(group, "workers"))
+			if err != nil {
+				return fmt.Errorf("list workers of group %s: %w", group, err)
+			}
+			if asJSON {
+				return printRaw(out, resp.Data)
+			}
+			var body struct {
+				Workers []groupWorkerRow `json:"workers"`
+			}
+			if err := json.Unmarshal(resp.Data, &body); err != nil {
+				return fmt.Errorf("parse response: %w", err)
+			}
+			if len(body.Workers) == 0 {
+				fmt.Fprintf(out, "No workers in group %s.\n", group)
+				return nil
+			}
+			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "ID\tNAME\tSTATE\tHOSTNAME\tPEER ADDRESS\tLAST SEEN\tVERSION")
+			for _, wk := range body.Workers {
+				lastSeen := "-"
+				if !wk.LastSeen.IsZero() {
+					lastSeen = wk.LastSeen.UTC().Format(time.RFC3339)
+				}
+				// Every string here comes from a worker (or its row): no
+				// control character may reach the terminal.
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", orDash(terminalSafe(wk.ID)), orDash(terminalSafe(wk.Name)),
+					orDash(terminalSafe(wk.State)), orDash(terminalSafe(wk.Hostname)),
+					orDash(terminalSafe(wk.PeerAddr)), lastSeen, orDash(terminalSafe(wk.Version)))
+			}
+			return tw.Flush()
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print the raw JSON (includes key_id)")
+	return cmd
+}
+
+// terminalSafe replaces every character of s that is not printable
+// (unicode.IsPrint: control characters such as tab, newline and ESC, C1
+// controls and format characters such as bidi overrides) with '?', so a
+// worker-supplied string cannot move the cursor, recolour or rewrite the
+// terminal, or break the table.
+func terminalSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
+func newWorkerGroupsRemoveWorkerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove-worker <group> <worker-id>",
+		Short: "Remove an offline worker of a worker group you manage",
+		Long: "Removes a worker of the group from the worker list (worker ids: workers <group>).\n\n" +
+			workerRetireHelp,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			group, id := args[0], args[1]
+			if err := groupacl.ValidateGroupName(group); err != nil {
+				return err
+			}
+			if id == "" {
+				return errors.New("worker id is empty")
+			}
+			if _, err := client.Delete(managedGroupPath(group, "workers", id), nil); err != nil {
+				return fmt.Errorf("remove worker %s of group %s: %w", id, group, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed worker %s of group %s\n", id, group)
 			return nil
 		},
 	}

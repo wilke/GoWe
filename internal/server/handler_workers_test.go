@@ -411,7 +411,7 @@ func (c *concurrentWorkerWriteStore) GetWorker(ctx context.Context, id string) (
 	if err != nil || w == nil {
 		return w, err
 	}
-	if err := c.Store.TouchWorker(ctx, id, model.WorkerStateDraining, w.LastSeen, nil); err != nil {
+	if err := c.Store.TouchWorker(ctx, id, model.WorkerStateDraining, w.LastSeen, w.PeerAddr, nil); err != nil {
 		return nil, err
 	}
 	return w, nil

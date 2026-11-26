@@ -16,8 +16,10 @@ import (
 
 // Worker group manager routes (/api/v1/worker-groups, user auth). A manager
 // of a group, appointed by a server admin in the group's rule, manages for
-// that group only its users list and the worker keys valid for exactly that
-// group; server admins may use the same routes on every group. Managers,
+// that group only its users list, the worker keys valid for exactly that
+// group and the group's workers (list, remove offline ones; see
+// handler_group_workers.go); server admins may use the same routes on every
+// group. Managers,
 // admins, default_deny and deleting a rule stay on the admin routes.
 //
 // Every route on one group checks, in this order: an authenticated,
@@ -37,6 +39,8 @@ func (s *Server) managedWorkerGroupRoutes(r chi.Router) {
 		r.Get("/keys", s.handleListWorkerGroupKeys)
 		r.Post("/keys", s.handleCreateWorkerGroupKey)
 		r.Delete("/keys/{id}", s.handleRevokeWorkerGroupKey)
+		r.Get("/workers", s.handleListWorkerGroupWorkers)
+		r.Delete("/workers/{id}", s.handleRemoveWorkerGroupWorker)
 	})
 }
 

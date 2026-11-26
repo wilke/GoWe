@@ -547,6 +547,13 @@ var alterStatements = []struct {
 		column:   "managers",
 		alterSQL: "ALTER TABLE worker_group_policies ADD COLUMN managers TEXT NOT NULL DEFAULT '[]'",
 	},
+	// Host part of the connection address of the worker's registration and
+	// latest heartbeat ('' = not recorded yet).
+	{
+		table:    "workers",
+		column:   "peer_addr",
+		alterSQL: "ALTER TABLE workers ADD COLUMN peer_addr TEXT NOT NULL DEFAULT ''",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

@@ -405,7 +405,13 @@ Administrative operations; the caller must hold the **admin** role.
 gowe admin verify-outputs <submission_id> | --all [--output-state delivered,upload_failed] [--since YYYY-MM-DD] [--json]
 gowe admin redeliver <submission_id> [--dry-run] [--json]
 gowe admin worker-groups list|set|delete|default-deny ...   # see below
+gowe admin remove-worker <worker-id>
 ```
+
+**remove-worker** removes a worker of any group from the worker list. Only a worker that is
+offline and has sent no heartbeat for 3 x the server's worker timeout (90 s) is removed (the
+server answers `409` otherwise and the command prints its reason); its running tasks, if any
+are still attributed to it, are requeued. See [Retiring a worker](#retiring-a-worker).
 
 **verify-outputs** (read-only) downloads every `ws://` output of a submission — including
 sub-workflow child submissions — and compares it to the SHA-1 checksum and size the worker
@@ -480,8 +486,8 @@ gowe admin worker-groups list
 ### worker-groups
 
 For the **managers** of a worker group (appointed by a server admin with
-`gowe admin worker-groups set <group> --manager <username>`) and for server admins: the users
-and the worker keys of the groups they manage (see
+`gowe admin worker-groups set <group> --manager <username>`) and for server admins: the users,
+the worker keys and the workers of the groups they manage (see
 [server.md, Worker group managers](server.md#worker-group-managers)).
 
 ```bash
@@ -492,6 +498,8 @@ gowe worker-groups remove-user <group> <username>
 gowe worker-groups keys <group> [--json]            # keys valid for exactly this group
 gowe worker-groups create-key <group> --label L [--description D] [--expires 2027-01-01T00:00:00Z|720h] [--out FILE]
 gowe worker-groups revoke-key <group> <key-id>
+gowe worker-groups workers <group> [--json]         # the group's workers, offline ones included
+gowe worker-groups remove-worker <group> <worker-id>
 ```
 
 **add-user** / **remove-user** change who may submit to the group; the change takes effect at
@@ -508,6 +516,17 @@ and `--description` at most 1000. It fails with `409` until a server admin has c
 first worker key, and while the group has 100 keys of its own. **revoke-key** deletes a key of this group
 only (a key with any other groups is `404`); a task already running with it is not stopped.
 
+**workers** lists the workers of the group (whatever key they registered with), sorted by name:
+worker id (what **remove-worker** takes), name, state, hostname, peer address, last seen and
+version. Non-printable characters in these worker-supplied values (control characters such as
+tab, newline and ESC) are shown as `?`. `--json` prints the full answer unchanged (JSON escapes
+control characters), including `key_id` (the key's id when its groups are exactly `[<group>]`,
+`other` for any other key). The peer address is the address the server saw the worker's last
+heartbeat come from; behind a reverse proxy it is the proxy's address. A worker that stops
+heartbeating is shown `offline` and stays listed until it is removed. **remove-worker**
+removes a worker of the group that is offline and has sent no heartbeat for 3 x the server's
+worker timeout (90 s); otherwise the server refuses (`409`) and says why.
+
 Managers cannot change the managers, the admins switch or default-deny, nor delete the rule
 (`gowe admin worker-groups`). Whoever holds a key of a group can run a worker that receives
 every task sent to that group, including the submitter's data and the token used for staging.
@@ -517,7 +536,22 @@ gowe worker-groups add-user gpu carol@bvbrc
 gowe worker-groups create-key gpu --label gpu-node-07 --expires 2160h --out ~/gpu-node-07.key
 gowe worker-groups keys gpu
 gowe worker-groups revoke-key gpu wk_1f2e...
+gowe worker-groups workers gpu
+gowe worker-groups remove-worker gpu wrk_3c4d...
 ```
+
+#### Retiring a worker
+
+1. Stop the worker on its host (or revoke its key).
+2. Wait until it is shown `offline` (30 s without heartbeat, then up to 10 s), and until it
+   has sent no heartbeat for 90 s (3 x the worker timeout) in all.
+3. Remove it: `gowe worker-groups remove-worker <group> <worker-id>` (server admins, any
+   group: `gowe admin remove-worker <worker-id>`).
+
+A worker process that is still running when it is removed (it had not reached the server for
+90 s) does **not** register again by itself: its requests are answered `404` from then on, and
+it must be restarted. A removed worker that is started again with a valid key registers again,
+as a new worker. Revoking a key does not stop a task already running on the worker.
 
 ---
 

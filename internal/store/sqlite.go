@@ -2616,7 +2616,7 @@ func (s *SQLStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO workers (`+workerColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), formatTime(w.LastSeen),
 		w.CurrentTask, formatTime(w.RegisteredAt),
@@ -2626,13 +2626,14 @@ func (s *SQLStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON,
 		usageJSON, formatTimePtr(w.UsageAt),
 		nullableInt(w.DefaultTaskCores), nullableInt(w.DefaultTaskRamMB),
+		w.PeerAddr,
 	)
 	return err
 }
 
 // workerColumns is the single column list for workers reads/inserts; its order
 // must match scanWorker and the CreateWorker argument list.
-const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at, default_task_cores, default_task_ram_mb"
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at, default_task_cores, default_task_ram_mb, peer_addr"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2662,7 +2663,7 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
 		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem,
 		&w.HostID, &hostCPUs, &hostMem, &slots, &cgroupCPU, &cgroupMem, &gpusJSON,
-		&usageJSON, &usageAt, &defaultCores, &defaultMem); err != nil {
+		&usageJSON, &usageAt, &defaultCores, &defaultMem, &w.PeerAddr); err != nil {
 		return nil, err
 	}
 	w.State = model.WorkerState(state)
@@ -2846,27 +2847,30 @@ func (s *SQLStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 	return nil
 }
 
-// TouchWorker records a heartbeat in a single UPDATE: state and last_seen,
-// plus host_usage and host_usage_at (= lastSeen) only when usage is non-nil,
-// so a heartbeat without usage keeps the stored one. Unlike UpdateWorker it
+// TouchWorker records a heartbeat in a single UPDATE: state, last_seen and
+// peer_addr, plus host_usage and host_usage_at (= lastSeen) only when usage
+// is non-nil, so a heartbeat without usage keeps the stored one. An empty
+// peerAddr (unknown) keeps the stored peer_addr. Unlike UpdateWorker it
 // never writes current_task, so it cannot clobber a concurrent CheckoutTask.
-func (s *SQLStore) TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, usage *model.WorkerUsage) error {
+func (s *SQLStore) TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, peerAddr string, usage *model.WorkerUsage) error {
 	s.logger.Debug("sql", "op", "touch", "table", "workers", "id", id, "usage", usage != nil)
 
 	ts := formatTime(lastSeen)
+	// peer_addr is replaced only by a non-empty value.
+	const setPeer = `peer_addr=COALESCE(NULLIF(CAST(? AS TEXT), ''), peer_addr)`
 	var result sql.Result
 	var err error
 	if usage == nil {
 		result, err = s.db.ExecContext(ctx,
-			`UPDATE workers SET state=?, last_seen=? WHERE id=?`, string(state), ts, id)
+			`UPDATE workers SET state=?, last_seen=?, `+setPeer+` WHERE id=?`, string(state), ts, peerAddr, id)
 	} else {
 		usageJSON, merr := nullableUsageJSON(usage)
 		if merr != nil {
 			return merr
 		}
 		result, err = s.db.ExecContext(ctx,
-			`UPDATE workers SET state=?, last_seen=?, host_usage=?, host_usage_at=? WHERE id=?`,
-			string(state), ts, usageJSON, ts, id)
+			`UPDATE workers SET state=?, last_seen=?, `+setPeer+`, host_usage=?, host_usage_at=? WHERE id=?`,
+			string(state), ts, peerAddr, usageJSON, ts, id)
 	}
 	if err != nil {
 		return fmt.Errorf("touch worker: %w", err)
@@ -2885,19 +2889,63 @@ func (s *SQLStore) TouchWorker(ctx context.Context, id string, state model.Worke
 func (s *SQLStore) DeleteWorker(ctx context.Context, id string) error {
 	s.logger.Debug("sql", "op", "delete", "table", "workers", "id", id)
 
+	deleted, err := s.deleteWorkerWhere(ctx, id, "")
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return fmt.Errorf("worker %s not found", id)
+	}
+	return nil
+}
+
+// DeleteOfflineWorker deletes the worker id and, in the same transaction,
+// requeues its RUNNING worker-executor tasks (as DeleteWorker), but only when
+// the row exists, its state is offline, its last_seen is older than now -
+// silentFor and, when group is not empty, its group is group ("" and
+// "default" are the same group, as in CheckoutTask). The conditions are part
+// of the DELETE, so a heartbeat that brings the worker back between a
+// caller's read and this call makes it delete nothing. It reports whether
+// the worker was deleted.
+func (s *SQLStore) DeleteOfflineWorker(ctx context.Context, id, group string, silentFor time.Duration) (bool, error) {
+	cutoff := formatTime(time.Now().UTC().Add(-silentFor))
+	s.logger.Debug("sql", "op", "delete_offline", "table", "workers", "id", id, "group", group, "cutoff", cutoff)
+
+	cond := ` AND state = ? AND last_seen < ?`
+	args := []any{string(model.WorkerStateOffline), cutoff}
+	switch group {
+	case "":
+	case "default":
+		cond += ` AND worker_group IN ('', 'default')`
+	default:
+		cond += ` AND worker_group = ?`
+		args = append(args, group)
+	}
+	return s.deleteWorkerWhere(ctx, id, cond, args...)
+}
+
+// deleteWorkerWhere deletes the worker id when cond (SQL appended to the
+// DELETE's "WHERE id = ?", with its arguments args) holds and, in the same
+// transaction, requeues the worker's RUNNING worker-executor tasks (same
+// reset as RequeueWorkerTasks). Nothing changes when no row matched; it
+// reports whether one was deleted.
+func (s *SQLStore) deleteWorkerWhere(ctx context.Context, id, cond string, args ...any) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `DELETE FROM workers WHERE id = ?`, id)
+	result, err := tx.ExecContext(ctx, `DELETE FROM workers WHERE id = ?`+cond, append([]any{id}, args...)...)
 	if err != nil {
-		return fmt.Errorf("delete worker: %w", err)
+		return false, fmt.Errorf("delete worker: %w", err)
 	}
-	n, _ := result.RowsAffected()
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete worker: rows affected: %w", err)
+	}
 	if n == 0 {
-		return fmt.Errorf("worker %s not found", id)
+		return false, nil
 	}
 
 	res, err := tx.ExecContext(ctx,
@@ -2905,21 +2953,21 @@ func (s *SQLStore) DeleteWorker(ctx context.Context, id string) error {
 		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("requeue tasks: %w", err)
+		return false, fmt.Errorf("requeue tasks: %w", err)
 	}
 	requeued, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("requeue tasks: rows affected: %w", err)
+		return false, fmt.Errorf("requeue tasks: rows affected: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return false, fmt.Errorf("commit: %w", err)
 	}
 
 	if requeued > 0 {
 		s.logger.Info("requeued tasks of deleted worker", "worker_id", id, "count", requeued)
 	}
-	return nil
+	return true, nil
 }
 
 // AdoptWorkerKey binds a legacy worker row (key_id = ”) to keyID. It is a
@@ -2994,6 +3042,8 @@ func (s *SQLStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 
 // CheckoutTask atomically finds a QUEUED worker task and transitions it to
 // RUNNING, assigning it to the given worker. Returns nil if no task is available.
+// It also returns nil, changing no task, when the worker row does not exist
+// (when the checkout starts, or when its final worker update finds no row).
 // Selection considers runtime capability, worker group, and dataset affinity:
 //   - Runtime: if runtime is "none", only tasks without docker_image are eligible.
 //   - Group: if workerGroup is non-empty, only tasks with matching or empty WorkerGroup.
@@ -3044,9 +3094,13 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 		 FROM workers WHERE id = ?`, workerID).
 		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem, &workerHostID, &workerKeyID,
 			&workerHostCPUs, &workerHostMem, &workerDefaultCores, &workerDefaultMem, &workerGPUsJSON); err != nil {
-		if err != sql.ErrNoRows {
-			s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
+		if err == sql.ErrNoRows {
+			// No such worker (it may have been removed after the caller's
+			// read): hand out nothing and change no task.
+			s.logger.Debug("sql", "op", "checkout_task_no_worker", "worker_id", workerID)
+			return nil, nil
 		}
+		s.logger.Warn("sql", "op", "checkout_task_load_worker", "worker_id", workerID, "error", err)
 		workerDatasets = map[string]string{}
 	} else if err := json.Unmarshal([]byte(workerDatasetsJSON), &workerDatasets); err != nil {
 		s.logger.Warn("sql", "op", "checkout_task_parse_worker_datasets", "worker_id", workerID, "error", err)
@@ -3591,12 +3645,20 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 		return nil, nil
 	}
 
-	// Update worker's current_task.
-	_, err = tx.ExecContext(ctx,
+	// Update worker's current_task. No row means the worker was deleted
+	// after the read above: roll back (deferred) so the task stays QUEUED
+	// for another worker, and hand out nothing.
+	wres, err := tx.ExecContext(ctx,
 		`UPDATE workers SET current_task = ?, last_seen = ? WHERE id = ?`,
 		selected.ID, nowStr, workerID)
 	if err != nil {
 		return nil, fmt.Errorf("update worker current_task: %w", err)
+	}
+	if n, err := wres.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("update worker current_task: %w", err)
+	} else if n == 0 {
+		s.logger.Debug("sql", "op", "checkout_task_worker_gone", "worker_id", workerID, "task_id", selected.ID)
+		return nil, nil
 	}
 
 	if err := tx.Commit(); err != nil {
