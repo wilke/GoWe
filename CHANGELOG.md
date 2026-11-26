@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.31.0](https://github.com/wilke/GoWe/compare/v0.30.0...v0.31.0) (2026-11-26)
+
+
+### Features
+
+* **server:** manager worker list, safe worker removal, worker peer address ([#385](https://github.com/wilke/GoWe/issues/385)) ([4f0095d](https://github.com/wilke/GoWe/commit/4f0095df14417a17e6c3137a949bff70dde59f9e))
+* **server:** restrict which submitters may target a worker group ([#382](https://github.com/wilke/GoWe/issues/382)) ([1c8f013](https://github.com/wilke/GoWe/commit/1c8f01364c0a9c4faf564be29ef3a97b6549393d))
+* **server:** store the worker group policy in the database ([#383](https://github.com/wilke/GoWe/issues/383)) ([96a4ca5](https://github.com/wilke/GoWe/commit/96a4ca593414713cad9514ab28a32f8756367276))
+* **server:** worker group managers for users and group keys ([#384](https://github.com/wilke/GoWe/issues/384)) ([14a60d8](https://github.com/wilke/GoWe/commit/14a60d81effc5002a05e450580df63447c9d9403))
+* **ui:** worker group pages for admins and group managers ([#386](https://github.com/wilke/GoWe/issues/386)) ([40c4934](https://github.com/wilke/GoWe/commit/40c4934951e8205920faf43d40534c185b7ee5bc))
+
+
+### Bug Fixes
+
+* **ui:** let wide tables scroll instead of clipping them ([#380](https://github.com/wilke/GoWe/issues/380)) ([4a7e33e](https://github.com/wilke/GoWe/commit/4a7e33e3cdc60224b9f7711a519de5f604a5bf28))
+
 ## [0.30.0](https://github.com/wilke/GoWe/compare/v0.29.0...v0.30.0) (2026-11-25)
 
 
