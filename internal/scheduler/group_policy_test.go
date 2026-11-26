@@ -258,6 +258,36 @@ func TestDispatchStep_GroupPolicy(t *testing.T) {
 	}
 }
 
+// A manager of a group may send tasks to it without being in its users; a
+// manager of another group may not.
+func TestDispatchStep_GroupPolicy_Manager(t *testing.T) {
+	managed := testPolicy{rules: []model.WorkerGroupPolicy{
+		{Group: "gpu", Users: []string{"alice"}, Managers: []string{"mgr"}},
+		{Group: "cpu", Users: []string{}, Managers: []string{"other"}},
+	}}
+	t.Run("manager dispatched", func(t *testing.T) {
+		sched, st := testSetup(t)
+		queueOnlyWorkerExecutor(sched, st)
+		sched.SetGroupPolicy(loadTestGroupPolicy(t, st, managed))
+		subID := registerGraphWorkflowAs(t, st, groupStepHintCWL, nil, "mgr")
+		if err := sched.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		tasks := hintsByStep(t, sched, subID)["s"]
+		if len(tasks) != 1 || tasks[0].State != model.TaskStateQueued || tasks[0].RuntimeHints.WorkerGroup != "gpu" {
+			si := getStepInstancesByStep(t, st, subID)["s"]
+			t.Fatalf("tasks = %+v (step %s %q), want one QUEUED task on gpu", tasks, si.State, si.Error)
+		}
+	})
+	t.Run("manager of another group denied", func(t *testing.T) {
+		sched, st := testSetup(t)
+		queueOnlyWorkerExecutor(sched, st)
+		sched.SetGroupPolicy(loadTestGroupPolicy(t, st, managed))
+		subID := registerGraphWorkflowAs(t, st, groupStepHintCWL, nil, "other")
+		assertStepGroupDenied(t, sched, st, subID, "other", "gpu")
+	})
+}
+
 // A rule an admin adds after the submission was accepted applies at dispatch:
 // the scheduler holds the same live handle the admin API reloads.
 func TestDispatchStep_GroupPolicy_ChangedAtRuntime(t *testing.T) {

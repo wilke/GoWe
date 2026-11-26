@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -450,6 +451,190 @@ func TestWorkerKeyAdminOnly(t *testing.T) {
 				t.Errorf("GET worker-keys: status=%d, want %d", rec.Code, wantList)
 			}
 		})
+	}
+}
+
+// Deleting the last DB key leaves worker authentication on: it does not
+// depend on the number of key rows. A fresh server without keys stays open.
+func TestWorkerAuth_StaysOnAfterLastKeyDeleted(t *testing.T) {
+	ctx := context.Background()
+	srv := testServer()
+	if srv.workerAuth.Enabled(ctx) {
+		t.Fatal("Enabled() = true on a fresh server without keys")
+	}
+	// Open fleet: registration needs no key.
+	if w, _ := keyedDo(t, srv, "", "POST", "/api/v1/workers/", `{"name":"w","hostname":"h","runtime":"none","group":"default"}`); w.Code != http.StatusCreated {
+		t.Fatalf("open registration: status=%d, want 201", w.Code)
+	}
+
+	router := adminRouter(srv)
+	rec, env := doAdmin(t, router, "POST", "/api/v1/admin/worker-keys", `{"label":"only","groups":["default"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mint: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var minted struct {
+		WorkerKey model.WorkerKey `json:"worker_key"`
+	}
+	if err := json.Unmarshal(env.Data, &minted); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.workerAuth.Enabled(ctx) {
+		t.Fatal("Enabled() = false right after the first key was created")
+	}
+	if rec, _ := doAdmin(t, router, "DELETE", "/api/v1/admin/worker-keys/"+minted.WorkerKey.ID, ""); rec.Code != http.StatusOK {
+		t.Fatalf("revoke: status=%d", rec.Code)
+	}
+	if n, _ := srv.store.CountWorkerKeys(ctx); n != 0 {
+		t.Fatalf("%d keys left, want 0", n)
+	}
+	if !srv.workerAuth.Enabled(ctx) {
+		t.Fatal("Enabled() = false after the last key was deleted; worker auth must stay on")
+	}
+	if w, _ := keyedDo(t, srv, "", "POST", "/api/v1/workers/", `{"name":"w","hostname":"h","runtime":"none","group":"default"}`); w.Code != http.StatusUnauthorized {
+		t.Fatalf("registration without a key after the last key was deleted: status=%d, want 401", w.Code)
+	}
+}
+
+// settingFake is an in-memory workerAuthSettingStore.
+type settingFake struct {
+	keys     int
+	settings map[string]string
+	countErr error
+	getErr   error
+}
+
+func (f *settingFake) CountWorkerKeys(context.Context) (int, error) { return f.keys, f.countErr }
+
+func (f *settingFake) GetServerSetting(_ context.Context, key string) (string, bool, error) {
+	if f.getErr != nil {
+		return "", false, f.getErr
+	}
+	v, ok := f.settings[key]
+	return v, ok, nil
+}
+
+func (f *settingFake) SetServerSetting(_ context.Context, key, value, _ string) error {
+	f.settings[key] = value
+	return nil
+}
+
+// At start-up, a database holding keys from before worker_auth.required
+// existed gets the setting; one without keys is left open.
+func TestEnsureWorkerAuthRequired(t *testing.T) {
+	ctx := context.Background()
+
+	old := &settingFake{keys: 2, settings: map[string]string{}}
+	if set, err := EnsureWorkerAuthRequired(ctx, old); err != nil || !set {
+		t.Fatalf("existing keys: set=%v err=%v, want true, nil", set, err)
+	}
+	if old.settings[store.WorkerAuthRequiredKey] != "true" {
+		t.Errorf("setting = %q, want true", old.settings[store.WorkerAuthRequiredKey])
+	}
+	if set, err := EnsureWorkerAuthRequired(ctx, old); err != nil || set {
+		t.Errorf("second start-up: set=%v err=%v, want false, nil", set, err)
+	}
+
+	fresh := &settingFake{settings: map[string]string{}}
+	if set, err := EnsureWorkerAuthRequired(ctx, fresh); err != nil || set {
+		t.Errorf("no keys: set=%v err=%v, want false, nil", set, err)
+	}
+	if _, found := fresh.settings[store.WorkerAuthRequiredKey]; found {
+		t.Error("a database without keys must stay open")
+	}
+
+	broken := &settingFake{countErr: errors.New("db down"), settings: map[string]string{}}
+	if _, err := EnsureWorkerAuthRequired(ctx, broken); err == nil {
+		t.Error("a count error must be returned (the server must not start)")
+	}
+	unreadable := &settingFake{keys: 2, getErr: errors.New("db down"), settings: map[string]string{}}
+	if set, err := EnsureWorkerAuthRequired(ctx, unreadable); err == nil || set {
+		t.Errorf("a read error: set=%v err=%v, want an error (the server must not start)", set, err)
+	}
+	if _, found := unreadable.settings[store.WorkerAuthRequiredKey]; found {
+		t.Error("nothing may be written when the setting cannot be read")
+	}
+
+	// A stored "false" with keys present is set again (the documented way
+	// to reopen the fleet also deletes the keys); a value that counts as on
+	// is left alone.
+	falseWithKeys := &settingFake{keys: 1, settings: map[string]string{store.WorkerAuthRequiredKey: " FALSE "}}
+	if set, err := EnsureWorkerAuthRequired(ctx, falseWithKeys); err != nil || !set || falseWithKeys.settings[store.WorkerAuthRequiredKey] != "true" {
+		t.Errorf("false with keys: set=%v err=%v value=%q, want true, nil, \"true\"", set, err, falseWithKeys.settings[store.WorkerAuthRequiredKey])
+	}
+	onWithKeys := &settingFake{keys: 1, settings: map[string]string{store.WorkerAuthRequiredKey: "yes"}}
+	if set, err := EnsureWorkerAuthRequired(ctx, onWithKeys); err != nil || set || onWithKeys.settings[store.WorkerAuthRequiredKey] != "yes" {
+		t.Errorf("a value that counts as on: set=%v err=%v value=%q, want false, nil, unchanged", set, err, onWithKeys.settings[store.WorkerAuthRequiredKey])
+	}
+
+	// On the real store: a server started over a database with keys
+	// enforces worker auth, one without does not.
+	st := testAuthStore(t)
+	if set, err := EnsureWorkerAuthRequired(ctx, st); err != nil || set {
+		t.Errorf("empty store: set=%v err=%v", set, err)
+	}
+	if NewWorkerKeyAuthenticator(nil, st, discardLogger()).Enabled(ctx) {
+		t.Error("Enabled() = true over an empty store")
+	}
+}
+
+// settingErrStore is a store whose GetServerSetting fails.
+type settingErrStore struct {
+	store.Store
+}
+
+func (settingErrStore) GetServerSetting(context.Context, string) (string, bool, error) {
+	return "", false, errors.New("db down")
+}
+
+// Enabled fails closed: when the setting cannot be read, worker auth is
+// required.
+func TestAuthenticator_EnabledFailsClosedOnReadError(t *testing.T) {
+	ctx := context.Background()
+	st := testAuthStore(t)
+	auth := NewWorkerKeyAuthenticator(nil, settingErrStore{Store: st}, discardLogger())
+	if !auth.Enabled(ctx) {
+		t.Fatal("Enabled() = false when the setting cannot be read; must fail closed")
+	}
+	// The middleware then demands a key.
+	rec := httptest.NewRecorder()
+	testMiddlewareRouter(auth).ServeHTTP(rec, httptest.NewRequest("GET", "/work", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("no key while the setting is unreadable: status=%d, want 401", rec.Code)
+	}
+}
+
+// The setting is on for any stored value except "false" (case-insensitive,
+// trimmed); absent is off.
+func TestAuthenticator_SettingValues(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{"", false, false},
+		{"true", true, true},
+		{"TRUE", true, true},
+		{"1", true, true},
+		{"yes", true, true},
+		{"", true, true},
+		{"flase", true, true},
+		{"false", true, false},
+		{"FALSE", true, false},
+		{" False\n", true, false},
+	} {
+		st := testAuthStore(t)
+		if c.set {
+			if err := st.SetServerSetting(ctx, store.WorkerAuthRequiredKey, c.value, "test"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := NewWorkerKeyAuthenticator(nil, st, discardLogger()).Enabled(ctx); got != c.want {
+			t.Errorf("stored=%v value=%q: Enabled() = %v, want %v", c.set, c.value, got, c.want)
+		}
+		if got := WorkerAuthSettingOn(c.value, c.set); got != c.want {
+			t.Errorf("WorkerAuthSettingOn(%q, %v) = %v, want %v", c.value, c.set, got, c.want)
+		}
 	}
 }
 

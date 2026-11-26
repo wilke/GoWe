@@ -442,15 +442,22 @@ policy, stored in the server's database; see
 
 ```bash
 gowe admin worker-groups list [--json]
-gowe admin worker-groups set <group> [--user <username>]... [--admins]
+gowe admin worker-groups set <group> [--user <username>]... [--admins] [--manager <username>]... [--no-managers]
 gowe admin worker-groups delete <group>
 gowe admin worker-groups default-deny <true|false>
 ```
 
 **set** creates or replaces the rule of a group: only the `--user` usernames (repeatable, exact
-and case-sensitive) may use it, and server admins too with `--admins`; with neither, nobody may.
-**set replaces the whole rule**, it does not edit it: omitting `--admins` turns the admins switch
-off, and omitting `--user` leaves nobody in the users list. The default group is written
+and case-sensitive) and the group's managers may use it, and server admins too with `--admins`;
+with none of them, nobody may. **set replaces the users and the admins switch**, it does not edit
+them: omitting `--admins` turns the admins switch off, and omitting `--user` leaves nobody in the
+users list. Managers are different: `--manager` (repeatable) replaces them, **without `--manager`
+the stored managers are kept**, and `--no-managers` removes them all. Managers manage the
+group's users and its group-only worker keys with [`gowe worker-groups`](#worker-groups-1); the
+default group cannot have managers. When **set** removes managers (or **delete** removes a rule
+that had managers or keys), the output lists the worker keys of that group alone: they stay
+valid, revoke them if the former manager should no longer add workers. **list** shows the
+managers of every rule. The default group is written
 `default`. **delete** removes the rule: the group becomes open, or admin-only while
 **default-deny** is `true` (which makes every group without a rule, except `default`,
 admin-only). Group names (for **set**) and usernames are checked before any request is sent;
@@ -465,9 +472,51 @@ cause is fixed re-syncs them. A direct SQL edit of the tables is seen after the 
 change or server restart.
 
 ```bash
-gowe admin worker-groups set gpu --user alice@bvbrc --user bob@bvbrc --admins
+gowe admin worker-groups set gpu --user alice@bvbrc --user bob@bvbrc --admins --manager lead@bvbrc
 gowe admin worker-groups default-deny true
 gowe admin worker-groups list
+```
+
+### worker-groups
+
+For the **managers** of a worker group (appointed by a server admin with
+`gowe admin worker-groups set <group> --manager <username>`) and for server admins: the users
+and the worker keys of the groups they manage (see
+[server.md, Worker group managers](server.md#worker-group-managers)).
+
+```bash
+gowe worker-groups list [--json]                    # the groups you manage (admins: all)
+gowe worker-groups show <group>
+gowe worker-groups add-user <group> <username>
+gowe worker-groups remove-user <group> <username>
+gowe worker-groups keys <group> [--json]            # keys valid for exactly this group
+gowe worker-groups create-key <group> --label L [--description D] [--expires 2027-01-01T00:00:00Z|720h] [--out FILE]
+gowe worker-groups revoke-key <group> <key-id>
+```
+
+**add-user** / **remove-user** change who may submit to the group; the change takes effect at
+once (tasks already QUEUED or RUNNING are not stopped). **create-key** issues a worker key whose
+groups are exactly `[<group>]`; a worker started with it (`gowe-worker --group <group>
+--worker-key-file FILE`) joins the group. The raw key is shown once: printed to stdout (with a
+note on stderr that it is not shown again), or with `--out FILE` written to a new file with mode
+0600 (an existing file is never overwritten; the file is created before the key is requested)
+and not printed. The answer holding the key is never logged, not even with `--debug`. When the
+answer cannot be read or the key cannot be written to `--out`, the file is removed and the error
+says how to find (`keys`) and revoke (`revoke-key`) the key that may have been created.
+`--expires` takes an RFC 3339 time or a duration from now; `--label` may be at most 200 bytes
+and `--description` at most 1000. It fails with `409` until a server admin has created the
+first worker key, and while the group has 100 keys of its own. **revoke-key** deletes a key of this group
+only (a key with any other groups is `404`); a task already running with it is not stopped.
+
+Managers cannot change the managers, the admins switch or default-deny, nor delete the rule
+(`gowe admin worker-groups`). Whoever holds a key of a group can run a worker that receives
+every task sent to that group, including the submitter's data and the token used for staging.
+
+```bash
+gowe worker-groups add-user gpu carol@bvbrc
+gowe worker-groups create-key gpu --label gpu-node-07 --expires 2160h --out ~/gpu-node-07.key
+gowe worker-groups keys gpu
+gowe worker-groups revoke-key gpu wk_1f2e...
 ```
 
 ---

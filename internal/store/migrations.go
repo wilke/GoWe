@@ -540,6 +540,13 @@ var alterStatements = []struct {
 		column:   "charged_gpus",
 		alterSQL: "ALTER TABLE tasks ADD COLUMN charged_gpus INTEGER",
 	},
+	// Worker group managers: JSON array of the usernames who manage the
+	// group's users and its group-only worker keys.
+	{
+		table:    "worker_group_policies",
+		column:   "managers",
+		alterSQL: "ALTER TABLE worker_group_policies ADD COLUMN managers TEXT NOT NULL DEFAULT '[]'",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.

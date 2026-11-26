@@ -44,6 +44,12 @@ type apiResponse struct {
 
 // do performs an HTTP request and returns the parsed envelope.
 func (c *Client) do(method, path string, body any) (*apiResponse, error) {
+	return c.send(method, path, body, true)
+}
+
+// send is do; with showResponse false the response body is neither logged
+// nor quoted in an error (it carries a secret).
+func (c *Client) send(method, path string, body any, showResponse bool) (*apiResponse, error) {
 	url := c.BaseURL + path
 
 	var bodyReader io.Reader
@@ -80,10 +86,17 @@ func (c *Client) do(method, path string, body any) (*apiResponse, error) {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	c.Logger.Debug("HTTP response", "status", resp.StatusCode, "body", string(respBody))
+	if !showResponse {
+		c.Logger.Debug("HTTP response (body not logged: it holds a secret)", "status", resp.StatusCode, "body_bytes", len(respBody))
+	} else {
+		c.Logger.Debug("HTTP response", "status", resp.StatusCode, "body", string(respBody))
+	}
 
 	var apiResp apiResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		if !showResponse {
+			return nil, fmt.Errorf("parse response (status %d): %w", resp.StatusCode, err)
+		}
 		return nil, fmt.Errorf("parse response (status %d): %w\nbody: %s", resp.StatusCode, err, string(respBody))
 	}
 
@@ -102,6 +115,13 @@ func (c *Client) Get(path string) (*apiResponse, error) {
 // Post performs a POST request with a JSON body.
 func (c *Client) Post(path string, body any) (*apiResponse, error) {
 	return c.do("POST", path, body)
+}
+
+// PostSecret is Post for a response that carries a secret (a raw worker
+// key): the response body is never logged, not even at debug level, nor
+// quoted in an error.
+func (c *Client) PostSecret(path string, body any) (*apiResponse, error) {
+	return c.send("POST", path, body, false)
 }
 
 // Delete performs a DELETE request with an optional JSON body.

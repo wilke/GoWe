@@ -59,7 +59,7 @@ type Server struct {
 	groupPolicy           *groupacl.Policy             // optional; live worker-group access policy (#261), reloaded by the admin API; nil allows every group
 
 	// groupPolicyMu serialises "store write + reload" of the worker-group
-	// admin handlers, and their reload + read on GET.
+	// admin and manager handlers, and their reload + read on GET.
 	groupPolicyMu sync.Mutex
 
 	// redeliverSourceDirs is the allowlist of local directories the admin
@@ -523,6 +523,11 @@ func (s *Server) routes() {
 
 			// Label vocabulary (read-only for authenticated users)
 			r.Get("/labels", s.handleListLabelVocabulary)
+
+			// Worker group managers (and server admins): users and
+			// group-only worker keys of the groups they manage. The
+			// right is checked per route (handler_worker_group_managers.go).
+			r.Route("/worker-groups", s.managedWorkerGroupRoutes)
 
 			// Admin endpoints (require admin role)
 			r.Route("/admin", func(r chi.Router) {

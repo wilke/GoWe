@@ -94,6 +94,9 @@ func TestLogGroupPolicy(t *testing.T) {
 					t.Errorf("WARN does not name %s:\n%s", flag, out)
 				}
 			}
+			if !strings.Contains(out, "managers are identified by username") {
+				t.Errorf("WARN does not say that group managers are identified by username:\n%s", out)
+			}
 		})
 	}
 }

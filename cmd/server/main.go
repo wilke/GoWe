@@ -446,6 +446,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "worker key configuration: %v\n", err)
 		os.Exit(1)
 	}
+	// Databases holding worker keys from before worker_auth.required existed
+	// get the setting now, so worker auth stays on as before. Fail closed: a
+	// database whose keys cannot be counted, or whose setting cannot be
+	// written, could otherwise run with worker auth off.
+	if set, err := server.EnsureWorkerAuthRequired(context.Background(), st); err != nil {
+		logger.Error("cannot check the worker authentication setting; refusing to start", "error", err)
+		os.Exit(1)
+	} else if set {
+		logger.Info("worker keys exist in the database: worker authentication is now required (server setting " + store.WorkerAuthRequiredKey + ")")
+	}
 	if workerKeyConfig.IsEnabled() {
 		serverOpts = append(serverOpts, server.WithWorkerKeyConfig(workerKeyConfig))
 		logger.Info("worker key authentication enabled", "keys", len(workerKeyConfig.Keys))
@@ -719,8 +729,9 @@ func normalizeBasePath(p string) (string, error) {
 // the database at start-up: one INFO line with the restricted group names
 // (never the user lists) and default_deny, or one saying there is no policy.
 // With restrictions, it adds one WARN when a flag makes the server accept
-// unverified identities: the policy is only as strong as the username it is
-// given. Later changes through the admin API log their own INFO lines.
+// unverified identities: the policy, and the right of worker group managers,
+// is only as strong as the username it is given. Later changes through the
+// admin and manager APIs log their own INFO lines.
 func logGroupPolicy(logger *slog.Logger, p *groupacl.Policy, insecureSkipTokenVerify, allowUnverifiedMGRAST bool) {
 	if !p.Restricted() {
 		logger.Info("no worker group policy: every user may use every worker group")
@@ -735,14 +746,15 @@ func logGroupPolicy(logger *slog.Logger, p *groupacl.Policy, insecureSkipTokenVe
 		weakening = append(weakening, "--allow-unverified-mgrast")
 	}
 	if len(weakening) > 0 {
-		logger.Warn("worker group restrictions rely on verified usernames, but the server accepts unverified identities: a caller can claim a listed username", "flags", weakening)
+		logger.Warn("worker group restrictions rely on verified usernames, but the server accepts unverified identities: a caller can claim a listed username, and worker group managers are identified by username too (a caller claiming a manager's name can change the group's users and issue its worker keys)", "flags", weakening)
 	}
 }
 
 // workerAPIIsKeyless reports whether the worker API (/api/v1/workers/*, guarded
 // by workerAuthMiddleware) would run with no authentication: no static worker
-// keys (from --worker-keys/GOWE_WORKER_KEYS) and no DB-backed keys minted via
-// the admin API. Extracted for testability. A store lookup failure is treated
+// keys (from --worker-keys/GOWE_WORKER_KEYS), no DB-backed keys minted via
+// the admin API, and worker_auth.required not set (it stays set once a DB key
+// has existed). Extracted for testability. A store lookup failure is treated
 // as "unknown" (not keyless) rather than triggering a possibly-wrong warning —
 // callers elsewhere already fail closed on genuine key-config load errors.
 func workerAPIIsKeyless(ctx context.Context, st store.Store, cfg *server.WorkerKeyConfig) bool {
@@ -751,6 +763,10 @@ func workerAPIIsKeyless(ctx context.Context, st store.Store, cfg *server.WorkerK
 	}
 	if st == nil {
 		return true
+	}
+	value, found, err := st.GetServerSetting(ctx, store.WorkerAuthRequiredKey)
+	if err != nil || server.WorkerAuthSettingOn(value, found) {
+		return false
 	}
 	n, err := st.CountWorkerKeys(ctx)
 	if err != nil {

@@ -35,8 +35,12 @@ func workerGroupsServer(t *testing.T) (*httptest.Server, func() []recordedReq) {
 		case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/api/v1/admin/worker-groups/"):
 			users, _ := json.Marshal(body["users"])
 			admins, _ := json.Marshal(body["admins"])
+			managers := []byte("[]")
+			if m, ok := body["managers"]; ok {
+				managers, _ = json.Marshal(m)
+			}
 			group := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/worker-groups/")
-			write(`{"group":"` + group + `","users":` + string(users) + `,"admins":` + string(admins) + `,"updated_by":"root"}`)
+			write(`{"group":"` + group + `","users":` + string(users) + `,"managers":` + string(managers) + `,"admins":` + string(admins) + `,"updated_by":"root"}`)
 		case r.Method == "PUT" && r.URL.Path == "/api/v1/admin/worker-groups-default-deny":
 			d, _ := json.Marshal(body["default_deny"])
 			write(`{"default_deny":` + string(d) + `}`)

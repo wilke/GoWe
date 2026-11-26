@@ -207,6 +207,102 @@ func TestReload(t *testing.T) {
 	}
 }
 
+// gpm is gp with managers.
+func gpm(group string, managers []string, users ...string) *model.WorkerGroupPolicy {
+	r := gp(group, false, users...)
+	r.Managers = managers
+	return r
+}
+
+// Managers: always allowed on their group, never on another; "" and
+// anonymous never manage; stored managers are validated like users and
+// refused on the default group.
+func TestManagers(t *testing.T) {
+	p := mustPolicy(t, &memSource{defaultDeny: "true", rules: []*model.WorkerGroupPolicy{
+		gpm("gpu", []string{"mgr", "both"}, "alice"),
+		gpm("cpu", []string{"both"}),
+		gp("nobody", false),
+	}}).WithAdmins(adminsOf("root"))
+
+	for _, c := range []struct {
+		user, group string
+		manager     bool
+		allowed     bool
+	}{
+		// mgr is not in the users of gpu, yet allowed as its manager; not
+		// on other groups (esmfold: unlisted under default_deny).
+		{"mgr", "gpu", true, true},
+		{"mgr", "cpu", false, false},
+		{"mgr", "nobody", false, false},
+		{"mgr", "esmfold", false, false},
+		{"both", "cpu", true, true},
+		{"alice", "gpu", false, true},
+		// The admins switch is off and an admin is not a manager.
+		{"root", "gpu", false, false},
+		{"", "gpu", false, false},
+		{"anonymous", "gpu", false, false},
+	} {
+		if got := p.IsManager(c.user, c.group); got != c.manager {
+			t.Errorf("IsManager(%q, %q) = %v, want %v", c.user, c.group, got, c.manager)
+		}
+		if got := p.Allowed(c.user, c.group); got != c.allowed {
+			t.Errorf("Allowed(%q, %q) = %v, want %v", c.user, c.group, got, c.allowed)
+		}
+	}
+	if got := p.ManagedGroups("both"); !reflect.DeepEqual(got, []string{"cpu", "gpu"}) {
+		t.Errorf("ManagedGroups(both) = %v, want [cpu gpu]", got)
+	}
+	if got := p.ManagedGroups("alice"); got != nil {
+		t.Errorf("ManagedGroups(alice) = %v, want nil", got)
+	}
+	if got := p.ManagedGroups(""); got != nil {
+		t.Errorf("ManagedGroups(\"\") = %v, want nil", got)
+	}
+	var nilPolicy *Policy
+	if nilPolicy.IsManager("mgr", "gpu") || nilPolicy.ManagedGroups("mgr") != nil {
+		t.Error("a nil policy has no managers")
+	}
+
+	for _, c := range []struct {
+		name    string
+		rule    *model.WorkerGroupPolicy
+		wantErr string
+	}{
+		{"managers on default", gpm("default", []string{"mgr"}), `"default" group cannot have managers`},
+		{"anonymous manager", gpm("gpu", []string{"anonymous"}), `managers holds "anonymous"`},
+		{"empty manager", gpm("gpu", []string{""}), "managers holds an empty username"},
+		{"manager with whitespace", gpm("gpu", []string{" mgr"}), "leading or trailing whitespace"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := New().Reload(context.Background(), &memSource{rules: []*model.WorkerGroupPolicy{c.rule}})
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("Reload error = %v, want it to contain %q", err, c.wantErr)
+			}
+		})
+	}
+	if err := New().Reload(context.Background(), &memSource{rules: []*model.WorkerGroupPolicy{gpm("default", []string{}, "a")}}); err != nil {
+		t.Errorf("default with an empty managers list: %v", err)
+	}
+}
+
+func TestCheckManagersGroup(t *testing.T) {
+	for _, c := range []struct {
+		group    string
+		managers []string
+		wantErr  bool
+	}{
+		{"default", []string{"mgr"}, true},
+		{"", []string{"mgr"}, true},
+		{"default", nil, false},
+		{"default", []string{}, false},
+		{"gpu", []string{"mgr"}, false},
+	} {
+		if err := CheckManagersGroup(c.group, c.managers); (err != nil) != c.wantErr {
+			t.Errorf("CheckManagersGroup(%q, %v) = %v, want error %v", c.group, c.managers, err, c.wantErr)
+		}
+	}
+}
+
 // A Reload replaces the whole rule set; a failed one keeps the old rules.
 func TestReload_SwapAndFailure(t *testing.T) {
 	ctx := context.Background()

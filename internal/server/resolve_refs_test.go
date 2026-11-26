@@ -215,6 +215,15 @@ func (m *mockStore) ListWorkerGroupPolicies(context.Context) ([]*model.WorkerGro
 func (m *mockStore) UpsertWorkerGroupPolicy(context.Context, *model.WorkerGroupPolicy) error {
 	return nil
 }
+func (m *mockStore) AddWorkerGroupUser(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}
+func (m *mockStore) RemoveWorkerGroupUser(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}
+func (m *mockStore) DeleteWorkerKeyForGroup(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 func (m *mockStore) DeleteWorkerGroupPolicy(context.Context, string) (bool, error) { return false, nil }
 func (m *mockStore) GetServerSetting(context.Context, string) (string, bool, error) {
 	return "", false, nil
