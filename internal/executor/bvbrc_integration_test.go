@@ -91,12 +91,23 @@ func TestBVBRCIntegration_SubmitAndPoll(t *testing.T) {
 	outputPath := "/" + username + "/home/gowe-test"
 	outputFile := fmt.Sprintf("gowe-integ-%d", time.Now().UnixNano())
 
+	// Submit only runs with the task's own token (as the scheduler attaches
+	// the submitter's token); the default caller is never used to start a job.
+	tok, err := bvbrc.ResolveToken()
+	if err != nil {
+		t.Skipf("no BV-BRC token: %v", err)
+	}
 	task := &model.Task{
 		ID:         "integ_task_1",
 		BVBRCAppID: "Date",
 		Inputs: map[string]any{
 			"output_path": outputPath,
 			"output_file": outputFile,
+		},
+		RuntimeHints: &model.RuntimeHints{
+			StagerOverrides: &model.StagerOverrides{
+				HTTPCredential: &model.HTTPCredential{Token: tok},
+			},
 		},
 	}
 

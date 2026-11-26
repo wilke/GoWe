@@ -62,6 +62,7 @@ func newAdminCmd() *cobra.Command {
 		newAdminUnblessCmd(),
 		newAdminWorkerGroupsCmd(),
 		newAdminRemoveWorkerCmd(),
+		newAdminServiceTokensCmd(),
 	)
 	return cmd
 }

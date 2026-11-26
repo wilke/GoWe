@@ -110,6 +110,36 @@ func (ui *UI) subworkflowDescendantCount(ctx context.Context, proxyTaskID string
 	return total, nil
 }
 
+// taskInSubmissionTree reports whether task belongs to submission rootID or
+// to one of its descendant child submissions: it follows the chain task ->
+// its submission -> that submission's parent proxy task (ParentTaskID) -> ...
+// up to maxSubworkflowDepth levels. A missing link or a deeper chain is
+// false (fail closed).
+func (ui *UI) taskInSubmissionTree(ctx context.Context, task *model.Task, rootID string) (bool, error) {
+	subID := task.SubmissionID
+	for depth := 0; depth <= maxSubworkflowDepth; depth++ {
+		if subID == rootID {
+			return true, nil
+		}
+		sub, err := ui.store.GetSubmission(ctx, subID)
+		if err != nil {
+			return false, err
+		}
+		if sub == nil || sub.ParentTaskID == "" {
+			return false, nil
+		}
+		parent, err := ui.store.GetTask(ctx, sub.ParentTaskID)
+		if err != nil {
+			return false, err
+		}
+		if parent == nil {
+			return false, nil
+		}
+		subID = parent.SubmissionID
+	}
+	return false, nil
+}
+
 // HandleSubmissionTaskChildren serves GET
 // /submissions/{id}/tasks/{tid}/children: the lazily-fetched expansion
 // fragment for one sub-workflow proxy task, rendering its paired child
@@ -117,20 +147,46 @@ func (ui *UI) subworkflowDescendantCount(ctx context.Context, proxyTaskID string
 // for grandchildren, fetched on first click via the fragment's own HTMX
 // attributes — no upfront N+1 fetch of the whole tree's row data.
 //
-// {id} is the page's root submission ID, threaded through only to build
-// further nested "/submissions/{id}/tasks/{tid}/..." URLs (logs, further
-// expansion) — it is NOT an ownership boundary, since a grandchild proxy
-// task's own SubmissionID is an intermediate child, not the root. Ownership
-// is instead checked against the fetched child submission itself; child
-// submissions inherit SubmittedBy from the root submission at creation (see
-// internal/scheduler/subworkflow.go), so checking any level is equivalent.
+// {id} is the page's root submission ID. A grandchild proxy task's own
+// SubmissionID is an intermediate child, not the root, so the task need not
+// belong to {id} directly; it must belong to {id}'s sub-workflow tree
+// (taskInSubmissionTree). Checks, in order: the root submission exists (404),
+// it is the caller's (403), the task exists and is in its tree (404). The
+// fetched child submission's owner is checked as well; child submissions
+// inherit SubmittedBy from the root submission at creation (see
+// internal/scheduler/subworkflow.go).
 func (ui *UI) HandleSubmissionTaskChildren(w http.ResponseWriter, r *http.Request) {
 	sess := SessionFromContext(r.Context())
 	rootID := ui.pathParam(r, "id")
 	taskID := ui.pathParam(r, "tid")
 
+	root, err := ui.store.GetSubmission(r.Context(), rootID)
+	if err != nil {
+		ui.logger.Error("subworkflow children: failed to load submission", "submission_id", rootID, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if root == nil {
+		ui.renderNotFound(w, "Submission not found")
+		return
+	}
+	if sess != nil && !sess.IsAdmin() && root.SubmittedBy != sess.Username {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	task, err := ui.store.GetTask(r.Context(), taskID)
 	if err != nil || task == nil {
+		ui.renderNotFound(w, "Task not found")
+		return
+	}
+	inTree, err := ui.taskInSubmissionTree(r.Context(), task, rootID)
+	if err != nil {
+		ui.logger.Error("subworkflow children: failed to resolve the task's submission tree", "task_id", taskID, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if !inTree {
 		ui.renderNotFound(w, "Task not found")
 		return
 	}

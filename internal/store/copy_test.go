@@ -118,6 +118,7 @@ type copyFixture struct {
 	workerID     string
 	workerKeyID  string
 	blessingID   string
+	svcTokenHash string // hash of the service token (it is looked up by it)
 	username     string
 	sessionID    string
 	oldCreatedAt string
@@ -191,6 +192,18 @@ func fillCopySource(t *testing.T, src *SQLStore) copyFixture {
 		t.Fatalf("create worker key: %v", err)
 	}
 	fx.workerKeyID = key.ID
+
+	svcRaw := "gowe_svc_" + strings.Repeat("k", 43)
+	svc := sampleServiceToken("svt_copy-1", "model-router", svcRaw)
+	svcExp := now.Add(time.Hour)
+	svc.ExpiresAt = &svcExp
+	if err := src.CreateServiceToken(ctx, svc); err != nil {
+		t.Fatalf("create service token: %v", err)
+	}
+	if err := src.TouchServiceToken(ctx, svc.ID, now); err != nil {
+		t.Fatalf("touch service token: %v", err)
+	}
+	fx.svcTokenHash = svc.TokenHash
 
 	b := sampleBlessing("tb_copy-1", "sha256:copy")
 	if err := src.CreateToolBlessing(ctx, b); err != nil {
@@ -401,6 +414,19 @@ func checkCopy(t *testing.T, src, dst *SQLStore, fx copyFixture, pg bool) {
 		t.Fatalf("destination worker key: %v", err)
 	}
 	same("worker key", kS, kD)
+
+	stS, err := src.GetServiceTokenByHash(ctx, fx.svcTokenHash)
+	if err != nil || stS == nil {
+		t.Fatalf("source service token: %v %v", stS, err)
+	}
+	stD, err := dst.GetServiceTokenByHash(ctx, fx.svcTokenHash)
+	if err != nil || stD == nil {
+		t.Fatalf("destination service token: %v %v", stD, err)
+	}
+	same("service token", stS, stD)
+	if stD.LastUsedAt == nil || stD.ExpiresAt == nil {
+		t.Errorf("service token times not copied: %+v", stD)
+	}
 
 	bS, err := src.GetToolBlessing(ctx, fx.blessingID)
 	if err != nil {

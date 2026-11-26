@@ -58,7 +58,7 @@ gowe-server --metrics-addr localhost:9090
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--allow-anonymous` | `false` | Allow unauthenticated API requests |
-| `--anonymous-executors` | `local,container,worker` | Executors allowed for anonymous users |
+| `--anonymous-executors` | `local,container,worker` | Executors allowed for anonymous users. Do not list `bvbrc`: the BV-BRC executor needs the submitter's token, so an anonymous submission (also a dry run or a retry) whose workflow uses it is refused with `403` whatever this flag says, and the server logs one WARN at start-up when the list contains it |
 | `--admins` | `""` | Comma-separated list of admin usernames (also: `GOWE_ADMINS` env) |
 | `--worker-keys` | `""` | Path to worker keys JSON file |
 
@@ -596,6 +596,8 @@ Error responses:
 
 Protected endpoints require one of:
 - `Authorization` header (BV-BRC token): `un=username|tokenid=...|expiry=...`
+- `Authorization: Bearer gowe_svc_...` (a GoWe [service token](#post-apiv1adminservice-tokens), identity
+  `<name>@service.gowe`)
 - `X-MG-RAST-Token` header (MG-RAST token)
 - Anonymous access (if `--allow-anonymous` is set)
 
@@ -1555,6 +1557,50 @@ Permanently revoke (delete) a key. Use this for a compromised worker — other w
 curl -X DELETE http://localhost:8080/api/v1/admin/worker-keys/wk_1f2e... \
   -H "Authorization: $ADMIN_TOKEN"
 ```
+
+#### `POST /api/v1/admin/service-tokens`
+
+Create a [service token](../security/authentication.md#service-tokens): an identity of its own for a program such as
+the model router. A request made with a token of name `N` is the user `N@service.gowe` (role user, never an admin, no
+BV-BRC token). `name` is 1-64 characters, a lower-case letter or digit followed by lower-case letters, digits, `.`, `_`
+or `-`; several tokens may share a name (rotation). `description` is at most 1000 bytes. `expires_in` is an optional
+Go duration between `1h` and `8760h`; without it the token does not expire. Unknown fields are refused (`400`), so a
+misspelt `expires_in` cannot create a token that never expires. At most 20 tokens per name and 500 in total (`409`
+beyond).
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/service-tokens \
+  -H "Authorization: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"model-router","description":"router in prod","expires_in":"2160h"}'
+```
+
+Response (201, `Cache-Control: no-store`) — `token` is returned only here; only its SHA-256 hash is stored:
+
+```json
+{
+  "id": "svt_6d1c...",
+  "name": "model-router",
+  "username": "model-router@service.gowe",
+  "token": "gowe_svc_...redacted...",
+  "token_prefix": "gowe_svc_Q2xhdW",
+  "created_at": "2026-11-26T12:00:00Z",
+  "expires_at": "2027-02-24T12:00:00Z"
+}
+```
+
+Allow it in a worker group with `gowe admin worker-groups set model-router --user model-router@service.gowe`. The
+program sends it as `Authorization: Bearer gowe_svc_...` (never in `X-MG-RAST-Token`, where it is refused).
+
+#### `GET /api/v1/admin/service-tokens`
+
+List every service token, newest first, as `{"total": N, "service_tokens": [...]}`: `id`, `name`, `username`,
+`token_prefix`, `description`, `created_by`, `created_at`, `expires_at`, `last_used_at` (written at most once a
+minute) and `expired`. Never the token or its hash.
+
+#### `DELETE /api/v1/admin/service-tokens/{id}`
+
+Revoke (delete) a service token: `200` `{"id": ..., "revoked": true}`, `404` when there is no such token. The next
+request made with the token is refused (`401`); work it already submitted is not cancelled.
 
 #### `GET /api/v1/admin/worker-groups`
 

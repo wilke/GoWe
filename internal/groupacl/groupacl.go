@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -74,6 +75,7 @@ type live struct {
 	// in force.
 	reloadMu sync.Mutex
 	current  atomic.Pointer[snapshot] // nil = no rules
+	logger   *slog.Logger             // Reload's WARNs; nil = slog.Default(); guarded by reloadMu
 }
 
 // IsAdminFunc reports whether a username is a server admin.
@@ -135,10 +137,37 @@ func ValidateUsers(users []string) ([]string, error) {
 
 // ValidateManagers checks a managers list with the rules of ValidateUsers
 // (errors name "managers") and returns it without duplicates, in the order
-// given (never nil). Whether the group may have managers at all is
+// given (never nil). A username in the reserved service realm
+// (model.IsServiceUsername) is refused, naming the entry: a manager can issue
+// worker keys for the group, and a worker with such a key receives every
+// task sent to it with the submitters' staging credentials. (A service
+// identity may be in users.) Whether the group may have managers at all is
 // CheckManagersGroup's question.
 func ValidateManagers(managers []string) ([]string, error) {
-	return validateNames("managers", managers)
+	out, err := validateNames("managers", managers)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range out {
+		if model.IsServiceUsername(m) {
+			return nil, fmt.Errorf("managers holds %q: a service identity (@%s) cannot be a worker group manager", m, model.ServiceRealm)
+		}
+	}
+	return out, nil
+}
+
+// splitServiceManagers returns the stored managers outside the service realm
+// and, separately, those in it (which load ignores).
+func splitServiceManagers(managers []string) (kept, service []string) {
+	kept = make([]string, 0, len(managers))
+	for _, m := range managers {
+		if model.IsServiceUsername(m) {
+			service = append(service, m)
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept, service
 }
 
 // validateNames is ValidateUsers for the list called field.
@@ -192,12 +221,26 @@ func CheckManagersGroup(group string, managers []string) error {
 	return nil
 }
 
+// SetLogger sets the logger Reload reports to (nil: slog.Default()), for p
+// and every copy WithAdmins made of it.
+func (p *Policy) SetLogger(l *slog.Logger) {
+	if p == nil || p.state == nil {
+		return
+	}
+	p.state.reloadMu.Lock()
+	defer p.state.reloadMu.Unlock()
+	p.state.logger = l
+}
+
 // Reload reads the rules from src and makes them the rules of p and of every
 // copy WithAdmins made of it, in one swap. On error nothing changes and the
 // error is returned. A stored rule that fails ValidateGroupName,
 // ValidateUsers or ValidateManagers (other than duplicates) or
 // CheckManagersGroup, or a default_deny value other than "true"/"false", is
-// an error: the policy fails closed instead of skipping it.
+// an error: the policy fails closed instead of skipping it. The one
+// exception: a stored manager in the reserved service realm (which
+// ValidateManagers refuses on write) is ignored, the rule's other fields
+// apply, and one WARN per Reload lists the ignored entries.
 func (p *Policy) Reload(ctx context.Context, src Source) error {
 	if p == nil || p.state == nil {
 		return errors.New("worker group policy: Reload needs a policy made by groupacl.New")
@@ -205,9 +248,17 @@ func (p *Policy) Reload(ctx context.Context, src Source) error {
 	p.state.reloadMu.Lock()
 	defer p.state.reloadMu.Unlock()
 
-	s, err := load(ctx, src)
+	s, ignored, err := load(ctx, src)
 	if err != nil {
 		return err
+	}
+	if len(ignored) > 0 {
+		logger := p.state.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("worker group policy: ignoring stored managers in the reserved service realm (a service identity cannot manage a worker group); the rules' other fields apply. Set the rule's managers again to remove them",
+			"entries", ignored)
 	}
 	p.state.current.Store(s)
 	return nil
@@ -228,37 +279,45 @@ func IsInvalidStoredRule(err error) bool {
 	return errors.As(err, &e)
 }
 
-// load builds a snapshot from src.
-func load(ctx context.Context, src Source) (*snapshot, error) {
-	s := &snapshot{}
+// load builds a snapshot from src. ignored lists the stored managers in the
+// service realm that were left out ("<group>: <username>").
+func load(ctx context.Context, src Source) (s *snapshot, ignored []string, err error) {
+	s = &snapshot{}
 	value, found, err := src.GetServerSetting(ctx, DefaultDenyKey)
 	if err != nil {
-		return nil, fmt.Errorf("worker group policy: read %s: %w", DefaultDenyKey, err)
+		return nil, nil, fmt.Errorf("worker group policy: read %s: %w", DefaultDenyKey, err)
 	}
 	if found {
 		if s.defaultDeny, err = ParseDefaultDeny(value); err != nil {
-			return nil, fmt.Errorf("worker group policy: %w", err)
+			return nil, nil, fmt.Errorf("worker group policy: %w", err)
 		}
 	}
 	rows, err := src.ListWorkerGroupPolicies(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("worker group policy: list rules: %w", err)
+		return nil, nil, fmt.Errorf("worker group policy: list rules: %w", err)
 	}
 	s.groups = make(map[string]rule, len(rows))
 	for _, gp := range rows {
 		if err := ValidateGroupName(gp.Group); err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule: %w", &invalidStoredRuleError{err})
+			return nil, nil, fmt.Errorf("worker group policy: stored rule: %w", &invalidStoredRuleError{err})
 		}
 		users, err := ValidateUsers(gp.Users)
 		if err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, &invalidStoredRuleError{err})
+			return nil, nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, &invalidStoredRuleError{err})
 		}
-		managers, err := ValidateManagers(gp.Managers)
+		// A service identity never manages a group: such a stored entry
+		// (written before the realm was refused, or by SQL) is ignored, not
+		// a start-up failure.
+		storedManagers, serviceManagers := splitServiceManagers(gp.Managers)
+		for _, m := range serviceManagers {
+			ignored = append(ignored, gp.Group+": "+m)
+		}
+		managers, err := ValidateManagers(storedManagers)
 		if err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, &invalidStoredRuleError{err})
+			return nil, nil, fmt.Errorf("worker group policy: stored rule for group %q: %w", gp.Group, &invalidStoredRuleError{err})
 		}
 		if err := CheckManagersGroup(gp.Group, managers); err != nil {
-			return nil, fmt.Errorf("worker group policy: stored rule: %w", &invalidStoredRuleError{err})
+			return nil, nil, fmt.Errorf("worker group policy: stored rule: %w", &invalidStoredRuleError{err})
 		}
 		r := rule{users: make(map[string]bool, len(users)), managers: make(map[string]bool, len(managers)), admins: gp.Admins}
 		for _, u := range users {
@@ -269,7 +328,7 @@ func load(ctx context.Context, src Source) (*snapshot, error) {
 		}
 		s.groups[gp.Group] = r
 	}
-	return s, nil
+	return s, ignored, nil
 }
 
 // WithAdmins returns the policy with the admin lookup set (may be nil =
@@ -330,10 +389,10 @@ func (p *Policy) allowedIn(s *snapshot, username, group string) bool {
 }
 
 // IsManager reports whether username manages group ("" and "default" are the
-// default group, which never has managers). "" and "anonymous" never manage
-// a group.
+// default group, which never has managers). "", "anonymous" and a username
+// in the service realm never manage a group.
 func (p *Policy) IsManager(username, group string) bool {
-	if username == "" || username == anonymousUser {
+	if username == "" || username == anonymousUser || model.IsServiceUsername(username) {
 		return false
 	}
 	s := p.rules()
@@ -344,9 +403,10 @@ func (p *Policy) IsManager(username, group string) bool {
 	return listed && r.managers[username]
 }
 
-// ManagedGroups returns the groups username manages, sorted (nil when none).
+// ManagedGroups returns the groups username manages, sorted (nil when none;
+// always nil for a username in the service realm).
 func (p *Policy) ManagedGroups(username string) []string {
-	if username == "" || username == anonymousUser {
+	if username == "" || username == anonymousUser || model.IsServiceUsername(username) {
 		return nil
 	}
 	s := p.rules()

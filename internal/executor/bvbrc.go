@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,31 +32,44 @@ var reservedKeys = map[string]bool{
 // and the scheduler polls Status until terminal.
 //
 // The executor supports two modes:
-//  1. Default caller mode: Uses a preconfigured RPC caller for all operations.
-//     This is used for status checks and log retrieval.
-//  2. Per-task token mode: Creates a per-task caller using the user's token
-//     from RuntimeHints.StagerOverrides.HTTPCredential. This is used for
-//     job submission to run under the user's identity.
+//  1. Per-task token mode: Creates a per-task caller using the user's token
+//     from RuntimeHints.StagerOverrides.HTTPCredential. Job submission
+//     (Submit) always uses it: a task without a per-task token is refused,
+//     so no job ever runs under the server's own BV-BRC account.
+//  2. Default caller mode: Uses a preconfigured RPC caller (the server's
+//     account) for status checks, cancel and log retrieval of a task that
+//     carries no token (for example after its credential was scrubbed).
 type BVBRCExecutor struct {
 	appServiceURL string          // BV-BRC App Service endpoint
 	workspaceURL  string          // BV-BRC Workspace endpoint (wildcard-glob output resolution)
-	defaultCaller bvbrc.RPCCaller // Optional: default caller for status/logs
-	logger        *slog.Logger
+	defaultCaller bvbrc.RPCCaller // Optional: default caller for status/cancel/logs, never for Submit
+	// taskCaller builds the caller of a per-task token. A field so tests can
+	// replace the HTTP caller.
+	taskCaller func(token string) bvbrc.RPCCaller
+	logger     *slog.Logger
 }
 
 // NewBVBRCExecutor creates a BVBRCExecutor.
-// The defaultCaller is optional and used for status checks and log retrieval.
-// If nil, per-task tokens will be required for all operations.
+// The defaultCaller is optional and used for status checks, cancel and log
+// retrieval of tasks without a per-task token; it is never used to submit a
+// job (Submit requires the task's own token).
 func NewBVBRCExecutor(appServiceURL string, defaultCaller bvbrc.RPCCaller, logger *slog.Logger) *BVBRCExecutor {
 	if appServiceURL == "" {
 		appServiceURL = bvbrc.DefaultAppServiceURL
 	}
-	return &BVBRCExecutor{
+	e := &BVBRCExecutor{
 		appServiceURL: appServiceURL,
 		workspaceURL:  bvbrcpkg.DefaultWorkspaceURL,
 		defaultCaller: defaultCaller,
 		logger:        logger.With("component", "bvbrc-executor"),
 	}
+	e.taskCaller = func(token string) bvbrc.RPCCaller {
+		return bvbrc.NewHTTPRPCCaller(bvbrc.ClientConfig{
+			AppServiceURL: e.appServiceURL,
+			Token:         token,
+		}, e.logger)
+	}
+	return e
 }
 
 // SetWorkspaceURL overrides the BV-BRC Workspace service URL used to list a
@@ -85,18 +99,11 @@ func taskToken(task *model.Task) string {
 
 // getTaskCaller creates an RPC caller for the given task.
 // It uses the token from RuntimeHints.StagerOverrides.HTTPCredential if available,
-// otherwise falls back to the default caller.
+// otherwise falls back to the default caller. Used by Status, Cancel and
+// Logs; Submit uses getSubmitCaller, which has no fallback.
 func (e *BVBRCExecutor) getTaskCaller(task *model.Task) (bvbrc.RPCCaller, string, error) {
-	token := taskToken(task)
-
-	if token != "" {
-		// Create per-task caller with user's token.
-		cfg := bvbrc.ClientConfig{
-			AppServiceURL: e.appServiceURL,
-			Token:         token,
-		}
-		tokenInfo := bvbrc.ParseToken(token)
-		return bvbrc.NewHTTPRPCCaller(cfg, e.logger), tokenInfo.Username, nil
+	if caller, username, err := e.getSubmitCaller(task); err == nil {
+		return caller, username, nil
 	}
 
 	// Fall back to default caller.
@@ -107,6 +114,25 @@ func (e *BVBRCExecutor) getTaskCaller(task *model.Task) (bvbrc.RPCCaller, string
 	return nil, "", fmt.Errorf("task %s: no user token for BV-BRC submission", task.ID)
 }
 
+// ErrNoBVBRCToken is wrapped by the error Submit returns for a task that
+// carries no submitter token. It is permanent: the scheduler fails such a task
+// without retrying it (the same task would be refused again every time).
+var ErrNoBVBRCToken = errors.New("no user token for BV-BRC submission")
+
+// getSubmitCaller creates the RPC caller that submits task's job: always
+// with the task's own token. A task without one is refused (ErrNoBVBRCToken);
+// the server's default caller is never used to start a job, so a token-less
+// submitter (a service identity, an anonymous submission) cannot run BV-BRC
+// apps as the server's account.
+func (e *BVBRCExecutor) getSubmitCaller(task *model.Task) (bvbrc.RPCCaller, string, error) {
+	token := taskToken(task)
+	if token == "" {
+		return nil, "", fmt.Errorf("task %s: %w", task.ID, ErrNoBVBRCToken)
+	}
+	tokenInfo := bvbrc.ParseToken(token)
+	return e.taskCaller(token), tokenInfo.Username, nil
+}
+
 // Type returns model.ExecutorTypeBVBRC.
 func (e *BVBRCExecutor) Type() model.ExecutorType {
 	return model.ExecutorTypeBVBRC
@@ -114,7 +140,8 @@ func (e *BVBRCExecutor) Type() model.ExecutorType {
 
 // Submit calls AppService.start_app and returns the BV-BRC job UUID.
 // The call returns immediately; the job runs asynchronously on BV-BRC.
-// The job is submitted using the user's token from RuntimeHints.
+// The job is submitted using the user's token from RuntimeHints; a task
+// without one is refused (no user token for BV-BRC submission).
 func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, error) {
 	appID := task.BVBRCAppID
 	if appID == "" {
@@ -126,8 +153,8 @@ func (e *BVBRCExecutor) Submit(ctx context.Context, task *model.Task) (string, e
 		return "", fmt.Errorf("task %s: bvbrc_app_id is missing", task.ID)
 	}
 
-	// Get caller for this task (per-task token or default).
-	caller, username, err := e.getTaskCaller(task)
+	// Caller with the task's own token; never the default caller.
+	caller, username, err := e.getSubmitCaller(task)
 	if err != nil {
 		return "", err
 	}

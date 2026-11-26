@@ -275,6 +275,14 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The service realm is reserved for GoWe service tokens: refuse it
+	// before the password is sent anywhere.
+	if model.IsServiceUsername(username) {
+		ui.logger.Warn("login refused: username in the reserved service realm", "username", username)
+		http.Redirect(w, r, ui.href("/login?error=Invalid+credentials"), http.StatusSeeOther)
+		return
+	}
+
 	// Authenticate with BV-BRC.
 	token, err := ui.authenticateBVBRC(r.Context(), username, password)
 	if err != nil {
@@ -290,6 +298,11 @@ func (ui *UI) HandleLoginPost(w http.ResponseWriter, r *http.Request) {
 	sessionUsername := tokenInfo.Username
 	if sessionUsername == "" {
 		sessionUsername = username // Fallback to form input if token parsing fails
+	}
+	if model.IsServiceUsername(sessionUsername) {
+		ui.logger.Warn("login refused: token username in the reserved service realm", "username", sessionUsername)
+		http.Redirect(w, r, ui.href("/login?error=Invalid+credentials"), http.StatusSeeOther)
+		return
 	}
 
 	// Determine role (admin list can be configured via env or config).
@@ -1040,13 +1053,21 @@ func (ui *UI) HandleTaskLogs(w http.ResponseWriter, r *http.Request) {
 	subID := ui.pathParam(r, "id")
 	taskID := ui.pathParam(r, "tid")
 
-	// Ownership check: verify the caller can access the parent submission.
+	// The submission must exist (a lookup error is never a skipped check)
+	// and be the caller's; the task must belong to it.
 	sub, subErr := ui.store.GetSubmission(r.Context(), subID)
-	if subErr == nil && sub != nil {
-		if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
+	if subErr != nil {
+		ui.logger.Error("task logs: failed to load submission", "submission_id", subID, "error", subErr)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if sub == nil {
+		ui.renderNotFound(w, "Submission not found")
+		return
+	}
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
 	}
 
 	task, err := ui.store.GetTask(r.Context(), taskID)
@@ -1215,8 +1236,12 @@ func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (boo
 // refuses putting task of sub back in the queue, or "" when it may go. Same
 // rule as the scheduler's retry check: only worker tasks are checked, with
 // the group stored on the task (nil hints or "" = the default group) and the
-// submission's submitter.
+// submission's submitter. A BV-BRC task of a service identity is refused
+// too, as the scheduler's retry refuses it.
 func (ui *UI) requeueGroupDenied(sub *model.Submission, task *model.Task) string {
+	if task.ExecutorType == model.ExecutorTypeBVBRC && model.IsServiceUsername(sub.SubmittedBy) {
+		return model.ServiceBVBRCDenied
+	}
 	if task.ExecutorType != model.ExecutorTypeWorker {
 		return ""
 	}
@@ -1431,8 +1456,32 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	subID := ui.pathParam(r, "id")
 	taskID := ui.pathParam(r, "tid")
 
-	task, err := ui.store.GetTask(r.Context(), taskID)
-	if err != nil || task == nil || task.SubmissionID != subID {
+	// The task snapshot is read first (the guarded write below compares
+	// against it), but the answers come in this order: unknown submission
+	// (404), not the caller's (403), task not of this submission (404), and
+	// only then anything about the task's state. Before, a non-owner learned
+	// a task's state (400) before the ownership check.
+	task, taskErr := ui.store.GetTask(r.Context(), taskID)
+
+	// The submission is fetched up front also so the CANCELLED check below
+	// happens before any task write.
+	sub, err := ui.store.GetSubmission(r.Context(), subID)
+	if err != nil {
+		ui.logger.Error("task recompute: failed to load submission", "submission_id", subID, "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if sub == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	// Ownership check: non-admin users can only recompute their own submissions.
+	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	if taskErr != nil || task == nil || task.SubmissionID != subID {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -1443,18 +1492,7 @@ func (ui *UI) HandleTaskRecompute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Gate on submission state before writing: a cancelled submission is not
-	// actionable (mirrors the cancel handler's terminal-state gate). Fetched
-	// up front so the CANCELLED check happens before any task write.
-	sub, err := ui.store.GetSubmission(r.Context(), subID)
-	if err != nil || sub == nil {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	// Ownership check: non-admin users can only recompute their own submissions.
-	if sess != nil && !sess.IsAdmin() && sub.SubmittedBy != sess.Username {
-		w.WriteHeader(http.StatusForbidden)
-		return
-	}
+	// actionable (mirrors the cancel handler's terminal-state gate).
 	if sub.State == model.SubmissionStateCancelled {
 		w.WriteHeader(http.StatusBadRequest)
 		return

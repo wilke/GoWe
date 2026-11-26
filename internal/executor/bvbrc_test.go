@@ -3,9 +3,11 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/me/gowe/internal/bvbrc"
@@ -33,8 +35,87 @@ func bvbrcLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// newTestBVBRCExecutor returns an executor whose default caller and per-task
+// callers are all caller.
 func newTestBVBRCExecutor(caller bvbrc.RPCCaller) *BVBRCExecutor {
-	return NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, caller, bvbrcLogger())
+	e := NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, caller, bvbrcLogger())
+	e.taskCaller = func(string) bvbrc.RPCCaller { return caller }
+	return e
+}
+
+// testTaskToken is the per-task BV-BRC token of tasks submitted in tests.
+const testTaskToken = "un=tester@bvbrc|tokenid=t-1|expiry=4102444800|sig=00"
+
+// tokenHints returns runtime hints carrying testTaskToken, as the scheduler
+// attaches the submitter's token to a BV-BRC task.
+func tokenHints() *model.RuntimeHints {
+	return &model.RuntimeHints{
+		StagerOverrides: &model.StagerOverrides{
+			HTTPCredential: &model.HTTPCredential{Token: testTaskToken},
+		},
+	}
+}
+
+// A task without a per-task token is refused by Submit: the server's default
+// caller (its own BV-BRC account) is never used to start a job, whoever the
+// submitter is (a service identity, an anonymous submission, a submission
+// whose token was not attached). Status, Cancel and Logs still use it.
+func TestBVBRCExecutor_SubmitRefusesTokenlessTask(t *testing.T) {
+	defaultCaller := &mockRPCCaller{result: json.RawMessage(`[{"id":"j1","status":"queued"}]`)}
+	e := NewBVBRCExecutor(bvbrc.DefaultAppServiceURL, defaultCaller, bvbrcLogger())
+	perTask := 0
+	e.taskCaller = func(string) bvbrc.RPCCaller {
+		perTask++
+		return defaultCaller
+	}
+
+	for _, hints := range []*model.RuntimeHints{
+		nil,
+		{},
+		{StagerOverrides: &model.StagerOverrides{}},
+		{StagerOverrides: &model.StagerOverrides{HTTPCredential: &model.HTTPCredential{Token: ""}}},
+	} {
+		task := &model.Task{
+			ID:           "task_svc",
+			BVBRCAppID:   "GenomeAssembly2",
+			Inputs:       map[string]any{"output_path": "/x/home/"},
+			RuntimeHints: hints,
+		}
+		extID, err := e.Submit(context.Background(), task)
+		if err == nil || !strings.Contains(err.Error(), "no user token for BV-BRC submission") {
+			t.Errorf("hints %+v: Submit = %q, %v; want the no-token refusal", hints, extID, err)
+		}
+		// The scheduler makes the refusal permanent by this sentinel.
+		if !errors.Is(err, ErrNoBVBRCToken) {
+			t.Errorf("hints %+v: Submit error %v does not wrap ErrNoBVBRCToken", hints, err)
+		}
+	}
+	if len(defaultCaller.calls) != 0 || perTask != 0 {
+		t.Errorf("a token-less task reached BV-BRC: %d default-caller calls, %d per-task callers", len(defaultCaller.calls), perTask)
+	}
+
+	// The same executor still submits a task that carries a token, through
+	// the per-task caller.
+	task := &model.Task{ID: "task_user", BVBRCAppID: "GenomeAssembly2", Inputs: map[string]any{}, RuntimeHints: tokenHints()}
+	if _, err := e.Submit(context.Background(), task); err != nil {
+		t.Fatalf("task with a token: %v", err)
+	}
+	if perTask != 1 || len(defaultCaller.calls) != 1 || defaultCaller.calls[0].Method != "AppService.start_app" {
+		t.Errorf("task with a token: %d per-task callers, calls %+v", perTask, defaultCaller.calls)
+	}
+	// Its default workspace is the token's user's home.
+	if ws := defaultCaller.calls[0].Params[2]; ws != "/tester@bvbrc/home/" {
+		t.Errorf("workspace = %v, want /tester@bvbrc/home/", ws)
+	}
+
+	// Status of a token-less task keeps using the default caller.
+	defaultCaller.result = json.RawMessage(`[{"j1":{"status":"queued"}}]`)
+	if _, err := e.Status(context.Background(), &model.Task{ID: "task_svc", ExternalID: "j1"}); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if n := len(defaultCaller.calls); n != 2 || defaultCaller.calls[1].Method != "AppService.query_tasks" {
+		t.Errorf("Status of a token-less task: calls %+v, want query_tasks on the default caller", defaultCaller.calls)
+	}
 }
 
 func TestBVBRCExecutor_Type(t *testing.T) {
@@ -57,6 +138,7 @@ func TestBVBRCExecutor_SubmitSuccess(t *testing.T) {
 			"contigs":     "/user/home/data.fasta",
 			"output_path": "/user/home/",
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	extID, err := e.Submit(context.Background(), task)
@@ -93,14 +175,18 @@ func TestBVBRCExecutor_SubmitRPCError(t *testing.T) {
 	e := newTestBVBRCExecutor(mock)
 
 	task := &model.Task{
-		ID:         "task_1",
-		BVBRCAppID: "GenomeAssembly2",
-		Inputs:     map[string]any{},
+		ID:           "task_1",
+		BVBRCAppID:   "GenomeAssembly2",
+		Inputs:       map[string]any{},
+		RuntimeHints: tokenHints(),
 	}
 
 	_, err := e.Submit(context.Background(), task)
 	if err == nil {
 		t.Fatal("expected error from RPC failure")
+	}
+	if len(mock.calls) != 1 {
+		t.Errorf("expected the RPC to be called once, got %d calls", len(mock.calls))
 	}
 }
 
@@ -120,6 +206,7 @@ func TestBVBRCExecutor_SubmitFiltersReservedKeys(t *testing.T) {
 			"_docker_image": "alpine",
 			"_bvbrc_app_id": "App1",
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	_, err := e.Submit(context.Background(), task)
@@ -159,6 +246,7 @@ func TestBVBRCExecutor_SubmitUsesInputAppID(t *testing.T) {
 		Inputs: map[string]any{
 			"_bvbrc_app_id": "FallbackApp",
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	_, err := e.Submit(context.Background(), task)
@@ -185,6 +273,7 @@ func TestBVBRCExecutor_SubmitDirectoryWSScheme(t *testing.T) {
 				"location": "ws:///awilke@bvbrc/home/gowe-test",
 			},
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	_, err := e.Submit(context.Background(), task)
@@ -216,6 +305,7 @@ func TestBVBRCExecutor_SubmitDirectoryShockScheme(t *testing.T) {
 				"location": "shock://p3.theseed.org/node/abc123",
 			},
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	_, err := e.Submit(context.Background(), task)
@@ -255,6 +345,7 @@ func TestBVBRCExecutor_SubmitFileAndDirectoryResolved(t *testing.T) {
 			},
 			"plain_param": "hello",
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	_, err := e.Submit(context.Background(), task)
@@ -307,6 +398,7 @@ func TestBVBRCExecutor_SubmitFlattensNestedGroupFiles(t *testing.T) {
 			"output_path": map[string]any{"class": "Directory", "location": "ws:///user@bvbrc/home/"},
 			"output_file": "asm",
 		},
+		RuntimeHints: tokenHints(),
 	}
 
 	if _, err := e.Submit(context.Background(), task); err != nil {

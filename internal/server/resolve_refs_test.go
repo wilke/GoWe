@@ -218,6 +218,17 @@ func (m *mockStore) RevokeToolBlessing(context.Context, string, string, string) 
 func (m *mockStore) AddToolBlessingImageSHA256(context.Context, string, string) error { return nil }
 func (m *mockStore) CountWorkerKeys(context.Context) (int, error)                     { return 0, nil }
 func (m *mockStore) TouchWorkerKey(context.Context, string, time.Time) error          { return nil }
+func (m *mockStore) CreateServiceToken(context.Context, *model.ServiceToken) error    { return nil }
+func (m *mockStore) ListServiceTokens(context.Context) ([]*model.ServiceToken, error) {
+	return nil, nil
+}
+func (m *mockStore) GetServiceTokenByHash(context.Context, string) (*model.ServiceToken, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteServiceToken(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+func (m *mockStore) TouchServiceToken(context.Context, string, time.Time) error { return nil }
 func (m *mockStore) ListWorkerGroupPolicies(context.Context) ([]*model.WorkerGroupPolicy, error) {
 	return nil, nil
 }

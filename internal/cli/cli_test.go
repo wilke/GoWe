@@ -57,8 +57,12 @@ func startTestServerWithStore(t *testing.T) (string, store.Store) {
 }
 
 // submitTestWorkflow creates a workflow + submission via HTTP and returns the submission ID.
+// The pipeline's steps run on the BV-BRC executor, which needs the
+// submitter's token (anonymous submissions of it are refused), so the client
+// and every later CLI call of the test authenticate with wsTestToken.
 func submitTestWorkflow(t *testing.T, serverURL string) string {
 	t.Helper()
+	writeCredentials(t, wsTestToken)
 
 	srvLogger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	c := NewClient(serverURL, srvLogger)
@@ -113,6 +117,7 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 
 func TestSubmitCommand(t *testing.T) {
 	url := startTestServer(t)
+	writeCredentials(t, wsTestToken) // BV-BRC steps need the submitter's token
 
 	// Capture stdout
 	old := os.Stdout
@@ -145,6 +150,7 @@ func TestSubmitCommand(t *testing.T) {
 
 func TestSubmitCommand_DryRun(t *testing.T) {
 	url := startTestServer(t)
+	writeCredentials(t, wsTestToken) // BV-BRC steps need the submitter's token
 
 	old := os.Stdout
 	r, w, _ := os.Pipe()
