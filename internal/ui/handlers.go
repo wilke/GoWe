@@ -61,6 +61,9 @@ type UI struct {
 	// Session cookie hardening.
 	secureCookies       bool // Always set the Secure attribute on session cookies
 	trustForwardedProto bool // Honor X-Forwarded-Proto when deciding the Secure attribute
+	// behindProxy lets SameOriginMiddleware accept an Origin matching the
+	// first X-Forwarded-Host value (Config.BehindProxy).
+	behindProxy bool
 
 	// grafanaURL is rendered as a nav link (target _blank) when non-empty.
 	grafanaURL string
@@ -85,6 +88,9 @@ type UI struct {
 	inputValidation  validate.Mode
 	tokenBlessingDev bool             // --token-blessing=dev banner
 	groupPolicy      *groupacl.Policy // worker-group access (#261); nil allows every group
+	// groups runs the worker group operations of the worker group pages
+	// (nil: the pages answer 503).
+	groups GroupAdmin
 	// workerTimeout is the server reaper's heartbeat timeout; a worker may be
 	// deleted once it has sent no heartbeat for removalSilence (3 x this).
 	workerTimeout time.Duration
@@ -105,6 +111,12 @@ type Config struct {
 	// behind a trusted reverse proxy that sets this header, since a client can
 	// otherwise spoof it.
 	TrustForwardedProto bool
+	// BehindProxy is set when the server runs with --behind-proxy: the
+	// cross-site check of state-changing UI requests (SameOriginMiddleware)
+	// then also accepts an Origin whose host equals the first value of
+	// X-Forwarded-Host, which a trusted proxy sets to the host the browser
+	// used.
+	BehindProxy bool
 	// WorkspaceURL is the BV-BRC Workspace service endpoint used by the
 	// workspace browser, the file picker and uploads. Empty selects
 	// production.
@@ -123,6 +135,11 @@ type Config struct {
 	// form refuses a submission using a group the user may not use. nil
 	// allows every group.
 	GroupPolicy *groupacl.Policy
+	// GroupAdmin runs the operations of the worker group pages
+	// (/admin/worker-groups, /worker-groups): the server passes itself, so
+	// the pages and the REST API share one implementation, authorization
+	// included. nil makes those pages answer 503.
+	GroupAdmin GroupAdmin
 	// BasePath mounts the UI under this path prefix behind a reverse proxy.
 	// Empty (the default) is root-mounted, byte-identical to pre-#250
 	// behavior. Must already be normalized — see cmd/server's
@@ -163,6 +180,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		startTime:           time.Now(),
 		secureCookies:       cfg.SecureCookies,
 		trustForwardedProto: cfg.TrustForwardedProto,
+		behindProxy:         cfg.BehindProxy,
 		workspaceURL:        workspaceURL,
 		uploadMaxSize:       uploadMaxSize,
 		grafanaURL:          cfg.GrafanaURL,
@@ -170,6 +188,7 @@ func New(st store.Store, logger *slog.Logger, cfg Config) *UI {
 		inputValidation:     cfg.InputValidation,
 		tokenBlessingDev:    cfg.TokenBlessingDev,
 		groupPolicy:         cfg.GroupPolicy,
+		groups:              cfg.GroupAdmin,
 		workerTimeout:       workerTimeout,
 	}
 }
@@ -2284,6 +2303,11 @@ func (ui *UI) pathParam(r *http.Request, name string) string {
 }
 
 func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any) {
+	ui.renderStatus(w, http.StatusOK, template, data)
+}
+
+// renderStatus is render answering with status instead of 200.
+func (ui *UI) renderStatus(w http.ResponseWriter, status int, template string, data map[string]any) {
 	// For now, render a simple HTML response.
 	// This will be replaced with templ templates.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -2298,6 +2322,13 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 		data["BasePath"] = ui.basePath
 	}
 	data["TokenBlessingDev"] = ui.tokenBlessingDev
+	// The "Worker groups" nav link: for server admins and for users who
+	// manage a group in the live policy, when the pages are available (a
+	// GroupAdmin is configured). Only the link; the pages ask the group
+	// operations, which decide.
+	if sess, _ := data["Session"].(*model.Session); sess != nil {
+		data["ShowWorkerGroups"] = ui.groups != nil && (sess.IsAdmin() || len(ui.groupPolicy.ManagedGroups(sess.Username)) > 0)
+	}
 
 	var buf bytes.Buffer
 	if err := renderTemplate(&buf, template, data); err != nil {
@@ -2306,7 +2337,7 @@ func (ui *UI) render(w http.ResponseWriter, template string, data map[string]any
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	buf.WriteTo(w)
 }
 

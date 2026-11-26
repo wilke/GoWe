@@ -14,6 +14,7 @@ const adminBlessingsTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>

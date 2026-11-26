@@ -677,6 +677,11 @@ var templates = map[string]string{
                         <a href="{{base}}/workers" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Workers
                         </a>
+                        {{if .ShowWorkerGroups}}
+                        <a href="{{base}}/worker-groups" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            Worker groups
+                        </a>
+                        {{end}}
                         {{if .Session.IsAdmin}}
                         <a href="{{base}}/admin" class="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                             Admin
@@ -2396,6 +2401,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
@@ -2565,6 +2571,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
@@ -2809,6 +2816,7 @@ var templates = map[string]string{
                     <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                     <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hostname</th>
+                    {{if and $.Session $.Session.IsAdmin}}<th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Peer address</th>{{end}}
                     <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Group</th>
                     <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Runtime</th>
                     <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GPU</th>
@@ -2830,6 +2838,7 @@ var templates = map[string]string{
                     </td>
                     <td class="px-3 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{.Name}}</td>
                     <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">{{.Hostname}}</td>
+                    {{if and $.Session $.Session.IsAdmin}}<td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">{{if .PeerAddr}}{{.PeerAddr}}{{else}}-{{end}}</td>{{end}}
                     <td class="px-3 py-4 whitespace-nowrap text-sm text-gray-500">{{.Group}}</td>
                     <td class="px-3 py-4 whitespace-nowrap">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
@@ -2903,6 +2912,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Labels</a>
@@ -3012,6 +3022,7 @@ var templates = map[string]string{
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>

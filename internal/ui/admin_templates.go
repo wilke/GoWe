@@ -23,6 +23,7 @@ const adminFleetTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
@@ -183,6 +184,7 @@ const adminKeysTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>
@@ -197,6 +199,7 @@ const adminKeysTemplate = `{{define "content"}}
     <div class="mb-6 bg-yellow-50 border border-yellow-300 rounded-lg p-4">
         <h3 class="text-sm font-medium text-yellow-800 mb-2">Key issued &mdash; copy it now, it will not be shown again</h3>
         <code class="block bg-white border border-yellow-200 rounded px-3 py-2 text-sm text-gray-900 break-all select-all">{{.RawKey}}</code>
+        <p class="mt-2 text-xs text-yellow-800">Do not reload this page: reloading submits the form again and issues another key. <a href="{{base}}/admin/worker-keys" class="underline">Open the key list</a> instead.</p>
     </div>
     {{end}}
 
@@ -224,6 +227,7 @@ const adminKeysTemplate = `{{define "content"}}
                     <label class="block text-xs font-medium text-gray-500 mb-1">Expires</label>
                     <input type="date" name="expires_at"
                            class="block w-40 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-1.5 border">
+                    <p class="mt-1 text-xs text-gray-500">The key expires at 00:00 UTC at the start of the chosen day.</p>
                 </div>
                 <button type="submit"
                         class="inline-flex items-center px-4 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
@@ -296,6 +300,7 @@ const adminOutputsTemplate = `{{define "content"}}
         <a href="{{base}}/admin/health" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Health</a>
         <a href="{{base}}/admin/fleet" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Fleet</a>
         <a href="{{base}}/admin/worker-keys" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Keys</a>
+        <a href="{{base}}/admin/worker-groups" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Worker groups</a>
         <a href="{{base}}/admin/tool-blessings" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Blessings</a>
         <a href="{{base}}/admin/outputs" class="pb-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-500">Outputs</a>
         <a href="{{base}}/admin/labels" class="pb-2 text-sm font-medium text-gray-500 hover:text-gray-700">Labels</a>

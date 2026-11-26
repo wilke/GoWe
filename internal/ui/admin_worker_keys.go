@@ -122,6 +122,9 @@ func (ui *UI) HandleAdminWorkerKeyCreate(w http.ResponseWriter, r *http.Request)
 		"RawKey":  raw,
 		"NewID":   key.ID,
 	}
+	// The raw key exists in this answer only: never stored by a cache (the
+	// worker group page's key creation does the same).
+	w.Header().Set("Cache-Control", "no-store")
 	ui.render(w, "admin/keys", data)
 }
 

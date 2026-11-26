@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/ui"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -49,43 +50,41 @@ func (s *Server) handleCreateWorkerKey(w http.ResponseWriter, r *http.Request) {
 		createdBy = uc.User.Username
 	}
 
-	s.issueWorkerKey(r.Context(), w, r, reqID, req, createdBy)
+	key, raw, e := s.mintWorkerKey(r.Context(), requestActor(r), chi.URLParam(r, "group"), req, createdBy)
+	if e != nil {
+		respondGroupError(w, reqID, e)
+		return
+	}
+	respondIssuedKey(w, reqID, key, raw)
 }
 
 // Bounds of the label and the description of a worker key issued through
-// issueWorkerKey, in bytes.
+// mintWorkerKey, in bytes.
 const (
 	maxWorkerKeyLabelBytes       = 200
 	maxWorkerKeyDescriptionBytes = 1000
 )
 
-// issueWorkerKey validates req (label and description length, expires_at in
-// the future), mints a key with req.Groups (which the caller has set),
-// stores its hash and answers 201 with the raw key, returned this once. It
-// reports whether the key was issued. Shared by the admin route and the
-// worker-group key route; an internal error is detailed to server admins
-// only (respondInternal).
-func (s *Server) issueWorkerKey(ctx context.Context, w http.ResponseWriter, r *http.Request, reqID string, req createWorkerKeyRequest, createdBy string) (*model.WorkerKey, bool) {
+// mintWorkerKey validates req (label and description length, expires_at in
+// the future), mints a key with req.Groups (which the caller has set) and
+// stores its hash. It returns the key and its raw value, which exists only
+// in this answer. Shared by the admin route and the worker-group key
+// operation; an internal error is logged (with group, "" on the admin route)
+// and detailed to server admins only.
+func (s *Server) mintWorkerKey(ctx context.Context, actor ui.GroupActor, group string, req createWorkerKeyRequest, createdBy string) (*model.WorkerKey, string, *ui.GroupError) {
 	if len(req.Label) > maxWorkerKeyLabelBytes {
-		validationErr(w, reqID, fmt.Sprintf("label is %d bytes long; at most %d are allowed", len(req.Label), maxWorkerKeyLabelBytes))
-		return nil, false
+		return nil, "", groupErr(ui.GroupErrInvalid, fmt.Sprintf("label is %d bytes long; at most %d are allowed", len(req.Label), maxWorkerKeyLabelBytes))
 	}
 	if len(req.Description) > maxWorkerKeyDescriptionBytes {
-		validationErr(w, reqID, fmt.Sprintf("description is %d bytes long; at most %d are allowed", len(req.Description), maxWorkerKeyDescriptionBytes))
-		return nil, false
+		return nil, "", groupErr(ui.GroupErrInvalid, fmt.Sprintf("description is %d bytes long; at most %d are allowed", len(req.Description), maxWorkerKeyDescriptionBytes))
 	}
 	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now()) {
-		respondError(w, reqID, http.StatusBadRequest, &model.APIError{
-			Code:    model.ErrValidation,
-			Message: "expires_at must be in the future",
-		})
-		return nil, false
+		return nil, "", groupErr(ui.GroupErrInvalid, "expires_at must be in the future")
 	}
 
 	raw, hash, prefix, err := model.GenerateWorkerKey()
 	if err != nil {
-		s.internalErrForCaller(w, r, reqID, err)
-		return nil, false
+		return nil, "", s.internalErrFor(actor, group, err)
 	}
 
 	key := &model.WorkerKey{
@@ -103,20 +102,15 @@ func (s *Server) issueWorkerKey(ctx context.Context, w http.ResponseWriter, r *h
 	// The store also sets worker_auth.required in the same transaction, so
 	// worker authentication is on from this key onwards.
 	if err := s.store.CreateWorkerKey(ctx, key); err != nil {
-		s.internalErrForCaller(w, r, reqID, err)
-		return nil, false
+		return nil, "", s.internalErrFor(actor, group, err)
 	}
 
 	s.logger.Info("worker key issued", "key_id", key.ID, "label", key.Label,
 		"groups", key.Groups, "created_by", createdBy)
 
-	// Return the raw key ONCE alongside the metadata. It is never retrievable again.
-	respondCreated(w, reqID, map[string]any{
-		"key":        raw,
-		"worker_key": key,
-		"warning":    "store this key now; it cannot be retrieved again",
-	})
-	return key, true
+	// The raw key goes to the caller ONCE alongside the metadata. It is never
+	// retrievable again.
+	return key, raw, nil
 }
 
 // handleListWorkerKeys lists all worker keys. Hashes and raw secrets are never

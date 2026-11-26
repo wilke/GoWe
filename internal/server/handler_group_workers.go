@@ -4,17 +4,18 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/me/gowe/internal/groupacl"
+	"github.com/me/gowe/internal/ui"
 	"github.com/me/gowe/pkg/model"
 )
 
 // The workers of a group for its managers and server admins
-// (GET/DELETE /api/v1/worker-groups/{group}/workers), and the admin removal
-// of any worker (DELETE /api/v1/admin/workers/{id}).
+// (GET/DELETE /api/v1/worker-groups/{group}/workers, through the operations
+// ListGroupWorkers and RemoveGroupWorker shared with the web UI), and the
+// admin removal of any worker (DELETE /api/v1/admin/workers/{id}).
 //
 // A worker that stops heartbeating is marked offline by the reaper and its
 // row stays listed until it is removed here. Only a worker that is offline
@@ -28,27 +29,12 @@ import (
 
 // groupWorkerOtherKey is the key_id shown for a worker whose key is not one
 // of the group's own keys (groups exactly [group]).
-const groupWorkerOtherKey = "other"
+const groupWorkerOtherKey = ui.GroupWorkerOtherKey
 
 // groupWorker is a worker as listed to the managers of its group: a
-// projection of model.Worker, not the full record.
-type groupWorker struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name"`
-	Hostname     string                 `json:"hostname"`
-	PeerAddr     string                 `json:"peer_addr"`
-	State        model.WorkerState      `json:"state"`
-	LastSeen     time.Time              `json:"last_seen"`
-	RegisteredAt time.Time              `json:"registered_at"`
-	Version      string                 `json:"version"`
-	Runtime      model.ContainerRuntime `json:"runtime"`
-	GPUEnabled   bool                   `json:"gpu_enabled"`
-	CurrentTask  string                 `json:"current_task"`
-	// KeyID is the id of the registering key when its groups are exactly
-	// [group], groupWorkerOtherKey for any other key, "" when the worker is
-	// bound to no key (worker auth was off when it registered).
-	KeyID string `json:"key_id"`
-}
+// projection of model.Worker, not the full record (defined in the ui
+// package, which renders it too).
+type groupWorker = ui.GroupWorker
 
 // workerGroupName is the group of wk, with "" folded to the default group.
 func workerGroupName(wk *model.Worker) string {
@@ -58,64 +44,23 @@ func workerGroupName(wk *model.Worker) string {
 	return wk.Group
 }
 
+// workerRemovable reports whether wk passes the removal rule of
+// DeleteOfflineWorker at now: offline and last seen more than silentFor ago.
+// Only a hint for listings; the removal decides inside its delete.
+func workerRemovable(wk *model.Worker, silentFor time.Duration, now time.Time) bool {
+	return wk.State == model.WorkerStateOffline && wk.LastSeen.Before(now.Add(-silentFor))
+}
+
 // handleListWorkerGroupWorkers lists the workers of a group (whatever key
 // they registered with), offline ones included, sorted by name.
 // GET /api/v1/worker-groups/{group}/workers
 func (s *Server) handleListWorkerGroupWorkers(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
-	group, _, ok := s.startGroupRoute(w, r, reqID)
-	if !ok {
-		return
-	}
-	if !s.requireGroupRule(r.Context(), w, r, reqID, group) {
-		return
-	}
-	keys, err := s.groupKeys(r.Context(), group)
+	out, err := s.ListGroupWorkers(r.Context(), requestActor(r), chi.URLParam(r, "group"))
 	if err != nil {
-		s.internalErrForCaller(w, r, reqID, err)
+		respondGroupError(w, reqID, err)
 		return
 	}
-	own := make(map[string]bool, len(keys))
-	for _, k := range keys {
-		own[k.ID] = true
-	}
-	workers, err := s.store.ListWorkers(r.Context())
-	if err != nil {
-		s.internalErrForCaller(w, r, reqID, err)
-		return
-	}
-	out := []groupWorker{}
-	for _, wk := range workers {
-		if workerGroupName(wk) != group {
-			continue
-		}
-		keyID := wk.KeyID
-		if keyID != "" && !own[keyID] {
-			keyID = groupWorkerOtherKey
-		}
-		// The caller is a server admin or a manager of group, so the peer
-		// address is shown.
-		out = append(out, groupWorker{
-			ID:           wk.ID,
-			Name:         wk.Name,
-			Hostname:     wk.Hostname,
-			PeerAddr:     wk.PeerAddr,
-			State:        wk.State,
-			LastSeen:     wk.LastSeen,
-			RegisteredAt: wk.RegisteredAt,
-			Version:      wk.Version,
-			Runtime:      wk.Runtime,
-			GPUEnabled:   wk.GPUEnabled,
-			CurrentTask:  wk.CurrentTask,
-			KeyID:        keyID,
-		})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
-		}
-		return out[i].ID < out[j].ID
-	})
 	respondOK(w, reqID, map[string]any{
 		"total":   len(out),
 		"workers": out,
@@ -123,23 +68,16 @@ func (s *Server) handleListWorkerGroupWorkers(w http.ResponseWriter, r *http.Req
 }
 
 // handleRemoveWorkerGroupWorker removes an offline, silent worker of a group
-// (see removeWorker), under the same lock-reload-recheck as the other
-// manager writes.
+// (see RemoveGroupWorker).
 // DELETE /api/v1/worker-groups/{group}/workers/{id}
 func (s *Server) handleRemoveWorkerGroupWorker(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
-	group, user, ok := s.startGroupRoute(w, r, reqID)
-	if !ok {
-		return
-	}
 	id := chi.URLParam(r, "id")
-
-	ctx, done, ok := s.beginGroupWrite(w, r, reqID, user, group)
-	if !ok {
+	if err := s.RemoveGroupWorker(r.Context(), requestActor(r), chi.URLParam(r, "group"), id); err != nil {
+		respondGroupError(w, reqID, err)
 		return
 	}
-	defer done()
-	s.removeWorker(ctx, w, r, reqID, user.Username, id, group)
+	respondWorkerRemoved(w, reqID, id)
 }
 
 // handleAdminRemoveWorker removes an offline, silent worker of any group
@@ -150,20 +88,32 @@ func (s *Server) handleAdminRemoveWorker(w http.ResponseWriter, r *http.Request)
 	id := chi.URLParam(r, "id")
 	ctx, cancel := writeContext(r)
 	defer cancel()
-	s.removeWorker(ctx, w, r, reqID, adminName(r), id, "")
+	if e := s.removeWorker(ctx, requestActor(r), id, ""); e != nil {
+		respondGroupError(w, reqID, e)
+		return
+	}
+	respondWorkerRemoved(w, reqID, id)
+}
+
+// respondWorkerRemoved answers 200 for a removed worker.
+func respondWorkerRemoved(w http.ResponseWriter, reqID, id string) {
+	respondOK(w, reqID, map[string]any{
+		"id":      id,
+		"removed": true,
+	})
 }
 
 // removeWorker deletes worker id with DeleteOfflineWorker (silent for
-// workerRemovalSilence; in group unless group is "") and answers 200, 404
-// when there is no such worker (in group), or 409 when the worker exists
-// but is not removable (yet).
-func (s *Server) removeWorker(ctx context.Context, w http.ResponseWriter, r *http.Request, reqID, actor, id, group string) {
-	notFound := func() {
+// workerRemovalSilence; in group unless group is ""). It returns not found
+// when there is no such worker (in group), or a conflict when the worker
+// exists but is not removable (yet).
+func (s *Server) removeWorker(ctx context.Context, actor ui.GroupActor, id, group string) *ui.GroupError {
+	notFound := func() *ui.GroupError {
 		kind := "worker"
 		if group != "" {
 			kind = "worker of group " + group
 		}
-		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError(kind, id))
+		return groupErr(ui.GroupErrNotFound, model.NewNotFoundError(kind, id).Message)
 	}
 	inScope := func(wk *model.Worker) bool {
 		return wk != nil && (group == "" || workerGroupName(wk) == group)
@@ -171,38 +121,27 @@ func (s *Server) removeWorker(ctx context.Context, w http.ResponseWriter, r *htt
 
 	wk, err := s.store.GetWorker(ctx, id)
 	if err != nil {
-		s.internalErrForCaller(w, r, reqID, err)
-		return
+		return s.internalErrFor(actor, group, err)
 	}
 	if !inScope(wk) {
-		notFound()
-		return
+		return notFound()
 	}
 	deleted, err := s.store.DeleteOfflineWorker(ctx, id, group, workerRemovalSilence)
 	if err != nil {
-		s.internalErrForCaller(w, r, reqID, err)
-		return
+		return s.internalErrFor(actor, group, err)
 	}
 	if !deleted {
 		// The delete decided; a fresh read only explains why.
 		if cur, err := s.store.GetWorker(ctx, id); err == nil {
 			if !inScope(cur) {
-				notFound()
-				return
+				return notFound()
 			}
 			wk = cur
 		}
-		respondError(w, reqID, http.StatusConflict, &model.APIError{
-			Code:    model.ErrConflict,
-			Message: workerNotRemovableMessage(wk, workerRemovalSilence, time.Now()),
-		})
-		return
+		return groupErr(ui.GroupErrConflict, workerNotRemovableMessage(wk, workerRemovalSilence, time.Now()))
 	}
-	s.logger.Info("worker removed", "actor", actor, "worker_id", id, "group", workerGroupName(wk))
-	respondOK(w, reqID, map[string]any{
-		"id":      id,
-		"removed": true,
-	})
+	s.logger.Info("worker removed", "actor", actor.Username, "worker_id", id, "group", workerGroupName(wk))
+	return nil
 }
 
 // workerNotRemovableMessage tells why wk cannot be removed and what to do;

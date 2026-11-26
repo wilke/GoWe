@@ -17,14 +17,31 @@ import (
 )
 
 // newTestSession creates and persists a session with the given role,
-// returning the session and a cookie that authenticates as it.
+// returning the session and a cookie that authenticates as it. The user is
+// stored with that role too: AdminMiddleware and the worker group pages
+// trust the stored role, not the session's.
 func newTestSession(t *testing.T, u *UI, username, role string) (*model.Session, *http.Cookie) {
 	t.Helper()
+	setStoredRole(t, u, username, model.UserRole(role))
 	sess, err := u.sessions.CreateSession(context.Background(), "user_"+username, username, role, "tok-"+username, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	return sess, &http.Cookie{Name: SessionCookieName, Value: sess.ID}
+}
+
+// setStoredRole stores username's account with role (created when missing).
+func setStoredRole(t *testing.T, u *UI, username string, role model.UserRole) {
+	t.Helper()
+	ctx := context.Background()
+	user, err := u.store.GetOrCreateUser(ctx, username, model.ProviderBVBRC)
+	if err != nil {
+		t.Fatalf("store user %s: %v", username, err)
+	}
+	user.Role = role
+	if err := u.store.UpdateUser(ctx, user); err != nil {
+		t.Fatalf("set role of %s: %v", username, err)
+	}
 }
 
 // --- 1. Admin gating: new /admin/* routes reuse the existing AdminMiddleware. ---
