@@ -13,8 +13,18 @@ A task that runs again starts in a fresh task directory (#368). No manual steps;
   empty directory. Before, the new attempt ran on top of the old files, and a tool with `InitialWorkDirRequirement`
   entries failed every further attempt with `file exists`.
 - The `.attempt-N` directories are kept on every worker, with or without `--keep-task-dirs`, also when a later attempt
-  succeeds, and nothing removes them yet. Watch the work directory of workers whose tasks are retried often.
+  succeeds; only `--kept-task-dir-ttl` (below) removes them. Watch the work directory of workers whose tasks are
+  retried often.
 - A tool that resumed from files its own failed attempt left in the task directory no longer finds them.
+
+New worker flag `--kept-task-dir-ttl` (default `0`, off): removes kept task directories (failed, cancelled, `--debug`,
+`--keep-task-dirs`, `.attempt-N`) once they are older than the given age (at least `1h`; e.g. `720h`), checked at
+start-up and hourly. Only directories with a `<dir>.kept` marker next to them are removed; workers write the marker
+from this version on, so directories kept by an older worker have none and must still be removed by hand. See
+[Removing kept directories](tools/worker.md#removing-kept-directories). After a rollback to an older
+worker, delete the `*.kept` files in the work directory before using the flag again.
+Kept directories are removed only when the worker is the only worker process on its work directory (lock files
+`.gowe-worker.lock` and `.gowe-worker.shared` there; workers of older versions are not detected).
 
 The server keeps a history of a task's earlier attempts in a new table `task_attempts` (exit code, stdout/stderr,
 worker, times; the newest 20 per task; see [Task attempt history](tools/server.md#task-attempt-history)). The table is

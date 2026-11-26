@@ -43,6 +43,7 @@ gowe-worker [flags]
 | `--poll` | `5s` | Poll interval for checking new tasks |
 | `--stage-mode` | `copy` | File staging mode (`copy`, `symlink`, `reference`) |
 | `--keep-task-dirs` | `false` | Retain task working directories after successful completion (failed tasks are always kept) |
+| `--kept-task-dir-ttl` | `0` | Remove kept task directories (failed, cancelled, `--debug`, `--keep-task-dirs`, `.attempt-N`) whose `<dir>.kept` marker is older than this, at start-up and hourly. `0` never removes them; otherwise at least `1h` (e.g. `720h`). See [Removing kept directories](#removing-kept-directories) |
 | `--docker-host-path-map` | `""` | Path mapping for DinD (env: `DOCKER_HOST_PATH_MAP`) |
 | `--docker-volume` | `""` | Named Docker volume shared with tool containers (env: `DOCKER_VOLUME`) |
 | `--input-path-map` | `""` | Input path mapping (env: `INPUT_PATH_MAP`) |
@@ -420,7 +421,7 @@ echo "All workers started. Check status with: curl $SERVER/api/v1/workers | jq"
 
 **Key considerations for multi-GPU setups:**
 
-1. **Separate work directories** - Each worker needs its own `--workdir` to avoid conflicts
+1. **Separate work directories** - Each worker needs its own `--workdir` to avoid conflicts; `--kept-task-dir-ttl` removes nothing while another worker process uses the same work directory (see [Removing kept directories](#removing-kept-directories))
 2. **GPU isolation** - Use `--gpu-id` to bind each worker to exactly one GPU
 3. **Worker groups** - Use distinct groups (gpu-0, gpu-1, ...) for targeted scheduling
 4. **Memory** - Ensure sufficient RAM per worker (protein folding needs 16-32GB per GPU)
@@ -1018,26 +1019,125 @@ directory. Whatever the earlier attempt left is moved next to it as
 `<task id>.attempt-N` (with `<task id>.attempt-N_tmp` /
 `<task id>.attempt-N_staging`; N is the first free number). This happens on
 every worker, with or without `--keep-task-dirs`, and the `.attempt-N`
-directories stay even when a later attempt succeeds: they are never removed
-automatically, and each one can hold a full copy of the staged inputs and
-partial outputs, so watch the disk on workers whose tasks are retried often.
+directories stay even when a later attempt succeeds: they are removed only by
+`--kept-task-dir-ttl` (see below), and each one can hold a full copy of the
+staged inputs and partial outputs, so watch the disk on workers whose tasks are
+retried often.
 Absolute symlinks inside a moved directory that pointed into the task's own
 directories now point at the new attempt's, or at nothing. A tool can no longer
 resume from files its own earlier attempt left in the task directory. The
 server keeps the earlier attempt's exit code and output, see
 [Task attempt history](server.md#task-attempt-history).
 
+#### Removing kept directories
+
+`--kept-task-dir-ttl <duration>` (default `0`: never) removes kept task
+directories once they are older than the given age. The worker checks in the
+background right after start-up and then every hour; a positive value below
+`1h` is refused at start-up, so a typo cannot delete fresh evidence. A
+suggested value is `720h` (30 days).
+
+When the worker keeps a directory it writes a small marker file next to it (not
+inside, so tool output is unaffected): `<workdir>/<task id>.kept` or
+`<workdir>/<task id>.attempt-N.kept`, holding the task id, the reason
+(`failed`, `cancelled`, `debug`, `keep-task-dirs`, `earlier-attempt`) and the
+time it was kept (`kept_at`, UTC). The marker moves with the directory when a
+later attempt archives it as `.attempt-N`. The age is measured from the later
+of `kept_at` and the marker file's modification time, so a marker file written
+recently never makes an old `kept_at` count; a marker whose `kept_at` is in the
+future is left alone. Ages use the host clock: a worker started with a wrong
+clock can remove marked directories early or late. When the age exceeds the
+TTL the worker renames `<base>`, `<base>_tmp` and `<base>_staging` to
+`.gowe-swept-<name>-<number>` in the work directory, removes the marker, and
+then deletes the renamed directories. Deleting a large tree can take long, but
+it does not delay task starts; a `.gowe-swept-*` directory left behind by a
+worker that stopped during the deletion is removed by the next sweep.
+
+Kept directories are only removed while the worker is the only worker process
+using its work directory. Every worker (with or without the flag) takes one of
+two `flock` locks in the work directory while it runs. The first worker holds
+`<workdir>/.gowe-worker.lock` exclusively and is the only one that can sweep;
+every other worker holds a shared lock on `<workdir>/.gowe-worker.shared`. The
+sweeping worker removes something only when no other worker process holds the
+`.gowe-worker.shared` lock; otherwise it removes nothing and logs `work
+directory is shared with another worker process; kept task directories are not
+removed` once (WARN). When the first worker exits, another worker with the flag
+takes over at its next hourly check and sweeps from the check after. A worker
+that starts while a sweep is moving directories aside waits until that is done
+(not for the deletion that follows). If the lock files cannot be created or
+locked, the worker logs a WARN, runs tasks as before and never removes kept
+directories. Workers of older versions do not take these locks and are not
+detected: do not enable `--kept-task-dir-ttl` on a work directory shared with
+other workers.
+
+Limits of this detection:
+
+- A worker that could not take a lock (for example one running under another
+  user on a group-writable work directory) is not seen by the sweeping worker
+  either.
+- The locks are `flock` locks. On a network file system where `flock` is local
+  to each host (NFS mounted with `nolock` or `local_lock=flock`, Lustre with
+  `localflock`), workers on different hosts do not see each other. Leave the
+  flag off there, or give every worker its own work directory.
+- The repository's `docker-compose.yml` runs its workers on one shared work
+  directory, so the flag never removes anything in that set-up.
+- After an older worker version has run on the work directory (a rollback),
+  delete the `*.kept` files before enabling the flag again: the older version
+  does not move or remove markers when a task runs again, so a marker can
+  sit next to a newer directory of the same task.
+
+What is swept:
+
+- directories of tasks that failed or were cancelled (including a task left for
+  requeue when the worker shut down), of `gowe submit --debug` jobs and of
+  successful tasks on a `--keep-task-dirs` worker;
+- earlier attempts' `.attempt-N` directories, also of a task that is running
+  right now.
+
+What is never swept:
+
+- a directory without a marker: one whose outputs are referenced in place
+  (`--stage-out local`, or a failed stage-out), the directory of a task this
+  worker is running, one left by a run the worker was killed during (it gets an
+  `earlier-attempt` marker only if the task runs again on this worker), and a
+  successful task's directory whose SUCCESS report the server did not accept;
+- a directory whose name is the id of a task this worker is running;
+- anything in a work directory another worker process uses (see above);
+- anything outside the work directory: the marker's file name must be its task
+  id or `<task id>.attempt-<number>`, otherwise it is skipped with a WARN, as
+  is a marker that cannot be read, is not a regular file (a symlink is not
+  followed) or is larger than 4 KiB, and one with a zero `kept_at`. A symlink
+  in place of a task directory is unlinked, its target left alone; symlinks
+  inside a removed directory are not followed.
+
+Directories kept before this version have no marker and are never removed by
+the worker; remove them by hand (see below). Removing a directory by hand
+without its marker is harmless: the next sweep that finds the marker expired
+removes it.
+
 Staged copies in a shared stage-out directory (`--stage-out file:///...`) or in
 Shock are not cleaned by the worker; submission-level retention of those
 intermediates is tracked in [#159](https://github.com/wilke/GoWe/issues/159).
 
-Clean up retained directories manually:
+Directories without a marker (or all of them, on a worker without
+`--kept-task-dir-ttl`) can be cleaned up by hand. For marked directories prefer
+`--kept-task-dir-ttl`: the command below removes every directory of the work
+directory last modified more than 7 days ago, also one whose outputs
+downstream tasks still read in place (`--stage-out local`, or a failed
+stage-out), and leaves the `.kept` marker files behind:
 ```bash
-# Remove tasks older than 7 days
-find /var/lib/gowe/work -maxdepth 1 -type d -mtime +7 -exec rm -rf {} \;
+# Remove task directories older than 7 days (markers stay)
+find /var/lib/gowe/work -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} \;
 ```
 
-Or configure automatic cleanup via cron:
+A variant that also removes the marker `<dir>.kept` of each directory it
+removes:
+```bash
+find /var/lib/gowe/work -mindepth 1 -maxdepth 1 -type d -mtime +7 \
+  -exec sh -c 'rm -rf "$1" && rm -f "$1.kept"' sh {} \;
+```
+
+Or configure the cleanup via cron:
 ```cron
-0 2 * * * find /var/lib/gowe/work -maxdepth 1 -type d -mtime +7 -exec rm -rf {} \;
+0 2 * * * find /var/lib/gowe/work -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec sh -c 'rm -rf "$1" && rm -f "$1.kept"' sh {} \;
 ```

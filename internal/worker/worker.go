@@ -64,6 +64,9 @@ type Worker struct {
 	shareRamMB        int64                    // Registered charge for a task requesting no RAM (0 = not sent)
 	singleTask        atomic.Bool              // Server cannot account for several tasks: run one at a time
 	keepTaskDirs      bool                     // Retain task working dirs after successful completion
+	keptTaskDirTTL    time.Duration            // Remove marked kept task dirs older than this (0 = never)
+	keptMu            sync.Mutex               // Serializes the kept-dir sweep with archiving/creating a task dir
+	wdLock            *workDirLock             // Owner or sharer flock on the workdir (workdirlock.go; nil: none, no sweep)
 	inheritHostEnv    bool                     // Degraded: local/bare tools inherit the full worker env
 	noContainall      bool                     // Degraded: apptainer runs without --containall
 	logger            *slog.Logger
@@ -147,6 +150,12 @@ type Config struct {
 	// FAILED tasks are always kept regardless of this setting.
 	KeepTaskDirs bool
 
+	// KeptTaskDirTTL removes kept task directories (failed, cancelled, debug,
+	// --keep-task-dirs, earlier attempts; those with a "<base>.kept" marker)
+	// once their marker is older than this (--kept-task-dir-ttl). 0 never
+	// removes them; otherwise at least 1h (ValidateKeptTaskDirTTL).
+	KeptTaskDirTTL time.Duration
+
 	// InheritHostEnv makes tools that run directly on the host (local and the
 	// legacy bare runtime) inherit the worker's full environment instead of
 	// the allow-list. Degraded mode; reported in the registration labels.
@@ -200,6 +209,9 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 	}
 	if cfg.Poll == 0 {
 		cfg.Poll = 5 * time.Second
+	}
+	if err := ValidateKeptTaskDirTTL(cfg.KeptTaskDirTTL); err != nil {
+		return nil, err
 	}
 
 	// Auto-detect system resources if not explicitly set. Total-memory detection
@@ -442,6 +454,7 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		secrets:           cfg.Secrets,
 		envVars:           cfg.EnvVars,
 		keepTaskDirs:      cfg.KeepTaskDirs,
+		keptTaskDirTTL:    cfg.KeptTaskDirTTL,
 		inheritHostEnv:    cfg.InheritHostEnv,
 		noContainall:      cfg.ApptainerNoContainall,
 		active:            newActiveTaskSet(),
@@ -598,6 +611,11 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(w.workDir, 0o755); err != nil {
 		return fmt.Errorf("create workdir %s: %w", w.workDir, err)
 	}
+	// Lock on the workdir for the life of the process, with or without
+	// --kept-task-dir-ttl: the owner lock if no other worker process holds it,
+	// otherwise the sharer lock, which the owner's sweep sees and skips
+	// (workdirlock.go).
+	w.lockWorkDir()
 
 	regOpts := RegisterOptions{
 		GPUEnabled: w.gpu.Enabled,
@@ -650,6 +668,12 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 
 	// Start heartbeat in a separate goroutine so it continues during task execution.
 	go w.heartbeatLoop(ctx)
+
+	// Kept task dirs older than --kept-task-dir-ttl: removed in the background,
+	// first right away, then hourly; never delays polling or task starts.
+	if w.keptTaskDirTTL > 0 {
+		go w.keptDirSweepLoop(ctx)
+	}
 
 	// Run task polling loop.
 	return w.taskLoop(ctx)
@@ -856,6 +880,16 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 		w.active.remove(task.ID)
 		cancel()
 	}()
+	// Every exit of a run that created its task dir passes here, panic
+	// included: a dir kept because the run did not end with SUCCESS gets its
+	// kept-dir marker. Deferred after the removal above so it runs first,
+	// while the outcome recorded at the report is still in w.active.
+	taskDirCreated := false
+	defer func() {
+		if taskDirCreated {
+			w.markUnsuccessfulRun(task.ID)
+		}
+	}()
 
 	// GPU access for this task: the worker's static config, or devices of its
 	// own (possibly after a wait), or none.
@@ -878,16 +912,14 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 	taskDir := filepath.Join(w.workDir, task.ID)
 	// A retried or requeued task keeps its id: start in fresh directories and
 	// keep what an earlier attempt left as "<id>.attempt-N" for debugging.
-	archived, err := archivePreviousAttempt(w.workDir, task.ID)
-	if err != nil {
-		return w.reportFailure(runCtx, task, fmt.Errorf("archive previous attempt: %w", err))
-	}
+	archived, err := w.prepareTaskDir(task.ID)
 	if archived != "" {
 		w.logger.Info("previous attempt's task dir kept", "task_id", task.ID, "archived", archived)
 	}
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return w.reportFailure(runCtx, task, fmt.Errorf("create task dir: %w", err))
+	if err != nil {
+		return w.reportFailure(runCtx, task, err)
 	}
+	taskDirCreated = true
 
 	// Check if task has Tool+Job (new format) or legacy _base_command.
 	if task.HasTool() {
@@ -971,14 +1003,14 @@ func (w *Worker) releaseTaskGPUs(taskID string, hold *gpuHold) {
 // when a StageOut failed and left the local path; deleting the dir then would
 // destroy outputs that downstream tasks reference. Earlier attempts'
 // directories ("<id>.attempt-N", see archivePreviousAttempt) are always kept.
+//
+// Kept-dir markers (keptdirs.go): a dir kept for --keep-task-dirs or a debug
+// submission gets one (so --kept-task-dir-ttl may remove it later), but only
+// if it is still the directory this run created (ownsTaskDir); a dir kept
+// because outputs are referenced in place never does (an old marker is
+// removed), whatever the other settings; a leftover marker goes once the
+// directories were removed.
 func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
-	if w.keepTaskDirs {
-		return
-	}
-	if task.RuntimeHints != nil && task.RuntimeHints.Debug {
-		w.logger.Debug("keeping task dir: debug submission", "task_id", task.ID)
-		return
-	}
 	taskID := task.ID
 	taskDir := filepath.Join(w.workDir, taskID)
 	if abs, err := filepath.Abs(taskDir); err == nil {
@@ -988,6 +1020,20 @@ func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 	// literals; a passthrough output may reference them in place.
 	if outputsReferenceDir(outputs, taskDir) || outputsReferenceDir(outputs, taskDir+"_staging") {
 		w.logger.Debug("keeping task dir: outputs are referenced in place", "task_id", taskID)
+		w.removeKeptMarker(taskID)
+		return
+	}
+	if w.keepTaskDirs {
+		if w.ownsTaskDir(taskID) {
+			w.markKeptDir(taskID, taskID, keptReasonKeepTaskDirs)
+		}
+		return
+	}
+	if task.RuntimeHints != nil && task.RuntimeHints.Debug {
+		w.logger.Debug("keeping task dir: debug submission", "task_id", taskID)
+		if w.ownsTaskDir(taskID) {
+			w.markKeptDir(taskID, taskID, keptReasonDebug)
+		}
 		return
 	}
 	removed := true
@@ -998,6 +1044,7 @@ func (w *Worker) cleanupTaskDir(task *model.Task, outputs map[string]any) {
 		}
 	}
 	if removed {
+		w.removeKeptMarker(taskID)
 		w.logger.Debug("task dir removed", "task_id", taskID)
 	}
 }
@@ -1122,7 +1169,22 @@ var errReportDeclined = errors.New("server declined report")
 // Transient failures (network errors, 5xx, 429, 408) are retried up to 3
 // attempts with a short backoff; a 409 is a deliberate server-side drop and
 // is never retried.
+//
+// Every final result of a run passes here, so it records the run's outcome
+// for the kept-dir marker (markUnsuccessfulRun) before reporting: SUCCESS
+// (cleanupTaskDir decides; a SUCCESS the server did not accept stays without a
+// marker, as the server may still hold it with outputs in place), SKIPPED
+// ("cancelled") or FAILED ("failed").
 func (w *Worker) reportComplete(ctx context.Context, taskID string, result TaskResult) error {
+	switch result.State {
+	case model.TaskStateSuccess:
+		w.active.setOutcome(taskID, runOutcomeSuccess)
+	case model.TaskStateSkipped:
+		w.active.setOutcome(taskID, keptReasonCancelled)
+	default:
+		w.active.setOutcome(taskID, keptReasonFailed)
+	}
+
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 
@@ -1199,6 +1261,7 @@ func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task
 		// shutting down. Leave the task non-terminal so deregistration (or the
 		// server reaper) requeues it rather than marking it FAILED.
 		w.logger.Info("worker shutting down mid-task, leaving for requeue", "task_id", task.ID)
+		w.active.setOutcome(task.ID, keptReasonCancelled)
 		return true, runCtx.Err()
 	default:
 		return false, nil
