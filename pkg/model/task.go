@@ -95,7 +95,17 @@ type Task struct {
 	// the grace window; cleared when a heartbeat lists it again. A second
 	// omission once it is older than the grace window marks the task FAILED.
 	ServiceMissingAt *time.Time `json:"service_missing_at,omitempty"`
+	// ServiceStopRequestedAt is when the submission of this RUNNING service
+	// task was cancelled (set once). The task stays RUNNING, and keeps its
+	// charges, until its worker reports it stopped.
+	ServiceStopRequestedAt *time.Time `json:"service_stop_requested_at,omitempty"`
 }
+
+// ServiceStopReleaseAfter is how long a stop request of a RUNNING service
+// (ServiceStopRequestedAt) may stay unconfirmed before a server admin or a
+// manager of its worker group may force-release it although its worker is
+// online and not lost.
+const ServiceStopReleaseAfter = 15 * time.Minute
 
 // DatasetRequirement describes a reference dataset needed by a CWL tool.
 // Parsed from the gowe:ResourceData CWL hint.

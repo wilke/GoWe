@@ -798,6 +798,7 @@ PUT /api/v1/submissions/{id}/cancel
     "state": "CANCELLED",
     "steps_cancelled": 2,
     "tasks_cancelled": 3,
+    "services_stopping": 0,
     "tasks_already_completed": 2,
     "children_cancelled": 4
   }
@@ -806,11 +807,22 @@ PUT /api/v1/submissions/{id}/cancel
 
 `children_cancelled` counts descendant sub-workflow submissions (scatter
 children, at any nesting depth) cancelled synchronously at cancel-accept time.
+`services_stopping` counts the submission's running services (`gowe:Service`)
+that got (or already had) a stop request: they stay RUNNING, and their GPUs
+stay charged, until their worker confirms; they are not in
+`tasks_already_completed`.
 
 Deletion is separate from cancellation: `DELETE /api/v1/submissions/{id}`
 permanently removes a submission and returns `409 Conflict` while any descendant
 child submission is still active — cancel first and wait for the cascade to
-finish. Deleting also requires an authenticated (non-anonymous) owner or admin.
+finish. It also returns `409` while a task of the submission (or of a
+descendant) is a running service (`gowe:Service`): a cancel keeps a running
+service RUNNING until its worker reports it stopped, so cancel, wait, then
+delete (or force-release the service, see
+[docs/cwl-hints.md](cwl-hints.md#server-behaviour)). If a service is checked
+out while the delete runs, the submission is cancelled (its service asked to
+stop) and the `409` says so. Deleting also requires an authenticated
+(non-anonymous) owner or admin.
 
 ---
 

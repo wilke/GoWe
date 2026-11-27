@@ -145,7 +145,26 @@ type Store interface {
 	// CancelNonTerminalTasks SKIPs a submission's non-terminal tasks EXCEPT
 	// sub-workflow proxies: those are cancelled by the scheduler's per-tick
 	// reconciliation so the cancel cascade reaches their child submissions.
+	// A RUNNING worker service is not SKIPPED either: it stays RUNNING, with
+	// its charges, and gets service_stop_requested_at (set once) until its
+	// worker reports it stopped. Returns the number of tasks SKIPPED.
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
+	// CountStoppingServices returns the number of RUNNING worker services of
+	// the submission that have a stop request (what a cancel left RUNNING).
+	CountStoppingServices(ctx context.Context, submissionID string) (int, error)
+	// HasRunningService reports whether a task of the submission, or of one
+	// of its descendant child submissions, is a RUNNING service.
+	// DeleteSubmission refuses such a submission (ErrSubmissionHasRunningService).
+	HasRunningService(ctx context.Context, submissionID string) (bool, error)
+	// ForceReleaseService ends the RUNNING service task taskID of submission
+	// submissionID whose worker cannot confirm a stop (service_lost_at set,
+	// no worker row, a stop request older than model.ServiceStopReleaseAfter,
+	// or no submission row): FAILED, or SKIPPED when a stop was requested,
+	// with a stderr line naming actor; checks and write in one transaction. It
+	// returns the task as written, ErrTaskNotFound when the task does not
+	// exist or belongs to another submission, and a *ServiceReleaseError
+	// (errors.Is ErrServiceNotReleasable) when the task is not releasable.
+	ForceReleaseService(ctx context.Context, submissionID, taskID, actor string) (*model.Task, error)
 	// ResetFailedTasks archives (reason reset) and resets the submission's
 	// FAILED tasks to PENDING in one transaction. Service tasks are left alone.
 	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
@@ -231,7 +250,8 @@ type Store interface {
 	// running is non-nil (nil = the heartbeat had no running_tasks field; an
 	// empty non-nil slice = it reported none): a listed one has
 	// service_missing_at cleared, a first omission sets it, an omission once
-	// it is older than minAge marks the task FAILED.
+	// it is older than minAge marks the task FAILED (SKIPPED when a stop was
+	// requested: it stopped as asked).
 	ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error)
 	// ReleaseWorkerTask moves the worker's current_task off taskID in one
 	// UPDATE: if current_task is taskID it becomes the worker's most recently
@@ -239,10 +259,14 @@ type Store interface {
 	// current_task, and every other column, is left unchanged. An unknown
 	// worker is not an error.
 	ReleaseWorkerTask(ctx context.Context, workerID, taskID string) error
-	// CancelledTasksForWorker returns the subset of taskIDs the worker should
-	// stop: tasks whose submission is CANCELLED, and service tasks that are
-	// terminal in the database.
-	CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error)
+	// CancelledTasksForWorker returns the tasks worker workerID should stop:
+	// of taskIDs (its heartbeat's list), tasks whose submission is CANCELLED,
+	// service tasks that are terminal in the database, service tasks with a
+	// stop request and RUNNING service tasks whose submission row is gone;
+	// and, whatever was listed (nil included), every RUNNING service of
+	// workerID (external_id) with a stop request or whose submission is
+	// CANCELLED or gone. Batch tasks follow the list-based rule only.
+	CancelledTasksForWorker(ctx context.Context, workerID string, taskIDs []string) ([]string, error)
 
 	// Worker key operations (per-worker authentication, hashed at rest)
 	CreateWorkerKey(ctx context.Context, k *model.WorkerKey) error

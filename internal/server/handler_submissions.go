@@ -17,6 +17,7 @@ import (
 	"github.com/me/gowe/internal/fileliteral"
 	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/scheduler"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/validate"
 	"github.com/me/gowe/pkg/model"
 )
@@ -686,12 +687,15 @@ func (s *Server) handleCancelSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A RUNNING service with a stop request stays RUNNING until its worker
+	// confirms: it is in services_stopping, neither cancelled nor completed.
 	respondOK(w, reqID, map[string]any{
 		"id":                      sub.ID,
 		"state":                   sub.State,
 		"steps_cancelled":         result.StepsCancelled,
 		"tasks_cancelled":         result.TasksCancelled,
-		"tasks_already_completed": max(0, len(sub.Tasks)-result.TasksCancelled),
+		"services_stopping":       result.ServicesStopping,
+		"tasks_already_completed": max(0, len(sub.Tasks)-result.TasksCancelled-result.ServicesStopping),
 		"children_cancelled":      result.ChildrenCancelled,
 	})
 }
@@ -792,6 +796,23 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A running service holds its worker's GPUs until the worker reports it
+	// stopped; deleting the rows would never tell the worker to stop it and
+	// would drop its charges. Refuse here before anything is changed. The
+	// store's delete refuses too, for a service checked out after this check;
+	// the cancel below has then already been applied, so it is completed
+	// (see DeleteSubmission's refusal below) rather than left half done.
+	if running, err := s.store.HasRunningService(r.Context(), id); err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	} else if running {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code: model.ErrConflict, Message: store.ErrSubmissionHasRunningService.Error(),
+		})
+		return
+	}
+
 	// Cancel any in-flight work before deleting rows so workers see the
 	// cancellation on their next poll rather than reporting to a missing task.
 	now := time.Now().UTC()
@@ -799,6 +820,23 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 	tasksCancelled, _ := s.store.CancelNonTerminalTasks(r.Context(), id, now)
 
 	if err := s.store.DeleteSubmission(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrSubmissionHasRunningService) {
+			// A service was checked out after the check above, and the
+			// cancel above has already skipped the other steps and tasks
+			// and asked the service to stop. Complete the cancel (the
+			// submission becomes CANCELLED, descendants are handled) so it
+			// is not left half-cancelled, e.g. completing once the service
+			// ends, then refuse the delete.
+			sub.State = model.SubmissionStateCancelled
+			sub.CompletedAt = &now
+			if _, err := cancelseq.Run(r.Context(), s.store, s.metrics, s.logger, sub, now); err != nil {
+				s.logger.Error("delete refused: cancel submission", "submission_id", id, "error", err)
+			}
+			respondError(w, reqID, http.StatusConflict, &model.APIError{
+				Code: model.ErrConflict, Message: store.DeleteRefusedServiceStopping,
+			})
+			return
+		}
 		respondError(w, reqID, http.StatusInternalServerError,
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 		return

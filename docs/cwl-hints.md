@@ -438,22 +438,28 @@ A task created from a service step is a service task (`is_service`). The server 
   update after the task was created did not land), the scheduler adopts that task instead of creating a second one.
   The dispatch's own write of the submit outcome never puts a task a worker has already checked out back in the queue
   (compare-and-set on the state it wrote; this holds for every worker task).
+- **Only for a live submission.** A service task is stored only while its submission exists and is not finished
+  (COMPLETED, FAILED, CANCELLED), checked in the same transaction as the insert; a delete or cancel that lands while
+  the scheduler is creating it leaves no task. A service task is handed out only while its submission exists and is
+  not finished.
 - **Queue and checkout.** It is offered only to a service-mode worker of its group, and a service-mode worker is offered
   only service tasks. It waits in the queue until such a worker takes it; it is never failed for lack of a capable
   worker (dispatch preflight, stuck-task detection), and a service-mode worker never counts as capacity for ordinary
   tasks. The checkout hold rule (`--checkout-hold-after`) is never applied to a service-mode worker: its running
   services do not finish, so a held service would wait forever.
-- **Service-mode workers.** With worker authentication on, a worker registers with `service_mode: true` only with a
-  worker key whose group list explicitly names the worker's group; a key with an empty group list (any group) is
-  refused with 403. With worker authentication off this key rule is not checked. In every case `service_mode: true`
-  needs a valid `host_id` (an absent one, which the server groups by hostname, does not count): else 400 (`a
-  service-mode worker must report a host id`).
+- **Service-mode workers.** Service mode requires worker authentication: with it off (no static key, no database key
+  ever created) a registration with `service_mode: true` is refused with 403 (`service mode requires worker
+  authentication (register with a worker key that names the group)`). With it on, a worker registers with
+  `service_mode: true` only with a worker key whose group list explicitly names the worker's group; a key with an
+  empty group list (any group) is refused with 403, and such a key cannot adopt a keyless service-mode worker record
+  either (403). `service_mode: true` also needs a valid `host_id` (an absent one, which the server groups by hostname,
+  does not count): else 400 (`a service-mode worker must report a host id`).
 - **GPUs.** A service-mode worker without a GPU inventory (GPU capacity unknown) is offered no task that needs a GPU.
   GPU charges follow the worker row: besides its own RUNNING tasks, a worker with an inventory and a host id has
   subtracted the GPUs charged to RUNNING services of other worker rows (online or offline) of the same `host_id` whose
   inventory shares at least one GPU UUID with its own; workers of the same host with disjoint inventories do not affect
   each other. Limit: a restarted worker registers under a new id, so its lost services stay charged to the old row
-  (and are protected through this overlap rule) until their submissions are cancelled; the protection is by
+  (and are protected through this overlap rule) until they are force-released (see below); the protection is by
   inventory, not by the devices a service was actually given.
 - **Never retried, requeued or re-run.** `max_retries` is 0, the scheduler never marks a FAILED service for retry
   (whatever its `max_retries`) and its retry phase refuses one before archiving or clearing anything. No requeue path
@@ -463,15 +469,16 @@ A task created from a service step is a service task (`is_service`). The server 
   `a service task is not re-run; submit the service again`.
 - **Completion.** A worker reports a service's end with an explicit state, `FAILED` or `SKIPPED`: a model server
   that exits has failed, so `SUCCESS` (and an omitted state) is refused with 400 (`a service does not complete; report
-  FAILED, or SKIPPED after a cancel`). `SKIPPED` stands only when the submission is cancelled; otherwise it is stored as
-  `FAILED` (stderr gets `service stopped by its worker without a cancel`), so the submission fails. For every worker task, `/complete` accepts only `SUCCESS`, `FAILED`, `SKIPPED` or no state (decided
+  FAILED, or SKIPPED after a cancel`). `SKIPPED` stands only when the submission is cancelled (or the task has a stop
+  request); otherwise it is stored as `FAILED` (stderr gets `service stopped by its worker without a cancel`), so the
+  submission fails. For every worker task, `/complete` accepts only `SUCCESS`, `FAILED`, `SKIPPED` or no state (decided
   from the exit code); any other state is 400.
 - **No image change at submission.** A submission of a service workflow whose inputs contain the key
   `cwl:requirements` is refused with 400 (`cwl:requirements is not accepted for a service workflow`); the scheduler
   never merges job requirements into a service's tool either.
 - **Worker removal.** A worker that still holds a RUNNING service task cannot be removed (worker deregistration, admin,
-  group-manager and web UI removal: 409 `worker still holds N running service(s); cancel their submissions first`;
-  the UI's purge of offline workers skips it).
+  group-manager and web UI removal: 409 `worker still holds N running service(s); cancel their submissions, or
+  force-release them if the worker is gone`; the UI's purge of offline workers skips it).
 - **Silent worker.** When the worker of a RUNNING service goes silent, the reaper marks the worker offline as usual but
   the service stays RUNNING, keeps its charged cores, memory and GPUs, and is marked lost (`service_lost_at`); the mark
   is cleared when the worker heartbeats again.
@@ -480,13 +487,51 @@ A task created from a service step is a service task (`is_service`). The server 
   RUNNING service older than the grace period that such a heartbeat omits is marked missing (`service_missing_at`); a
   heartbeat that lists it again clears the mark; one that omits it once the mark is older than the grace period marks
   it FAILED (`service is no longer running on its worker (not in the worker's heartbeat)`), which fails its step and
-  submission. A worker must therefore send `running_tasks: []` when it runs nothing.
+  submission; a service with a stop request (see Cancel) is marked SKIPPED instead (`service stopped after a cancel
+  (no longer in the worker's heartbeat)`): it stopped as asked. A worker must therefore send `running_tasks: []` when
+  it runs nothing.
 - **Stopping an ended service.** The heartbeat answer's `cancel_tasks` lists every task the worker reported running
-  whose submission is cancelled and, for services, every one that is already finished in the database, so the worker
-  stops a service the server has ended.
-- **Known limit: cancel.** Cancelling the submission of a running service marks the service task SKIPPED at once and
-  frees its GPUs in the server's accounting before the worker has stopped the process (the worker learns it from
-  `cancel_tasks` at its next heartbeat). Waiting for the process to be gone is left to the next change.
+  whose submission is cancelled and, for services, every one that is already finished in the database, has a stop
+  request or (RUNNING) has lost its submission record, so the worker stops a service the server has ended or asked to
+  stop. Independently of what the worker lists (also when `running_tasks` is absent), it lists every RUNNING service
+  attributed to that worker that has a stop request or whose submission is cancelled or gone. Ordinary tasks follow
+  the list only.
+- **Cancel = stop requested.** Cancelling a submission makes it CANCELLED and skips its steps at once, and its tasks
+  that are not running as before; a QUEUED service is SKIPPED at once. A RUNNING service is not: it stays RUNNING, its
+  cores, memory and GPUs stay charged to its worker, and it gets a stop request (`service_stop_requested_at`, set
+  once; a second cancel changes nothing). Every heartbeat that lists it gets it in `cancel_tasks` until its worker
+  reports the end on `/complete` (`SKIPPED`, or `FAILED`, stored as sent) or the two-strike rule above ends it
+  SKIPPED; only then are its charges freed. The scheduler leaves the cancelled submission alone meanwhile (no new
+  task, no re-dispatch, the submission stays CANCELLED). The cancel answer counts such services in
+  `services_stopping` (not in `tasks_already_completed`), and `gowe cancel` prints `Services stopping: N (their GPUs
+  stay charged until the worker confirms)`.
+- **Delete refused while running.** Deleting a submission (`DELETE /api/v1/submissions/{id}`, and delete in the web
+  UI) while any task of it, or of a descendant child submission, is a RUNNING service is refused with 409 (`submission
+  has a running service; cancel it and wait until it has stopped, or force-release it`) and changes nothing. The
+  store refuses the delete too, for a service checked out after that check; the delete has then already cancelled
+  the submission's steps and tasks, so it completes the cancel (the submission becomes CANCELLED, its service gets a
+  stop request, descendants are cancelled) and answers 409 `submission has a running service, so it was not deleted:
+  it was cancelled and its service is stopping; delete it once the service has stopped`. Cancel first, wait until
+  the worker has reported the service stopped, then delete.
+- **Force release.** `POST /api/v1/submissions/{id}/tasks/{tid}/force-release` (`gowe admin force-release-service
+  <submission-id> <task-id>`) ends a RUNNING service whose worker cannot confirm that it stopped, or has not: its
+  worker went silent (`service_lost_at`), its worker record is gone, or its stop request is older than 15 minutes
+  (the worker online). Only a server admin or a manager of the task's worker group may do it (not the submission
+  owner by that alone); anyone else (a service identity, an anonymous caller, a user who manages no group) is
+  refused with 403 before anything is looked up, and a manager of another group gets the same 403 (`only a server
+  admin or a manager of the service's worker group may force-release it`). An unknown submission or task, or a task
+  of another submission, is 404; except that a server admin may release a task whose submission record is gone (the
+  task's `submission_id` must be the one in the URL). A task that is not a service, not RUNNING, or whose worker is
+  online with a younger or no stop request is refused with 409 (`the service's worker is online; cancel the
+  submission, then wait 15 minutes or until the worker is marked lost`). The task becomes FAILED (SKIPPED when a stop
+  was requested), its stderr gets `force-released by <user>: the worker did not confirm that the service stopped; its
+  process and GPUs may still be in use` (followed by `; the worker will be told to stop it on its next heartbeat`
+  when its worker record exists and is not lost), its secrets are removed, the server logs one WARN, the task
+  metrics record it (a FAILED one with reason `force_release`), and its charges are freed. The answer holds only
+  `id`, `state`, `external_id`, `completed_at` and `worker_notified` (when the worker is told to stop it: `on its
+  next heartbeat`, `on its next heartbeat, if it comes back` for a lost worker, `never: its worker record no longer
+  exists`). It is a bookkeeping act only: **the process may still run and hold the GPUs** on the worker's host, so
+  check the host first. A worker that still lists the task is told to stop it on its heartbeat.
 
 ---
 

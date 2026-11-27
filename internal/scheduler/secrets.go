@@ -2,10 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -194,6 +196,13 @@ func (l *Loop) failTaskPreDispatch(ctx context.Context, task *model.Task, si *mo
 	task.MaxRetries = task.RetryCount
 	task.RuntimeHints.ScrubSecrets() // never persist a half-attached credential
 	if err := l.store.CreateTask(ctx, task); err != nil {
+		// A service task whose submission was deleted or ended after this
+		// tick read it: nothing to record (see dispatchStep).
+		if errors.Is(err, store.ErrServiceSubmissionGone) {
+			l.logger.Debug("failed service task not recorded: submission deleted or ended meanwhile",
+				"si_id", si.ID, "submission_id", si.SubmissionID, "error", err)
+			return nil
+		}
 		return fmt.Errorf("create task: %w", err)
 	}
 	si.State = model.StepStateFailed

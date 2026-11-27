@@ -1059,6 +1059,20 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A running service holds its worker's GPUs until the worker reports it
+	// stopped: refuse here before anything is changed. The store's delete
+	// refuses too, for a service checked out after this check; the cancel
+	// below has then already been applied, so it is completed rather than
+	// left half done (see DeleteSubmission's refusal below).
+	if running, err := ui.store.HasRunningService(r.Context(), id); err != nil {
+		ui.logger.Error("delete submission: check running services", "submission_id", id, "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if running {
+		http.Error(w, store.ErrSubmissionHasRunningService.Error(), http.StatusConflict)
+		return
+	}
+
 	// Cancel any in-flight work before deleting rows so workers see the
 	// cancellation on their next poll rather than reporting to a missing task.
 	now := time.Now().UTC()
@@ -1071,6 +1085,20 @@ func (ui *UI) HandleSubmissionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ui.store.DeleteSubmission(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrSubmissionHasRunningService) {
+			// A service was checked out after the check above, and the
+			// cancel above has already skipped the other steps and tasks
+			// and asked the service to stop: complete the cancel (the
+			// submission becomes CANCELLED, descendants are handled), then
+			// refuse the delete.
+			sub.State = model.SubmissionStateCancelled
+			sub.CompletedAt = &now
+			if _, err := cancelseq.Run(r.Context(), ui.store, ui.metrics, ui.logger, sub, now); err != nil {
+				ui.logger.Error("delete refused: cancel submission", "submission_id", id, "error", err)
+			}
+			http.Error(w, store.DeleteRefusedServiceStopping, http.StatusConflict)
+			return
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}

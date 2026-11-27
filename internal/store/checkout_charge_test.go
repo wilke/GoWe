@@ -43,6 +43,11 @@ func mustCreateWorker(t *testing.T, st *SQLStore, w *model.Worker) {
 
 func mustCreateTask(t *testing.T, st *SQLStore, tk *model.Task) {
 	t.Helper()
+	// A service task is stored only while its submission is live
+	// (ErrServiceSubmissionGone): store a RUNNING one when there is none.
+	if tk.RuntimeHints != nil && tk.RuntimeHints.Service != nil {
+		ensureLiveSubmission(t, st, tk.SubmissionID)
+	}
 	if err := st.CreateTask(context.Background(), tk); err != nil {
 		t.Fatalf("create task %s: %v", tk.ID, err)
 	}

@@ -137,7 +137,8 @@ func TestServiceColumns_RoundTrip(t *testing.T) {
 	}
 
 	for _, c := range []struct{ table, col string }{
-		{"tasks", "is_service"}, {"tasks", "service_lost_at"}, {"tasks", "service_missing_at"}, {"workers", "service_mode"},
+		{"tasks", "is_service"}, {"tasks", "service_lost_at"}, {"tasks", "service_missing_at"},
+		{"tasks", "service_stop_requested_at"}, {"workers", "service_mode"},
 	} {
 		if !hasColumn(t, st, c.table, c.col) {
 			t.Errorf("column %s.%s missing", c.table, c.col)
@@ -385,7 +386,7 @@ func TestDeleteWorker_RefusedWithServices(t *testing.T) {
 			if !errors.As(err, &svcErr) || svcErr.Count != 1 || svcErr.WorkerID != "wrk_s" {
 				t.Errorf("error = %#v, want a WorkerServicesError for wrk_s with count 1", err)
 			}
-			const want = "worker still holds 1 running service(s); cancel their submissions first"
+			const want = "worker still holds 1 running service(s); cancel their submissions, or force-release them if the worker is gone"
 			if err.Error() != want {
 				t.Errorf("message = %q, want %q", err.Error(), want)
 			}

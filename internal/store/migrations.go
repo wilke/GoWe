@@ -623,6 +623,14 @@ var alterStatements = []struct {
 		column:   "service_missing_at",
 		alterSQL: "ALTER TABLE tasks ADD COLUMN service_missing_at TEXT",
 	},
+	// service_stop_requested_at: set (once) by a cancel of the submission of
+	// a RUNNING worker service, which stays RUNNING with its charges until
+	// the worker reports it stopped (NULL = no stop requested).
+	{
+		table:    "tasks",
+		column:   "service_stop_requested_at",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN service_stop_requested_at TEXT",
+	},
 	{
 		table:    "workers",
 		column:   "service_mode",
