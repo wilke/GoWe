@@ -526,6 +526,14 @@ func (ui *UI) HandleWorkflowDelete(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	// Only the owner or an admin deletes a workflow, as on the REST route
+	// (legacy workflows with no recorded owner stay deletable).
+	if sess := SessionFromContext(r.Context()); wf != nil && sess != nil && !sess.IsAdmin() &&
+		wf.CreatedBy != "" && wf.CreatedBy != sess.Username {
+		w.Header().Set("HX-Reswap", "none")
+		http.Error(w, "you can only delete workflows you created", http.StatusForbidden)
+		return
+	}
 	if wf != nil {
 		var refusal error
 		if ui.groups != nil {
