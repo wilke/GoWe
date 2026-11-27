@@ -328,6 +328,13 @@ const (
 	maxGPUFieldLength     = 128
 	// maxWorkerHeartbeatBody caps the heartbeat request body (#323).
 	maxWorkerHeartbeatBody = 64 << 10
+	// maxLoggedTaskID caps a worker-sent task id in a log line.
+	maxLoggedTaskID = 128
+	// maxServiceTaskIDLen is the longest task_id a services entry may have.
+	maxServiceTaskIDLen = 128
+	// maxLoggedErrorLen caps the text of an error about worker-sent data in
+	// a log line (it may quote the data).
+	maxLoggedErrorLen = 256
 )
 
 // sanitizeWorkerGPUs drops entries with a negative index or an empty uuid,
@@ -378,7 +385,9 @@ func truncateUTF8(s string, n int) string {
 }
 
 // handleWorkerHeartbeat updates a worker's last_seen timestamp and, when the
-// body carries it, its live usage (#323).
+// body carries it, its live usage (#323). Order: touch (last_seen, usage),
+// reconcile of running_tasks, service statuses (service-mode worker only),
+// cancelled-task lookup for the answer.
 // PUT /api/v1/workers/{id}/heartbeat
 func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
@@ -408,6 +417,13 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 			bodyErr = err
 		}
 	}
+	// Service statuses: only from a service-mode worker; a list that is too
+	// long or not a list is ignored (never fails the heartbeat).
+	now := time.Now().UTC()
+	var services []model.ServiceReport
+	if bodyErr == nil {
+		services = s.heartbeatServices(worker, req.Services, now)
+	}
 	var usage *model.WorkerUsage
 	if bodyErr == nil {
 		usage = s.heartbeatUsage(worker, req)
@@ -416,7 +432,7 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// One targeted UPDATE of state, last_seen, peer_addr and (when sent)
 	// usage: a full-row UpdateWorker here races with CheckoutTask's
 	// current_task write.
-	worker.LastSeen = time.Now().UTC()
+	worker.LastSeen = now
 	if err := s.store.TouchWorker(r.Context(), worker.ID, worker.State, worker.LastSeen, peerAddr(r), usage); err != nil {
 		respondError(w, reqID, http.StatusInternalServerError,
 			model.NewInternalError(err.Error()))
@@ -453,6 +469,23 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 			"worker_id", worker.ID, "tasks", requeued)
 	}
 
+	// Store the reported service statuses after the reconcile, so a service
+	// the reconcile has just ended is not written (the store writes only
+	// RUNNING services of this worker). A store error never fails the
+	// heartbeat.
+	if len(services) > 0 {
+		if ignored, err := s.store.UpdateServiceStatuses(r.Context(), worker.ID, services, now); err != nil {
+			s.logger.Error("heartbeat: store service statuses", "worker_id", worker.ID, "error", err)
+		} else if len(ignored) > 0 {
+			logged := make([]string, len(ignored))
+			for i, id := range ignored {
+				logged[i] = truncateUTF8(id, maxLoggedTaskID)
+			}
+			s.logger.Debug("heartbeat: service statuses ignored (not a RUNNING service of this worker)",
+				"worker_id", worker.ID, "tasks", logged)
+		}
+	}
+
 	// Tell the worker which of its running tasks have been cancelled so it can
 	// kill the underlying process and free resources; this includes every
 	// listed service task the server has already ended (terminal in the
@@ -475,11 +508,100 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 // The usage fields stay raw so that a malformed usage value is dropped by
 // heartbeatUsage instead of failing the heartbeat (#323); running_tasks is
 // decoded strictly, as before, into a pointer so that an absent (or null)
-// field (nil) is told apart from an empty list.
+// field (nil) is told apart from an empty list. services stays raw too: it
+// is looked at only for a service-mode worker (heartbeatServices), and a bad
+// entry is skipped rather than failing the heartbeat.
 type heartbeatBody struct {
 	RunningTasks *[]string       `json:"running_tasks"`
 	Host         json.RawMessage `json:"host"`
 	GPUs         json.RawMessage `json:"gpu_usage"`
+	Services     json.RawMessage `json:"services"`
+}
+
+// heartbeatServices decodes, normalises and validates the services list of
+// a heartbeat body. It returns nothing for a worker that is not in service
+// mode (one DEBUG when the field was sent) and for an absent or null field.
+// For a service-mode worker, a list of more than model.MaxHeartbeatServices
+// entries is ignored as a whole with one WARN (worker id, count), and so is a
+// value that is not a list; the rest of the heartbeat is unaffected. An entry
+// that cannot be decoded, has no task_id, a task_id longer than
+// maxServiceTaskIDLen bytes or holding a byte outside 0x21..0x7e, or fails
+// model.ServiceStatus.Validate is skipped with one WARN naming the task id
+// (cut to maxLoggedTaskID bytes) and the reason (a decode error cut to
+// maxLoggedErrorLen bytes). When a task id appears more than once the last
+// entry wins (in its own position of the result).
+func (s *Server) heartbeatServices(worker *model.Worker, raw json.RawMessage, now time.Time) []model.ServiceReport {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if !worker.ServiceMode {
+		s.logger.Debug("heartbeat: ignoring services from a worker not in service mode", "worker_id", worker.ID)
+		return nil
+	}
+	var entries []json.RawMessage
+	if !isJSONKind(trimmed, '[') || json.Unmarshal(trimmed, &entries) != nil {
+		s.logger.Warn("heartbeat: ignoring services: not a list", "worker_id", worker.ID)
+		return nil
+	}
+	if len(entries) > model.MaxHeartbeatServices {
+		s.logger.Warn("heartbeat: ignoring services: too many entries",
+			"worker_id", worker.ID, "count", len(entries), "limit", model.MaxHeartbeatServices)
+		return nil
+	}
+	var out []model.ServiceReport
+	pos := make(map[string]int, len(entries))
+	for _, e := range entries {
+		var rep model.ServiceReport
+		if err := json.Unmarshal(e, &rep); err != nil {
+			// Name the task when at least task_id decodes.
+			var id struct {
+				TaskID string `json:"task_id"`
+			}
+			_ = json.Unmarshal(e, &id)
+			s.logger.Warn("heartbeat: skipping a service status that cannot be decoded",
+				"worker_id", worker.ID, "task_id", truncateUTF8(id.TaskID, maxLoggedTaskID),
+				"error", truncateUTF8(err.Error(), maxLoggedErrorLen))
+			continue
+		}
+		if rep.TaskID == "" {
+			s.logger.Warn("heartbeat: skipping a service status without task_id", "worker_id", worker.ID)
+			continue
+		}
+		if reason := checkServiceTaskID(rep.TaskID); reason != "" {
+			s.logger.Warn("heartbeat: skipping a service status with an invalid task_id",
+				"worker_id", worker.ID, "task_id", truncateUTF8(rep.TaskID, maxLoggedTaskID), "error", reason)
+			continue
+		}
+		rep.Normalize()
+		if err := rep.Validate(now); err != nil {
+			s.logger.Warn("heartbeat: skipping an invalid service status",
+				"worker_id", worker.ID, "task_id", truncateUTF8(rep.TaskID, maxLoggedTaskID), "error", err)
+			continue
+		}
+		if i, dup := pos[rep.TaskID]; dup {
+			out[i] = rep
+			continue
+		}
+		pos[rep.TaskID] = len(out)
+		out = append(out, rep)
+	}
+	return out
+}
+
+// checkServiceTaskID returns why id may not be the task_id of a services
+// entry ("" when it may): longer than maxServiceTaskIDLen bytes, or a byte
+// outside printable ASCII without the space (0x21..0x7e).
+func checkServiceTaskID(id string) string {
+	if len(id) > maxServiceTaskIDLen {
+		return fmt.Sprintf("task_id is longer than %d bytes", maxServiceTaskIDLen)
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; c < 0x21 || c > 0x7e {
+			return "task_id must contain only printable ASCII characters (0x21-0x7e)"
+		}
+	}
+	return ""
 }
 
 // hostUsageWire and gpuUsageWire mirror model.HostUsage and model.GPUUsage

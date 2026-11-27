@@ -8,7 +8,9 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/me/gowe/pkg/model"
 	"github.com/spf13/cobra"
 )
 
@@ -123,6 +125,7 @@ func newStatusCmd() *cobra.Command {
 
 			if tasks, ok := data["tasks"].([]any); ok && len(tasks) > 0 {
 				fmt.Println("  Steps:")
+				now := time.Now().UTC()
 				for _, t := range tasks {
 					task, ok := t.(map[string]any)
 					if !ok {
@@ -131,6 +134,9 @@ func newStatusCmd() *cobra.Command {
 					stepID, _ := task["step_id"].(string)
 					tState, _ := task["state"].(string)
 					fmt.Printf("    - %s: %s\n", stepID, tState)
+					if line := serviceStatusLine(task["service_status"], now); line != "" {
+						fmt.Printf("      service: %s\n", line)
+					}
 				}
 			}
 
@@ -169,6 +175,24 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&showTiming, "timing", false, "Show the timing breakdown (steps, tasks, queue/run durations)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print the raw timing JSON (requires --timing)")
 	return cmd
+}
+
+// serviceStatusLine renders a task's service_status field (as decoded into
+// a map) with model.ServiceStatus.Line, judged stale against now; "" when
+// absent or not decodable.
+func serviceStatusLine(v any, now time.Time) string {
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	var st model.ServiceStatus
+	if err := json.Unmarshal(b, &st); err != nil || st.State == "" {
+		return ""
+	}
+	return st.Line(now)
 }
 
 // runTimingStatus fetches and renders the /timing view of a submission.

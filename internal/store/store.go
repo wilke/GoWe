@@ -268,6 +268,13 @@ type Store interface {
 	// ended in any state (CANCELLED, FAILED, COMPLETED) or is gone. Batch
 	// tasks follow the list-based rule only.
 	CancelledTasksForWorker(ctx context.Context, workerID string, taskIDs []string) ([]string, error)
+	// UpdateServiceStatuses stores each report as the service_status of its
+	// task (UpdatedAt = now), in one transaction, only while the task is a
+	// RUNNING worker service (is_service) whose external_id is workerID; the
+	// task ids of the other reports are returned in ignored, nothing changed
+	// for them. A stored ready_at is never cleared or changed; without one the
+	// report's is taken, or now when the reported state is ready.
+	UpdateServiceStatuses(ctx context.Context, workerID string, reports []model.ServiceReport, now time.Time) (ignored []string, err error)
 
 	// Worker key operations (per-worker authentication, hashed at rest)
 	CreateWorkerKey(ctx context.Context, k *model.WorkerKey) error
