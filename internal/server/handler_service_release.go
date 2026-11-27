@@ -12,8 +12,9 @@ import (
 // ForceReleaseRefused is the 403 message of every refused force release by
 // who the caller is: an anonymous caller, a service identity, a user who is
 // neither a server admin nor a manager of any worker group, and a manager of
-// other groups than the task's. It never names a group, so a refused caller
-// learns nothing about the task.
+// other groups than the task's; and, for a caller who is not a server admin,
+// every unknown submission or task. It never names a group, so a refused
+// caller learns nothing about the task or whether it exists.
 const ForceReleaseRefused = "only a server admin or a manager of the service's worker group may force-release it"
 
 // The worker_notified values of a force release: when the worker is told to
@@ -34,13 +35,16 @@ const (
 //
 // Who: a server admin or a manager of the task's worker group. Anyone else
 // (an anonymous caller, a service identity, a user who manages no group) is
-// refused with 403 ForceReleaseRefused before anything is looked up, and a
-// manager of other groups gets the same 403 for an existing task; the
-// submission owner gets no right from ownership. Unknown submission or task,
-// or a task of another submission: 404, as the neighbouring task routes;
-// except that a server admin may release a task whose submission row is gone
-// (a task with that id whose submission_id is the {id} of the URL), the
-// worker then being told to stop it on its next heartbeat. Every other
+// refused with 403 ForceReleaseRefused before anything is looked up; the
+// submission owner gets no right from ownership. A manager who is not a
+// server admin gets the same 403 for every miss: unknown submission, unknown
+// task, task of another submission, a task whose submission row is gone, or
+// a task of a group they do not manage. A server admin gets 404 for an
+// unknown submission or task, or a task of another submission, as the
+// neighbouring task routes; except that a server admin may release a task
+// whose submission row is gone (a task with that id whose submission_id is
+// the {id} of the URL), the worker then being told to stop it on its next
+// heartbeat. Every other
 // refusal (not a service, not RUNNING, worker online) is a 409 from
 // store.ForceReleaseService, which checks and writes in one transaction.
 //
@@ -80,10 +84,18 @@ func (s *Server) handleForceReleaseService(w http.ResponseWriter, r *http.Reques
 			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 		return
 	}
+	// A caller who is not a server admin gets the same 403 for every miss
+	// (unknown submission, unknown task, task of another submission, a task
+	// whose submission row is gone, a group not managed), so a manager cannot
+	// probe which submissions and tasks exist.
+	if !actor.IsAdmin && (sub == nil || task == nil || task.SubmissionID != subID) {
+		refuse()
+		return
+	}
 	if sub == nil {
 		// A task left without its submission row (created as the submission
 		// was deleted): only a server admin may release it.
-		if !actor.IsAdmin || task == nil || task.SubmissionID != subID {
+		if task == nil || task.SubmissionID != subID {
 			respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", subID))
 			return
 		}
@@ -108,6 +120,8 @@ func (s *Server) handleForceReleaseService(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		var refused *store.ServiceReleaseError
 		switch {
+		case errors.Is(err, store.ErrTaskNotFound) && !actor.IsAdmin:
+			refuse()
 		case errors.Is(err, store.ErrTaskNotFound):
 			respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("task", tid))
 		case errors.As(err, &refused):

@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -202,19 +204,44 @@ func TestForceReleaseService_SmallAnswerAndMetrics(t *testing.T) {
 	})
 }
 
+// bodyWithoutRequest returns the JSON body without its request_id and
+// timestamp, re-encoded with sorted keys, to compare two answers.
+func bodyWithoutRequest(t *testing.T, body []byte) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("decode body %q: %v", body, err)
+	}
+	delete(m, "request_id")
+	delete(m, "timestamp")
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
 // F6: a caller who is neither a server admin nor a manager of any group
-// gets the same 403 whether the submission and task exist or not, and a
-// manager of another group gets it for an existing task; nothing changes.
+// gets the same 403 whether the submission and task exist or not, and so
+// does a manager of another group: for an unknown submission, an unknown
+// task of an existing submission, a task of another submission and an
+// existing task, all with the same body; nothing changes.
 func TestForceReleaseService_NoProbing(t *testing.T) {
 	f := newForceReleaseFixture(t, seedLostService)
 	if w, _ := wgDo(t, f.srv, "PUT", workerGroupsPath+"/h", `{"users":["bob"],"managers":["hmgr"]}`, adminAuthToken); w.Code != http.StatusOK {
 		t.Fatalf("PUT h: %d %s", w.Code, w.Body.String())
 	}
+	bodies := map[string]string{}
 	for _, c := range []struct{ name, token, path string }{
 		{"ordinary user, existing task", plainToken, forceReleasePath},
 		{"ordinary user, unknown task", plainToken, "/api/v1/submissions/sub_fr/tasks/task_nope/force-release"},
 		{"ordinary user, unknown submission", plainToken, "/api/v1/submissions/sub_nope/tasks/task_nope/force-release"},
+		{"manager of another group, unknown submission", hmgrToken, "/api/v1/submissions/sub_nope/tasks/task_svc/force-release"},
+		{"manager of another group, unknown task", hmgrToken, "/api/v1/submissions/sub_fr/tasks/task_nope/force-release"},
+		{"manager of another group, task of another submission", hmgrToken, "/api/v1/submissions/sub_other/tasks/task_svc/force-release"},
 		{"manager of another group, existing task", hmgrToken, forceReleasePath},
+		{"manager of the group, unknown submission", mgrToken, "/api/v1/submissions/sub_nope/tasks/task_svc/force-release"},
+		{"manager of the group, unknown task", mgrToken, "/api/v1/submissions/sub_fr/tasks/task_nope/force-release"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			w, env := mgDo(t, f.srv, "POST", c.path, "", c.token)
@@ -222,10 +249,20 @@ func TestForceReleaseService_NoProbing(t *testing.T) {
 				env.Error.Message != ForceReleaseRefused {
 				t.Fatalf("force-release = %d %+v, want 403 %q", w.Code, env.Error, ForceReleaseRefused)
 			}
+			bodies[c.name] = bodyWithoutRequest(t, w.Body.Bytes())
 			if tk := mustTask(t, f.st, "task_svc"); tk.State != model.TaskStateRunning {
 				t.Errorf("task = %s, want RUNNING", tk.State)
 			}
 		})
+	}
+	want := bodies["manager of another group, existing task"]
+	if want == "" {
+		t.Fatal("no body for the existing task")
+	}
+	for name, got := range bodies {
+		if got != want {
+			t.Errorf("%s: body %s, want the same as for an existing task: %s", name, got, want)
+		}
 	}
 }
 
@@ -309,9 +346,10 @@ func newFileManagedGroupServer(t *testing.T) (*Server, store.Store, *sql.DB) {
 }
 
 // F1d: a RUNNING service whose submission row is gone (its worker online) is
-// released by a server admin only: a manager of its group gets 404 like for
-// any unknown submission; the admin's release frees its charges, and the
-// live worker is told to stop it on its next heartbeat.
+// released by a server admin only: a manager of its group gets the 403 of
+// any unknown submission, an admin naming another submission id a 404; the
+// admin's release frees its charges, and the live worker is told to stop it
+// on its next heartbeat.
 func TestForceReleaseService_SubmissionRowMissing(t *testing.T) {
 	ctx := context.Background()
 	srv, st, raw := newFileManagedGroupServer(t)
@@ -322,13 +360,17 @@ func TestForceReleaseService_SubmissionRowMissing(t *testing.T) {
 	}
 	const path = "/api/v1/submissions/sub_gone/tasks/task_svc/force-release"
 
-	for _, c := range []struct{ name, path, token string }{
-		{"manager of the group", path, mgrToken},
-		{"admin, task of another submission id", "/api/v1/submissions/sub_nope/tasks/task_svc/force-release", adminAuthToken},
+	for _, c := range []struct {
+		name, path, token string
+		code              int
+		errCode           model.ErrorCode
+	}{
+		{"manager of the group", path, mgrToken, http.StatusForbidden, model.ErrForbidden},
+		{"admin, task of another submission id", "/api/v1/submissions/sub_nope/tasks/task_svc/force-release", adminAuthToken, http.StatusNotFound, model.ErrNotFound},
 	} {
 		w, env := mgDo(t, srv, "POST", c.path, "", c.token)
-		if w.Code != http.StatusNotFound || env.Error == nil || env.Error.Code != model.ErrNotFound {
-			t.Fatalf("%s: force-release = %d %+v, want 404", c.name, w.Code, env.Error)
+		if w.Code != c.code || env.Error == nil || env.Error.Code != c.errCode {
+			t.Fatalf("%s: force-release = %d %+v, want %d %s", c.name, w.Code, env.Error, c.code, c.errCode)
 		}
 		if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateRunning {
 			t.Fatalf("%s: task = %s, want RUNNING", c.name, tk.State)
@@ -441,6 +483,131 @@ func TestDeleteSubmission_ServiceCheckedOutDuringDelete(t *testing.T) {
 	srv.store = st
 	if w, _ := mgDo(t, srv, "DELETE", "/api/v1/submissions/sub_del", "", adminAuthToken); w.Code != http.StatusOK {
 		t.Fatalf("delete after the stop = %d %s, want 200", w.Code, w.Body.String())
+	}
+}
+
+// completedBeforeCancelStore is checkoutAfterCheckStore whose refused
+// DeleteSubmission then sets the submission COMPLETED, as a scheduler tick
+// ending it right before the delete handler's cancel sequence would.
+type completedBeforeCancelStore struct {
+	checkoutAfterCheckStore
+}
+
+func (s *completedBeforeCancelStore) DeleteSubmission(ctx context.Context, id string) error {
+	err := s.Store.DeleteSubmission(ctx, id)
+	if !errors.Is(err, store.ErrSubmissionHasRunningService) {
+		return err
+	}
+	sub, gerr := s.Store.GetSubmission(ctx, id)
+	if gerr != nil || sub == nil {
+		return fmt.Errorf("read submission %s: %v", id, gerr)
+	}
+	now := time.Now().UTC()
+	sub.State, sub.CompletedAt = model.SubmissionStateCompleted, &now
+	if uerr := s.Store.UpdateSubmission(ctx, sub); uerr != nil {
+		return uerr
+	}
+	return err
+}
+
+// Round 2, item 3: a delete refused by the store whose submission another
+// writer ended (COMPLETED) before the handler's cancel sequence: the 409 names
+// the real state, not "it was cancelled"; the submission stays COMPLETED and
+// the service is RUNNING with a stop request.
+func TestDeleteSubmission_RefusedNamesRealState(t *testing.T) {
+	ctx := context.Background()
+	srv, st, _ := newManagedGroupServer(t)
+	seedOwnedSubmission(t, st, "sub_del", "admin")
+	seedGPUServiceWorker(t, st, "wrk_svc", time.Now().UTC())
+	if err := st.CreateTask(ctx, serviceTask("sub_del", "task_svc")); err != nil {
+		t.Fatal(err)
+	}
+	srv.store = &completedBeforeCancelStore{checkoutAfterCheckStore{Store: st}}
+
+	const want = "submission has a running service that is being stopped; the submission is COMPLETED; delete it again once the service has stopped"
+	w, env := mgDo(t, srv, "DELETE", "/api/v1/submissions/sub_del", "", adminAuthToken)
+	if w.Code != http.StatusConflict || env.Error == nil || env.Error.Code != model.ErrConflict || env.Error.Message != want {
+		t.Fatalf("delete = %d %+v, want 409 %q", w.Code, env.Error, want)
+	}
+	if store.DeleteRefusedMessage(model.SubmissionStateCompleted) != want {
+		t.Errorf("DeleteRefusedMessage(COMPLETED) = %q, want %q", store.DeleteRefusedMessage(model.SubmissionStateCompleted), want)
+	}
+	if sub, err := st.GetSubmission(ctx, "sub_del"); err != nil || sub == nil || sub.State != model.SubmissionStateCompleted {
+		t.Fatalf("submission = %+v, %v; want kept, COMPLETED", sub, err)
+	}
+	if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateRunning || tk.ExternalID != "wrk_svc" || tk.ServiceStopRequestedAt == nil {
+		t.Errorf("service = %s on %q (stop %v), want RUNNING on wrk_svc with a stop request", tk.State, tk.ExternalID, tk.ServiceStopRequestedAt)
+	}
+}
+
+// Round 2, item 2: a service's SKIPPED report under a FAILED submission
+// without a stop request is stored as FAILED (only a CANCELLED submission or
+// a stop request makes SKIPPED stand).
+func TestWorkerTaskComplete_ServiceSkippedUnderFailedSubmission(t *testing.T) {
+	ctx := context.Background()
+	srv, st := testServerWithStore()
+	workerID := registerTestWorker(t, srv)
+	_, subID := createTestSubmission(t, srv)
+	seedServiceIn(t, st, subID, "task_svc", workerID)
+	sub, err := st.GetSubmission(ctx, subID)
+	if err != nil || sub == nil {
+		t.Fatalf("GetSubmission = (%v, %v)", sub, err)
+	}
+	now := time.Now().UTC()
+	sub.State, sub.CompletedAt = model.SubmissionStateFailed, &now
+	if err := st.UpdateSubmission(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateRunning || tk.ServiceStopRequestedAt != nil {
+		t.Fatalf("task = %s (stop %v), want RUNNING without a stop request", tk.State, tk.ServiceStopRequestedAt)
+	}
+
+	if code, env := completeTask(t, srv, workerID, "task_svc", `{"state":"SKIPPED","exit_code":-1,"stderr":"stopped"}`); code != http.StatusOK {
+		t.Fatalf("complete = %d %+v, want 200", code, env.Error)
+	}
+	if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateFailed || tk.Stderr != "stopped\n"+ServiceStoppedWithoutCancel {
+		t.Errorf("task = %s stderr %q, want FAILED %q", tk.State, tk.Stderr, "stopped\n"+ServiceStoppedWithoutCancel)
+	}
+}
+
+// Round 2, item 4: SKIPPED for a RUNNING service whose submission row is
+// gone (no stop request) is accepted with 200 and stored as FAILED, with
+// ServiceStoppedWithoutCancel appended (a missing submission is not a
+// cancel); the task ends terminal and its worker's heartbeat no longer
+// lists it in cancel_tasks.
+func TestWorkerTaskComplete_ServiceSkippedSubmissionRowMissing(t *testing.T) {
+	ctx := context.Background()
+	srv, st, raw := newFileManagedGroupServer(t)
+	seedGPUServiceWorker(t, st, "wrk_svc", time.Now().UTC())
+	seedChargedService(t, st, "sub_gone", "task_svc", "wrk_svc")
+	if _, err := raw.ExecContext(ctx, `DELETE FROM submissions WHERE id = ?`, "sub_gone"); err != nil {
+		t.Fatal(err)
+	}
+	if sub, err := st.GetSubmission(ctx, "sub_gone"); err != nil || sub != nil {
+		t.Fatalf("submission = (%v, %v), want no row", sub, err)
+	}
+	if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateRunning || tk.ServiceStopRequestedAt != nil {
+		t.Fatalf("task = %s (stop %v), want RUNNING without a stop request", tk.State, tk.ServiceStopRequestedAt)
+	}
+
+	code, env := completeTask(t, srv, "wrk_svc", "task_svc", `{"state":"SKIPPED","exit_code":-1,"stderr":"stopped"}`)
+	if code != http.StatusOK {
+		t.Fatalf("complete = %d %+v, want 200", code, env.Error)
+	}
+	tk := mustTask(t, st, "task_svc")
+	if !tk.State.IsTerminal() || tk.CompletedAt == nil {
+		t.Fatalf("task = %s (completed %v), want terminal", tk.State, tk.CompletedAt)
+	}
+	if tk.State != model.TaskStateFailed || tk.Stderr != "stopped\n"+ServiceStoppedWithoutCancel {
+		t.Errorf("task = %s stderr %q, want FAILED %q", tk.State, tk.Stderr, "stopped\n"+ServiceStoppedWithoutCancel)
+	}
+	if charges, err := st.SumChargedByWorker(ctx); err != nil {
+		t.Fatal(err)
+	} else if _, ok := charges["wrk_svc"]; ok {
+		t.Errorf("charges = %v, want nothing charged to wrk_svc", charges)
+	}
+	if resp := heartbeat(t, srv, "wrk_svc", `{"running_tasks":[]}`); len(resp.CancelTasks) != 0 {
+		t.Errorf("cancel_tasks = %v, want none once the task is terminal", resp.CancelTasks)
 	}
 }
 

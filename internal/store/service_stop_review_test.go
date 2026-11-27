@@ -236,6 +236,63 @@ func TestCancelledTasksForWorker_ByWorker(t *testing.T) {
 	}
 }
 
+// Round 2, item 2: by worker id, a RUNNING service without a stop request
+// whose submission has ended in any state (FAILED and COMPLETED as well as
+// CANCELLED) is in the cancel list, listed or not; under a live submission
+// (RUNNING, PENDING) it is not. A listed batch task under a FAILED or
+// COMPLETED submission is still not returned (the list-based rule counts
+// CANCELLED only).
+func TestCancelledTasksForWorker_ServiceUnderEndedSubmission(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		state     model.SubmissionState
+		svcWanted bool
+		batchToo  bool
+	}{
+		{model.SubmissionStateFailed, true, false},
+		{model.SubmissionStateCompleted, true, false},
+		{model.SubmissionStateCancelled, true, true},
+		{model.SubmissionStateRunning, false, false},
+		{model.SubmissionStatePending, false, false},
+	} {
+		t.Run("submission "+string(tt.state), func(t *testing.T) {
+			st := testStore(t)
+			mustCreateWorker(t, st, svcWorker("wrk_s", true, nil))
+			seedRunningOn(t, st, "svc_run", "wrk_s", true, 0, 0)
+			seedRunningOn(t, st, "batch_run", "wrk_s", false, 0, 0)
+			setSubmissionState(tt.state)(t, st)
+			if tk := mustGetTask(t, st, "svc_run"); tk.ServiceStopRequestedAt != nil {
+				t.Fatalf("svc_run has a stop request %v, want none", tk.ServiceStopRequestedAt)
+			}
+
+			var byWorker []string
+			if tt.svcWanted {
+				byWorker = []string{"svc_run"}
+			}
+			listedWant := slices.Clone(byWorker)
+			if tt.batchToo {
+				listedWant = append(listedWant, "batch_run")
+			}
+			for _, c := range []struct {
+				name   string
+				listed []string
+				want   []string
+			}{
+				{"running_tasks absent", nil, byWorker},
+				{"both listed", []string{"svc_run", "batch_run"}, listedWant},
+			} {
+				t.Run(c.name, func(t *testing.T) {
+					got, err := st.CancelledTasksForWorker(ctx, "wrk_s", c.listed)
+					if err != nil {
+						t.Fatal(err)
+					}
+					checkSameIDs(t, got, c.want)
+				})
+			}
+		})
+	}
+}
+
 // F2b: a service whose worker is online and not lost is force-released once
 // its stop request is older than model.ServiceStopReleaseAfter (SKIPPED, the
 // stderr says the worker will be told to stop it); a younger stop request is

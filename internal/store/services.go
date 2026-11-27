@@ -194,6 +194,18 @@ var ErrSubmissionHasRunningService = errors.New("submission has a running servic
 // cancel, so the submission is CANCELLED and its service is asked to stop.
 const DeleteRefusedServiceStopping = "submission has a running service, so it was not deleted: it was cancelled and its service is stopping; delete it once the service has stopped"
 
+// DeleteRefusedMessage is the 409 message of such a refused delete, built
+// from the state of the submission as re-read after the handler's cancel
+// sequence: DeleteRefusedServiceStopping when it is CANCELLED; otherwise (the
+// scheduler, say, ended it first, so the cancel did not apply) a message
+// naming its real state.
+func DeleteRefusedMessage(state model.SubmissionState) string {
+	if state == model.SubmissionStateCancelled {
+		return DeleteRefusedServiceStopping
+	}
+	return fmt.Sprintf("submission has a running service that is being stopped; the submission is %s; delete it again once the service has stopped", state)
+}
+
 // CountStoppingServices implements Store.
 func (s *SQLStore) CountStoppingServices(ctx context.Context, submissionID string) (int, error) {
 	var n int

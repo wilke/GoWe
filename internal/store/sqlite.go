@@ -4560,14 +4560,17 @@ func (s *SQLStore) requeueOrphan(ctx context.Context, workerID, id string) error
 //
 // By worker, whatever was listed (taskIDs nil or empty included): every
 // RUNNING service whose external_id is workerID and that has a stop request
-// or whose submission is CANCELLED or gone, on every heartbeat while it
-// stays RUNNING (a cancel keeps it RUNNING until its worker reports it
-// stopped). Batch tasks follow the list-based rule only.
+// or whose submission has ended in any state (CANCELLED, FAILED, COMPLETED)
+// or is gone, on every heartbeat while it stays RUNNING (a cancel keeps it
+// RUNNING until its worker reports it stopped). Batch tasks follow the
+// list-based rule only, where only a CANCELLED submission counts.
 func (s *SQLStore) CancelledTasksForWorker(ctx context.Context, workerID string, taskIDs []string) ([]string, error) {
 	query := `SELECT t.id FROM tasks t
 		 LEFT JOIN submissions s ON t.submission_id = s.id
 		 WHERE t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 1 AND t.external_id = ?
-		   AND (t.service_stop_requested_at IS NOT NULL OR s.state = 'CANCELLED' OR s.id IS NULL)`
+		   AND (t.service_stop_requested_at IS NOT NULL
+		        OR s.state IN ('CANCELLED', 'FAILED', 'COMPLETED')
+		        OR s.id IS NULL)`
 	args := []any{workerID}
 	if len(taskIDs) > 0 {
 		placeholders := make([]string, len(taskIDs))

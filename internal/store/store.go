@@ -264,8 +264,9 @@ type Store interface {
 	// service tasks that are terminal in the database, service tasks with a
 	// stop request and RUNNING service tasks whose submission row is gone;
 	// and, whatever was listed (nil included), every RUNNING service of
-	// workerID (external_id) with a stop request or whose submission is
-	// CANCELLED or gone. Batch tasks follow the list-based rule only.
+	// workerID (external_id) with a stop request or whose submission has
+	// ended in any state (CANCELLED, FAILED, COMPLETED) or is gone. Batch
+	// tasks follow the list-based rule only.
 	CancelledTasksForWorker(ctx context.Context, workerID string, taskIDs []string) ([]string, error)
 
 	// Worker key operations (per-worker authentication, hashed at rest)

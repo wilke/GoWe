@@ -494,13 +494,14 @@ A task created from a service step is a service task (`is_service`). The server 
   whose submission is cancelled and, for services, every one that is already finished in the database, has a stop
   request or (RUNNING) has lost its submission record, so the worker stops a service the server has ended or asked to
   stop. Independently of what the worker lists (also when `running_tasks` is absent), it lists every RUNNING service
-  attributed to that worker that has a stop request or whose submission is cancelled or gone. Ordinary tasks follow
-  the list only.
+  attributed to that worker that has a stop request or whose submission has ended in any state (cancelled, failed or
+  completed) or is gone: a running service under a submission that has ended, however it ended, is told to stop.
+  Ordinary tasks follow the list only (there only a cancelled submission counts).
 - **Cancel = stop requested.** Cancelling a submission makes it CANCELLED and skips its steps at once, and its tasks
   that are not running as before; a QUEUED service is SKIPPED at once. A RUNNING service is not: it stays RUNNING, its
   cores, memory and GPUs stay charged to its worker, and it gets a stop request (`service_stop_requested_at`, set
-  once; a second cancel changes nothing). Every heartbeat that lists it gets it in `cancel_tasks` until its worker
-  reports the end on `/complete` (`SKIPPED`, or `FAILED`, stored as sent) or the two-strike rule above ends it
+  once; a second cancel changes nothing). Every heartbeat of its worker gets it in `cancel_tasks`, listed or not,
+  until its worker reports the end on `/complete` (`SKIPPED`, or `FAILED`, stored as sent) or the two-strike rule above ends it
   SKIPPED; only then are its charges freed. The scheduler leaves the cancelled submission alone meanwhile (no new
   task, no re-dispatch, the submission stays CANCELLED). The cancel answer counts such services in
   `services_stopping` (not in `tasks_already_completed`), and `gowe cancel` prints `Services stopping: N (their GPUs
@@ -511,7 +512,10 @@ A task created from a service step is a service task (`is_service`). The server 
   store refuses the delete too, for a service checked out after that check; the delete has then already cancelled
   the submission's steps and tasks, so it completes the cancel (the submission becomes CANCELLED, its service gets a
   stop request, descendants are cancelled) and answers 409 `submission has a running service, so it was not deleted:
-  it was cancelled and its service is stopping; delete it once the service has stopped`. Cancel first, wait until
+  it was cancelled and its service is stopping; delete it once the service has stopped`; if the submission had
+  already ended otherwise (so the cancel did not apply), the 409 names its real state instead (`submission has a
+  running service that is being stopped; the submission is COMPLETED; delete it again once the service has
+  stopped`). Cancel first, wait until
   the worker has reported the service stopped, then delete.
 - **Force release.** `POST /api/v1/submissions/{id}/tasks/{tid}/force-release` (`gowe admin force-release-service
   <submission-id> <task-id>`) ends a RUNNING service whose worker cannot confirm that it stopped, or has not: its
@@ -519,8 +523,9 @@ A task created from a service step is a service task (`is_service`). The server 
   (the worker online). Only a server admin or a manager of the task's worker group may do it (not the submission
   owner by that alone); anyone else (a service identity, an anonymous caller, a user who manages no group) is
   refused with 403 before anything is looked up, and a manager of another group gets the same 403 (`only a server
-  admin or a manager of the service's worker group may force-release it`). An unknown submission or task, or a task
-  of another submission, is 404; except that a server admin may release a task whose submission record is gone (the
+  admin or a manager of the service's worker group may force-release it`). A manager who is not a server admin gets
+  that same 403 for an unknown submission or task, or a task of another submission, so nothing can be probed; for a
+  server admin these are 404, except that a server admin may release a task whose submission record is gone (the
   task's `submission_id` must be the one in the URL). A task that is not a service, not RUNNING, or whose worker is
   online with a younger or no stop request is refused with 409 (`the service's worker is online; cancel the
   submission, then wait 15 minutes or until the worker is marked lost`). The task becomes FAILED (SKIPPED when a stop
@@ -528,7 +533,8 @@ A task created from a service step is a service task (`is_service`). The server 
   process and GPUs may still be in use` (followed by `; the worker will be told to stop it on its next heartbeat`
   when its worker record exists and is not lost), its secrets are removed, the server logs one WARN, the task
   metrics record it (a FAILED one with reason `force_release`), and its charges are freed. The answer holds only
-  `id`, `state`, `external_id`, `completed_at` and `worker_notified` (when the worker is told to stop it: `on its
+  `id`, `state`, `external_id`, `completed_at` and `worker_notified` (when the worker is told to stop it, if it still
+  reports the task: `on its
   next heartbeat`, `on its next heartbeat, if it comes back` for a lost worker, `never: its worker record no longer
   exists`). It is a bookkeeping act only: **the process may still run and hold the GPUs** on the worker's host, so
   check the host first. A worker that still lists the task is told to stop it on its heartbeat.

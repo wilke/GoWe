@@ -832,8 +832,21 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 			if _, err := cancelseq.Run(r.Context(), s.store, s.metrics, s.logger, sub, now); err != nil {
 				s.logger.Error("delete refused: cancel submission", "submission_id", id, "error", err)
 			}
+			// The cancel applies only to a submission still active: say what
+			// the submission really is now (another writer may have ended it
+			// first), not what the cancel meant it to be.
+			after, err := s.store.GetSubmission(r.Context(), id)
+			if err != nil {
+				respondError(w, reqID, http.StatusInternalServerError,
+					&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+				return
+			}
+			if after == nil {
+				respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("submission", id))
+				return
+			}
 			respondError(w, reqID, http.StatusConflict, &model.APIError{
-				Code: model.ErrConflict, Message: store.DeleteRefusedServiceStopping,
+				Code: model.ErrConflict, Message: store.DeleteRefusedMessage(after.State),
 			})
 			return
 		}
