@@ -83,6 +83,10 @@ func cloneRuntimeHints(h *model.RuntimeHints) *model.RuntimeHints {
 		so := *h.StagerOverrides
 		cp.StagerOverrides = &so
 	}
+	if h.Service != nil {
+		svc := *h.Service
+		cp.Service = &svc
+	}
 	return &cp
 }
 

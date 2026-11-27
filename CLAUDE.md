@@ -106,7 +106,12 @@ hints:
       - id: boltz
         path: /local_databases/boltz
         mode: prestage         # "prestage" (require) or "cache" (prefer)
+
+  gowe:Service:                # Experimental long-running service: parsed, validated, access-checked only (runs as an ordinary task, MaxRetries 0)
+    port_input: port           # int input that receives the port; also scheme, health{...}, stop_grace, weights_checksum (docs/cwl-hints.md)
 ```
+
+A workflow with a `gowe:Service` tool is registered or replaced only if it has one step, no scatter, a container, a valid non-`default` worker group, an `int` `port_input` (else 400), and the caller is a server admin or a manager of that group (else 403; `model.ValidateServiceWorkflow` + `checkServiceWorkflow` in `internal/server/handler_workflows.go`). Replace, labels and delete of an existing one (REST and UI delete) go through `MayChangeWorkflow` (`internal/server/group_admin.go`, also on `ui.GroupAdmin`). A service anywhere inside a sub-workflow is refused by the parser and, authoritatively, by `createChildSubmission`; a child submission's task never carries `RuntimeHints.Service`.
 
 ### Key Packages
 

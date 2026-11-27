@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,10 @@ import (
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
 )
+
+// errServiceInSubWorkflow is the permanent child-creation error for a
+// sub-workflow that contains a gowe:Service step.
+var errServiceInSubWorkflow = errors.New("a service (gowe:Service) cannot run inside a sub-workflow")
 
 // isSubWorkflow checks if a tool map represents a CWL Workflow (sub-workflow).
 func isSubWorkflow(tool map[string]any) bool {
@@ -52,6 +57,14 @@ func (l *Loop) createChildSubmission(ctx context.Context, parentTask *model.Task
 	childWf, err := p.ToModel(subGraph, "sub_"+parentTask.StepID)
 	if err != nil {
 		return nil, fmt.Errorf("convert sub-workflow to model: %w", err)
+	}
+	// Authoritative gowe:Service rule: the parser refuses a nested service
+	// at registration, but a workflow registered before that check (or one
+	// that slipped past it) reaches here, where the sub-workflow's steps are
+	// top-level and would carry the service. Permanent: every caller fails
+	// the proxy (MaxRetries 0) and the step.
+	if _, isService, _ := model.ValidateServiceWorkflow(childWf); isService {
+		return nil, errServiceInSubWorkflow
 	}
 
 	// Build a proper RawCWL for the child that includes the sub-workflow as

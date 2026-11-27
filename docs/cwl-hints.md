@@ -11,7 +11,7 @@ All GoWe-specific extensions should go in **`hints`**, not `requirements`. In CW
 
 Using `hints` ensures your CWL workflows remain portable: cwltool, Toil, and other engines will skip unknown hints rather than failing.
 
-> **Parser behavior**: GoWe accepts `DockerRequirement` and `gowe:ResourceData` from either `hints` or `requirements`. `gowe:Execution` is only recognized in `hints`. The parser also accepts legacy `goweHint` for backward compatibility, but new CWL files should use `gowe:Execution`.
+> **Parser behavior**: GoWe accepts `DockerRequirement`, `gowe:ResourceData` and `gowe:Service` from either `hints` or `requirements`. `gowe:Execution` is only recognized in `hints`. The parser also accepts legacy `goweHint` for backward compatibility, but new CWL files should use `gowe:Execution`.
 
 ---
 
@@ -331,6 +331,104 @@ This tool:
 
 ---
 
+## `gowe:Service` — Long-running Service (Experimental)
+
+**Experimental. In this version the hint is parsed, validated and access-checked only; a service workflow that is
+submitted runs like an ordinary task.** Later versions will run the tool as a long-lived server (for example a model
+server on a GPU worker) and check its health.
+
+Marks a `CommandLineTool` as a service: the worker chooses a port, passes it in the tool's `port_input` input and
+checks the service's health over HTTP.
+
+```yaml
+$namespaces:
+  gowe: https://github.com/wilke/GoWe#
+
+hints:
+  gowe:Service:
+    port_input: port
+    scheme: http
+    health:
+      path: /health
+      ready_path: /v1/models
+      ready_contains: my-model
+      start_timeout: 600      # seconds
+      interval: 10
+      failure_threshold: 3
+    stop_grace: 30            # seconds
+    weights_checksum: sha256:...
+```
+
+| Field | Type | Default | Range / rule |
+|-------|------|---------|--------------|
+| `port_input` | string | — (required) | Id of an input of the tool whose type is exactly `int` (not `int?`, `long` or a union); the worker sets it to the chosen port |
+| `scheme` | string | `http` | `http` or `https` |
+| `health.path` | string | `/health` | Starts with `/` but not `//`; printable ASCII only (0x21-0x7e: no spaces, control or non-ASCII characters); no `#`; at most 256 bytes |
+| `health.ready_path` | string | none | Optional second GET; same rules as `health.path` |
+| `health.ready_contains` | string | none | The `ready_path` response body must contain it; any text without control characters; at most 256 bytes; requires `ready_path` |
+| `health.start_timeout` | integer (seconds) | 600 | 1..3600 |
+| `health.interval` | integer (seconds) | 10 | 1..300 |
+| `health.failure_threshold` | integer | 3 | 1..100 |
+| `stop_grace` | integer (seconds) | 30 | 1..600 |
+| `weights_checksum` | string | none | Recorded only; printable ASCII only (0x21-0x7e); at most 256 bytes |
+
+Lengths are counted in bytes (UTF-8), not characters.
+
+- Only the literal key `gowe:Service` is recognized (unlike `gowe:Execution`, no full-URI or other-prefix spelling). A
+  key that looks meant as it — equal to it ignoring case, ending in `#Service`, or `<prefix>:Service` where
+  `$namespaces` maps `<prefix>` to `https://github.com/wilke/GoWe#` — fails registration (400), naming the key, instead
+  of being ignored. This applies on tools, steps, the workflow and inside sub-workflows.
+- The hint is read from `hints` or `requirements` of the tool, or from the `hints` or `requirements` of the step that
+  runs it; declaring it in both `hints` and `requirements` of the same tool or step is an error. A step's hint
+  replaces the tool's as a whole (like the other step-level routing fields). The tool's own hint is still validated
+  in full (keys, values, `port_input`) even when the step replaces it.
+- A **step's** `hints`/`requirements` are read in map form only (`hints: {gowe:Service: {...}}`). The list form
+  (`hints: [{class: gowe:Service, ...}]`) is dropped on a workflow step, as it is today for every hint there
+  (`DockerRequirement`, `gowe:Execution`, ...); a tool's and the workflow's `hints` accept both forms.
+- A key that is given must have a value: an empty string for `port_input`, `scheme`, `health.path` or
+  `health.ready_path` fails registration (400); omit the key to use the default.
+- An unknown key (also inside `health`), a value of the wrong type, a value out of range, or a `port_input` that is not
+  an `int` input of the tool fails registration (400). Integers are written as integers, as for `gpu_count`; a CWL
+  expression is not accepted.
+- The hint is accepted only on a `CommandLineTool` run by a step of the top-level workflow (or on that step): not on the
+  workflow, an `ExpressionTool`, a tool no top-level step runs, or anywhere inside a sub-workflow (on the
+  sub-workflow, one of its steps, or any tool it holds, at any depth). The scheduler enforces this too: a sub-workflow
+  that turns out to contain a service (for example in a workflow registered before this check) fails its step with
+  `a service (gowe:Service) cannot run inside a sub-workflow`, and a task of a sub-workflow never carries the hint.
+- A top-level step must reach the tool by `run: "#<id>"` (inline or packed `$graph`) for the hint to count; an external
+  `run: tool.cwl` reference on the server is refused for a service tool. Register packed documents (`gowe register`
+  packs them).
+
+### Registration rule
+
+A workflow that contains a service tool may be registered (`POST /api/v1/workflows`) or replaced (`PUT
+/api/v1/workflows/{id}`) only when all of these hold:
+
+1. the workflow has exactly one step, and that step does not scatter;
+2. the step runs in a container (`DockerRequirement.dockerPull` or `gowe:Execution.docker_image`);
+3. the step names a worker group other than `default` (`gowe:Execution.worker_group`);
+4. `port_input` names an `int` input of the tool;
+5. the caller is a server admin or a manager of that worker group.
+
+1-4 are refused with 400, 5 with 403; an anonymous caller and a service identity (service token) are always refused.
+The worker group must also be a valid group name (letters, digits, `.`, `_`, `-`, starting with a letter or digit;
+else 400); names are case-sensitive, so `Default` is a group of its own, not `default`.
+
+A change to an existing service workflow — `PUT` (new CWL or metadata only), `PATCH /api/v1/workflows/{id}/labels`,
+`DELETE /api/v1/workflows/{id}`, and delete in the web UI — is refused with 403 unless the caller is a server admin or
+a manager of that workflow's worker group (in addition to the usual ownership check of each route).
+
+Registering content that is already stored returns the existing row (`deduplicated: true`) only when that row is
+itself a valid service workflow; a row with the same text parsed without the service (by an older server) is not
+reused, and a new row is stored.
+
+A task created from a service step is not retried by the scheduler (`max_retries` 0).
+
+**Known gap (closed in a later version):** the container rule holds at registration only. A submission can still
+change the image the step runs through `cwl:requirements` in its inputs (job-level `DockerRequirement`).
+
+---
+
 ## Data Flow
 
 ```
@@ -352,6 +450,7 @@ Container launched with bind mounts from --pre-stage-dir / --extra-bind
 | `DockerRequirement` | Fully supported | Standard CWL |
 | `gowe:Execution` | Safely ignored (namespaced) | GoWe-specific |
 | `gowe:ResourceData` | Safely ignored (namespaced) | GoWe-specific |
+| `gowe:Service` | Safely ignored (namespaced) | GoWe-specific, experimental |
 | `cwltool:CUDARequirement` | Supported by cwltool | cwltool extension |
 
 To maximize portability, always place GoWe extensions in `hints` and use `$namespaces` for `gowe:` prefixed hints (both `gowe:Execution` and `gowe:ResourceData`).

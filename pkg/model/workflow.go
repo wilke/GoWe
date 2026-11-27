@@ -103,6 +103,10 @@ type StepHints struct {
 	// InjectSecrets exposes every submission secret to this step's tool,
 	// parsed from gowe:Execution.inject_secrets.
 	InjectSecrets bool `json:"inject_secrets,omitempty"`
+
+	// Service marks the step's tool as a long-running service, parsed from
+	// the gowe:Service hint (experimental; see ValidateServiceWorkflow).
+	Service *ServiceSpec `json:"service,omitempty"`
 }
 
 // Tool represents a CWL CommandLineTool or ExpressionTool.

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1710,6 +1712,9 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 	if err := rejectExecutionUnderRequirements("workflow", wf.Requirements); err != nil {
 		return nil, err
 	}
+	if err := checkServicePlacement(graph); err != nil {
+		return nil, err
+	}
 
 	// Convert inputs.
 	for id, inp := range wf.Inputs {
@@ -1812,10 +1817,17 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 
 		// Extract GoWe hints from the step and the resolved tool and merge
 		// them field-wise (mergeStepHints): the step may route, never inject.
-		// The step's requirements are read for the GPU count only
-		// (CUDARequirement); its other requirements do not route.
-		stepHints, err := extractStepHintsNS(step.Hints,
-			cudaRequirementsOnly(step.Requirements, graph.Namespaces), graph.Namespaces)
+		// The step's requirements are read for the GPU count
+		// (CUDARequirement) and gowe:Service only; its other requirements do
+		// not route.
+		stepReqs := cudaRequirementsOnly(step.Requirements, graph.Namespaces)
+		if v, ok := step.Requirements[serviceHintClass]; ok {
+			if stepReqs == nil {
+				stepReqs = map[string]any{}
+			}
+			stepReqs[serviceHintClass] = v
+		}
+		stepHints, err := extractStepHintsNS(step.Hints, stepReqs, graph.Namespaces)
 		if err != nil {
 			return nil, fmt.Errorf("step %s: %w", stepID, err)
 		}
@@ -1824,6 +1836,14 @@ func (p *Parser) ToModel(graph *cwl.GraphDocument, name string) (*model.Workflow
 			toolHints = ms.ToolInline.Hints
 		}
 		ms.Hints = mergeStepHints(toolHints, stepHints)
+
+		// The service in force (the step's, else the tool's) must name an
+		// int input of the tool the step runs.
+		if ms.Hints != nil && ms.Hints.Service != nil {
+			if err := model.CheckServicePortInput(ms.ToolInline, ms.Hints.Service); err != nil {
+				return nil, fmt.Errorf("step %s: %w: %w", stepID, ErrInvalidServiceHint, err)
+			}
+		}
 
 		// Compute DependsOn from source references.
 		ms.DependsOn = computeDependsOn(ms.In, inputIDs)
@@ -1904,6 +1924,11 @@ func convertTool(ct *cwl.CommandLineTool, namespaces map[string]string) (*model.
 	hints, err := extractStepHintsNS(ct.Hints, ct.Requirements, namespaces)
 	if err != nil {
 		return nil, fmt.Errorf("tool %s: %w", ct.ID, err)
+	}
+	if hints != nil && hints.Service != nil {
+		if err := model.CheckServicePortInput(t, hints.Service); err != nil {
+			return nil, fmt.Errorf("tool %s: %w: %w", ct.ID, ErrInvalidServiceHint, err)
+		}
 	}
 	t.Hints = hints
 
@@ -2289,6 +2314,8 @@ func rejectExecutionUnderRequirements(where string, requirements map[string]any)
 //     sets them, otherwise the tool's value stands.
 //   - GPUs: the larger count (a step's plain gpu: true must not lower a
 //     tool's gpu_count).
+//   - Service (gowe:Service): like the routing fields, the step's spec,
+//     as a whole, wins when it sets one; otherwise the tool's stands.
 //
 // Either argument may be nil; nil is returned when both are.
 func mergeStepHints(tool, step *model.StepHints) *model.StepHints {
@@ -2331,6 +2358,9 @@ func mergeStepHints(tool, step *model.StepHints) *model.StepHints {
 	}
 	if step.InjectSecrets {
 		out.InjectSecrets = true
+	}
+	if step.Service != nil {
+		out.Service = step.Service
 	}
 	// out.InjectBVBRCToken stays the tool's: never copied from step.
 	return &out
@@ -2450,12 +2480,306 @@ func extractStepHintsNS(hints, requirements map[string]any, namespaces map[strin
 	}
 	h.RequiresGPU = h.GPUs > 0
 
+	// gowe:Service, from hints or requirements.
+	if h.Service, err = parseServiceHint(hints, requirements); err != nil {
+		return nil, err
+	}
+
 	if h.BVBRCAppID == "" && h.ExecutorType == "" && h.DockerImage == "" && h.WorkerGroup == "" &&
 		len(h.RequiredDatasets) == 0 && len(h.SecretEnv) == 0 && !h.InjectSecrets && !h.InjectBVBRCToken &&
-		!h.RequiresGPU && h.GPUs == 0 {
+		!h.RequiresGPU && h.GPUs == 0 && h.Service == nil {
 		return nil, nil
 	}
 	return &h, nil
+}
+
+// serviceHintClass is the hints/requirements key of the gowe:Service
+// extension (experimental).
+const serviceHintClass = "gowe:Service"
+
+// ErrInvalidServiceHint is wrapped by every gowe:Service registration error
+// (a malformed or misplaced hint); its text is the "gowe:Service" prefix of
+// the message. Handlers map it to HTTP 400.
+var ErrInvalidServiceHint = errors.New(serviceHintClass)
+
+// serviceErr returns a gowe:Service error: "gowe:Service: <format>".
+func serviceErr(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidServiceHint, fmt.Sprintf(format, args...))
+}
+
+// hasServiceHint reports whether a hints or requirements map declares
+// gowe:Service.
+func hasServiceHint(hints, requirements map[string]any) bool {
+	_, inHints := hints[serviceHintClass]
+	_, inReqs := requirements[serviceHintClass]
+	return inHints || inReqs
+}
+
+// parseServiceHint parses gowe:Service from hints or requirements (nil when
+// neither declares it; declaring it in both is an error). Unknown keys and
+// wrongly typed values are errors, so a typo never drops a setting silently.
+// Defaults are applied, then the spec is validated.
+func parseServiceHint(hints, requirements map[string]any) (*model.ServiceSpec, error) {
+	raw, inHints := hints[serviceHintClass]
+	if reqRaw, inReqs := requirements[serviceHintClass]; inReqs {
+		if inHints {
+			return nil, serviceErr("declared under both hints and requirements; declare it once")
+		}
+		raw = reqRaw
+	} else if !inHints {
+		return nil, nil
+	}
+
+	body, ok := raw.(map[string]any)
+	if raw != nil && !ok {
+		return nil, serviceErr("must be a mapping, got %T", raw)
+	}
+	var spec model.ServiceSpec
+	for _, key := range slices.Sorted(maps.Keys(body)) { // sorted: the first bad key is reported, always the same
+		v := body[key]
+		var err error
+		switch key {
+		case "class": // list-form hints: {class: gowe:Service, ...}
+		case "port_input":
+			spec.PortInput, err = serviceNonEmptyString(key, v)
+		case "scheme":
+			spec.Scheme, err = serviceNonEmptyString(key, v)
+		case "stop_grace":
+			spec.StopGraceSeconds, err = serviceInt(key, v)
+		case "weights_checksum":
+			spec.WeightsChecksum, err = serviceString(key, v)
+		case "health":
+			err = parseServiceHealth(v, &spec.Health)
+		default:
+			err = serviceErr("unknown key %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	spec.ApplyDefaults()
+	if err := spec.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidServiceHint, err)
+	}
+	return &spec, nil
+}
+
+// parseServiceHealth parses the health mapping of gowe:Service into h.
+func parseServiceHealth(v any, h *model.ServiceHealth) error {
+	if v == nil {
+		return nil
+	}
+	body, ok := v.(map[string]any)
+	if !ok {
+		return serviceErr("health must be a mapping, got %T", v)
+	}
+	for _, key := range slices.Sorted(maps.Keys(body)) {
+		val := body[key]
+		field := "health." + key
+		var err error
+		switch key {
+		case "path":
+			h.Path, err = serviceNonEmptyString(field, val)
+		case "ready_path":
+			h.ReadyPath, err = serviceNonEmptyString(field, val)
+		case "ready_contains":
+			h.ReadyContains, err = serviceString(field, val)
+		case "start_timeout":
+			h.StartTimeoutSeconds, err = serviceInt(field, val)
+		case "interval":
+			h.IntervalSeconds, err = serviceInt(field, val)
+		case "failure_threshold":
+			h.FailureThreshold, err = serviceInt(field, val)
+		default:
+			err = serviceErr("unknown key %q", field)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// serviceString returns v as a string, an error naming field otherwise.
+func serviceString(field string, v any) (string, error) {
+	s, ok := v.(string)
+	if !ok {
+		return "", serviceErr("%s must be a string, got %T", field, v)
+	}
+	return s, nil
+}
+
+// serviceNonEmptyString is serviceString, but the empty string is an error:
+// a key that is present must have a value (omit it for the default).
+func serviceNonEmptyString(field string, v any) (string, error) {
+	s, err := serviceString(field, v)
+	if err == nil && s == "" {
+		return "", serviceErr("%s must not be empty (a key that is given needs a value)", field)
+	}
+	return s, err
+}
+
+// serviceInt returns v as an integer >= 1 (the forms positiveIntValue
+// accepts), an error naming field otherwise.
+func serviceInt(field string, v any) (int, error) {
+	n, err := positiveIntValue(v)
+	if err != nil {
+		return 0, serviceErr("%s must be an integer >= 1: %v", field, err)
+	}
+	return n, nil
+}
+
+// checkServicePlacement refuses a gowe:Service declared anywhere but on a
+// CommandLineTool run by a step of the top-level workflow, or on such a
+// step: on the workflow itself, on an ExpressionTool, on a tool no top-level
+// step runs, and anywhere inside a sub-workflow (the registration rule only
+// sees the top-level steps, so a nested service would escape it). A
+// near-miss spelling of the key is refused first (checkServiceSpellings).
+func checkServicePlacement(graph *cwl.GraphDocument) error {
+	if graph == nil || graph.Workflow == nil {
+		return nil
+	}
+	if err := checkServiceSpellings(graph, graph.Namespaces); err != nil {
+		return err
+	}
+	if hasServiceHint(graph.Workflow.Hints, graph.Workflow.Requirements) {
+		return serviceErr("declared on the workflow; declare it on the CommandLineTool or its step")
+	}
+	// The tools-map keys a top-level step resolves to, by exactly the lookup
+	// ToModel uses for step.Run (graph.Tools[strings.TrimPrefix(run, "#")]):
+	// a tool reached by any other spelling is not attached to a top-level
+	// step, so the registration rule would never see its hint.
+	topLevel := make(map[string]bool, len(graph.Workflow.Steps))
+	for _, st := range graph.Workflow.Steps {
+		topLevel[strings.TrimPrefix(st.Run, "#")] = true
+	}
+	for id, t := range graph.Tools {
+		if t != nil && hasServiceHint(t.Hints, t.Requirements) && !topLevel[id] {
+			return serviceErr("tool %s is not run by a step of the top-level workflow (a service cannot run inside a sub-workflow)", id)
+		}
+	}
+	for id, et := range graph.ExpressionTools {
+		if et != nil && hasServiceHint(et.Hints, et.Requirements) {
+			return serviceErr("declared on ExpressionTool %s; a service must be a CommandLineTool", id)
+		}
+	}
+	return checkSubWorkflowServices(graph.SubWorkflows)
+}
+
+// checkSubWorkflowServices refuses a gowe:Service anywhere inside a
+// sub-workflow, at any depth: on the sub-workflow itself, on one of its
+// steps, or on any tool (CommandLineTool or ExpressionTool) it holds. Step
+// references are not followed: whatever a sub-workflow holds may run inside
+// it. (A top-level tool run by a nested step is refused by
+// checkServicePlacement unless a top-level step runs it too.)
+func checkSubWorkflowServices(subs map[string]*cwl.GraphDocument) error {
+	for id, sub := range subs {
+		if sub == nil {
+			continue
+		}
+		if sub.Workflow != nil {
+			if hasServiceHint(sub.Workflow.Hints, sub.Workflow.Requirements) {
+				return serviceErr("declared on sub-workflow %s; a service cannot run inside a sub-workflow", id)
+			}
+			for stepID, st := range sub.Workflow.Steps {
+				if hasServiceHint(st.Hints, st.Requirements) {
+					return serviceErr("step %s of sub-workflow %s runs a service; a service cannot run inside a sub-workflow", stepID, id)
+				}
+			}
+		}
+		for toolID, t := range sub.Tools {
+			if t != nil && hasServiceHint(t.Hints, t.Requirements) {
+				return serviceErr("tool %s of sub-workflow %s declares a service; a service cannot run inside a sub-workflow", toolID, id)
+			}
+		}
+		for toolID, et := range sub.ExpressionTools {
+			if et != nil && hasServiceHint(et.Hints, et.Requirements) {
+				return serviceErr("ExpressionTool %s of sub-workflow %s declares a service; a service cannot run inside a sub-workflow", toolID, id)
+			}
+		}
+		if err := checkSubWorkflowServices(sub.SubWorkflows); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// goweNamespaceURI is the URI the "gowe" prefix conventionally stands for in
+// $namespaces.
+const goweNamespaceURI = "https://github.com/wilke/GoWe#"
+
+// serviceKeyNearMiss returns the first key (sorted) of m that is not
+// serviceHintClass but looks meant as it: equal to it ignoring case, ending
+// in "#Service" (a full-URI spelling), or "<prefix>:Service" where the
+// document's $namespaces maps prefix to goweNamespaceURI (the way
+// cwltoolClassKeys finds CUDARequirement prefixes). "" when there is none.
+// Only the literal key is honoured, so such a key would silently drop the
+// hint.
+func serviceKeyNearMiss(m map[string]any, namespaces map[string]string) string {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		if k == serviceHintClass {
+			continue
+		}
+		if strings.EqualFold(k, serviceHintClass) || strings.HasSuffix(k, "#Service") {
+			return k
+		}
+		if prefix, ok := strings.CutSuffix(k, ":Service"); ok && namespaces[prefix] == goweNamespaceURI {
+			return k
+		}
+	}
+	return ""
+}
+
+// checkServiceSpelling refuses a near-miss spelling of gowe:Service
+// (serviceKeyNearMiss) in any of ms, the hints and requirements of where.
+func checkServiceSpelling(where string, namespaces map[string]string, ms ...map[string]any) error {
+	for _, m := range ms {
+		if k := serviceKeyNearMiss(m, namespaces); k != "" {
+			return serviceErr("%s: key %q is not recognized; write it exactly %q", where, k, serviceHintClass)
+		}
+	}
+	return nil
+}
+
+// checkServiceSpellings applies checkServiceSpelling to the workflow of
+// graph, its steps, its tools and expression tools, and recursively to every
+// sub-workflow. namespaces are the top-level document's $namespaces (a
+// sub-workflow graph carries none of its own).
+func checkServiceSpellings(graph *cwl.GraphDocument, namespaces map[string]string) error {
+	if graph == nil {
+		return nil
+	}
+	if wf := graph.Workflow; wf != nil {
+		if err := checkServiceSpelling("workflow "+wf.ID, namespaces, wf.Hints, wf.Requirements); err != nil {
+			return err
+		}
+		for _, id := range slices.Sorted(maps.Keys(wf.Steps)) {
+			st := wf.Steps[id]
+			if err := checkServiceSpelling("step "+id, namespaces, st.Hints, st.Requirements); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(graph.Tools)) {
+		if t := graph.Tools[id]; t != nil {
+			if err := checkServiceSpelling("tool "+id, namespaces, t.Hints, t.Requirements); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(graph.ExpressionTools)) {
+		if et := graph.ExpressionTools[id]; et != nil {
+			if err := checkServiceSpelling("ExpressionTool "+id, namespaces, et.Hints, et.Requirements); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(graph.SubWorkflows)) {
+		if err := checkServiceSpellings(graph.SubWorkflows[id], namespaces); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseNamespaces extracts $namespaces map from a CWL document.

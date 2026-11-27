@@ -182,6 +182,11 @@ type RuntimeHints struct {
 	// task from an older server, or created before an upgrade, must never
 	// start silently rejecting values. See internal/validate.Mode.
 	InputValidation string `json:"input_validation,omitempty"`
+
+	// Service is the step's gowe:Service spec (experimental), copied by the
+	// scheduler from the step hints; such a task gets MaxRetries 0. Metadata;
+	// survives ScrubSecrets.
+	Service *ServiceSpec `json:"service,omitempty"`
 }
 
 // StagerOverrides allows per-task stager customization.
