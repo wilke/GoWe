@@ -204,7 +204,16 @@ type HeartbeatRequest struct {
 	// optional: an older worker omits them and an older server ignores them.
 	Host *HostUsage `json:"host,omitempty"`
 	GPUs []GPUUsage `json:"gpu_usage,omitempty"`
+	// Services is a service-mode worker's status of each service it runs,
+	// at most MaxHeartbeatServices entries. The server ignores it from a
+	// worker that is not in service mode.
+	Services []ServiceReport `json:"services,omitempty"`
 }
+
+// MaxHeartbeatServices is the most entries a heartbeat's services list may
+// have (a longer list is ignored as a whole, with a WARN; the rest of the
+// heartbeat is processed).
+const MaxHeartbeatServices = 64
 
 // HeartbeatResponse is the server's reply to a heartbeat. CancelTasks lists task
 // IDs the worker is running whose submission has been cancelled — the worker

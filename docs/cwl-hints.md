@@ -482,6 +482,25 @@ A task created from a service step is a service task (`is_service`). The server 
 - **Silent worker.** When the worker of a RUNNING service goes silent, the reaper marks the worker offline as usual but
   the service stays RUNNING, keeps its charged cores, memory and GPUs, and is marked lost (`service_lost_at`); the mark
   is cleared when the worker heartbeats again.
+- **Status.** A service-mode worker may send, in every heartbeat, a `services` list (ignored, with a DEBUG log, from a
+  worker not in service mode) with one entry per service it runs: `task_id` (at most 128 bytes of printable ASCII
+  without spaces), `state` (`starting`, `ready`, `unhealthy` or `stopping`), `host`, `port`, `scheme` (`http` or
+  `https`), `gpus` (`index`, `uuid`), `image_sha256`, `pid`, `ready_at` and `detail` (at most 512 bytes; control
+  characters, Unicode format characters and line or paragraph separators become spaces). A list of more than 64
+  entries, or a `services` value that is not a list, is ignored as a whole with a WARN; the rest of the heartbeat
+  (reconcile, `cancel_tasks`, usage) is processed as usual and answered 200. An entry that fails validation is skipped
+  with a WARN; the heartbeat still succeeds. The server stores an entry only for a RUNNING service task checked out by
+  that worker (after the heartbeat's reconcile, so a service it has just ended is not written), stamps `updated_at`
+  with its own time, and keeps the first `ready_at`. `ready_at` is taken only from an entry in state `ready` (in any
+  other state a reported `ready_at` is dropped); it is the reported value, or the server's time when the entry has
+  none or one earlier than the task's start. The task JSON (task and submission endpoints, SSE, web UI,
+  `gowe status`) shows it as `service_status`; its `state` is shown as `lost` while the task is RUNNING and its worker
+  is silent (`service_lost_at`), `stopping` while the task is RUNNING with a stop request, and `stopped` once the task
+  has ended (the last status is kept, as the last known endpoint). A status can be stale: it is what the worker last
+  reported, at `updated_at`; check that time before trusting it (the web UI and `gowe status` add
+  `(last reported <time>)` when a reported state is more than 2 minutes old). `host` and `port` are as reported by the
+  worker, which can name any host: the server checks their form only (no lookup, no connection, no check that the host
+  is the worker's own).
 - **Missing from the heartbeat (two strikes).** Only a heartbeat that carries `running_tasks` (an empty list included)
   is looked at for services; a heartbeat without the field (an older worker, an empty body) leaves them alone. A
   RUNNING service older than the grace period that such a heartbeat omits is marked missing (`service_missing_at`); a

@@ -1720,7 +1720,7 @@ const taskColumns = `id, submission_id, step_id, step_instance_id, state, execut
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
 	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms,
 	 charged_cores, charged_ram_mb, charged_gpus, is_service, service_lost_at, service_missing_at,
-	 service_stop_requested_at`
+	 service_stop_requested_at, service_status`
 
 // checkInjectBlessed refuses to persist a non-terminal task that asks for the
 // user's token to be injected into the tool environment without naming the
@@ -1767,6 +1767,10 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execQueryer, task *model.T
 	if err != nil {
 		return err
 	}
+	serviceStatusJSON, err := marshalServiceStatus(task.ServiceStatus)
+	if err != nil {
+		return err
+	}
 
 	var startedAt, completedAt, dispatchedAt *string
 	if task.StartedAt != nil {
@@ -1803,7 +1807,7 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execQueryer, task *model.T
 
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO tasks (`+taskColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1814,7 +1818,7 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execQueryer, task *model.T
 		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
 		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB), nullableInt(task.ChargedGPUs),
 		isService, formatTimePtr(task.ServiceLostAt), formatTimePtr(task.ServiceMissingAt),
-		formatTimePtr(task.ServiceStopRequestedAt),
+		formatTimePtr(task.ServiceStopRequestedAt), serviceStatusJSON,
 	)
 	return err
 }
@@ -2464,7 +2468,7 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var state, executorType, createdAt string
-	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt *string
+	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt, serviceStatus *string
 	var isService int64
 
 	err := row.Scan(
@@ -2477,7 +2481,7 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
-		&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt,
+		&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt, &serviceStatus,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2498,6 +2502,7 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 	if task.ServiceStopRequestedAt, err = scanTimePtr(serviceStopAt); err != nil {
 		return nil, err
 	}
+	s.scanServiceStatus(&task, serviceStatus)
 	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 		return nil, err
 	}
@@ -2554,7 +2559,7 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var state, executorType, createdAt string
-		var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt *string
+		var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt, serviceStatus *string
 		var isService int64
 
 		if err := rows.Scan(
@@ -2567,7 +2572,7 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
 			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 			&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
-			&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt,
+			&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt, &serviceStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -2593,6 +2598,7 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		} else {
 			task.ServiceStopRequestedAt = t
 		}
+		s.scanServiceStatus(&task, serviceStatus)
 		if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
 			continue
@@ -3958,7 +3964,7 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var stateStr, executorType, createdAt string
-	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt *string
+	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt, serviceStatus *string
 	var isService int64
 
 	if err := rows.Scan(
@@ -3971,7 +3977,7 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
-		&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt,
+		&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt, &serviceStatus,
 	); err != nil {
 		return nil, err
 	}
@@ -3997,6 +4003,7 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 	} else {
 		task.ServiceStopRequestedAt = t
 	}
+	s.scanServiceStatus(&task, serviceStatus)
 	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
 		return nil, nil

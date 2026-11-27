@@ -99,6 +99,13 @@ type Task struct {
 	// task was cancelled (set once). The task stays RUNNING, and keeps its
 	// charges, until its worker reports it stopped.
 	ServiceStopRequestedAt *time.Time `json:"service_stop_requested_at,omitempty"`
+	// ServiceStatus is the last status the worker of this service task
+	// reported in a heartbeat (tasks.service_status, nil before the first).
+	// It is kept when the task ends. Its State is the shown one
+	// (ApplyShownServiceState, applied by the store on read): stopped for a
+	// task that is not RUNNING, lost or stopping for a RUNNING one whose
+	// worker is silent or that has a stop request.
+	ServiceStatus *ServiceStatus `json:"service_status,omitempty"`
 }
 
 // ServiceStopReleaseAfter is how long a stop request of a RUNNING service

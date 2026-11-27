@@ -2056,6 +2056,7 @@ var templates = map[string]string{
                                         {{end}}
                                     </div>
                                     <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
+                                {{with .ServiceStatus}}<div class="text-xs text-gray-600 font-mono">service: {{.Line $.Now}}</div>{{end}}
                                 </div>
                             </div>
                         </td>

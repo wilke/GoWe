@@ -3,8 +3,12 @@ package model
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Defaults and bounds of a ServiceSpec (gowe:Service hint).
@@ -187,6 +191,323 @@ func CheckServicePortInput(tool *Tool, spec *ServiceSpec) error {
 		return nil
 	}
 	return fmt.Errorf("port_input %q is not an input of tool %q", spec.PortInput, tool.ID)
+}
+
+// States of a running service as its worker reports them
+// (ServiceStatus.State).
+const (
+	ServiceStateStarting  = "starting"
+	ServiceStateReady     = "ready"
+	ServiceStateUnhealthy = "unhealthy"
+	ServiceStateStopping  = "stopping"
+)
+
+// States the server shows in place of the reported one (Task.
+// ApplyShownServiceState); a worker may not report them.
+const (
+	ServiceStateLost    = "lost"    // the task is RUNNING but its worker went silent (service_lost_at)
+	ServiceStateStopped = "stopped" // the task is no longer RUNNING
+)
+
+// Bounds of a ServiceStatus a worker reports.
+const (
+	MaxServiceStatusGPUs = 64
+	MaxServiceDetailLen  = 512
+	// ServiceReadyAtSkew is how far in the future (the worker's clock ahead
+	// of the server's) a reported ready_at may be.
+	ServiceReadyAtSkew = 5 * time.Minute
+	// ServiceStatusStaleAfter is how old a stored status (UpdatedAt) in a
+	// state a worker reports may be before ServiceStatus.Line marks it with
+	// the time it was last reported.
+	ServiceStatusStaleAfter = 2 * time.Minute
+
+	maxServiceHostLen    = 253
+	maxServiceGPUUUIDLen = 96
+	maxServiceGPUIndex   = 1023
+	maxServiceDNSLabel   = 63
+)
+
+// ServiceStatus is what a worker reports about a running service.
+type ServiceStatus struct {
+	State       string       `json:"state"`                  // starting | ready | unhealthy | stopping
+	Host        string       `json:"host,omitempty"`         // name clients use to reach it
+	Port        int          `json:"port,omitempty"`         // 0: not reported
+	Scheme      string       `json:"scheme,omitempty"`       // http | https
+	GPUs        []ServiceGPU `json:"gpus,omitempty"`         // the devices the service was given
+	ImageSHA256 string       `json:"image_sha256,omitempty"` // hex digest of the image file
+	PID         int          `json:"pid,omitempty"`
+	ReadyAt     *time.Time   `json:"ready_at,omitempty"` // first time it became ready
+	Detail      string       `json:"detail,omitempty"`   // short human text, e.g. last health error
+	UpdatedAt   time.Time    `json:"updated_at"`         // set by the SERVER when stored
+}
+
+// ServiceGPU is one GPU a service was given.
+type ServiceGPU struct {
+	UUID  string `json:"uuid,omitempty"`
+	Index int    `json:"index"`
+	// MemBudgetMB is reserved for a later per-GPU memory budget; keep the object shape.
+	MemBudgetMB int64 `json:"mem_budget_mb,omitempty"`
+}
+
+// ServiceReport is one entry of a heartbeat's "services" list.
+type ServiceReport struct {
+	TaskID string `json:"task_id"`
+	ServiceStatus
+}
+
+// Normalize makes a reported status storable instead of refusing it for a
+// cosmetic fault: invalid UTF-8 in Detail becomes U+FFFD and every control
+// character, format character (Unicode category Cf: bidirectional controls,
+// zero-width characters, ...) and line or paragraph separator (Zl, Zp) in it
+// a space. It cuts nothing off (Validate refuses a Detail longer than
+// MaxServiceDetailLen bytes). A nil receiver is left alone.
+func (s *ServiceStatus) Normalize() {
+	if s == nil {
+		return
+	}
+	s.Detail = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(s.Detail, string(utf8.RuneError)))
+}
+
+// Validate checks a reported status after Normalize. now is the server's
+// time: ready_at may not be later than now + ServiceReadyAtSkew. Messages
+// never repeat a long reported value.
+func (s *ServiceStatus) Validate(now time.Time) error {
+	if s == nil {
+		return errors.New("no service status")
+	}
+	switch s.State {
+	case ServiceStateStarting, ServiceStateReady, ServiceStateUnhealthy, ServiceStateStopping:
+	default:
+		return fmt.Errorf("state must be starting, ready, unhealthy or stopping, got %s", shortQuote(s.State))
+	}
+	if err := checkServiceHost(s.Host); err != nil {
+		return err
+	}
+	if s.Port < 0 || s.Port > 65535 {
+		return fmt.Errorf("port must be between 0 and 65535, got %d", s.Port)
+	}
+	switch s.Scheme {
+	case "", "http", "https":
+	default:
+		return fmt.Errorf("scheme must be http or https, got %s", shortQuote(s.Scheme))
+	}
+	if len(s.GPUs) > MaxServiceStatusGPUs {
+		return fmt.Errorf("at most %d gpus, got %d", MaxServiceStatusGPUs, len(s.GPUs))
+	}
+	for i, g := range s.GPUs {
+		if len(g.UUID) > maxServiceGPUUUIDLen {
+			return fmt.Errorf("gpus[%d].uuid is longer than %d bytes", i, maxServiceGPUUUIDLen)
+		}
+		for j := 0; j < len(g.UUID); j++ {
+			if c := g.UUID[j]; c < 0x21 || c > 0x7e {
+				return fmt.Errorf("gpus[%d].uuid must contain only printable ASCII characters (0x21-0x7e)", i)
+			}
+		}
+		if g.Index < 0 || g.Index > maxServiceGPUIndex {
+			return fmt.Errorf("gpus[%d].index must be between 0 and %d, got %d", i, maxServiceGPUIndex, g.Index)
+		}
+		if g.MemBudgetMB < 0 {
+			return fmt.Errorf("gpus[%d].mem_budget_mb must not be negative, got %d", i, g.MemBudgetMB)
+		}
+	}
+	if s.ImageSHA256 != "" && !isLowerHex(s.ImageSHA256, 64) {
+		return errors.New("image_sha256 must be exactly 64 lower-case hex characters")
+	}
+	if s.PID < 0 {
+		return fmt.Errorf("pid must not be negative, got %d", s.PID)
+	}
+	if len(s.Detail) > MaxServiceDetailLen {
+		return fmt.Errorf("detail is longer than %d bytes", MaxServiceDetailLen)
+	}
+	if !utf8.ValidString(s.Detail) {
+		return errors.New("detail is not valid UTF-8")
+	}
+	for _, r := range s.Detail {
+		if unicode.IsControl(r) {
+			return errors.New("detail must not contain control characters")
+		}
+	}
+	if s.ReadyAt != nil {
+		if s.ReadyAt.IsZero() {
+			return errors.New("ready_at must not be the zero time")
+		}
+		if s.ReadyAt.After(now.Add(ServiceReadyAtSkew)) {
+			return fmt.Errorf("ready_at must not be more than %s in the future", ServiceReadyAtSkew)
+		}
+	}
+	return nil
+}
+
+// shortQuote quotes v for an error message, cut to 32 bytes.
+func shortQuote(v string) string {
+	if len(v) > 32 {
+		return strconv.Quote(v[:32]) + "..."
+	}
+	return strconv.Quote(v)
+}
+
+// isLowerHex reports whether v is exactly n characters of 0-9a-f.
+func isLowerHex(v string, n int) bool {
+	if len(v) != n {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// checkServiceHost accepts "" or, in at most maxServiceHostLen bytes of
+// printable ASCII without spaces: an IPv6 literal without brackets (the only
+// form that may hold ":"), a dotted-decimal IPv4 address, or a DNS name
+// (labels of 1-63 letters, digits and "-", neither first nor last, separated
+// by single dots, no trailing dot, the last label not all digits). A name
+// some resolvers read as a numeric IPv4 address is refused too: a last label
+// of "0x" or "0X" followed only by hex digits, or a single label of hex
+// digits only (such as 7f000001; a single label holding another letter, such
+// as coconut, stays valid). Only the form is checked: nothing is looked up,
+// and the worker may name any host.
+func checkServiceHost(h string) error {
+	if h == "" {
+		return nil
+	}
+	if len(h) > maxServiceHostLen {
+		return fmt.Errorf("host is longer than %d bytes", maxServiceHostLen)
+	}
+	for i := 0; i < len(h); i++ {
+		if c := h[i]; c < 0x21 || c > 0x7e {
+			return errors.New("host must contain only printable ASCII characters (0x21-0x7e: no spaces)")
+		}
+	}
+	if strings.Contains(h, ":") {
+		// net.ParseIP refuses brackets, zones ("%eth0") and anything else.
+		if net.ParseIP(h) == nil {
+			return errors.New("host contains \":\" but is not an IPv6 address (write it without brackets or port)")
+		}
+		return nil
+	}
+	if strings.Trim(h, "0123456789.") == "" {
+		if ip := net.ParseIP(h); ip == nil || ip.To4() == nil {
+			return errors.New("host is neither a dotted-decimal IPv4 address nor a DNS name")
+		}
+		return nil
+	}
+	labels := strings.Split(h, ".")
+	for _, l := range labels {
+		if l == "" || len(l) > maxServiceDNSLabel {
+			return fmt.Errorf("host is not a valid DNS name (each label 1-%d characters, no empty label)", maxServiceDNSLabel)
+		}
+		if l[0] == '-' || l[len(l)-1] == '-' {
+			return errors.New("host is not a valid DNS name (a label must not start or end with \"-\")")
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+				return errors.New("host is not a valid DNS name (letters, digits, \"-\" and \".\" only)")
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" {
+		return errors.New("host is not a valid DNS name (the last label must not be all digits)")
+	}
+	if len(last) >= 2 && last[0] == '0' && (last[1] == 'x' || last[1] == 'X') && isHexDigits(last[2:]) {
+		return errors.New("host is not a valid DNS name (the last label must not be a hexadecimal number such as 0x7f)")
+	}
+	if len(labels) == 1 && isHexDigits(last) {
+		return errors.New("host is not a valid DNS name (a single label must not be all hexadecimal digits: it may be read as an IPv4 address)")
+	}
+	return nil
+}
+
+// isHexDigits reports whether every byte of v is 0-9, a-f or A-F (true for
+// "").
+func isHexDigits(v string) bool {
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// Line renders the status on one line for people (web UI, gowe status):
+// state, scheme://host:port, GPU indexes, ready since, and, when the state is
+// one a worker reports (starting, ready, unhealthy, stopping; not lost or
+// stopped) and UpdatedAt is more than ServiceStatusStaleAfter before now,
+// " (last reported <UpdatedAt in RFC 3339 UTC>)". A nil receiver gives "".
+func (s *ServiceStatus) Line(now time.Time) string {
+	if s == nil {
+		return ""
+	}
+	line := s.line()
+	switch s.State {
+	case ServiceStateStarting, ServiceStateReady, ServiceStateUnhealthy, ServiceStateStopping:
+		if now.Sub(s.UpdatedAt) > ServiceStatusStaleAfter {
+			line += " (last reported " + s.UpdatedAt.UTC().Format(time.RFC3339) + ")"
+		}
+	}
+	return line
+}
+
+// line is Line without the staleness suffix.
+func (s *ServiceStatus) line() string {
+	parts := []string{s.State}
+	if s.Host != "" {
+		scheme := s.Scheme
+		if scheme == "" {
+			scheme = DefaultServiceScheme
+		}
+		hostport := s.Host
+		switch {
+		case s.Port > 0:
+			hostport = net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
+		case strings.Contains(s.Host, ":"):
+			hostport = "[" + s.Host + "]"
+		}
+		parts = append(parts, scheme+"://"+hostport)
+	}
+	if len(s.GPUs) > 0 {
+		idx := make([]string, len(s.GPUs))
+		for i, g := range s.GPUs {
+			idx[i] = strconv.Itoa(g.Index)
+		}
+		parts = append(parts, "GPUs "+strings.Join(idx, ","))
+	}
+	if s.ReadyAt != nil {
+		parts = append(parts, "ready since "+s.ReadyAt.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(parts, "  ")
+}
+
+// ApplyShownServiceState rewrites the state of t.ServiceStatus to what the
+// server shows: ServiceStateStopped when the task is not RUNNING,
+// ServiceStateLost when it is RUNNING with service_lost_at set (its worker is
+// silent), ServiceStateStopping when it is RUNNING with a stop request;
+// otherwise the reported state stays. The store applies it to every task it
+// reads; the stored document is not changed. Nothing happens without a
+// status.
+func (t *Task) ApplyShownServiceState() {
+	st := t.ServiceStatus
+	if st == nil {
+		return
+	}
+	switch {
+	case t.State != TaskStateRunning:
+		st.State = ServiceStateStopped
+	case t.ServiceLostAt != nil:
+		st.State = ServiceStateLost
+	case t.ServiceStopRequestedAt != nil:
+		st.State = ServiceStateStopping
+	}
 }
 
 // defaultWorkerGroupName is the group of workers started without --group.

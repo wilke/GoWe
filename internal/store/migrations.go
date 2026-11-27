@@ -631,6 +631,15 @@ var alterStatements = []struct {
 		column:   "service_stop_requested_at",
 		alterSQL: "ALTER TABLE tasks ADD COLUMN service_stop_requested_at TEXT",
 	},
+	// service_status: the JSON document (model.ServiceStatus) of the last
+	// status the worker of a RUNNING service reported in a heartbeat
+	// (UpdateServiceStatuses), kept when the task ends (NULL = none yet).
+	// Read in Go only, never parsed by SQL.
+	{
+		table:    "tasks",
+		column:   "service_status",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN service_status TEXT",
+	},
 	{
 		table:    "workers",
 		column:   "service_mode",

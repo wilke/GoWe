@@ -198,6 +198,9 @@ func (m *mockStore) ReleaseWorkerTask(context.Context, string, string) error { r
 func (m *mockStore) CancelledTasksForWorker(context.Context, string, []string) ([]string, error) {
 	return nil, nil
 }
+func (m *mockStore) UpdateServiceStatuses(context.Context, string, []model.ServiceReport, time.Time) ([]string, error) {
+	return nil, nil
+}
 
 func (m *mockStore) CreateWorkerKey(context.Context, *model.WorkerKey) error { return nil }
 func (m *mockStore) GetWorkerKeyByID(context.Context, string) (*model.WorkerKey, error) {

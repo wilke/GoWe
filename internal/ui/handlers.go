@@ -761,6 +761,7 @@ func (ui *UI) HandleSubmissionDetail(w http.ResponseWriter, r *http.Request) {
 		"Timing":                     timingReport,
 		"TimingBars":                 buildTimingBars(timingReport),
 		"Warning":                    warning,
+		"Now":                        time.Now().UTC(), // service status lines are judged stale against it
 	}
 	ui.render(w, "submissions/detail", data)
 }

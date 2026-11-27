@@ -1076,6 +1076,26 @@ is still updated). Usage is telemetry and never fails a heartbeat: non-finite or
 The sanitised sample is stored and shown on the worker record as `usage` (`{"host": {...}, "gpus": [...]}`) with
 `usage_at`, the server's receive time; a heartbeat without usage keeps the previous sample.
 
+A service-mode worker may also send `services`, one status per service it runs (ignored from any other worker):
+
+```json
+"services": [
+  {"task_id": "task_789", "state": "ready", "host": "gpu01.example.org", "port": 8000, "scheme": "http",
+   "gpus": [{"index": 0, "uuid": "GPU-1a2b3c4d-0000-1111-2222-333344445555"}],
+   "image_sha256": "<64 lower-case hex>", "pid": 4242, "ready_at": "2026-11-24T09:58:00Z", "detail": ""}
+]
+```
+
+A list of more than 64 entries, or a `services` value that is not a list, is ignored as a whole with a WARN; the rest
+of the heartbeat (reconcile, `cancel_tasks`, usage) is processed as usual and answered 200. An invalid entry (including
+a `task_id` longer than 128 bytes or holding a byte outside printable ASCII without spaces) is skipped with a WARN. The
+status is stored for a RUNNING service task of that worker only and shown on the task as `service_status` (see
+[`gowe:Service` Status](../cwl-hints.md#server-behaviour)). `ready_at` is taken only from an entry in state `ready`
+and only once (a reported value earlier than the task's start is replaced by the server's time). A stored status can be
+stale: it is what the worker last reported, at `updated_at` (the server's receive time); check it before trusting the
+status. `host` and `port` are whatever the worker reports, any host it names: the server checks their form only. The
+heartbeat answer does not change.
+
 #### `GET /api/v1/workers/{id}/work`
 
 Poll for a task. Returns 204 if no work available. Task matching considers: runtime capability, worker group, and dataset affinity (prestage=require, cache=prefer).

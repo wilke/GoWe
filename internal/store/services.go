@@ -273,6 +273,132 @@ func hasRunningService(ctx context.Context, q queryer, id string) (bool, error) 
 	return false, nil
 }
 
+// marshalServiceStatus is the tasks.service_status value of st: its JSON
+// document, or nil (NULL) for no status.
+func marshalServiceStatus(st *model.ServiceStatus) (*string, error) {
+	if st == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		return nil, fmt.Errorf("marshal service_status: %w", err)
+	}
+	doc := string(b)
+	return &doc, nil
+}
+
+// scanServiceStatus decodes the tasks.service_status value raw into
+// task.ServiceStatus and applies the shown state
+// (model.Task.ApplyShownServiceState), so every reader of a task (API, SSE,
+// web UI, worker checkout) sees the same rewritten state; the stored document
+// is not changed. task.State, ServiceLostAt and ServiceStopRequestedAt must
+// already be set. A document that cannot be decoded is logged and dropped: it
+// never hides the task. A JSON null, or a document without a state (such as
+// {}), is no status: the server never stores one, and a status without a
+// state shows nothing.
+func (s *SQLStore) scanServiceStatus(task *model.Task, raw *string) {
+	if raw == nil || *raw == "" {
+		return
+	}
+	var st model.ServiceStatus
+	if err := json.Unmarshal([]byte(*raw), &st); err != nil {
+		s.logger.Warn("ignoring an undecodable service_status", "task_id", task.ID, "error", err)
+		return
+	}
+	if st.State == "" {
+		return
+	}
+	task.ServiceStatus = &st
+	task.ApplyShownServiceState()
+}
+
+// serviceStatusMatch is the condition a task must meet for its worker's
+// report to be stored: a RUNNING worker service checked out by that worker.
+const serviceStatusMatch = ` WHERE id = ? AND state = 'RUNNING' AND is_service = 1 AND executor_type = 'worker' AND external_id = ?`
+
+// UpdateServiceStatuses implements Store. In one transaction, each report
+// is stored as the tasks.service_status of its task, with UpdatedAt = now,
+// only while the task is a RUNNING worker service of workerID; any other
+// report (unknown id, another worker's task, not RUNNING, not a service)
+// changes nothing and its task id is returned in ignored. ReadyAt is sticky:
+// a stored ready_at is kept whatever the report says. Without one, a report
+// in state ready sets it: to the report's ready_at, or to now when it carries
+// none or one earlier than the task's started_at; a report in any other state
+// sets none (its ready_at is dropped). The caller validates the reports
+// (model.ServiceStatus.Validate) and removes duplicate task ids.
+func (s *SQLStore) UpdateServiceStatuses(ctx context.Context, workerID string, reports []model.ServiceReport, now time.Time) ([]string, error) {
+	if len(reports) == 0 {
+		return nil, nil
+	}
+	s.logger.Debug("sql", "op", "update_service_statuses", "worker_id", workerID, "count", len(reports))
+	now = now.UTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("update service statuses: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var ignored []string
+	for _, r := range reports {
+		var raw, startedRaw *string
+		err := tx.QueryRowContext(ctx, `SELECT service_status, started_at FROM tasks`+serviceStatusMatch, r.TaskID, workerID).
+			Scan(&raw, &startedRaw)
+		if errors.Is(err, sql.ErrNoRows) {
+			ignored = append(ignored, r.TaskID)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("update service statuses: read %s: %w", r.TaskID, err)
+		}
+
+		st := r.ServiceStatus
+		st.UpdatedAt = now
+		var stored model.ServiceStatus
+		if raw != nil && *raw != "" {
+			if err := json.Unmarshal([]byte(*raw), &stored); err != nil {
+				s.logger.Warn("replacing an undecodable service_status", "task_id", r.TaskID, "error", err)
+				stored = model.ServiceStatus{}
+			}
+		}
+		reported := st.ReadyAt
+		st.ReadyAt = nil
+		switch {
+		case stored.ReadyAt != nil:
+			readyAt := stored.ReadyAt.UTC()
+			st.ReadyAt = &readyAt
+		case st.State == model.ServiceStateReady:
+			readyAt := now
+			if reported != nil {
+				readyAt = reported.UTC()
+				started, err := scanTimePtr(startedRaw)
+				if err != nil {
+					s.logger.Warn("update service statuses: ignoring an unreadable started_at", "task_id", r.TaskID, "error", err)
+				}
+				if started != nil && readyAt.Before(*started) {
+					readyAt = now
+				}
+			}
+			st.ReadyAt = &readyAt
+		}
+		doc, err := marshalServiceStatus(&st)
+		if err != nil {
+			return nil, fmt.Errorf("update service statuses: %s: %w", r.TaskID, err)
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE tasks SET service_status = ?`+serviceStatusMatch, doc, r.TaskID, workerID)
+		if err != nil {
+			return nil, fmt.Errorf("update service statuses: write %s: %w", r.TaskID, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			ignored = append(ignored, r.TaskID)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("update service statuses: commit: %w", err)
+	}
+	return ignored, nil
+}
+
 // ErrTaskNotFound is returned (wrapped) by ForceReleaseService when the task
 // does not exist or belongs to another submission.
 var ErrTaskNotFound = errors.New("task not found")
