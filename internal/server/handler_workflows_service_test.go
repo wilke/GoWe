@@ -471,7 +471,7 @@ func TestServiceWorkflow_UIDelete(t *testing.T) {
 		t.Fatalf("register service: %d %s", w.Code, w.Body.String())
 	}
 	created, _ := createdWorkflow(t, env)
-	byMgr := seedServiceCopy(t, st, created.ID, "plain")
+	byMgr := seedServiceCopy(t, st, created.ID, "mgr")
 	byAdmin := seedServiceCopy(t, st, created.ID, "plain")
 
 	exists := func(id string) bool {
@@ -498,5 +498,21 @@ func TestServiceWorkflow_UIDelete(t *testing.T) {
 		t.Fatalf("register normal: %d %s", w.Code, w.Body.String())
 	}
 	normal, _ := createdWorkflow(t, env)
+	// Ownership: another non-admin user is refused, the owner is not; a
+	// legacy workflow without a recorded owner stays deletable.
+	wantStatus(t, "other user's UI delete of an ordinary workflow", uiDo(t, srv, "DELETE", "/workflows/"+normal.ID, nil, uiCookie(t, st, "mgr", false)), http.StatusForbidden)
+	if !exists(normal.ID) {
+		t.Fatal("a non-owner deleted an ordinary workflow through the UI")
+	}
 	wantStatus(t, "plain UI delete of an ordinary workflow", uiDo(t, srv, "DELETE", "/workflows/"+normal.ID, nil, plain), http.StatusOK)
+	if exists(normal.ID) {
+		t.Error("the owner's UI delete left the row")
+	}
+	w, env = mgDo(t, srv, "POST", "/api/v1/workflows", wfRegisterBody("legacy", gpDoc("")), plainToken)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("register legacy: %d %s", w.Code, w.Body.String())
+	}
+	legacySrc, _ := createdWorkflow(t, env)
+	legacy := seedServiceCopy(t, st, legacySrc.ID, "")
+	wantStatus(t, "UI delete of a workflow without an owner", uiDo(t, srv, "DELETE", "/workflows/"+legacy, nil, uiCookie(t, st, "mgr", false)), http.StatusOK)
 }
