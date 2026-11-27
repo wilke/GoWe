@@ -35,6 +35,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 			{"/api/v1/submissions/{sid}/tasks/{tid}", []string{"GET"}, "Single Task detail"},
 			{"/api/v1/submissions/{sid}/tasks/{tid}/logs", []string{"GET"}, "Task stdout/stderr logs"},
 			{"/api/v1/submissions/{sid}/tasks/{tid}/attempts", []string{"GET"}, "Earlier attempts of a Task (exit code, stdout/stderr, worker)"},
+			{"/api/v1/submissions/{sid}/tasks/{tid}/force-release", []string{"POST"}, "End a running service Task whose worker is lost (admins and the group's managers)"},
 			{"/api/v1/apps", []string{"GET"}, "List available BV-BRC applications (cached)"},
 			{"/api/v1/apps/{app_id}", []string{"GET"}, "Get BV-BRC app parameter schema"},
 			{"/api/v1/apps/{app_id}/cwl-tool", []string{"GET"}, "Auto-generated CWL tool wrapper from app schema"},

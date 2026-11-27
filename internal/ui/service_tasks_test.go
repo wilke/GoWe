@@ -17,11 +17,31 @@ import (
 // A service task (gowe:Service) is never re-run from the web UI, and a
 // worker holding a running one is not deleted.
 
-// seedFailedServiceTask creates a FAILED worker service task on subID.
+// seedFailedServiceTask creates a FAILED worker service task on subID. A
+// service task is stored only while its submission is live
+// (store.ErrServiceSubmissionGone): an ended submission is made RUNNING for
+// the insert and then given its state back.
 func seedFailedServiceTask(t *testing.T, st *store.SQLiteStore, taskID, subID string) {
 	t.Helper()
+	ctx := context.Background()
+	sub, err := st.GetSubmission(ctx, subID)
+	if err != nil || sub == nil {
+		t.Fatalf("get submission %s: (%v, %v)", subID, sub, err)
+	}
+	if ended := sub.State; ended.IsTerminal() {
+		sub.State = model.SubmissionStateRunning
+		if err := st.UpdateSubmission(ctx, sub); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			sub.State = ended
+			if err := st.UpdateSubmission(ctx, sub); err != nil {
+				t.Fatal(err)
+			}
+		}()
+	}
 	now := time.Now().UTC()
-	if err := st.CreateTask(context.Background(), &model.Task{
+	if err := st.CreateTask(ctx, &model.Task{
 		ID: taskID, SubmissionID: subID, StepID: "step1", State: model.TaskStateFailed,
 		ExecutorType: model.ExecutorTypeWorker, Inputs: map[string]any{}, Outputs: map[string]any{},
 		Job: map[string]any{}, ScatterIndex: -1, Stderr: "service exited", StartedAt: &now, CompletedAt: &now,
@@ -113,6 +133,13 @@ func seedServiceWorker(t *testing.T, st *store.SQLiteStore, workerID, taskID str
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// A service task is stored only for a live submission.
+	if err := st.CreateSubmission(ctx, &model.Submission{
+		ID: "sub_svc", WorkflowID: "wf_svc", State: model.SubmissionStateRunning,
+		Inputs: map[string]any{}, SubmittedBy: "alice", CreatedAt: old,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.CreateTask(ctx, &model.Task{
 		ID: taskID, SubmissionID: "sub_svc", StepID: "s", State: model.TaskStateRunning,
 		ExecutorType: model.ExecutorTypeWorker, ExternalID: workerID, StartedAt: &old,
@@ -134,7 +161,7 @@ func TestHandleWorkerDelete_RunningService(t *testing.T) {
 	rec := httptest.NewRecorder()
 	newTestUI(st).HandleWorkerDelete(rec, req)
 
-	const want = "worker still holds 1 running service(s); cancel their submissions first"
+	const want = "worker still holds 1 running service(s); cancel their submissions, or force-release them if the worker is gone"
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("response = %d %q, want 409 containing %q", rec.Code, rec.Body.String(), want)
 	}

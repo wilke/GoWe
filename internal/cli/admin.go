@@ -63,8 +63,57 @@ func newAdminCmd() *cobra.Command {
 		newAdminWorkerGroupsCmd(),
 		newAdminRemoveWorkerCmd(),
 		newAdminServiceTokensCmd(),
+		newAdminForceReleaseServiceCmd(),
 	)
 	return cmd
+}
+
+func newAdminForceReleaseServiceCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "force-release-service <submission-id> <task-id>",
+		Short: "End a running service task whose worker is lost or never confirmed a stop",
+		Long: `Ends a RUNNING service task (gowe:Service) whose worker cannot confirm that it
+stopped: the worker went silent (the service is marked lost), its worker
+record is gone, or its submission was cancelled more than 15 minutes ago and
+the worker has not confirmed the stop. A server admin may also release a
+task whose submission record is gone. The task becomes FAILED (SKIPPED if
+its submission was cancelled) and its cores, memory and GPUs are no longer
+charged.
+
+The service's process may still run on the worker's host and hold its GPUs:
+check the host first. The worker, when it still has a record, is told to
+stop the task on its next heartbeat (a lost worker when it comes back).
+
+Allowed for server admins and the managers of the task's worker group. A
+service whose worker is online is refused: cancel its submission, then wait
+15 minutes or until the worker is marked lost.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			subID, taskID := args[0], args[1]
+			if subID == "" || taskID == "" {
+				return errors.New("submission id and task id must not be empty")
+			}
+			path := "/api/v1/submissions/" + url.PathEscape(subID) + "/tasks/" + url.PathEscape(taskID) + "/force-release"
+			resp, err := client.Post(path, nil)
+			if err != nil {
+				return fmt.Errorf("force-release service task %s: %w", taskID, err)
+			}
+			var task struct {
+				State          string `json:"state"`
+				ExternalID     string `json:"external_id"`
+				WorkerNotified string `json:"worker_notified"`
+			}
+			if err := json.Unmarshal(resp.Data, &task); err != nil {
+				return fmt.Errorf("parse response: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Force-released service task %s (now %s; worker %s). Its process may still run on the worker's host.\n",
+				taskID, task.State, task.ExternalID)
+			if task.WorkerNotified != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "The worker is told to stop it: %s.\n", task.WorkerNotified)
+			}
+			return nil
+		},
+	}
 }
 
 func newAdminRemoveWorkerCmd() *cobra.Command {

@@ -93,11 +93,18 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A service-mode worker runs long-lived services with the group's GPUs:
-	// with worker authentication on, only a key whose group list explicitly
-	// names the worker's group may register one (a key with an empty group
-	// list joins any group, but may not run services). With worker auth off
-	// (the anonymous context) nothing changes.
-	if req.ServiceMode && workerAuth != nil && !workerAuth.Anonymous && !workerAuth.NamesGroup(group) {
+	// it needs worker authentication (with it off, the middleware gives every
+	// caller the anonymous context: 403), and only a key whose group list
+	// explicitly names the worker's group may register one (a key with an
+	// empty group list joins any group, but may not run services).
+	if req.ServiceMode && (workerAuth == nil || workerAuth.Anonymous) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    model.ErrForbidden,
+			Message: ServiceModeNeedsWorkerAuth,
+		})
+		return
+	}
+	if req.ServiceMode && !workerAuth.NamesGroup(group) {
 		respondError(w, reqID, http.StatusForbidden, &model.APIError{
 			Code: model.ErrForbidden,
 			Message: fmt.Sprintf("a service-mode worker needs a worker key whose groups explicitly name group %q; "+
@@ -449,8 +456,10 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// Tell the worker which of its running tasks have been cancelled so it can
 	// kill the underlying process and free resources; this includes every
 	// listed service task the server has already ended (terminal in the
-	// database).
-	cancelTasks, err := s.store.CancelledTasksForWorker(r.Context(), running)
+	// database) and, whether listed or not (running_tasks absent included),
+	// every RUNNING service of this worker with a stop request or whose
+	// submission is cancelled or gone.
+	cancelTasks, err := s.store.CancelledTasksForWorker(r.Context(), worker.ID, running)
 	if err != nil {
 		s.logger.Error("heartbeat: cancelled tasks lookup", "worker_id", worker.ID, "error", err)
 	}
@@ -762,15 +771,20 @@ const ServiceStoppedWithoutCancel = "service stopped by its worker without a can
 // without a valid host id.
 const ServiceModeNeedsHostID = "a service-mode worker must report a host id"
 
+// ServiceModeNeedsWorkerAuth is the 403 message of a service-mode
+// registration while worker authentication is not required.
+const ServiceModeNeedsWorkerAuth = "service mode requires worker authentication (register with a worker key that names the group)"
+
 // handleWorkerTaskComplete allows a worker to report task completion.
 // PUT /api/v1/workers/{id}/tasks/{tid}/complete
 //
 // state must be terminal (SUCCESS, FAILED, SKIPPED) or omitted (decided from
 // the exit code); anything else is 400. For a service task it must be given
 // and must not be SUCCESS (400); SKIPPED is accepted only when the task's
-// submission is CANCELLED, otherwise it is stored as FAILED (stderr gets
-// ServiceStoppedWithoutCancel), so a service submission never completes
-// through a SKIPPED step.
+// submission is CANCELLED or the task has a stop request (a cancel kept it
+// RUNNING until this report, which frees its charges), otherwise it is stored
+// as FAILED (stderr gets ServiceStoppedWithoutCancel), so a service
+// submission never completes through a SKIPPED step.
 func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	workerID := chi.URLParam(r, "id")
@@ -861,7 +875,9 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 				model.FieldError{Field: "state", Message: "SUCCESS is not accepted for a service task"}))
 			return
 		}
-		if newState == model.TaskStateSkipped {
+		// A stop request (set by the cancel that kept the service RUNNING)
+		// is a cancel too.
+		if newState == model.TaskStateSkipped && task.ServiceStopRequestedAt == nil {
 			sub, err := s.store.GetSubmission(r.Context(), task.SubmissionID)
 			if err != nil {
 				respondError(w, reqID, http.StatusInternalServerError,
@@ -949,6 +965,11 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	// ignores it for SUCCESS).
 	workflowName := s.workflowNameFor(r.Context(), task.SubmissionID)
 	s.metrics.ObserveTaskTerminal(task, workflowName, "worker")
+	// A cancelled RUNNING service is not in the cancel's SKIP count (it stayed
+	// RUNNING until this report): count it here, once, behind the CAS.
+	if task.IsService && task.State == model.TaskStateSkipped {
+		s.metrics.AddTasksSkipped(1)
+	}
 
 	// Move the worker's current_task off this task (onto another of its
 	// RUNNING tasks, if any) in one targeted UPDATE: a full-row UpdateWorker
@@ -1062,7 +1083,8 @@ func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {
 //   - worker auth disabled (anonymous context): allowed, as before;
 //   - worker.KeyID == caller key id: allowed;
 //   - legacy row (KeyID == ""): the caller adopts it, but only if its key may
-//     join the worker's group (CAS, so exactly one adopter wins);
+//     join the worker's group and, for a service-mode row, explicitly names
+//     it (the rule registration applies) (CAS, so exactly one adopter wins);
 //   - anything else: 403 (404 is returned for unknown ids, as before).
 func (s *Server) authorizeWorker(w http.ResponseWriter, r *http.Request, id string) (*model.Worker, bool) {
 	reqID := RequestIDFromContext(r.Context())
@@ -1095,7 +1117,7 @@ func (s *Server) authorizeWorker(w http.ResponseWriter, r *http.Request, id stri
 		return worker, true
 	}
 
-	if worker.KeyID == "" && wa.CanJoinGroup(worker.Group) {
+	if worker.KeyID == "" && wa.CanJoinGroup(worker.Group) && (!worker.ServiceMode || wa.NamesGroup(worker.Group)) {
 		adopted, err := s.store.AdoptWorkerKey(r.Context(), id, wa.KeyID)
 		if err != nil {
 			respondError(w, reqID, http.StatusInternalServerError,

@@ -161,7 +161,7 @@ func TestCancelledTasksForWorker_TerminalService(t *testing.T) {
 		tk.CompletedAt = &now
 		mustCreateTask(t, st, tk)
 	}
-	got, err := st.CancelledTasksForWorker(ctx, []string{"svc_running", "svc_failed", "svc_skipped", "batch_failed", "batch_success"})
+	got, err := st.CancelledTasksForWorker(ctx, "wrk_s", []string{"svc_running", "svc_failed", "svc_skipped", "batch_failed", "batch_success"})
 	if err != nil {
 		t.Fatal(err)
 	}

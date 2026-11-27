@@ -20,9 +20,14 @@ import (
 // registers a service-mode worker.
 
 // seedOwnedTask stores a worker task of workerID in state (RUNNING: started
-// an hour ago), a service of group g when service is set.
+// an hour ago) in submission sub_review, a service of group g when service
+// is set (sub_review is then stored RUNNING unless it exists: a service task
+// is stored only for a live submission).
 func seedOwnedTask(t *testing.T, st store.Store, id, workerID string, service bool, state model.TaskState) {
 	t.Helper()
+	if service {
+		ensureLiveSubmission(t, st, "sub_review")
+	}
 	started := time.Now().UTC().Add(-time.Hour)
 	tk := &model.Task{
 		ID: id, SubmissionID: "sub_review", StepID: "s", State: state,
@@ -107,8 +112,8 @@ func TestWorkerTaskComplete_BatchStates(t *testing.T) {
 }
 
 // R4: a service task must report its state, and never SUCCESS; FAILED is
-// accepted, SKIPPED without a cancel of the submission (here: no submission
-// row) is stored as FAILED (second review, item 2).
+// accepted, SKIPPED without a cancel of the submission (here: RUNNING, no
+// stop request) is stored as FAILED (second review, item 2).
 func TestWorkerTaskComplete_ServiceRules(t *testing.T) {
 	tests := []struct {
 		name, body string
@@ -191,13 +196,12 @@ func TestWorkerTaskComplete_ServiceSkippedWithoutCancel(t *testing.T) {
 }
 
 // Second review, item 2: SKIPPED for a service after a cancel. Through the
-// cancel route the task is already SKIPPED (cancelseq), so the report is
-// refused as for any terminal task (409) and the row is unchanged; when the
-// submission is CANCELLED but the task not yet terminal, SKIPPED is stored
-// as sent.
+// cancel route the task stays RUNNING with a stop request until its worker
+// reports, and the SKIPPED report is stored as sent; when the submission is
+// CANCELLED but the task not yet terminal, SKIPPED is stored as sent too.
 func TestWorkerTaskComplete_ServiceSkippedAfterCancel(t *testing.T) {
 	const body = `{"state":"SKIPPED","exit_code":-1,"stderr":"stopped"}`
-	t.Run("cancel route already skipped the task", func(t *testing.T) {
+	t.Run("cancel route keeps the task running until the report", func(t *testing.T) {
 		srv, st := testServerWithStore()
 		workerID := registerTestWorker(t, srv)
 		_, subID := createTestSubmission(t, srv)
@@ -205,13 +209,14 @@ func TestWorkerTaskComplete_ServiceSkippedAfterCancel(t *testing.T) {
 		if w, _ := doPut(t, srv, "/api/v1/submissions/"+subID+"/cancel", ""); w.Code != http.StatusOK {
 			t.Fatalf("cancel = %d %s", w.Code, w.Body.String())
 		}
-		code, env := completeTask(t, srv, workerID, "task_svc", body)
-		if code != http.StatusConflict || env.Error == nil || env.Error.Code != model.ErrConflict ||
-			!strings.Contains(env.Error.Message, "already terminal (SKIPPED)") {
-			t.Fatalf("complete = %d %+v, want 409 already terminal (SKIPPED)", code, env.Error)
+		if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateRunning || tk.ServiceStopRequestedAt == nil {
+			t.Fatalf("after cancel: %s, stop requested %v; want RUNNING with a stop request", tk.State, tk.ServiceStopRequestedAt)
 		}
-		if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateSkipped || tk.Stderr != "" {
-			t.Errorf("task = %s stderr %q, want SKIPPED, stderr untouched", tk.State, tk.Stderr)
+		if code, env := completeTask(t, srv, workerID, "task_svc", body); code != http.StatusOK {
+			t.Fatalf("complete = %d %+v, want 200", code, env.Error)
+		}
+		if tk := mustTask(t, st, "task_svc"); tk.State != model.TaskStateSkipped || tk.Stderr != "stopped" {
+			t.Errorf("task = %s stderr %q, want SKIPPED %q", tk.State, tk.Stderr, "stopped")
 		}
 	})
 	t.Run("submission cancelled, task still running", func(t *testing.T) {
@@ -219,14 +224,20 @@ func TestWorkerTaskComplete_ServiceSkippedAfterCancel(t *testing.T) {
 		workerID := registerTestWorker(t, srv)
 		now := time.Now().UTC()
 		sub := &model.Submission{
-			ID: "sub_cancelled", WorkflowID: "wf_x", WorkflowName: "x", State: model.SubmissionStateCancelled,
+			ID: "sub_cancelled", WorkflowID: "wf_x", WorkflowName: "x", State: model.SubmissionStateRunning,
 			SubmittedBy: "anonymous", Inputs: map[string]any{}, Outputs: map[string]any{},
-			Labels: map[string]string{}, CreatedAt: now, CompletedAt: &now,
+			Labels: map[string]string{}, CreatedAt: now,
 		}
 		if err := st.CreateSubmission(context.Background(), sub); err != nil {
 			t.Fatal(err)
 		}
+		// Stored while the submission is live, then the submission alone is
+		// marked CANCELLED (no stop request on the task).
 		seedServiceIn(t, st, sub.ID, "task_svc", workerID)
+		sub.State, sub.CompletedAt = model.SubmissionStateCancelled, &now
+		if err := st.UpdateSubmission(context.Background(), sub); err != nil {
+			t.Fatal(err)
+		}
 		if code, env := completeTask(t, srv, workerID, "task_svc", body); code != http.StatusOK {
 			t.Fatalf("complete = %d %+v, want 200", code, env.Error)
 		}
@@ -238,7 +249,8 @@ func TestWorkerTaskComplete_ServiceSkippedAfterCancel(t *testing.T) {
 
 // Second review, item 4: a service-mode registration needs a valid host id
 // (400, nothing stored); an absent, empty or legacy-style one does not
-// count. An ordinary worker still registers without one.
+// count. An ordinary worker still registers without one. (Service mode needs
+// worker authentication: registered with a key naming the group.)
 func TestRegisterWorker_ServiceModeNeedsHostID(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -254,13 +266,13 @@ func TestRegisterWorker_ServiceModeNeedsHostID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, st := testServerWithStore()
-			fields := map[string]any{"name": "w", "hostname": "h", "runtime": "none", "group": "llm", "service_mode": tt.serviceMode}
+			srv, st := keyedServer(t)
+			fields := map[string]any{"name": "w", "hostname": "h", "runtime": "none", "group": "g1", "service_mode": tt.serviceMode}
 			if tt.hostID != nil {
 				fields["host_id"] = tt.hostID
 			}
 			body, _ := json.Marshal(fields)
-			w, env := doPost(t, srv, "/api/v1/workers/", string(body))
+			w, env := keyedDo(t, srv, "secretG1", "POST", "/api/v1/workers/", string(body))
 			if w.Code != tt.want {
 				t.Fatalf("register = %d %s, want %d", w.Code, w.Body.String(), tt.want)
 			}
@@ -347,14 +359,19 @@ func TestRetrySubmission_ServiceTaskRefused(t *testing.T) {
 			srv, st, _ := newManagedGroupServer(t)
 			now := time.Now().UTC()
 			sub := &model.Submission{
-				ID: "sub_review", WorkflowID: "wf_gone", WorkflowName: "gone", State: model.SubmissionStateFailed,
+				ID: "sub_review", WorkflowID: "wf_gone", WorkflowName: "gone", State: model.SubmissionStateRunning,
 				SubmittedBy: "admin", Inputs: map[string]any{}, Outputs: map[string]any{},
-				Labels: map[string]string{}, CreatedAt: now, CompletedAt: &now,
+				Labels: map[string]string{}, CreatedAt: now,
 			}
 			if err := st.CreateSubmission(ctx, sub); err != nil {
 				t.Fatal(err)
 			}
+			// A service task is stored only while its submission is live.
 			seedOwnedTask(t, st, "task_failed", "wrk_x", withService, model.TaskStateFailed)
+			sub.State, sub.CompletedAt = model.SubmissionStateFailed, &now
+			if err := st.UpdateSubmission(ctx, sub); err != nil {
+				t.Fatal(err)
+			}
 
 			w, env := mgDo(t, srv, "PUT", "/api/v1/submissions/"+sub.ID+"/retry", "", adminAuthToken)
 			if withService {
@@ -375,7 +392,8 @@ func TestRetrySubmission_ServiceTaskRefused(t *testing.T) {
 }
 
 // R8: with worker auth on, service_mode is accepted only from a key whose
-// groups name the worker's group; with worker auth off nothing changes.
+// groups name the worker's group; with worker auth off it is refused (403,
+// nothing stored), while an ordinary worker still registers (F3).
 func TestRegisterWorker_ServiceModeKey(t *testing.T) {
 	register := func(t *testing.T, srv *Server, secret, group string, serviceMode bool) (int, envelope) {
 		t.Helper()
@@ -420,9 +438,33 @@ func TestRegisterWorker_ServiceModeKey(t *testing.T) {
 		}
 	})
 	t.Run("worker auth off", func(t *testing.T) {
-		srv, _ := testServerWithStore()
+		srv, st := testServerWithStore()
 		code, env := register(t, srv, "", "llm", true)
-		if code != http.StatusCreated || !serviceModeOf(t, env) {
+		if code != http.StatusForbidden || env.Error == nil || env.Error.Code != model.ErrForbidden ||
+			env.Error.Message != ServiceModeNeedsWorkerAuth {
+			t.Fatalf("register = %d %+v, want 403 %q", code, env.Error, ServiceModeNeedsWorkerAuth)
+		}
+		if workers, err := st.ListWorkers(context.Background()); err != nil || len(workers) != 0 {
+			t.Errorf("workers = %d, %v; want none registered", len(workers), err)
+		}
+		if code, env := register(t, srv, "", "llm", false); code != http.StatusCreated || serviceModeOf(t, env) {
+			t.Errorf("ordinary register = %d %+v, want 201, not in service mode", code, env.Error)
+		}
+	})
+	// Worker auth on through the stored setting (a DB key has existed), the
+	// way the registration handler's middleware reads it: a key naming the
+	// group registers in service mode.
+	t.Run("worker auth on through a DB key", func(t *testing.T) {
+		srv, st := testServerWithStore()
+		raw, hash, prefix, err := model.GenerateWorkerKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateWorkerKey(context.Background(), &model.WorkerKey{ID: "wk_llm", KeyHash: hash, KeyPrefix: prefix,
+			Groups: []string{"llm"}, CreatedBy: "admin", CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if code, env := register(t, srv, raw, "llm", true); code != http.StatusCreated || !serviceModeOf(t, env) {
 			t.Fatalf("register = %d %+v, want 201 in service mode", code, env.Error)
 		}
 	})

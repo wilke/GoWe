@@ -500,6 +500,8 @@ func (s *Server) routes() {
 							r.Get("/", s.handleGetTask)
 							r.Get("/logs", s.handleGetTaskLogs)
 							r.Get("/attempts", s.handleListTaskAttempts)
+							// Admins and the task's group managers only (checked in the handler).
+							r.Post("/force-release", s.handleForceReleaseService)
 						})
 					})
 				})

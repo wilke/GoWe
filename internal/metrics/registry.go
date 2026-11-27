@@ -319,9 +319,9 @@ func workerGroupOf(task *model.Task) string {
 // instrumentation point for gowe_task_queue_seconds, gowe_task_run_seconds,
 // gowe_task_stage_seconds, and gowe_task_failures_total, called at every
 // site that lands a task in a terminal state after winning the store's CAS
-// guard (handleWorkerTaskComplete, persistSubmitOutcome, pollInFlight's
-// terminal branch, pollSubworkflowTask's advancement/failure paths,
-// detectStuckTasks' fail path).
+// guard (handleWorkerTaskComplete, handleForceReleaseService,
+// persistSubmitOutcome, pollInFlight's terminal branch, pollSubworkflowTask's
+// advancement/failure paths, detectStuckTasks' fail path).
 //
 // Per M3 scoping, the DURATION histograms observe SUCCESS/FAILED only, and
 // only when task.StartedAt is non-nil (the PR1/PR2 trust rule: a nil
@@ -329,7 +329,8 @@ func workerGroupOf(task *model.Task) string {
 // on an async executor). The FAILURES counter is unconditional on
 // timestamps — every task that reaches FAILED counts, with reason
 // classifying the observation site (e.g. "submit", "poll", "worker",
-// "subworkflow", "stuck"); reason is ignored for a SUCCESS outcome.
+// "subworkflow", "stuck", "force_release"); reason is ignored for a SUCCESS
+// outcome.
 func (r *Registry) ObserveTaskTerminal(task *model.Task, workflow, reason string) {
 	if r == nil || task == nil {
 		return
@@ -384,7 +385,10 @@ func (r *Registry) IncTaskRetry(task *model.Task, workflow string) {
 // per-row is explicitly out of scope (M3). The one per-row exception is a
 // sub-workflow proxy task retired to SKIPPED outside CancelNonTerminalTasks
 // (which excludes proxies): callers there pass n=1 per retired proxy, gated
-// on the store CAS write actually applying.
+// on the store CAS write actually applying. Likewise a cancelled RUNNING
+// service (kept RUNNING by CancelNonTerminalTasks) is counted once when its
+// worker's SKIPPED report is applied (handleWorkerTaskComplete) or when it
+// is force-released SKIPPED (handleForceReleaseService).
 func (r *Registry) AddTasksSkipped(n int) {
 	if r == nil || n <= 0 {
 		return

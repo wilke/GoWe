@@ -28,10 +28,14 @@ func newCancelCmd() *cobra.Command {
 			state, _ := data["state"].(string)
 			cancelled, _ := data["tasks_cancelled"].(float64)
 			completed, _ := data["tasks_already_completed"].(float64)
+			stopping, _ := data["services_stopping"].(float64)
 
 			fmt.Printf("Submission %s: %s\n", id, state)
 			fmt.Printf("  Tasks cancelled: %d\n", int(cancelled))
 			fmt.Printf("  Tasks already completed: %d\n", int(completed))
+			if int(stopping) > 0 {
+				fmt.Printf("  Services stopping: %d (their GPUs stay charged until the worker confirms)\n", int(stopping))
+			}
 			return nil
 		},
 	}

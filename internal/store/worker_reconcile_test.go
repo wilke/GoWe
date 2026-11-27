@@ -151,7 +151,7 @@ func TestCancelledTasksForWorker(t *testing.T) {
 		t.Fatalf("cancel submission: %v", err)
 	}
 
-	got, err := st.CancelledTasksForWorker(ctx, []string{cancelledTask, liveTask})
+	got, err := st.CancelledTasksForWorker(ctx, "wrk_alive", []string{cancelledTask, liveTask})
 	if err != nil {
 		t.Fatalf("cancelled tasks: %v", err)
 	}

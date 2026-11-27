@@ -420,12 +420,29 @@ gowe admin redeliver <submission_id> [--dry-run] [--json]
 gowe admin worker-groups list|set|delete|default-deny ...   # see below
 gowe admin remove-worker <worker-id>
 gowe admin service-tokens create|list|revoke ...            # see below
+gowe admin force-release-service <submission-id> <task-id>
 ```
 
 **remove-worker** removes a worker of any group from the worker list. Only a worker that is
 offline and has sent no heartbeat for 3 x the server's worker timeout (90 s) is removed (the
 server answers `409` otherwise and the command prints its reason); its running tasks, if any
 are still attributed to it, are requeued. See [Retiring a worker](#retiring-a-worker).
+
+**force-release-service** ends a RUNNING service task (`gowe:Service`) whose worker cannot
+confirm that it stopped — the worker went silent (the service is marked lost), its worker
+record is gone, or its stop request (a cancel) is older than 15 minutes; a server admin may also
+release one whose submission record is gone — through
+`POST /api/v1/submissions/{id}/tasks/{tid}/force-release`. The task becomes `FAILED` (`SKIPPED`
+if its submission was cancelled) and its cores, memory and GPUs are no longer charged. The
+service's process may still run on the worker's host and hold its GPUs: check the host first;
+the command prints when the worker is told to stop the task (on its next heartbeat; a lost
+worker when it comes back). Server admins and the managers of the task's worker group may run
+it (the server decides, so it works for managers too). A service whose worker is online is
+refused (`409`): cancel its submission, then wait 15 minutes or until the worker is marked lost.
+See [`gowe:Service` server behaviour](../cwl-hints.md#server-behaviour).
+
+`gowe cancel` prints `Services stopping: N (their GPUs stay charged until the worker confirms)`
+when the cancel left running services waiting for their worker.
 
 **verify-outputs** (read-only) downloads every `ws://` output of a submission — including
 sub-workflow child submissions — and compares it to the SHA-1 checksum and size the worker

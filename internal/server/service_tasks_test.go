@@ -17,9 +17,11 @@ import (
 // retried, and cwl:requirements is refused at submission.
 
 // seedRunningServiceTask stores a RUNNING worker service task of group g
-// checked out by workerID.
+// checked out by workerID, in submission sub_svc (stored RUNNING unless it
+// exists).
 func seedRunningServiceTask(t *testing.T, srv *Server, id, workerID string) {
 	t.Helper()
+	ensureLiveSubmission(t, srv.store, "sub_svc")
 	started := time.Now().UTC()
 	if err := srv.store.CreateTask(context.Background(), &model.Task{
 		ID: id, SubmissionID: "sub_svc", StepID: "s", State: model.TaskStateRunning,
@@ -34,7 +36,7 @@ func seedRunningServiceTask(t *testing.T, srv *Server, id, workerID string) {
 // Every REST route that removes a worker answers 409 for a worker that
 // still holds a RUNNING service, and changes nothing.
 func TestWorkerRemoval_RefusedWithRunningService(t *testing.T) {
-	const want = "worker still holds 1 running service(s); cancel their submissions first"
+	const want = "worker still holds 1 running service(s); cancel their submissions, or force-release them if the worker is gone"
 	routes := []struct {
 		name string
 		do   func(t *testing.T, srv *Server) (*httptest.ResponseRecorder, envelope)

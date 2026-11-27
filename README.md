@@ -393,10 +393,11 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 | `POST` | `/submissions` | Create submission (`workflow_id` accepts ID or name; `?dry_run=true` for validation) |
 | `GET` | `/submissions/{id}` | Get submission |
 | `PUT` | `/submissions/{id}/cancel` | Cancel submission (cascades to child submissions; returns `children_cancelled`) |
-| `DELETE` | `/submissions/{id}` | Delete submission (`409` while child submissions are active) |
+| `DELETE` | `/submissions/{id}` | Delete submission (`409` while child submissions are active or a service task is running) |
 | `GET` | `/submissions/{id}/tasks` | List tasks |
 | `GET` | `/submissions/{id}/tasks/{tid}` | Get task |
 | `GET` | `/submissions/{id}/tasks/{tid}/logs` | Task logs |
+| `POST` | `/submissions/{id}/tasks/{tid}/force-release` | End a running service task whose worker is lost or never confirmed a stop (admins and the group's managers) |
 | `GET` | `/sse/submissions/{id}` | SSE stream for real-time updates |
 | **Workers** | | |
 | `GET` | `/workers` | List workers |

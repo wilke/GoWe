@@ -32,8 +32,12 @@ import (
 // Result reports what a cancel sequence actually did, for the caller's
 // response envelope.
 type Result struct {
-	StepsCancelled    int
-	TasksCancelled    int
+	StepsCancelled int
+	TasksCancelled int
+	// ServicesStopping is the number of the submission's RUNNING services
+	// that got, or already had, a stop request: they stay RUNNING (and
+	// charged) until their worker confirms, and are not in TasksCancelled.
+	ServicesStopping  int
 	ChildrenCancelled int
 }
 
@@ -72,6 +76,10 @@ func Run(ctx context.Context, st store.Store, reg *metrics.Registry, logger *slo
 		logger.Error("cancel non-terminal tasks", "submission_id", sub.ID, "error", err)
 	}
 	reg.AddTasksSkipped(tasksCancelled)
+	servicesStopping, err := st.CountStoppingServices(ctx, sub.ID)
+	if err != nil {
+		logger.Error("cancel: count stopping services", "submission_id", sub.ID, "error", err)
+	}
 
 	// CancelNonTerminalTasks is a state-only bulk UPDATE — it never touches
 	// tasks.runtime_hints, so any per-task secret copy delivered to this
@@ -86,6 +94,7 @@ func Run(ctx context.Context, st store.Store, reg *metrics.Registry, logger *slo
 	return Result{
 		StepsCancelled:    stepsCancelled,
 		TasksCancelled:    tasksCancelled,
+		ServicesStopping:  servicesStopping,
 		ChildrenCancelled: childrenCancelled,
 	}, nil
 }

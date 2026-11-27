@@ -842,9 +842,13 @@ curl -X PUT http://localhost:8080/api/v1/submissions/sub_xyz789/cancel
   "state": "cancelled",
   "steps_cancelled": 2,
   "tasks_cancelled": 5,
+  "services_stopping": 0,
   "tasks_already_completed": 3
 }
 ```
+
+`services_stopping` counts running services (`gowe:Service`) kept RUNNING with a stop request until their
+worker confirms; they are not in `tasks_already_completed`.
 
 ---
 

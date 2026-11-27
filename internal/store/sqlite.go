@@ -1269,6 +1269,11 @@ func (s *SQLStore) ListSubmissionsWithSecretsForRetention(ctx context.Context) (
 	return subs, rows.Err()
 }
 
+// DeleteSubmission deletes the submission with its tasks, their attempts and
+// its step instances in one transaction. A submission that has a RUNNING
+// service task (itself or a descendant child submission) is not deleted:
+// the transaction is rolled back and ErrSubmissionHasRunningService
+// returned (wrapped).
 func (s *SQLStore) DeleteSubmission(ctx context.Context, id string) error {
 	s.logger.Debug("sql", "op", "delete", "table", "submissions", "id", id)
 
@@ -1278,12 +1283,30 @@ func (s *SQLStore) DeleteSubmission(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
+	// Last line of defence for every caller: a running service's worker
+	// would never be told to stop it, and its charges would vanish.
+	if running, err := hasRunningService(ctx, tx, id); err != nil {
+		return fmt.Errorf("delete submission: %w", err)
+	} else if running {
+		return fmt.Errorf("delete submission %s: %w", id, ErrSubmissionHasRunningService)
+	}
+
 	// Delete child tasks first, with their archived attempts.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM task_attempts WHERE submission_id = ?`, id); err != nil {
 		return fmt.Errorf("delete task attempts: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE submission_id = ?`, id); err != nil {
+	// A service checked out since the check above is kept (and found below):
+	// the condition is evaluated on the row as the DELETE writes it.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM tasks WHERE submission_id = ? AND NOT (state = 'RUNNING' AND is_service = 1)`, id); err != nil {
 		return fmt.Errorf("delete tasks: %w", err)
+	}
+	var kept int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE submission_id = ?`, id).Scan(&kept); err != nil {
+		return fmt.Errorf("delete tasks: count kept: %w", err)
+	}
+	if kept > 0 {
+		return fmt.Errorf("delete submission %s: %w", id, ErrSubmissionHasRunningService)
 	}
 
 	// Delete child step instances.
@@ -1663,9 +1686,28 @@ type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+// execQueryer is an execer that can also query (*sqlDB, *sqlTx).
+type execQueryer interface {
+	execer
+	queryer
+}
+
 func (s *SQLStore) CreateTask(ctx context.Context, task *model.Task) error {
 	s.logger.Debug("sql", "op", "insert", "table", "tasks", "id", task.ID)
-	return s.insertTask(ctx, s.db, task)
+	if task.RuntimeHints == nil || task.RuntimeHints.Service == nil {
+		return s.insertTask(ctx, s.db, task)
+	}
+	// A service task: insertTask's submission check and the insert share one
+	// transaction, so a delete or cancel cannot commit in between.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.insertTask(ctx, tx, task); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // taskColumns is the column set returned by every unscoped `SELECT * FROM
@@ -1677,7 +1719,8 @@ const taskColumns = `id, submission_id, step_id, step_instance_id, state, execut
 	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
 	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms,
-	 charged_cores, charged_ram_mb, charged_gpus, is_service, service_lost_at, service_missing_at`
+	 charged_cores, charged_ram_mb, charged_gpus, is_service, service_lost_at, service_missing_at,
+	 service_stop_requested_at`
 
 // checkInjectBlessed refuses to persist a non-terminal task that asks for the
 // user's token to be injected into the tool environment without naming the
@@ -1693,8 +1736,10 @@ func checkInjectBlessed(task *model.Task) error {
 // insertTask marshals the task (including runtime-hint encryption) and runs
 // the shared INSERT on the given execer. It is the single insert path behind
 // CreateTask and CreateTasksAndDispatchStep so both persist the same field
-// set.
-func (s *SQLStore) insertTask(ctx context.Context, ex execer, task *model.Task) error {
+// set. A service task is inserted only while its submission row exists and
+// is not terminal, checked on ex (the insert's transaction):
+// ErrServiceSubmissionGone otherwise.
+func (s *SQLStore) insertTask(ctx context.Context, ex execQueryer, task *model.Task) error {
 	inputsJSON, err := json.Marshal(task.Inputs)
 	if err != nil {
 		return fmt.Errorf("marshal inputs: %w", err)
@@ -1748,11 +1793,17 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execer, task *model.Task) 
 		if task.ExecutorType != model.ExecutorTypeWorker {
 			return fmt.Errorf("task %s: %w (executor %q)", task.ID, ErrServiceNotWorker, task.ExecutorType)
 		}
+		// Tasks have no foreign key: a service task stored for a submission
+		// deleted or ended since the caller read it could be checked out and
+		// never stopped or released.
+		if err := checkServiceSubmissionLive(ctx, ex, task.SubmissionID); err != nil {
+			return fmt.Errorf("task %s: %w", task.ID, err)
+		}
 	}
 
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO tasks (`+taskColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1763,6 +1814,7 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execer, task *model.Task) 
 		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
 		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB), nullableInt(task.ChargedGPUs),
 		isService, formatTimePtr(task.ServiceLostAt), formatTimePtr(task.ServiceMissingAt),
+		formatTimePtr(task.ServiceStopRequestedAt),
 	)
 	return err
 }
@@ -2245,13 +2297,28 @@ func (s *SQLStore) GetActiveTasks(ctx context.Context) ([]*model.Task, error) {
 // by the scheduler's per-tick reconciliation (pollSubworkflowTask), which is
 // the only path that also cancels the proxy's child submission — skipping a
 // proxy here would remove it from the RUNNING scan and orphan its child.
+//
+// A RUNNING service of the worker executor is not SKIPPED either: its process
+// still runs and holds its GPUs, so it stays RUNNING with its charges and gets
+// service_stop_requested_at (set once) until its worker reports it stopped
+// (/complete, or the heartbeat two-strike rule). The count returned is that of
+// the tasks SKIPPED.
 func (s *SQLStore) CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error) {
 	s.logger.Debug("sql", "op", "cancel_non_terminal_tasks", "submission_id", submissionID)
 
-	result, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("cancel non-terminal tasks: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// SKIP first: a QUEUED service is SKIPPED here (no checkout can match it
+	// afterwards); one RUNNING now is left for the stop request below.
+	result, err := tx.ExecContext(ctx,
 		`UPDATE tasks
 		 SET state = ?, completed_at = ?
-		 WHERE submission_id = ? AND state NOT IN (?, ?, ?) AND executor_type != ?`,
+		 WHERE submission_id = ? AND state NOT IN (?, ?, ?) AND executor_type != ?
+		   AND NOT (state = 'RUNNING' AND is_service = 1 AND executor_type = 'worker')`,
 		string(model.TaskStateSkipped), formatTime(completedAt),
 		submissionID,
 		string(model.TaskStateSuccess), string(model.TaskStateFailed), string(model.TaskStateSkipped),
@@ -2259,10 +2326,25 @@ func (s *SQLStore) CancelNonTerminalTasks(ctx context.Context, submissionID stri
 	if err != nil {
 		return 0, fmt.Errorf("cancel non-terminal tasks: %w", err)
 	}
-
 	n, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("cancel non-terminal tasks rows affected: %w", err)
+	}
+
+	stop, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET service_stop_requested_at = ?
+		 WHERE submission_id = ? AND state = 'RUNNING' AND is_service = 1 AND executor_type = 'worker'
+		   AND service_stop_requested_at IS NULL`,
+		formatTime(completedAt), submissionID)
+	if err != nil {
+		return 0, fmt.Errorf("cancel non-terminal tasks: request service stop: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("cancel non-terminal tasks: commit: %w", err)
+	}
+	if m, _ := stop.RowsAffected(); m > 0 {
+		s.logger.Info("cancel: running service task(s) kept RUNNING until their worker reports them stopped",
+			"submission_id", submissionID, "services", m)
 	}
 	return int(n), nil
 }
@@ -2382,7 +2464,7 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var state, executorType, createdAt string
-	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt *string
+	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt *string
 	var isService int64
 
 	err := row.Scan(
@@ -2395,7 +2477,7 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
-		&isService, &serviceLostAt, &serviceMissingAt,
+		&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2411,6 +2493,9 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 		return nil, err
 	}
 	if task.ServiceMissingAt, err = scanTimePtr(serviceMissingAt); err != nil {
+		return nil, err
+	}
+	if task.ServiceStopRequestedAt, err = scanTimePtr(serviceStopAt); err != nil {
 		return nil, err
 	}
 	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
@@ -2469,7 +2554,7 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var state, executorType, createdAt string
-		var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt *string
+		var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt *string
 		var isService int64
 
 		if err := rows.Scan(
@@ -2482,7 +2567,7 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
 			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 			&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
-			&isService, &serviceLostAt, &serviceMissingAt,
+			&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2501,6 +2586,12 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			continue
 		} else {
 			task.ServiceMissingAt = t
+		}
+		if t, err := scanTimePtr(serviceStopAt); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		} else {
+			task.ServiceStopRequestedAt = t
 		}
 		if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
@@ -3155,7 +3246,9 @@ func (s *SQLStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 //   - Runtime: if runtime is "none", only tasks without docker_image are eligible.
 //   - Group: if workerGroup is non-empty, only tasks with matching or empty WorkerGroup.
 //   - Services: a service task (is_service) only to a service-mode worker,
-//     and a service-mode worker only service tasks.
+//     and a service-mode worker only service tasks, and only while the
+//     task's submission row exists and is not terminal (in SQL; checkEligible
+//     cannot repeat it: it sees only the task row).
 //   - Prestage datasets: task is skipped if worker lacks a required prestage dataset.
 //   - Cache datasets: among eligible tasks, prefer the one with the highest cache score
 //     (number of matching cache datasets). Ties are broken by creation order (oldest first).
@@ -3416,6 +3509,16 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 		query += `
 		   AND is_service = ?`
 		args = append(args, serviceModeArg)
+		// A service task is offered only while its submission row exists and
+		// is not terminal (tasks have no foreign key: one stored for a
+		// submission deleted or ended meanwhile is never started). Only in a
+		// service-mode worker's query, which matches is_service = 1 tasks
+		// only: batch tasks keep their query and cost.
+		if workerServiceMode {
+			query += `
+		   AND EXISTS (SELECT 1 FROM submissions sub WHERE sub.id = tasks.submission_id
+		                 AND sub.state NOT IN ('COMPLETED', 'FAILED', 'CANCELLED'))`
+		}
 		query += extra + fmt.Sprintf(`
 		 ORDER BY priority DESC, created_at LIMIT %d`, limit)
 		return query, append(args, extraArgs...)
@@ -3855,7 +3958,7 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var stateStr, executorType, createdAt string
-	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt *string
+	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt, serviceStopAt *string
 	var isService int64
 
 	if err := rows.Scan(
@@ -3868,7 +3971,7 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
-		&isService, &serviceLostAt, &serviceMissingAt,
+		&isService, &serviceLostAt, &serviceMissingAt, &serviceStopAt,
 	); err != nil {
 		return nil, err
 	}
@@ -3887,6 +3990,12 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 		return nil, nil
 	} else {
 		task.ServiceMissingAt = t
+	}
+	if t, err := scanTimePtr(serviceStopAt); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	} else {
+		task.ServiceStopRequestedAt = t
 	}
 	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
@@ -4293,7 +4402,8 @@ func (s *SQLStore) ReleaseWorkerTask(ctx context.Context, workerID, taskID strin
 // services are then left untouched): a heartbeat that lists it clears
 // service_missing_at; one that omits it (past the grace window) sets
 // service_missing_at when NULL; one that omits it when service_missing_at is
-// older than minAge marks it FAILED (failMissingService). A service is never
+// older than minAge marks it FAILED (failMissingService), or SKIPPED when a
+// stop was requested (a cancel: it stopped as asked). A service is never
 // returned.
 //
 // This complements ReapStaleWorkers (which only handles
@@ -4436,29 +4546,48 @@ func (s *SQLStore) requeueOrphan(ctx context.Context, workerID, id string) error
 	return tx.Commit()
 }
 
-// CancelledTasksForWorker returns the subset of the given task IDs whose owning
-// submission is CANCELLED — the tasks a worker is running that it should kill.
-// The submission state is the durable cancellation signal: the scheduler marks a
-// cancelled submission's tasks terminal (SKIPPED), but that does not stop the
-// worker's process, which is what this drives. A service task (is_service)
-// that is terminal in the database is returned too, whatever its submission:
-// the server has ended it (failed, or cancelled), so the worker must stop it.
-// Ordinary terminal tasks are not. Returns nil for an empty input.
-func (s *SQLStore) CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error) {
-	if len(taskIDs) == 0 {
-		return nil, nil
-	}
-	placeholders := make([]string, len(taskIDs))
-	args := make([]any, len(taskIDs))
-	for i, id := range taskIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
+// CancelledTasksForWorker returns the tasks worker workerID should stop.
+//
+// Of the given task IDs (the ones its heartbeat lists): those whose owning
+// submission is CANCELLED. The submission state is the durable cancellation
+// signal: the scheduler marks a cancelled submission's tasks terminal
+// (SKIPPED), but that does not stop the worker's process, which is what this
+// drives. A listed service task (is_service) that is terminal in the
+// database is returned too, whatever its submission: the server has ended it
+// (failed, or cancelled), so the worker must stop it. So is a listed service
+// with a stop request (service_stop_requested_at), and a listed RUNNING
+// service whose submission row is gone. Ordinary terminal tasks are not.
+//
+// By worker, whatever was listed (taskIDs nil or empty included): every
+// RUNNING service whose external_id is workerID and that has a stop request
+// or whose submission has ended in any state (CANCELLED, FAILED, COMPLETED)
+// or is gone, on every heartbeat while it stays RUNNING (a cancel keeps it
+// RUNNING until its worker reports it stopped). Batch tasks follow the
+// list-based rule only, where only a CANCELLED submission counts.
+func (s *SQLStore) CancelledTasksForWorker(ctx context.Context, workerID string, taskIDs []string) ([]string, error) {
 	query := `SELECT t.id FROM tasks t
+		 LEFT JOIN submissions s ON t.submission_id = s.id
+		 WHERE t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 1 AND t.external_id = ?
+		   AND (t.service_stop_requested_at IS NOT NULL
+		        OR s.state IN ('CANCELLED', 'FAILED', 'COMPLETED')
+		        OR s.id IS NULL)`
+	args := []any{workerID}
+	if len(taskIDs) > 0 {
+		placeholders := make([]string, len(taskIDs))
+		for i, id := range taskIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += `
+		 UNION
+		 SELECT t.id FROM tasks t
 		 LEFT JOIN submissions s ON t.submission_id = s.id
 		 WHERE t.id IN (` + strings.Join(placeholders, ",") + `)
 		   AND (s.state = 'CANCELLED'
-		        OR (t.is_service = 1 AND t.state IN ('SUCCESS', 'FAILED', 'SKIPPED')))`
+		        OR (t.is_service = 1 AND t.state IN ('SUCCESS', 'FAILED', 'SKIPPED'))
+		        OR (t.is_service = 1 AND t.service_stop_requested_at IS NOT NULL)
+		        OR (t.is_service = 1 AND t.state = 'RUNNING' AND s.id IS NULL))`
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("cancelled tasks: query: %w", err)

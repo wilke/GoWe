@@ -1064,6 +1064,13 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 		if errors.Is(err, store.ErrServiceNotWorker) {
 			return l.failStepServiceExecutor(ctx, si, sub, err.Error())
 		}
+		// The submission was deleted or ended after this tick read it: there
+		// is nothing to dispatch (its step instance is gone or orphaned).
+		if errors.Is(err, store.ErrServiceSubmissionGone) {
+			l.logger.Debug("service task not created: submission deleted or ended meanwhile",
+				"si_id", si.ID, "submission_id", si.SubmissionID, "error", err)
+			return nil
+		}
 		return fmt.Errorf("create task: %w", err)
 	}
 
