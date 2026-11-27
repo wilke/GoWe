@@ -69,6 +69,11 @@ type Worker struct {
 	wdLock            *workDirLock             // Owner or sharer flock on the workdir (workdirlock.go; nil: none, no sweep)
 	inheritHostEnv    bool                     // Degraded: local/bare tools inherit the full worker env
 	noContainall      bool                     // Degraded: apptainer runs without --containall
+	serviceMode       bool                     // --service-mode: runs gowe:Service tasks only (service.go)
+	advertiseHost     string                   // Host reported in service statuses (--advertise-host)
+	services          *serviceRegistry         // Running services and their ports; nil unless serviceMode
+	svcStateDir       string                   // <workdir>/.gowe-services: service state files (servicestate.go); "" until Run in service mode
+	svcIdent          serviceIdentity          // Host, boot and process written into service state files
 	logger            *slog.Logger
 }
 
@@ -171,6 +176,22 @@ type Config struct {
 
 	// WorkspaceURL is the BV-BRC Workspace service URL (empty = default production).
 	WorkspaceURL string
+
+	// ServiceMode makes the worker run gowe:Service tasks only, as
+	// long-lived processes (--service-mode; see service.go). It requires the
+	// apptainer runtime alone, a worker key and a host id, and refuses
+	// InheritHostEnv and ApptainerNoContainall.
+	ServiceMode bool
+
+	// ServicePortLo / ServicePortHi bound the ports given to services
+	// (--service-port-range). Both 0 means DefaultServicePortRange. Only
+	// with ServiceMode.
+	ServicePortLo int
+	ServicePortHi int
+
+	// AdvertiseHost is the host name or address reported for the services
+	// (--advertise-host). Empty means the hostname. Only with ServiceMode.
+	AdvertiseHost string
 }
 
 // GPUWorkerConfig holds GPU settings for the worker.
@@ -283,14 +304,25 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		)
 	}
 	// Several tasks at once on a GPU worker: each task gets its own devices
-	// from the inventory (a task that needs none gets no GPU access).
-	if err := validateGPUConcurrency(slots, cfg.GPU.Enabled, gpuInventory); err != nil {
+	// from the inventory (a task that needs none gets no GPU access); so does
+	// every service of a service-mode GPU worker, at any concurrency. Service
+	// mode (--service-mode): start-up requirements, port range and advertised
+	// host; without it nothing is set up.
+	svc, ledger, err := resolveGPUAndServiceSettings(cfg, hostname, hostID, gpuInventory, slots)
+	if err != nil {
 		return nil, err
 	}
-	var ledger *gpuLedger
-	if slots > 1 && cfg.GPU.Enabled {
-		ledger = newGPULedger(gpuInventory)
+	if ledger != nil {
 		logger.Info("per-task GPU assignment", "devices", strings.Join(ledger.devices, ","))
+	}
+	var services *serviceRegistry
+	if cfg.ServiceMode {
+		services = newServiceRegistry(svc.portLo, svc.portHi)
+		logger.Info("service mode",
+			"port_range", fmt.Sprintf("%d-%d", svc.portLo, svc.portHi),
+			"advertise_host", svc.advertiseHost,
+			"max_services", slots,
+		)
 	}
 
 	// Build TLS config.
@@ -461,6 +493,9 @@ func New(cfg Config, logger *slog.Logger) (*Worker, error) {
 		concurrency:       slots,
 		shareCores:        shareCores,
 		shareRamMB:        shareRamMB,
+		serviceMode:       cfg.ServiceMode,
+		advertiseHost:     svc.advertiseHost,
+		services:          services,
 		logger:            logger.With("component", "worker"),
 	}, nil
 }
@@ -616,6 +651,16 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	// otherwise the sharer lock, which the owner's sweep sees and skips
 	// (workdirlock.go).
 	w.lockWorkDir()
+	if w.serviceMode {
+		// The state directory and this worker's identity for the services'
+		// state files; then services a dead worker process left running here
+		// (crash, SIGKILL, shutdown wait expired) are stopped before this one
+		// registers and takes new ones.
+		if err := w.initServiceState(); err != nil {
+			return err
+		}
+		w.sweepLeftoverServices()
+	}
 
 	regOpts := RegisterOptions{
 		GPUEnabled: w.gpu.Enabled,
@@ -640,9 +685,20 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 		regOpts.DefaultTaskCores = w.shareCores
 		regOpts.DefaultTaskRamMB = w.shareRamMB
 	}
+	regOpts.ServiceMode = w.serviceMode
 	worker, err := w.client.Register(ctx, cfg.Name, cfg.Hostname, cfg.Group, cfg.Runtime, regOpts)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
+	}
+	if w.serviceMode && !worker.ServiceMode {
+		// An older server ignores service_mode: it would hand this worker
+		// ordinary tasks, which it refuses, and never a service.
+		deregCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if derr := w.client.Deregister(deregCtx); derr != nil {
+			w.logger.Warn("deregister after refused service mode failed", "error", derr)
+		}
+		cancel()
+		return errors.New("register: the server did not confirm service mode (no service_mode: true in its registration response; it is older than this worker): upgrade the server or start without --service-mode")
 	}
 	if w.concurrency > 1 && worker.DefaultTaskCores == nil {
 		// A server that does not echo the share does not charge tasks at
@@ -666,8 +722,17 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	w.usage = newUsageSampler(w.logger, w.gpuInventory)
 	go w.usage.run(ctx)
 
-	// Start heartbeat in a separate goroutine so it continues during task execution.
-	go w.heartbeatLoop(ctx)
+	// Start heartbeat in a separate goroutine so it continues during task
+	// execution. Batch: it stops at the first shutdown signal. Service mode:
+	// it goes on until the task goroutines have finished, so the services'
+	// "stopping" is reported, the worker is not marked lost while it stops
+	// them, and a server cancel can still arrive.
+	hbCtx, stopHeartbeats := ctx, context.CancelFunc(nil)
+	if w.serviceMode {
+		hbCtx, stopHeartbeats = context.WithCancel(context.WithoutCancel(ctx))
+		defer stopHeartbeats()
+	}
+	go w.heartbeatLoop(hbCtx)
 
 	// Kept task dirs older than --kept-task-dir-ttl: removed in the background,
 	// first right away, then hourly; never delays polling or task starts.
@@ -676,7 +741,7 @@ func (w *Worker) Run(ctx context.Context, cfg Config) error {
 	}
 
 	// Run task polling loop.
-	return w.taskLoop(ctx)
+	return w.taskLoop(ctx, stopHeartbeats)
 }
 
 // heartbeatLoop sends heartbeats at regular intervals until context is cancelled.
@@ -691,7 +756,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			usage := sentUsage.pending(w.usage.latest())
-			resp, err := w.client.Heartbeat(ctx, w.active.ids(), usage)
+			resp, err := w.sendHeartbeat(ctx, usage)
 			if err != nil {
 				w.logger.Warn("heartbeat failed", "error", err)
 				continue
@@ -709,6 +774,17 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// sendHeartbeat sends one heartbeat with the latest usage sample. In batch
+// mode it is the running task ids (nil, so absent, when none); in service
+// mode the running list is always sent (an empty one included) together with
+// the status of each service (serviceRegistry.reports).
+func (w *Worker) sendHeartbeat(ctx context.Context, usage *model.WorkerUsage) (*model.HeartbeatResponse, error) {
+	if !w.serviceMode {
+		return w.client.Heartbeat(ctx, w.active.ids(), usage)
+	}
+	return w.client.ServiceHeartbeat(ctx, w.active.ids(), w.services.reports(w.advertiseHost), usage)
+}
+
 // shutdownTaskWait bounds how long shutdown waits for running tasks (whose
 // contexts are cancelled, so their tools are being terminated) before
 // deregistering anyway. A variable so tests can shrink it.
@@ -717,8 +793,9 @@ var shutdownTaskWait = 60 * time.Second
 // taskLoop polls for tasks and runs up to slotLimit() of them at once until
 // the context is cancelled. On cancellation it stops polling, waits (bounded)
 // for the running tasks — their contexts derive from ctx, so their tools are
-// being terminated — and then deregisters.
-func (w *Worker) taskLoop(ctx context.Context) error {
+// being terminated — then calls afterTasks (when not nil: service mode stops
+// its heartbeats there) and deregisters.
+func (w *Worker) taskLoop(ctx context.Context, afterTasks func()) error {
 	ticker := time.NewTicker(w.poll)
 	defer ticker.Stop()
 
@@ -735,12 +812,24 @@ func (w *Worker) taskLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			w.logger.Info("shutting down: waiting for running tasks", "task_ids", w.active.ids())
 			w.waitForTasks(&wg)
+			if afterTasks != nil {
+				afterTasks()
+			}
 			w.logger.Info("deregistering...")
 			// Use a fresh context for deregistration.
 			deregCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := w.client.Deregister(deregCtx)
 			cancel() // Call cancel explicitly, not via defer
-			if err != nil {
+			var se *StatusError
+			switch {
+			case err == nil:
+			case w.serviceMode && errors.As(err, &se) && se.StatusCode == http.StatusConflict:
+				// A service whose stop could not be reported is still RUNNING
+				// on the server, which keeps the worker record for it. No
+				// heartbeat comes from this worker any more, so the server
+				// never ends it by itself.
+				w.logger.Error("deregister refused: the server still holds a running service of this worker (its stop could not be reported); it stays RUNNING (lost once this worker is silent) and charged until an admin or a manager of the group force-releases it (gowe admin force-release-service)", "error", err)
+			default:
 				w.logger.Error("deregister failed", "error", err)
 			}
 			return nil
@@ -753,8 +842,12 @@ func (w *Worker) taskLoop(ctx context.Context) error {
 	}
 }
 
-// waitForTasks waits for the task goroutines, at most shutdownTaskWait.
+// waitForTasks waits for the task goroutines, at most shutdownWait(). In
+// service mode, services still running when the wait expires have their
+// process groups SIGKILLed (KillServices) before the caller deregisters, so
+// none outlives the worker.
 func (w *Worker) waitForTasks(wg *sync.WaitGroup) {
+	wait := w.shutdownWait()
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -762,10 +855,29 @@ func (w *Worker) waitForTasks(wg *sync.WaitGroup) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(shutdownTaskWait):
+	case <-time.After(wait):
+		if w.serviceMode {
+			ids := w.active.ids()
+			n := w.KillServices()
+			w.logger.Warn("services still running after the shutdown wait: SIGKILL sent to their process groups; deregistering",
+				"task_ids", ids, "waited", wait, "killed_groups", n)
+			return
+		}
 		w.logger.Warn("tasks still running after the shutdown wait; deregistering anyway (the server requeues them)",
-			"task_ids", w.active.ids(), "waited", shutdownTaskWait)
+			"task_ids", w.active.ids(), "waited", wait)
 	}
+}
+
+// shutdownWait bounds the shutdown wait for running tasks: shutdownTaskWait,
+// or in service mode the fixed serviceShutdownWait (the largest possible stop
+// grace plus 30 s; a service's grace may exceed shutdownTaskWait, and one may
+// start while the wait is computed). waitForTasks returns as soon as all
+// tasks are done.
+func (w *Worker) shutdownWait() time.Duration {
+	if !w.serviceMode {
+		return shutdownTaskWait
+	}
+	return serviceShutdownWait
 }
 
 // fillSlots checks out tasks while a slot is free, starting each on its own
@@ -891,10 +1003,29 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 		}
 	}()
 
+	// A service-mode worker runs services only, any other worker none (the
+	// server never offers either; defence in depth).
+	if err := w.taskModeRefusal(task); err != nil {
+		w.logger.Warn("task refused", "task_id", task.ID, "reason", err.Error())
+		return w.reportFailure(runCtx, task, err)
+	}
+	// A service's task id names its task dir and its state file
+	// (<workdir>/.gowe-services/<task id>.json): a plain name only, never a
+	// dot name such as the state directory itself.
+	if w.serviceMode && !validServiceTaskID(task.ID) {
+		err := fmt.Errorf("task id %q cannot be used by a service (want [A-Za-z0-9._-], not starting with a dot)", task.ID)
+		w.logger.Warn("task refused", "task_id", task.ID, "reason", err.Error())
+		return w.reportFailure(runCtx, task, err)
+	}
+
 	// GPU access for this task: the worker's static config, or devices of its
 	// own (possibly after a wait), or none.
 	gpu, err := w.taskGPU(runCtx, task, hold)
 	if err != nil {
+		if w.serviceMode {
+			// A service is never requeued: report it even at shutdown.
+			return w.endServiceBeforeLaunch(runCtx, task, err)
+		}
 		// Cancelled while waiting for devices: same decision as a cancelled
 		// execution (SKIPPED for a server cancel, left for requeue on
 		// shutdown); otherwise the task fails.
@@ -920,6 +1051,12 @@ func (w *Worker) runTask(runCtx context.Context, cancel context.CancelFunc, task
 		return w.reportFailure(runCtx, task, err)
 	}
 	taskDirCreated = true
+
+	// A service (only a service-mode worker gets here with one) runs until it
+	// is stopped; this goroutine, its slot and its GPU devices live as long.
+	if w.serviceMode {
+		return w.executeService(runCtx, task, taskDir, gpu)
+	}
 
 	// Check if task has Tool+Job (new format) or legacy _base_command.
 	if task.HasTool() {
@@ -1273,117 +1410,21 @@ func (w *Worker) handleExecCancellation(runCtx context.Context, task *model.Task
 func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskDir string, gpu GPUConfig, releaseGPU func()) error {
 	w.logger.Debug("executing with cwltool", "task_id", task.ID, "has_tool", true)
 
-	// Rematerialize file literals in job inputs if paths don't exist locally.
-	for k, v := range task.Job {
-		if rematerialized, err := fileliteral.RematerializeRecursive(v, taskDir); err != nil {
-			w.logger.Warn("rematerialize file literal", "input", k, "error", err)
-		} else {
-			task.Job[k] = rematerialized
-		}
-	}
-
-	// Build cwltool configuration.
-	cfg := cwltool.Config{
-		Logger:                w.logger,
-		ContainerRuntime:      w.containerRuntime,
-		DockerHostPathMap:     w.dockerHostPathMap,
-		DockerVolume:          w.dockerVolume,
-		GPU:                   gpu,
-		MaxCPUs:               w.resources.MaxCPUs,
-		MaxMemMB:              w.resources.MaxMemMB,
-		ApptainerCgroups:      w.resources.ApptainerCgroups,
-		CgroupCPU:             w.resources.CgroupCPU,
-		CgroupMemory:          w.resources.CgroupMemory,
-		ImageDir:              w.imageDir,
-		ResolveSecondary:      task.StepInstanceID == "",
-		RemoveDefaultListings: true,
-		ExtraBinds:            w.extraBinds,
-		SecretEnvVars:         w.secrets,
-		EnvVars:               w.envVars,
-		InheritHostEnv:        w.inheritHostEnv,
-		ApptainerNoContainall: w.noContainall,
-	}
-	// File literals go below the task's staging dir, not the shared
-	// $TMPDIR/cwl-literals: concurrent tasks may carry literals with the same
-	// basename and different contents.
-	cfg.LiteralDir = taskStagingDir(taskDir)
-	// With several tasks at once, a tool that requests no cores / no RAM
-	// gets what the server charged for it instead of the whole budget.
-	cfg.DefaultCores, cfg.DefaultRamMB = w.taskShare(task)
-	if task.RuntimeHints != nil {
-		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
-		cfg.Namespaces = task.RuntimeHints.Namespaces
-		cfg.CWLDir = task.RuntimeHints.CWLDir
-		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
-	}
-
-	// The delegated token is always part of the redaction mask for the
-	// reported stdout/stderr/outputs, even for staging-only tasks, and is
-	// captured before staging. On-disk task files are NOT rewritten.
-	stageToken := taskToken(task.RuntimeHints)
-	var tokenMask map[string]string
-	if len(stageToken) >= redactSecretsMinLength {
-		tokenMask = map[string]string{"_delegated_token": stageToken}
-	}
-
-	// Parse the tool up front: the image check below needs its image ref, and
-	// a malformed tool should fail before any data is staged.
-	tool, err := w.parser.ParseToolFromMap(task.Tool)
+	prep, err := w.prepareCWLJob(ctx, task, taskDir, gpu)
 	if err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("parse tool: %w", err))
-	}
-
-	// Token injection into the tool environment: only for a scheduler-blessed
-	// task whose image hashes to a blessed digest (verified here, before
-	// launch, and the same resolved path is what gets launched). Otherwise
-	// the token stays staging-only.
-	if wantsTokenInjection(task.RuntimeHints, w.logger, task.ID) {
-		if err := prepareTokenImage(&cfg, tool, task.RuntimeHints, &w.imageDigests); err != nil {
-			return w.reportFailure(ctx, task, err)
+		var sie *stageInError
+		if errors.As(err, &sie) {
+			// Interrupted by a cancel: SKIPPED for a server cancel, left for
+			// requeue on worker shutdown — not a FAILED that consumes a retry.
+			if handled, cerr := w.handleExecCancellation(ctx, task); handled {
+				return cerr
+			}
 		}
-		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
+		return w.reportFailure(ctx, task, err)
 	}
-
-	// Deliver the task's opted-in submission secrets (gowe:Execution
-	// secret_env/inject_secrets, limited to SecretEnvNames — M13) as
-	// container env vars, and re-inject cwltool:Secrets-declared inputs
-	// stripped from the persisted job at submission time into a COPY of
-	// task.Job (task.Job itself is never mutated) — this is the same
-	// internal/cwltool.ApplySecrets path local/docker executors now use
-	// (H4), so all three deliver secrets identically. Must happen before
-	// tool evaluation (parameter references, JS,
-	// InitialWorkDirRequirement) sees the job below.
-	job, err := cwltool.ApplySecrets(&cfg, task, w.logger)
-	if err != nil {
-		return w.reportFailure(ctx, task, fmt.Errorf("apply secrets: %w", err))
-	}
-	// The delegated token also joins the in-execution mask set (redaction
-	// only; SecretValues is never delivered to the tool), so it is masked
-	// before toolexec cuts the stderr tail for an output-collection error.
-	// Redacting only afterwards would miss a token straddling that cut.
-	cfg.SecretValues = mergeSecretsForRedaction(cfg.SecretValues, tokenMask)
-
-	// Remap input paths if configured (host->container translation).
-	if len(w.inputPathMap) > 0 {
-		job = cwltool.RemapInputPaths(job, w.inputPathMap)
-		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
-	}
-
-	// Stage-in remote files (worker owns this step).
-	stager := w.stager
-	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
-		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
-	}
-	stageInStart := time.Now()
-	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
-		// Interrupted by a cancel: SKIPPED for a server cancel, left for
-		// requeue on worker shutdown — not a FAILED that consumes a retry.
-		if handled, cerr := w.handleExecCancellation(ctx, task); handled {
-			return cerr
-		}
-		return w.reportFailure(ctx, task, fmt.Errorf("stage-in: %w", err))
-	}
-	stageInMs := time.Since(stageInStart).Milliseconds()
+	cfg, tool, job := prep.cfg, prep.tool, prep.job
+	stageToken, tokenMask, stageInMs := prep.stageToken, prep.tokenMask, prep.stageInMs
+	prep = nil
 
 	// Execute the tool.
 	result, err := cwltool.ExecuteTool(ctx, cfg, tool, job, taskDir)
@@ -1491,6 +1532,148 @@ func (w *Worker) executeWithCWLTool(ctx context.Context, task *model.Task, taskD
 	}
 	w.cleanupTaskDir(task, stagedOutputs)
 	return nil
+}
+
+// cwlJob is a task prepared for cwltool.ExecuteTool by prepareCWLJob.
+type cwlJob struct {
+	cfg        cwltool.Config
+	tool       *cwl.CommandLineTool
+	job        map[string]any    // the job with secrets applied, remapped and staged in
+	stageToken string            // the delegated staging token ("" if none)
+	tokenMask  map[string]string // redaction mask holding stageToken; nil if none
+	stageInMs  int64
+}
+
+// stageInError marks a stage-in failure returned by prepareCWLJob, which a
+// caller treats as a possible cancellation. Its message is the wrapped
+// error's.
+type stageInError struct{ err error }
+
+func (e *stageInError) Error() string { return e.err.Error() }
+func (e *stageInError) Unwrap() error { return e.err }
+
+// prepareCWLJob prepares task for cwltool.ExecuteTool, up to and including
+// the stage-in of remote inputs: file literals, the cwltool configuration,
+// the tool, token injection (blessed tasks), secrets (cwltool.ApplySecrets),
+// input path remapping and stage-in. It reports nothing: on error the caller
+// reports; a stage-in failure is a *stageInError. Shared by
+// executeWithCWLTool and executeService.
+func (w *Worker) prepareCWLJob(ctx context.Context, task *model.Task, taskDir string, gpu GPUConfig) (*cwlJob, error) {
+	// Rematerialize file literals in job inputs if paths don't exist locally.
+	for k, v := range task.Job {
+		if rematerialized, err := fileliteral.RematerializeRecursive(v, taskDir); err != nil {
+			w.logger.Warn("rematerialize file literal", "input", k, "error", err)
+		} else {
+			task.Job[k] = rematerialized
+		}
+	}
+
+	// Build cwltool configuration.
+	cfg := cwltool.Config{
+		Logger:                w.logger,
+		ContainerRuntime:      w.containerRuntime,
+		DockerHostPathMap:     w.dockerHostPathMap,
+		DockerVolume:          w.dockerVolume,
+		GPU:                   gpu,
+		MaxCPUs:               w.resources.MaxCPUs,
+		MaxMemMB:              w.resources.MaxMemMB,
+		ApptainerCgroups:      w.resources.ApptainerCgroups,
+		CgroupCPU:             w.resources.CgroupCPU,
+		CgroupMemory:          w.resources.CgroupMemory,
+		ImageDir:              w.imageDir,
+		ResolveSecondary:      task.StepInstanceID == "",
+		RemoveDefaultListings: true,
+		ExtraBinds:            w.extraBinds,
+		SecretEnvVars:         w.secrets,
+		EnvVars:               w.envVars,
+		InheritHostEnv:        w.inheritHostEnv,
+		ApptainerNoContainall: w.noContainall,
+	}
+	// File literals go below the task's staging dir, not the shared
+	// $TMPDIR/cwl-literals: concurrent tasks may carry literals with the same
+	// basename and different contents.
+	cfg.LiteralDir = taskStagingDir(taskDir)
+	// With several tasks at once, a tool that requests no cores / no RAM
+	// gets what the server charged for it instead of the whole budget.
+	cfg.DefaultCores, cfg.DefaultRamMB = w.taskShare(task)
+	if task.RuntimeHints != nil {
+		cfg.ExpressionLib = task.RuntimeHints.ExpressionLib
+		cfg.Namespaces = task.RuntimeHints.Namespaces
+		cfg.CWLDir = task.RuntimeHints.CWLDir
+		cfg.InputValidation = validate.Mode(task.RuntimeHints.InputValidation)
+	}
+
+	// The delegated token is always part of the redaction mask for the
+	// reported stdout/stderr/outputs, even for staging-only tasks, and is
+	// captured before staging. On-disk task files are NOT rewritten.
+	stageToken := taskToken(task.RuntimeHints)
+	var tokenMask map[string]string
+	if len(stageToken) >= redactSecretsMinLength {
+		tokenMask = map[string]string{"_delegated_token": stageToken}
+	}
+
+	// Parse the tool up front: the image check below needs its image ref, and
+	// a malformed tool should fail before any data is staged.
+	tool, err := w.parser.ParseToolFromMap(task.Tool)
+	if err != nil {
+		return nil, fmt.Errorf("parse tool: %w", err)
+	}
+
+	// Token injection into the tool environment: only for a scheduler-blessed
+	// task whose image hashes to a blessed digest (verified here, before
+	// launch, and the same resolved path is what gets launched). Otherwise
+	// the token stays staging-only.
+	if wantsTokenInjection(task.RuntimeHints, w.logger, task.ID) {
+		if err := prepareTokenImage(&cfg, tool, task.RuntimeHints, &w.imageDigests); err != nil {
+			return nil, err
+		}
+		cfg.SecretEnvVars = injectBVBRCTokenEnv(cfg.SecretEnvVars, task.RuntimeHints)
+	}
+
+	// Deliver the task's opted-in submission secrets (gowe:Execution
+	// secret_env/inject_secrets, limited to SecretEnvNames — M13) as
+	// container env vars, and re-inject cwltool:Secrets-declared inputs
+	// stripped from the persisted job at submission time into a COPY of
+	// task.Job (task.Job itself is never mutated) — this is the same
+	// internal/cwltool.ApplySecrets path local/docker executors now use
+	// (H4), so all three deliver secrets identically. Must happen before
+	// tool evaluation (parameter references, JS,
+	// InitialWorkDirRequirement) sees the job below.
+	job, err := cwltool.ApplySecrets(&cfg, task, w.logger)
+	if err != nil {
+		return nil, fmt.Errorf("apply secrets: %w", err)
+	}
+	// The delegated token also joins the in-execution mask set (redaction
+	// only; SecretValues is never delivered to the tool), so it is masked
+	// before toolexec cuts the stderr tail for an output-collection error.
+	// Redacting only afterwards would miss a token straddling that cut.
+	cfg.SecretValues = mergeSecretsForRedaction(cfg.SecretValues, tokenMask)
+
+	// Remap input paths if configured (host->container translation).
+	if len(w.inputPathMap) > 0 {
+		job = cwltool.RemapInputPaths(job, w.inputPathMap)
+		w.logger.Debug("remapped input paths", "path_map", w.inputPathMap)
+	}
+
+	// Stage-in remote files (worker owns this step).
+	stager := w.stager
+	if task.RuntimeHints != nil && task.RuntimeHints.StagerOverrides != nil {
+		stager = w.stagerWithOverrides(task.RuntimeHints.StagerOverrides)
+	}
+	stageInStart := time.Now()
+	if err := stageRemoteInputs(ctx, stager, job, taskDir, w.logger); err != nil {
+		return nil, &stageInError{err: fmt.Errorf("stage-in: %w", err)}
+	}
+	stageInMs := time.Since(stageInStart).Milliseconds()
+
+	return &cwlJob{
+		cfg:        cfg,
+		tool:       tool,
+		job:        job,
+		stageToken: stageToken,
+		tokenMask:  tokenMask,
+		stageInMs:  stageInMs,
+	}, nil
 }
 
 // redactOutputsForReport scans outputs for the exact delegated token and

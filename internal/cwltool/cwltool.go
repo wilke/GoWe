@@ -114,6 +114,12 @@ type Config struct {
 	// RuntimeHints predate the server's --input-validation stamping.
 	// cwl-runner sets this explicitly to enforce (its standalone default).
 	InputValidation validate.Mode
+
+	// Service, when set, starts the tool as a long-running service under
+	// Apptainer (worker --service-mode) and returns at once with
+	// Result.Service: ToolTimeLimit is ignored and no outputs are collected.
+	// Nil runs the tool to completion, as without it.
+	Service *toolexec.ServiceLaunch
 }
 
 // Result holds the result of tool execution.
@@ -122,6 +128,9 @@ type Result struct {
 	ExitCode int
 	Stdout   string
 	Stderr   string
+
+	// Service is the running service's handle when Config.Service was set.
+	Service toolexec.ServiceHandle
 }
 
 // ResolveResources validates CWL resource requirements against worker limits
@@ -253,6 +262,9 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			containerRuntime = DetectContainerRuntime()
 		}
 	}
+	if cfg.Service != nil && containerRuntime != "apptainer" {
+		return nil, fmt.Errorf("a service runs only in an Apptainer container with a DockerRequirement image (container runtime %q)", containerRuntime)
+	}
 
 	// Make workDir absolute for use in runtime.outdir expressions.
 	if absWorkDir, err := filepath.Abs(workDir); err == nil {
@@ -291,7 +303,8 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 	if timeLimit < 0 {
 		return nil, fmt.Errorf("invalid ToolTimeLimit: timelimit must be non-negative, got %d", timeLimit)
 	}
-	if timeLimit > 0 {
+	// A service runs until it is stopped: ToolTimeLimit does not apply.
+	if timeLimit > 0 && cfg.Service == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeLimit)*time.Second)
 		defer cancel()
@@ -422,6 +435,7 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 			MaskSecrets:     cfg.SecretValues,
 
 			ApptainerNoContainall: cfg.ApptainerNoContainall,
+			Service:               cfg.Service,
 		})
 
 	default:
@@ -468,5 +482,6 @@ func ExecuteTool(ctx context.Context, cfg Config, tool *cwl.CommandLineTool, inp
 		ExitCode: execResult.ExitCode,
 		Stdout:   execResult.Stdout,
 		Stderr:   execResult.Stderr,
+		Service:  execResult.Service,
 	}, nil
 }

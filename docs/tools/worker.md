@@ -96,6 +96,14 @@ Startup errors: `--concurrency` below 1; `--concurrency` above the effective CPU
 
 At registration the worker also reports the host's physical CPU and memory totals (even when `--max-cpus` / `--max-mem` cap it lower), its task slots, whether the cpu / memory cgroup controllers are usable, and, with `--gpu`, the GPU inventory from `nvidia-smi` (filtered by `--gpu-id`). The server uses the capacity figures when it hands out tasks (see [Concurrency](#concurrency) and the server's capacity accounting); the number of GPUs in the inventory is the worker's GPU capacity there.
 
+#### Service Mode
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--service-mode` | `false` | Run long-lived services (`gowe:Service` tasks) only, at most `--concurrency` (≤ 64) at once. Linux only. See [Service Mode](#service-mode-1) |
+| `--service-port-range` | `20000-20999` | Ports given to services, `LO-HI` within 1024-65535, at least `--concurrency` ports; keep the ranges of workers on one host disjoint. Only with `--service-mode` |
+| `--advertise-host` | hostname | Host name or address reported as the services' `host` (checked with the server's host rule). Only with `--service-mode` |
+
 #### Reference Data Pre-staging
 
 | Flag | Default | Description |
@@ -630,6 +638,184 @@ At execution time, the worker selects the appropriate runtime per task.
 # Can handle both bare and Apptainer tasks
 gowe-worker --runtime none,apptainer
 ```
+
+## Service Mode
+
+**Experimental.** A worker started with `--service-mode` runs long-lived services: tasks of workflows whose tool
+carries the [`gowe:Service`](../cwl-hints.md#goweservice--long-running-service-experimental) hint, for example a
+model server on a GPU node. It runs services only, and only such a worker runs them (the server offers each kind only
+to its own workers; a worker that gets the other kind anyway reports it FAILED without running it: `this worker runs
+services only` / `this worker does not run services`).
+
+```bash
+gowe-worker --server https://gowe.example.org --group llm \
+  --runtime apptainer --image-dir /scout/containers \
+  --worker-key-file /etc/gowe/worker.key \
+  --service-mode --concurrency 2 --gpu \
+  --service-port-range 20000-20099 --advertise-host gpu01.example.org
+```
+
+**Start-up requirements** (the worker refuses to start otherwise, with a message naming the problem):
+
+- Linux (the worker checks through `/proc` that a service's port is held by the service; refused on other systems);
+- `--runtime apptainer` and no other runtime (not `none`, not `docker`), and the `apptainer` executable on `PATH`
+  (`singularity` alone is not enough: a service is launched as `apptainer`);
+- `--worker-key-file`: the server accepts service mode only with worker authentication, from a key whose groups
+  name the worker's group;
+- a host id (derived or `--host-id`);
+- `--concurrency` at most 64 (the most service statuses the server reads from one heartbeat);
+- with `--gpu`, a GPU inventory from `nvidia-smi` in which every GPU has a UUID, also at `--concurrency 1` (when this
+  fails, it is the error given, also above concurrency 1);
+- neither `--inherit-host-env` nor `--apptainer-no-containall`;
+- `--service-port-range` within 1024-65535, `LO <= HI`, with at least `--concurrency` ports;
+- the advertised host (`--advertise-host`, default the hostname) passes the server's host rule;
+- the state directory `<workdir>/.gowe-services` can be created (mode 0700; an existing one must be a directory,
+  not a symlink), and `/proc/self/stat` and `/proc/sys/kernel/random/boot_id` can be read (see *Worker crash*);
+- the server confirms `service_mode: true` in its registration answer (an older server does not: the worker
+  deregisters and exits).
+
+**First run on a host.** The ownership check below reads `/proc` (the socket tables and the descriptors of the
+service's processes). Under some Apptainer set-ups (for example a setuid starter, or `/proc` mounted with
+`hidepid`) part of that may not be readable by the worker's user, and a service then never becomes ready (its
+`detail` says `cannot verify the listener of port <n>: ...`). Confirm with a first real service on each host that it
+becomes `ready`.
+
+`--service-port-range` and `--advertise-host` without `--service-mode` are refused. Without `--service-mode` the
+worker behaves exactly as before.
+
+**What a service task does.** `--concurrency N` is the most services the worker runs at once: a service keeps its
+slot, its GPUs and its entry in the heartbeat's `running_tasks` until it has ended and been reported. With `--gpu`, a
+service gets exactly the devices the server charged for it, at every `--concurrency` including 1 (unlike a batch
+worker at concurrency 1, which gives every task the whole `--gpu` configuration): `CUDA_VISIBLE_DEVICES` names those
+devices and the status lists them; a service charged no GPU gets no GPU access (no `--nv`, `CUDA_VISIBLE_DEVICES=`).
+For each service the worker:
+
+1. refuses it before anything runs (FAILED) when its tool has no `DockerRequirement` image, when the task carries
+   secret inputs (`cwltool:Secrets`: their values can reach the command line; pass secrets through
+   `gowe:Execution.secret_env`, which sets environment variables only), or when it asks for token injection (and,
+   before its task dir is created, when its task id is not `[A-Za-z0-9._-]+` not starting with a dot: it names the
+   state file; server task ids always are);
+2. prepares the job like any task (file literals, `secret_env` secrets, stage-in), then drops the task's
+   credentials (the submitter's staging token and the task's secrets) from the task: a service does not hold them for
+   its whole life (the redaction mask keeps the token, so reported log tails stay masked; `secret_env` values stay in
+   the service's own environment). Its task dir's siblings `<task id>_tmp` (the container's `/tmp`),
+   `<task id>_staging` and `<task id>_output` are mode 0700 like the task dir;
+3. picks the lowest port of `--service-port-range` that none of its other services holds and that can be bound right
+   now, and sets the tool's `port_input` to it;
+4. starts the tool through the usual Apptainer launch (`--containall --cleanenv`, the same binds and environment)
+   with three differences: the container always uses the **host network** (no `--net --network none`, whatever
+   `NetworkAccess` says: the service can reach services on the host's loopback and the network), there is **no time
+   limit** (`ToolTimeLimit` is ignored), and the process runs in its own process group with its output written
+   straight to `gowe-service.stdout.log` / `gowe-service.stderr.log` in the task dir (`<workdir>/<task id>/`, mode
+   0700 for a service). The logs are created new with mode 0600 (a stale regular file of the worker's user there is
+   replaced; anything else at the name, e.g. a symlink, refuses the launch), and the worker opens the stderr log for
+   reading before the start and reads the reported tail only through that descriptor: the task dir is the
+   container's writable home, so a service could replace the name by a symlink to a file the worker can read, or by
+   a FIFO; neither is ever read or waited on;
+5. hashes a local `.sif` image (sha256, cached) for the status and launches the hashed file;
+6. writes a state file `<workdir>/.gowe-services/<task id>.json` (mode 0600, written atomically, in a directory of
+   mode 0700 created at start-up; outside every task dir, so it is never bound into a container): task id, pid,
+   process group, the process start time from `/proc/<pid>/stat`, port and launch time, and its writer: the worker's
+   host id, the boot id (`/proc/sys/kernel/random/boot_id`), and the worker's pid and start time. It is removed once
+   the service has ended (see *Worker crash* below);
+7. checks its health every `health.interval` seconds: `GET <scheme>://127.0.0.1:<port><health.path>` (5 s timeout,
+   redirects not followed, at most 1 MiB of body read; for `https` the certificate is **not verified**, as the check
+   only ever talks to the loopback address), then `health.ready_path` when set, which must answer 200 and contain
+   `health.ready_contains` when set. A check passes only if, in addition, **every** socket listening on the port
+   (IPv4 and IPv6, any local address, from `/proc/net/tcp{,6}`) belongs to the service: is held by the launched
+   process or one of its descendants (their descriptors in `/proc/<pid>/fd`), and there is at least one. Otherwise
+   the check fails:
+   - a listener on the port that is not the service's: `detail` says `port <n> also has a listener that is not this
+     service` (with no listener on the port at all: `port <n> is answered by a process that is not this service`);
+     before the first `ready`, 3 such checks in a row end the service (see below), after it they are failed checks;
+   - when no listener was found held by the service and the descriptors of one of its processes cannot be read
+     (permission): `cannot verify the listener of port <n>: cannot read /proc/<pid>/fd: <error>`. This is a failed
+     check, but it never counts towards the 3 checks that end a service.
+
+   A service whose listening process leaves the launched process tree (daemonizes to init) is therefore never ready.
+
+The health check talks to **127.0.0.1**, and clients reach the service on `<advertise host>:<port>`, which the server
+shows as the task's `service_status`: the model server must listen on **all interfaces** (`0.0.0.0`, or `[::]`
+dual-stack). A second listener on the service's port by anyone, on any address (another process binding
+`<some address>:<port>` next to the service's), makes the service not ready (or unhealthy once it was ready): a
+visible local denial of service instead of a silent hijack of some of its clients.
+
+**Port ranges.** Give the workers of one host disjoint `--service-port-range`s. Overlapping ranges are safe but
+wasteful: a worker takes only a port it can bind at that moment, but another worker (or any local process) can bind
+it between that test and the service's own bind. The ownership check above then keeps the service from being
+reported ready while the other process listens on the port, and a service that never became ready whose port has a
+listener that is not its own for 3 consecutive checks ends FAILED at once (`another process holds port <n>`); the
+task is lost and has to be submitted again.
+
+**States** (reported in every heartbeat's `services` list with host, port, scheme, GPUs (index and UUID), image
+sha256, pid, `ready_at` and the last health error as `detail`):
+
+| State | Meaning |
+|-------|---------|
+| `starting` | Launched; no health check has passed yet |
+| `ready` | A health check (and the ready check) passed, with every listener on the port held by the service; `ready_at` is the first time |
+| `unhealthy` | `health.failure_threshold` consecutive checks failed after it was ready. The service is **not** stopped (the router decides); the next good check makes it `ready` again |
+| `stopping` | Being stopped, or its process has exited and the report is under way |
+
+**How a service ends** (always reported through `/complete`, with the usual retries; the task dir is always kept,
+with a `failed` or `cancelled` kept-dir marker, never removed as after a success):
+
+| Event | Report |
+|-------|--------|
+| The process exits | FAILED, with its exit code (`-1` when killed by a signal) and the tail of its stderr log (secrets masked; `(service log could not be read: <error>)` when it cannot be read). What is left of its process group is SIGKILLed, so helpers cannot keep the port or GPU memory |
+| Not ready within `health.start_timeout` | Stopped, FAILED: `service did not become ready within N s` (with the last health error) |
+| Never ready, and a listener on its port not the service's (or none at all) in 3 consecutive checks | Stopped, FAILED: `another process holds port <n>` |
+| The server asks to stop it (`cancel_tasks` in the heartbeat answer, e.g. after a cancel) | Stopped, SKIPPED: `service stopped on request` (`; SIGKILL was needed after the grace period` when it was) |
+| The worker shuts down | Stopped, FAILED: `worker shut down; service stopped`. Still running when the 630 s shutdown wait expires: its process group is SIGKILLed before the worker deregisters (one WARN naming the task ids); its report may not get through |
+| Cancelled or shut down before the process started | SKIPPED (server cancel) or FAILED (`worker shut down before the service started`) |
+
+**Stopping** sends SIGTERM to the service's process group and SIGKILL after the hint's `stop_grace` if anything is
+left; the worker waits until the process has exited before it reports. A service is stopped on every path once
+launched, also when the worker hits an internal error.
+
+**Shutdown.** In this version a worker shutdown (SIGINT/SIGTERM) stops every service as above and reports it FAILED
+(SKIPPED if the server asks to stop it meanwhile); services are not kept across a worker restart. A service not yet
+launched when the shutdown or a cancel arrives is never launched. The worker waits up to 630 s (the largest possible
+`stop_grace`, 600 s, plus 30 s; instead of the batch 60 s), returning as soon as all services have ended, then
+deregisters. If the wait expires with services still running, it SIGKILLs their process groups first and logs one
+WARN (`services still running after the shutdown wait: SIGKILL sent to their process groups; deregistering`,
+naming the task ids), so no service outlives the worker. Its heartbeats go on until then, so the server sees the services `stopping`, does not mark the worker
+lost while it stops them, and can still send a cancel. If a stop could not be reported, the server refuses the
+deregistration (409, logged): no heartbeat comes from the worker any more, so the service stays RUNNING (lost once
+the worker is silent) and charged until an admin or a manager of the group force-releases it (`gowe admin
+force-release-service`).
+
+A **second** SIGINT/SIGTERM during the shutdown SIGKILLs the process groups of all running services and exits at once,
+without reporting them (they stay RUNNING on the server until force-released, as after a crash).
+
+**Worker crash.** If the worker dies without stopping its services (crash, SIGKILL), they keep running with nothing
+watching them. The next start of a service-mode worker on the same `--workdir` stops them before it registers. It
+reads the state directory `<workdir>/.gowe-services` (regular `<task id>.json` files only, never through a symlink,
+at most 4 KiB, the file name must be `<task id>.json` of the task id inside, which must be `[A-Za-z0-9._-]+` not
+starting with a dot; anything else is left with a WARN), under a lock (`<workdir>/.gowe-services/.sweep.lock`) that
+keeps two such sweeps from running at once, and for each file:
+
+- written on another host (host id) or in another boot (boot id): left alone, never signalled (one INFO line per
+  start with their count);
+- its writing worker process still runs (same pid and start time): left alone, that worker owns the service;
+- otherwise, when the recorded process still exists with the same start time and process group and leads that group
+  (pid = process group; never on a pid match alone), it sends SIGTERM to the group, SIGKILL after 10 s, logs
+  `stopped a service left behind by an earlier worker process` (WARN) and removes the file; a file whose process is
+  gone is just removed.
+
+The state files live outside the task dirs (a service's task dir is its container's writable home, so a file there
+could be forged by the service; such a file has no effect). Because each file names its writer, the sweep does not
+depend on being the only worker on the work directory: **a service-mode worker may share its work directory** with
+other workers, but a dedicated work directory per service-mode worker is recommended. Their tasks stay RUNNING (lost)
+and charged on the server, under the old worker record, until they are force-released; the new worker does not report
+them.
+
+Under **systemd**, set `TimeoutStopSec=` to at least 630 s, so the shutdown can stop every service within its grace
+before systemd escalates, and keep `KillMode=control-group` (the default), so a service left behind is killed with
+the unit even if the worker could not stop it.
+
+**Logs.** The worker logs at INFO when a service is launched (task, port, pid, devices, image, log dir), becomes
+ready, changes state, is being stopped and has stopped; a service that exits or needs SIGKILL is logged at WARN.
 
 ## Output Staging
 

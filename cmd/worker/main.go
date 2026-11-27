@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -75,6 +76,12 @@ func main() {
 	flag.IntVar(&cfg.Concurrency, "concurrency", 1, "Maximum number of tasks run at once (not above the worker's CPUs; with --gpu above 1, each task gets its own GPUs from the nvidia-smi inventory, which is then required)")
 	flag.IntVar(&cfg.DefaultTaskCores, "default-task-cores", 0, "Cores charged to and given to a task that requests none, when --concurrency > 1 (0 = max CPUs / concurrency)")
 	flag.Int64Var(&cfg.DefaultTaskRamMB, "default-task-ram", 0, "Memory in MiB charged to and given to a task that requests none, when --concurrency > 1 (0 = max memory / concurrency)")
+
+	// Service mode flags (gowe:Service tasks).
+	flag.BoolVar(&cfg.ServiceMode, "service-mode", false, "Run long-lived services (gowe:Service tasks) only, at most --concurrency at once; requires --runtime apptainer alone, --worker-key-file and a host id (see docs/tools/worker.md)")
+	var servicePortRange string
+	flag.StringVar(&servicePortRange, "service-port-range", worker.DefaultServicePortRange, "Ports given to services, LO-HI within 1024-65535, at least --concurrency of them (with --service-mode only)")
+	flag.StringVar(&cfg.AdvertiseHost, "advertise-host", "", "Host name or address reported for this worker's services (default: the hostname; with --service-mode only)")
 
 	// Image directory for local SIF files.
 	flag.StringVar(&cfg.ImageDir, "image-dir", "", "Base directory for resolving relative .sif image paths in DockerRequirement")
@@ -176,9 +183,15 @@ func main() {
 
 	// Resolve the worker key (file or env only; argv is refused).
 	workerKeyOnArgv := false
+	portRangeSet, advertiseHostSet := false, false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "worker-key" {
+		switch f.Name {
+		case "worker-key":
 			workerKeyOnArgv = true
+		case "service-port-range":
+			portRangeSet = true
+		case "advertise-host":
+			advertiseHostSet = true
 		}
 	})
 	workerKey, err := resolveWorkerKey(workerKeyOnArgv, workerKeyFile, os.Getenv)
@@ -213,7 +226,30 @@ func main() {
 	}
 
 	// Validate declared runtimes are actually installed.
+	declaredRuntime := cfg.Runtime
 	cfg.Runtime = validateInstalledRuntimes(cfg.Runtime, logger)
+
+	// Service mode: refuse an invalid flag combination before anything starts
+	// (worker.New checks host id, GPU inventory and the advertised host).
+	portLo, portHi, err := checkServiceModeFlags(serviceModeFlags{
+		serviceMode:      cfg.ServiceMode,
+		portRangeSet:     portRangeSet,
+		advertiseHostSet: advertiseHostSet,
+		portRange:        servicePortRange,
+		declaredRuntime:  declaredRuntime,
+		installedRuntime: cfg.Runtime,
+		apptainerOnPath:  onPath("apptainer"),
+		goos:             runtime.GOOS,
+		workerKeyFile:    workerKeyFile,
+		inheritHostEnv:   cfg.InheritHostEnv,
+		noContainall:     cfg.ApptainerNoContainall,
+		concurrency:      cfg.Concurrency,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	cfg.ServicePortLo, cfg.ServicePortHi = portLo, portHi
 
 	// Parse Docker host path map from flag or environment variable.
 	if dockerHostPathMapStr == "" {
@@ -397,10 +433,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// After the first signal restore the default handling, so a second
-	// signal ends the process instead of waiting out the shutdown.
+	// signal ends the process instead of waiting out the shutdown. In service
+	// mode the second signal is caught instead (registered before the first
+	// handler is dropped, so no signal falls through to the default action
+	// in between): the services' process groups are SIGKILLed before the
+	// process exits, so none is left running with nothing watching it.
 	go func() {
 		<-ctx.Done()
+		if !cfg.ServiceMode {
+			stop()
+			return
+		}
+		second := make(chan os.Signal, 1)
+		signal.Notify(second, os.Interrupt, syscall.SIGTERM)
 		stop()
+		sig := <-second
+		n := w.KillServices()
+		logger.Warn("second signal: killed the running services' process groups; exiting without reporting them", "signal", sig.String(), "services", n)
+		os.Exit(1)
 	}()
 
 	logger.Info("starting worker",
@@ -415,6 +465,7 @@ func main() {
 		"concurrency", cfg.Concurrency,
 		"image_dir", cfg.ImageDir,
 		"kept_task_dir_ttl", cfg.KeptTaskDirTTL,
+		"service_mode", cfg.ServiceMode,
 	)
 
 	if err := w.Run(ctx, cfg); err != nil {
@@ -423,6 +474,12 @@ func main() {
 	}
 
 	logger.Info("worker stopped")
+}
+
+// onPath reports whether the executable name is found on PATH.
+func onPath(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 // parsePathMap parses a path mapping string in the format "src1=dst1:src2=dst2".
