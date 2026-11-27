@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/groupacl"
 	"github.com/me/gowe/internal/parser"
 	"github.com/me/gowe/pkg/cwl"
 	"github.com/me/gowe/pkg/model"
@@ -66,15 +67,59 @@ func registrationWarnings(validatorWarns []model.FieldError, other []string) []s
 }
 
 // toModelErrorResponse maps a ToModel failure to an HTTP error: a
-// gowe:Execution under requirements is the author's mistake (400), anything
-// else stays an internal error.
+// gowe:Execution under requirements or an invalid gowe:Service hint is the
+// author's mistake (400), anything else stays an internal error.
 func toModelErrorResponse(w http.ResponseWriter, reqID string, err error) {
-	if errors.Is(err, parser.ErrExecutionUnderRequirements) {
+	if errors.Is(err, parser.ErrExecutionUnderRequirements) || errors.Is(err, parser.ErrInvalidServiceHint) {
 		respondError(w, reqID, http.StatusBadRequest, model.NewValidationError("CWL parse error: "+err.Error()))
 		return
 	}
 	respondError(w, reqID, http.StatusInternalServerError,
 		&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+}
+
+// checkServiceWorkflow applies the registration rule for a service workflow
+// (gowe:Service, experimental) to wf, the parsed content about to be stored:
+// the structure (model.ValidateServiceWorkflow: one step without scatter, a
+// container, a worker group other than default, an int port input; 400),
+// then the caller must be a server admin or a manager of that group (403;
+// never an anonymous caller or a service identity). A workflow without the
+// hint passes untouched. It reports whether the request may go on; when not,
+// the error has been written.
+func (s *Server) checkServiceWorkflow(w http.ResponseWriter, r *http.Request, reqID string, wf *model.Workflow) bool {
+	group, isService, err := model.ValidateServiceWorkflow(wf)
+	if !isService {
+		return true
+	}
+	if err != nil {
+		respondError(w, reqID, http.StatusBadRequest, model.NewValidationError("gowe:Service: "+err.Error()))
+		return false
+	}
+	if err := groupacl.ValidateGroupName(group); err != nil {
+		respondError(w, reqID, http.StatusBadRequest, model.NewValidationError("gowe:Service: gowe:Execution.worker_group: "+err.Error()))
+		return false
+	}
+	if !s.mayManageGroup(requestActor(r), group) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code:    model.ErrForbidden,
+			Message: fmt.Sprintf("only server admins and managers of worker group %q may register a service workflow (gowe:Service) for it", group),
+		})
+		return false
+	}
+	return true
+}
+
+// checkExistingServiceWorkflow refuses (403) a change to an existing service
+// workflow (replace, metadata, labels, delete) by a caller who is not a
+// server admin or a manager of its worker group, whatever the change
+// (MayChangeWorkflow, shared with the web UI). It reports whether the request
+// may go on; when not, the error has been written.
+func (s *Server) checkExistingServiceWorkflow(w http.ResponseWriter, r *http.Request, reqID string, existing *model.Workflow) bool {
+	if err := s.MayChangeWorkflow(r.Context(), requestActor(r), existing); err != nil {
+		respondGroupError(w, reqID, err)
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +198,13 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		mw.Class = "Workflow"
 	}
 
+	// A service workflow: checked before dedup, so an existing row is not
+	// handed out to a caller who may not register that content.
+	if !s.checkServiceWorkflow(w, r, reqID, mw) {
+		return
+	}
+	_, newIsService, _ := model.ValidateServiceWorkflow(mw)
+
 	// Override description if provided in request.
 	if req.Description != "" {
 		mw.Description = req.Description
@@ -178,6 +230,17 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 			respondError(w, reqID, http.StatusInternalServerError,
 				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
 			return
+		}
+		// A service workflow is deduplicated only against a row whose stored
+		// steps pass the rule too: a row with the same text parsed without
+		// the service (by an older server) was never checked, so it is no
+		// hit and a fresh row is stored, as with force.
+		if existing != nil && newIsService {
+			if _, ok, verr := model.ValidateServiceWorkflow(existing); !ok || verr != nil {
+				s.logger.Info("workflow dedup skipped: the stored row is not a valid service workflow",
+					"id", existing.ID, "hash", mw.ContentHash[:12])
+				existing = nil
+			}
 		}
 		if existing != nil {
 			s.logger.Info("workflow deduplicated", "id", existing.ID, "name", existing.Name, "hash", mw.ContentHash[:12])
@@ -338,6 +401,10 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// A service workflow is changed only by an admin or a manager of its group.
+	if !s.checkExistingServiceWorkflow(w, r, reqID, existing) {
+		return
+	}
 
 	var req struct {
 		Name        string            `json:"name"`
@@ -413,6 +480,9 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		updated, err := s.parser.ToModel(graph, name)
 		if err != nil {
 			toModelErrorResponse(w, reqID, err)
+			return
+		}
+		if !s.checkServiceWorkflow(w, r, reqID, updated) {
 			return
 		}
 		// New row: fresh id, fresh timestamps, fresh content hash.
@@ -506,6 +576,10 @@ func (s *Server) handlePatchWorkflowLabels(w http.ResponseWriter, r *http.Reques
 	if existing == nil {
 		return
 	}
+	// A service workflow is changed only by an admin or a manager of its group.
+	if !s.checkExistingServiceWorkflow(w, r, reqID, existing) {
+		return
+	}
 
 	var req struct {
 		Labels map[string]string `json:"labels"`
@@ -551,6 +625,10 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	existing := s.getOwnedWorkflow(w, r, reqID, id)
 	if existing == nil {
+		return
+	}
+	// A service workflow is deleted only by an admin or a manager of its group.
+	if !s.checkExistingServiceWorkflow(w, r, reqID, existing) {
 		return
 	}
 

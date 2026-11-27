@@ -40,7 +40,9 @@ func (ui *UI) RegisterRoutes(r chi.Router) {
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", ui.HandleWorkflowDetail)
 				r.Get("/edit", ui.HandleWorkflowEdit)
-				r.Delete("/", ui.HandleWorkflowDelete)
+				// LiveRoleMiddleware: the service workflow rule needs the
+				// user's current role (GroupAdmin.MayChangeWorkflow).
+				r.With(ui.LiveRoleMiddleware).Delete("/", ui.HandleWorkflowDelete)
 			})
 		})
 

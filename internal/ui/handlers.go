@@ -512,9 +512,34 @@ func (ui *UI) HandleWorkflowEdit(w http.ResponseWriter, r *http.Request) {
 	ui.render(w, "workflows/edit", data)
 }
 
-// HandleWorkflowDelete deletes a workflow (HTMX).
+// HandleWorkflowDelete deletes a workflow (HTMX). A service workflow
+// (gowe:Service) is deleted only by a server admin or a manager of its worker
+// group, decided by the server (GroupAdmin.MayChangeWorkflow, the rule of the
+// REST routes); without a GroupAdmin it is refused. The route runs under
+// LiveRoleMiddleware, so a server admin is one now.
 func (ui *UI) HandleWorkflowDelete(w http.ResponseWriter, r *http.Request) {
 	id := ui.pathParam(r, "id")
+
+	wf, err := ui.store.GetWorkflow(r.Context(), id)
+	if err != nil {
+		w.Header().Set("HX-Reswap", "none")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if wf != nil {
+		var refusal error
+		if ui.groups != nil {
+			refusal = ui.groups.MayChangeWorkflow(r.Context(), requestGroupActor(r), wf)
+		} else if _, isService, _ := model.ValidateServiceWorkflow(wf); isService {
+			refusal = &GroupError{Kind: GroupErrUnavailable, Message: "deleting a service workflow (gowe:Service) is not available on this server"}
+		}
+		if refusal != nil {
+			ge := AsGroupError(refusal)
+			w.Header().Set("HX-Reswap", "none")
+			http.Error(w, ge.Message, ge.HTTPStatus())
+			return
+		}
+	}
 
 	if err := ui.store.DeleteWorkflow(r.Context(), id); err != nil {
 		w.Header().Set("HX-Reswap", "none")

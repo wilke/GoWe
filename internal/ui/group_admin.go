@@ -57,6 +57,11 @@ type GroupAdmin interface {
 	// RemoveGroupWorker removes an offline worker of group that has sent no
 	// heartbeat for 3 x the worker timeout.
 	RemoveGroupWorker(ctx context.Context, actor GroupActor, group, id string) error
+	// MayChangeWorkflow returns nil when actor may change or delete wf by
+	// the service workflow rule: a service workflow (gowe:Service) only by a
+	// server admin or a manager of its worker group (else forbidden); any
+	// other workflow passes. It does not check ownership.
+	MayChangeWorkflow(ctx context.Context, actor GroupActor, wf *model.Workflow) error
 }
 
 // GroupActor is the user a GroupAdmin operation acts for. An empty Username

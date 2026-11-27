@@ -141,6 +141,21 @@ func errForbiddenGroup(group string) *ui.GroupError {
 	return groupErr(ui.GroupErrForbidden, fmt.Sprintf("only server admins and managers of worker group %q may do this", group))
 }
 
+// MayChangeWorkflow implements ui.GroupAdmin: nil unless wf is a service
+// workflow (gowe:Service) and actor is neither a server admin nor a manager
+// of its worker group (mayManageGroup), which is refused (forbidden). Any
+// other workflow passes. Ownership is the caller's check. The REST routes
+// (checkExistingServiceWorkflow) and the web UI's workflow delete use it.
+func (s *Server) MayChangeWorkflow(_ context.Context, actor ui.GroupActor, wf *model.Workflow) error {
+	group, isService, _ := model.ValidateServiceWorkflow(wf)
+	if !isService || s.mayManageGroup(actor, group) {
+		return nil
+	}
+	return groupErr(ui.GroupErrForbidden, fmt.Sprintf(
+		"workflow %s is a service workflow (gowe:Service) of worker group %q: only server admins and managers of that group may modify it",
+		wf.ID, group))
+}
+
 // errRuleNotFound is the 404 of a group without a rule.
 func errRuleNotFound(group string) *ui.GroupError {
 	return groupErr(ui.GroupErrNotFound, model.NewNotFoundError("worker group policy", group).Message)

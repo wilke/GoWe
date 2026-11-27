@@ -1845,6 +1845,24 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 				task.RuntimeHints.RequiredDatasets = step.Hints.RequiredDatasets
 			}
 		}
+		// gowe:Service (experimental): a private copy, so the task never
+		// shares the workflow's spec.
+		if step.Hints.Service != nil {
+			if task.RuntimeHints == nil {
+				task.RuntimeHints = &model.RuntimeHints{}
+			}
+			svc := *step.Hints.Service
+			task.RuntimeHints.Service = &svc
+		}
+	}
+	// Never a service inside a sub-workflow (a child submission): the
+	// registration rule only sees top-level steps. createChildSubmission
+	// refuses such a child; this covers anything that got past it (e.g. a
+	// child created before that check).
+	if sub.ParentTaskID != "" && task.RuntimeHints != nil && task.RuntimeHints.Service != nil {
+		l.logger.Warn("gowe:Service dropped: a service cannot run inside a sub-workflow",
+			"submission_id", sub.ID, "parent_task_id", sub.ParentTaskID, "step_id", si.StepID)
+		task.RuntimeHints.Service = nil
 	}
 
 	// Worker group: tool hints, then step hints, then the submission label
@@ -1864,6 +1882,11 @@ func (l *Loop) createTaskFromStep(si *model.StepInstance, tmpTask *model.Task, s
 			}
 			task.RuntimeHints.Debug = true
 		}
+	}
+
+	// A service task is never retried by the scheduler.
+	if task.RuntimeHints != nil && task.RuntimeHints.Service != nil {
+		task.MaxRetries = 0
 	}
 
 	return task

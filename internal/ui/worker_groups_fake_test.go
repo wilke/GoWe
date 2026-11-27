@@ -79,6 +79,10 @@ func (fakeGroupAdmin) ListGroupWorkers(context.Context, GroupActor, string) ([]G
 	}, nil
 }
 
+func (fakeGroupAdmin) MayChangeWorkflow(context.Context, GroupActor, *model.Workflow) error {
+	return nil
+}
+
 func (fakeGroupAdmin) RemoveGroupWorker(_ context.Context, _ GroupActor, _ string, id string) error {
 	return &GroupError{Kind: GroupErrConflict, Message: "worker " + id + " is online: stop it first"}
 }
