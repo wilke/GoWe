@@ -1677,7 +1677,7 @@ const taskColumns = `id, submission_id, step_id, step_instance_id, state, execut
 	 bvbrc_app_id, inputs, outputs, depends_on, priority, retry_count, max_retries,
 	 stdout, stderr, exit_code, created_at, started_at, completed_at,
 	 tool, job, runtime_hints, scatter_index, dispatched_at, stage_in_ms, stage_out_ms,
-	 charged_cores, charged_ram_mb, charged_gpus`
+	 charged_cores, charged_ram_mb, charged_gpus, is_service, service_lost_at, service_missing_at`
 
 // checkInjectBlessed refuses to persist a non-terminal task that asks for the
 // user's token to be injected into the tool environment without naming the
@@ -1737,9 +1737,22 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execer, task *model.Task) 
 		dispatchedAt = &s
 	}
 
+	// is_service is derived here, from the hints, so no caller can forget it;
+	// it is never written again.
+	task.IsService = task.RuntimeHints != nil && task.RuntimeHints.Service != nil
+	isService := 0
+	if task.IsService {
+		isService = 1
+		// Last line of defence: a service runs only on the worker executor
+		// (the scheduler makes a service step's executor worker or fails it).
+		if task.ExecutorType != model.ExecutorTypeWorker {
+			return fmt.Errorf("task %s: %w (executor %q)", task.ID, ErrServiceNotWorker, task.ExecutorType)
+		}
+	}
+
 	_, err = ex.ExecContext(ctx,
 		`INSERT INTO tasks (`+taskColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.SubmissionID, task.StepID, task.StepInstanceID, string(task.State),
 		string(task.ExecutorType), task.ExternalID, task.BVBRCAppID,
 		string(inputsJSON), string(outputsJSON), string(dependsOnJSON),
@@ -1749,6 +1762,7 @@ func (s *SQLStore) insertTask(ctx context.Context, ex execer, task *model.Task) 
 		string(toolJSON), string(jobJSON), string(runtimeHintsJSON),
 		task.ScatterIndex, dispatchedAt, task.StageInMs, task.StageOutMs,
 		nullableInt(task.ChargedCores), nullableInt(task.ChargedRamMB), nullableInt(task.ChargedGPUs),
+		isService, formatTimePtr(task.ServiceLostAt), formatTimePtr(task.ServiceMissingAt),
 	)
 	return err
 }
@@ -2311,6 +2325,7 @@ func (s *SQLStore) GetTaskSummaries(ctx context.Context, submissionIDs []string)
 // PRIOR attempt's stamp instead of stamping the new one, because a non-nil
 // started_at survives from the failed attempt otherwise. The failed attempts
 // are archived (reason reset) in the same transaction before the reset.
+// A service task (is_service) is never reset nor archived: it is not re-run.
 func (s *SQLStore) ResetFailedTasks(ctx context.Context, submissionID string) (int, error) {
 	s.logger.Debug("sql", "op", "reset_failed_tasks", "submission_id", submissionID)
 
@@ -2321,7 +2336,7 @@ func (s *SQLStore) ResetFailedTasks(ctx context.Context, submissionID string) (i
 	defer tx.Rollback()
 
 	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonReset,
-		`t.submission_id = ? AND t.state = 'FAILED'`, submissionID); err != nil {
+		`t.submission_id = ? AND t.state = 'FAILED' AND t.is_service = 0`, submissionID); err != nil {
 		return 0, fmt.Errorf("reset failed tasks: %w", err)
 	}
 
@@ -2329,7 +2344,7 @@ func (s *SQLStore) ResetFailedTasks(ctx context.Context, submissionID string) (i
 		`UPDATE tasks
 		 SET state = ?, retry_count = 0, started_at = NULL, completed_at = NULL, stderr = '', exit_code = NULL,
 		     stage_in_ms = NULL, stage_out_ms = NULL
-		 WHERE submission_id = ? AND state = ?`,
+		 WHERE submission_id = ? AND state = ? AND is_service = 0`,
 		string(model.TaskStatePending), submissionID, string(model.TaskStateFailed))
 	if err != nil {
 		return 0, fmt.Errorf("reset failed tasks: %w", err)
@@ -2367,7 +2382,8 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var state, executorType, createdAt string
-	var startedAt, completedAt, dispatchedAt *string
+	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt *string
+	var isService int64
 
 	err := row.Scan(
 		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
@@ -2379,6 +2395,7 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
+		&isService, &serviceLostAt, &serviceMissingAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -2389,6 +2406,13 @@ func (s *SQLStore) scanTask(row scanner) (*model.Task, error) {
 
 	task.State = model.TaskState(state)
 	task.ExecutorType = model.ExecutorType(executorType)
+	task.IsService = isService != 0
+	if task.ServiceLostAt, err = scanTimePtr(serviceLostAt); err != nil {
+		return nil, err
+	}
+	if task.ServiceMissingAt, err = scanTimePtr(serviceMissingAt); err != nil {
+		return nil, err
+	}
 	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 		return nil, err
 	}
@@ -2445,7 +2469,8 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 		var inputsJSON, outputsJSON, dependsOnJSON string
 		var toolJSON, jobJSON, runtimeHintsJSON string
 		var state, executorType, createdAt string
-		var startedAt, completedAt, dispatchedAt *string
+		var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt *string
+		var isService int64
 
 		if err := rows.Scan(
 			&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &state,
@@ -2457,12 +2482,26 @@ func (s *SQLStore) scanTasks(rows *sql.Rows) ([]*model.Task, error) {
 			&toolJSON, &jobJSON, &runtimeHintsJSON,
 			&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 			&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
+			&isService, &serviceLostAt, &serviceMissingAt,
 		); err != nil {
 			return nil, err
 		}
 
 		task.State = model.TaskState(state)
 		task.ExecutorType = model.ExecutorType(executorType)
+		task.IsService = isService != 0
+		if t, err := scanTimePtr(serviceLostAt); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		} else {
+			task.ServiceLostAt = t
+		}
+		if t, err := scanTimePtr(serviceMissingAt); err != nil {
+			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
+			continue
+		} else {
+			task.ServiceMissingAt = t
+		}
 		if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 			slog.Error("skipping corrupt task row", "id", task.ID, "error", err)
 			continue
@@ -2633,9 +2672,14 @@ func (s *SQLStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		return err
 	}
 
+	serviceMode := 0
+	if w.ServiceMode {
+		serviceMode = 1
+	}
+
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO workers (`+workerColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Hostname, group, string(w.State), string(w.Runtime),
 		string(labelsJSON), formatTime(w.LastSeen),
 		w.CurrentTask, formatTime(w.RegisteredAt),
@@ -2645,14 +2689,14 @@ func (s *SQLStore) CreateWorker(ctx context.Context, w *model.Worker) error {
 		nullableBool(w.CgroupCPU), nullableBool(w.CgroupMemory), gpusJSON,
 		usageJSON, formatTimePtr(w.UsageAt),
 		nullableInt(w.DefaultTaskCores), nullableInt(w.DefaultTaskRamMB),
-		w.PeerAddr,
+		w.PeerAddr, serviceMode,
 	)
 	return err
 }
 
 // workerColumns is the single column list for workers reads/inserts; its order
 // must match scanWorker and the CreateWorker argument list.
-const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at, default_task_cores, default_task_ram_mb, peer_addr"
+const workerColumns = "id, name, hostname, worker_group, state, runtime, labels, last_seen, current_task, registered_at, gpu_enabled, gpu_device, datasets, version, key_id, max_cpus, max_mem_mb, host_id, host_cpus, host_mem_mb, slots, cgroup_cpu, cgroup_memory, gpus, host_usage, host_usage_at, default_task_cores, default_task_ram_mb, peer_addr, service_mode"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -2673,7 +2717,7 @@ func (e *corruptWorkerRowError) Unwrap() error { return e.err }
 func scanWorker(sc rowScanner) (*model.Worker, error) {
 	var w model.Worker
 	var state, runtime, labelsJSON, datasetsJSON, lastSeen, registeredAt string
-	var gpuEnabled int
+	var gpuEnabled, serviceMode int
 	var maxCPUs, maxMem sql.NullInt64
 	var hostCPUs, hostMem, slots, cgroupCPU, cgroupMem sql.NullInt64
 	var defaultCores, defaultMem sql.NullInt64
@@ -2682,12 +2726,13 @@ func scanWorker(sc rowScanner) (*model.Worker, error) {
 		&labelsJSON, &lastSeen, &w.CurrentTask, &registeredAt, &gpuEnabled, &w.GPUDevice,
 		&datasetsJSON, &w.Version, &w.KeyID, &maxCPUs, &maxMem,
 		&w.HostID, &hostCPUs, &hostMem, &slots, &cgroupCPU, &cgroupMem, &gpusJSON,
-		&usageJSON, &usageAt, &defaultCores, &defaultMem, &w.PeerAddr); err != nil {
+		&usageJSON, &usageAt, &defaultCores, &defaultMem, &w.PeerAddr, &serviceMode); err != nil {
 		return nil, err
 	}
 	w.State = model.WorkerState(state)
 	w.Runtime = model.ContainerRuntime(runtime)
 	w.GPUEnabled = gpuEnabled != 0
+	w.ServiceMode = serviceMode != 0
 	if maxCPUs.Valid {
 		v := int(maxCPUs.Int64)
 		w.MaxCPUs = &v
@@ -2871,23 +2916,34 @@ func (s *SQLStore) UpdateWorker(ctx context.Context, w *model.Worker) error {
 // is non-nil, so a heartbeat without usage keeps the stored one. An empty
 // peerAddr (unknown) keeps the stored peer_addr. Unlike UpdateWorker it
 // never writes current_task, so it cannot clobber a concurrent CheckoutTask.
+// In the same transaction the worker's RUNNING service tasks are no longer
+// lost (service_lost_at cleared): the worker has been seen again.
 func (s *SQLStore) TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, peerAddr string, usage *model.WorkerUsage) error {
 	s.logger.Debug("sql", "op", "touch", "table", "workers", "id", id, "usage", usage != nil)
 
 	ts := formatTime(lastSeen)
 	// peer_addr is replaced only by a non-empty value.
 	const setPeer = `peer_addr=COALESCE(NULLIF(CAST(? AS TEXT), ''), peer_addr)`
-	var result sql.Result
-	var err error
-	if usage == nil {
-		result, err = s.db.ExecContext(ctx,
-			`UPDATE workers SET state=?, last_seen=?, `+setPeer+` WHERE id=?`, string(state), ts, peerAddr, id)
-	} else {
-		usageJSON, merr := nullableUsageJSON(usage)
-		if merr != nil {
+	var usageJSON *string
+	if usage != nil {
+		var merr error
+		if usageJSON, merr = nullableUsageJSON(usage); merr != nil {
 			return merr
 		}
-		result, err = s.db.ExecContext(ctx,
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("touch worker: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var result sql.Result
+	if usage == nil {
+		result, err = tx.ExecContext(ctx,
+			`UPDATE workers SET state=?, last_seen=?, `+setPeer+` WHERE id=?`, string(state), ts, peerAddr, id)
+	} else {
+		result, err = tx.ExecContext(ctx,
 			`UPDATE workers SET state=?, last_seen=?, `+setPeer+`, host_usage=?, host_usage_at=? WHERE id=?`,
 			string(state), ts, peerAddr, usageJSON, ts, id)
 	}
@@ -2897,6 +2953,15 @@ func (s *SQLStore) TouchWorker(ctx context.Context, id string, state model.Worke
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("worker %s not found", id)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET service_lost_at = NULL
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 1
+		   AND external_id = ? AND service_lost_at IS NOT NULL`, id); err != nil {
+		return fmt.Errorf("touch worker: clear lost services: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("touch worker: commit: %w", err)
 	}
 	return nil
 }
@@ -2950,7 +3015,9 @@ func (s *SQLStore) DeleteOfflineWorker(ctx context.Context, id, group string, si
 // reports whether one was deleted. The tasks' attempts are archived (reason
 // worker_removed) before the DELETE, while the worker's name can still be
 // read; when the DELETE matches nothing the transaction is rolled back and
-// the archived rows with it.
+// the archived rows with it. A worker that still holds RUNNING service tasks
+// is not deleted (a service is never requeued): the transaction is rolled
+// back and a *WorkerServicesError (errors.Is ErrWorkerHasServices) returned.
 func (s *SQLStore) deleteWorkerWhere(ctx context.Context, id, cond string, args ...any) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2959,7 +3026,7 @@ func (s *SQLStore) deleteWorkerWhere(ctx context.Context, id, cond string, args 
 	defer tx.Rollback()
 
 	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonWorkerRemoved,
-		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`, id); err != nil {
+		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 0 AND t.external_id = ?`, id); err != nil {
 		return false, err
 	}
 
@@ -2975,10 +3042,23 @@ func (s *SQLStore) deleteWorkerWhere(ctx context.Context, id, cond string, args 
 		return false, nil
 	}
 
+	// Checked after the DELETE matched, so a worker that is not removable
+	// for another reason keeps that answer; returning rolls the DELETE back.
+	var services int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 1 AND external_id = ?`, id).
+		Scan(&services); err != nil {
+		return false, fmt.Errorf("delete worker: count running services: %w", err)
+	}
+	if services > 0 {
+		return false, &WorkerServicesError{WorkerID: id, Count: services}
+	}
+
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
-		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, id)
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 0 AND external_id = ?`, id)
 	if err != nil {
 		return false, fmt.Errorf("requeue tasks: %w", err)
 	}
@@ -3074,6 +3154,8 @@ func (s *SQLStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 // Selection considers runtime capability, worker group, and dataset affinity:
 //   - Runtime: if runtime is "none", only tasks without docker_image are eligible.
 //   - Group: if workerGroup is non-empty, only tasks with matching or empty WorkerGroup.
+//   - Services: a service task (is_service) only to a service-mode worker,
+//     and a service-mode worker only service tasks.
 //   - Prestage datasets: task is skipped if worker lacks a required prestage dataset.
 //   - Cache datasets: among eligible tasks, prefer the one with the highest cache score
 //     (number of matching cache datasets). Ties are broken by creation order (oldest first).
@@ -3087,14 +3169,19 @@ func (s *SQLStore) ListWorkerGroups(ctx context.Context) ([]string, error) {
 //     to a GPU worker whose capacity (model.Worker.GPUCapacity) is known
 //     when k fits it and, for k > 0, fits what the worker's RUNNING tasks
 //     leave free; to a GPU worker of unknown capacity only when k <= 1, with
-//     no free gate; never to a CPU-only worker when k > 0. charged_gpus = k.
+//     no free gate (a service-mode worker of unknown capacity: never when
+//     k > 0); never to a CPU-only worker when k > 0. charged_gpus = k. A
+//     known capacity's free figure also subtracts the GPUs of RUNNING
+//     services of other worker rows of the same host whose inventory shares
+//     a GPU UUID with this worker's (overlappingServiceGPUs).
 //   - Hold (only with SetCheckoutHoldAfter > 0): when the first task in queue
 //     order that this worker could take but for the free capacity on its own
 //     worker gate has waited longer than the hold-after duration, and would
 //     fit the host gate if this worker's own tasks finished, tasks behind it
 //     that charge a dimension it is short in are not handed out (see
 //     findHolder). When the task a worker held for becomes eligible, no task
-//     behind it in queue order is considered at that checkout.
+//     behind it in queue order is considered at that checkout. Never applied
+//     to a service-mode worker (its running services do not finish).
 func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGroup string, runtime model.ContainerRuntime) (*model.Task, error) {
 	s.logger.Debug("sql", "op", "checkout_task", "worker_id", workerID, "group", workerGroup, "runtime", runtime)
 
@@ -3115,12 +3202,13 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 	var workerHostID, workerKeyID string
 	var workerHostCPUs, workerHostMem, workerDefaultCores, workerDefaultMem sql.NullInt64
 	var workerGPUsJSON sql.NullString
+	var workerServiceMode bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT datasets, gpu_enabled, max_cpus, max_mem_mb, host_id, key_id,
-		        host_cpus, host_mem_mb, default_task_cores, default_task_ram_mb, gpus
+		        host_cpus, host_mem_mb, default_task_cores, default_task_ram_mb, gpus, service_mode
 		 FROM workers WHERE id = ?`, workerID).
 		Scan(&workerDatasetsJSON, &workerGPUEnabled, &workerMaxCPUs, &workerMaxMem, &workerHostID, &workerKeyID,
-			&workerHostCPUs, &workerHostMem, &workerDefaultCores, &workerDefaultMem, &workerGPUsJSON); err != nil {
+			&workerHostCPUs, &workerHostMem, &workerDefaultCores, &workerDefaultMem, &workerGPUsJSON, &workerServiceMode); err != nil {
 		if err == sql.ErrNoRows {
 			// No such worker (it may have been removed after the caller's
 			// read): hand out nothing and change no task.
@@ -3147,15 +3235,18 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 	// Charges of the RUNNING tasks of this worker and of the workers sharing
 	// its host and key (the host gate). Offline workers are left out: their
 	// tasks are about to be requeued by the reaper. The worker's own tasks
-	// count whatever its state. A NULL charge (checked out by an older server) counts as 0.
-	// GPUs are counted on this worker only (no host term).
+	// count whatever its state, and so do RUNNING service tasks (never
+	// requeued: a lost service keeps its charge). A NULL charge (checked out
+	// by an older server) counts as 0.
+	// GPUs are counted on this worker here; their only host term is the
+	// overlapping services' (overlappingServiceGPUs, below).
 	var workerChargedCores, workerChargedMem, hostChargedCores, hostChargedMem, workerChargedGPUs int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT
 		   CAST(COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_cores END), 0) AS BIGINT),
 		   CAST(COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_ram_mb END), 0) AS BIGINT),
-		   CAST(COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_cores END), 0) AS BIGINT),
-		   CAST(COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ?) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0) AS BIGINT),
+		   CAST(COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ? OR t.is_service = 1) AND w.host_id = ? AND w.key_id = ? THEN t.charged_cores END), 0) AS BIGINT),
+		   CAST(COALESCE(SUM(CASE WHEN (w.state != 'offline' OR w.id = ? OR t.is_service = 1) AND w.host_id = ? AND w.key_id = ? THEN t.charged_ram_mb END), 0) AS BIGINT),
 		   CAST(COALESCE(SUM(CASE WHEN t.external_id = ? THEN t.charged_gpus END), 0) AS BIGINT)
 		 FROM tasks t JOIN workers w ON w.id = t.external_id
 		 WHERE t.state = 'RUNNING' AND t.executor_type = 'worker'`,
@@ -3182,23 +3273,47 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 	_, ownFreeMem := checkoutBounds("", nullInt64Ptr(workerMaxMem), nil, workerChargedMem, 0)
 	_, drainCores := checkoutBounds(workerHostID, nil, nullInt64Ptr(workerHostCPUs), 0, hostChargedCores-workerChargedCores)
 	_, drainMem := checkoutBounds(workerHostID, nil, nullInt64Ptr(workerHostMem), 0, hostChargedMem-workerChargedMem)
-	// GPUs, worker level only (no host term, no default share): a CPU-only
-	// worker takes no task that needs a GPU (total 0); a GPU worker with an
-	// unknown capacity takes tasks needing at most one GPU, with no free gate
-	// and no hold; a known capacity bounds the request and, minus the GPUs
-	// charged to this worker's RUNNING tasks, the charge (also its own gate
-	// for the hold rule).
-	var capGPUs, freeGPUs *int64
+	// GPUs (no default share): a CPU-only worker takes no task that needs a
+	// GPU (total 0); a GPU worker with an unknown capacity takes tasks
+	// needing at most one GPU, with no free gate and no hold, except a
+	// service-mode worker, which takes none (a service holds its GPUs for
+	// hours: it is placed only where they can be counted); a known capacity
+	// bounds the request and, minus the GPUs charged to this worker's RUNNING
+	// tasks and the host term below, the charge (also its own gate for the
+	// hold rule, which uses the same figure).
+	//
+	// Host term (only with a known inventory and a host id): the GPUs
+	// charged to RUNNING service tasks of OTHER worker rows of the same
+	// host_id, online or offline, whose stored inventory shares at least one
+	// GPU UUID with this worker's. A restarted worker registers under a new
+	// id; this keeps it from handing out the GPUs its lost services still
+	// hold. Workers of the same host with disjoint inventories do not affect
+	// each other. Overlap is by inventory, not by assigned device.
+	var capGPUs, freeGPUs, drainGPUs *int64
 	switch {
 	case !workerGPUEnabled:
+		v := int64(0)
+		capGPUs = &v
+	case workerGPUCap == nil && workerServiceMode:
 		v := int64(0)
 		capGPUs = &v
 	case workerGPUCap == nil:
 		v := int64(1)
 		capGPUs = &v
 	default:
-		c, f := int64(*workerGPUCap), int64(*workerGPUCap)-workerChargedGPUs
+		hostServiceGPUs := int64(0)
+		if workerHostID != "" {
+			if hostServiceGPUs, err = s.overlappingServiceGPUs(ctx, tx, workerID, workerHostID, workerGPUs); err != nil {
+				return nil, err
+			}
+		}
+		c, f := int64(*workerGPUCap), int64(*workerGPUCap)-workerChargedGPUs-hostServiceGPUs
 		capGPUs, freeGPUs = &c, &f
+		if hostServiceGPUs > 0 {
+			// What draining this worker's own tasks could free at most.
+			d := c - hostServiceGPUs
+			drainGPUs = &d
+		}
 	}
 	ownFreeGPUs := freeGPUs
 	// A non-positive default share is treated as unset.
@@ -3242,11 +3357,16 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 		{`COALESCE(` + numHint("ram_mb") + `, 0)`, charge("ram_mb"), []any{nullableInt(defaultMem)}, capMem, freeMem, ownFreeMem},
 		{gpuRequest, gpuRequest, nil, capGPUs, freeGPUs, ownFreeGPUs},
 	}
+	// is_service value of the tasks this worker may take (see candidateQuery).
+	serviceModeArg := 0
+	if workerServiceMode {
+		serviceModeArg = 1
+	}
 	// candidateQuery builds a query for the QUEUED worker tasks this worker
 	// can take, in queue order: the aged predicate when aged (first: cheap
-	// and usually false), the token-blessing, effective capacity, group and
-	// GPU predicates, the free-capacity gate when withFree, then extra
-	// (binding extraArgs).
+	// and usually false), the token-blessing, effective capacity, group,
+	// GPU and service predicates, the free-capacity gate when withFree, then
+	// extra (binding extraArgs).
 	candidateQuery := func(withFree, aged bool, extra string, extraArgs []any, limit int) (string, []any) {
 		query := `SELECT ` + taskColumns + `
 		 FROM tasks WHERE state = 'QUEUED' AND executor_type = 'worker'`
@@ -3291,6 +3411,11 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 			query += `
 		   AND NOT COALESCE(` + trueHint("requires_gpu") + `, FALSE)`
 		}
+		// Services: a service task goes only to a service-mode worker, and a
+		// service-mode worker takes service tasks only.
+		query += `
+		   AND is_service = ?`
+		args = append(args, serviceModeArg)
 		query += extra + fmt.Sprintf(`
 		 ORDER BY priority DESC, created_at LIMIT %d`, limit)
 		return query, append(args, extraArgs...)
@@ -3301,10 +3426,18 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 
 	// checkEligible applies every per-task check of this checkout except the
 	// free-capacity gate (shared by the candidate and the hold passes): the
-	// effective capacity (defence in depth: the queries apply the same bound),
-	// container runtime, GPU, worker group and prestage datasets. It returns
-	// the task's cache score (number of matching cache datasets).
+	// service match and the effective capacity (defence in depth: the queries
+	// apply the same rules), container runtime, GPU, worker group and
+	// prestage datasets. It returns the task's cache score (number of
+	// matching cache datasets).
 	checkEligible := func(task *model.Task) (int, bool) {
+		// A service is a task stored as one or carrying the spec in its hints
+		// (a row whose is_service disagrees with its hints is treated as a
+		// service, so never handed to an ordinary worker).
+		isService := task.IsService || (task.RuntimeHints != nil && task.RuntimeHints.Service != nil)
+		if isService != workerServiceMode {
+			return 0, false
+		}
 		reqCores, reqMem := taskRequest(task)
 		if capCores != nil && reqCores > *capCores {
 			s.logger.Debug("checkout skip: task exceeds worker cores", "task_id", task.ID, "worker_id", workerID,
@@ -3472,9 +3605,10 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 	// the host gate if this worker's own running tasks finished (drain). The
 	// host gate alone never makes a task short: it is shared with workers
 	// that may never see the holder, so holding for it could idle this
-	// worker without helping. GPUs have no host term: a task short on GPUs
-	// (only with a known GPU capacity) always fits once this worker's own
-	// tasks finish. Only the first checkoutHoldScan rows matching
+	// worker without helping. GPUs (only with a known GPU capacity) use the
+	// same free figure as the candidate gate; a task short on GPUs fits once
+	// this worker's own tasks finish unless the host term (services of other
+	// rows sharing its GPUs) leaves too few (drainGPUs). Only the first checkoutHoldScan rows matching
 	// in SQL are examined; if none of them qualifies there is no holder. Rows
 	// that cannot be scanned, decoded or decrypted are never holders.
 	findHolder := func() (*model.Task, bool, bool, bool, error) {
@@ -3519,7 +3653,8 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 			if !shortCores && !shortMem && !shortGPUs {
 				continue
 			}
-			if (shortCores && drainCores != nil && c > *drainCores) || (shortMem && drainMem != nil && m > *drainMem) {
+			if (shortCores && drainCores != nil && c > *drainCores) || (shortMem && drainMem != nil && m > *drainMem) ||
+				(shortGPUs && drainGPUs != nil && g > *drainGPUs) {
 				continue
 			}
 			return task, shortCores, shortMem, shortGPUs, nil
@@ -3537,10 +3672,13 @@ func (s *SQLStore) CheckoutTask(ctx context.Context, workerID string, workerGrou
 	// (nothing can be short on its own gate) or nothing eligible charges
 	// capacity (nothing to hold; the recorded holder is then kept so a hold
 	// over an otherwise empty queue is not logged again).
+	// A service-mode worker never holds: the rule assumes the worker's
+	// running tasks finish, and a service does not, so a held service would
+	// wait forever.
 	var holder *model.Task
 	var shortCores, shortMem, shortGPUs bool
 	var protectedID string // the task this worker's previous checkout held for
-	if s.checkoutHoldAfter > 0 {
+	if s.checkoutHoldAfter > 0 && !workerServiceMode {
 		protectedID = s.heldFor(workerID)
 		switch {
 		case workerChargedCores == 0 && workerChargedMem == 0 && workerChargedGPUs == 0:
@@ -3717,7 +3855,8 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 	var inputsJSON, outputsJSON, dependsOnJSON string
 	var toolJSON, jobJSON, runtimeHintsJSON string
 	var stateStr, executorType, createdAt string
-	var startedAt, completedAt, dispatchedAt *string
+	var startedAt, completedAt, dispatchedAt, serviceLostAt, serviceMissingAt *string
+	var isService int64
 
 	if err := rows.Scan(
 		&task.ID, &task.SubmissionID, &task.StepID, &task.StepInstanceID, &stateStr,
@@ -3729,12 +3868,26 @@ func (s *SQLStore) scanCheckoutRow(rows *sql.Rows) (*model.Task, error) {
 		&toolJSON, &jobJSON, &runtimeHintsJSON,
 		&task.ScatterIndex, &dispatchedAt, &task.StageInMs, &task.StageOutMs,
 		&task.ChargedCores, &task.ChargedRamMB, &task.ChargedGPUs,
+		&isService, &serviceLostAt, &serviceMissingAt,
 	); err != nil {
 		return nil, err
 	}
 
 	task.State = model.TaskState(stateStr)
 	task.ExecutorType = model.ExecutorType(executorType)
+	task.IsService = isService != 0
+	if t, err := scanTimePtr(serviceLostAt); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	} else {
+		task.ServiceLostAt = t
+	}
+	if t, err := scanTimePtr(serviceMissingAt); err != nil {
+		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
+		return nil, nil
+	} else {
+		task.ServiceMissingAt = t
+	}
 	if err := unmarshalJSON(inputsJSON, &task.Inputs, "inputs"); err != nil {
 		slog.Error("skipping corrupt task row in checkout", "id", task.ID, "error", err)
 		return nil, nil
@@ -3925,9 +4078,11 @@ func (s *SQLStore) MarkStaleWorkersOffline(ctx context.Context, timeout time.Dur
 // RequeueWorkerTasks), in one transaction: a failure leaves the workers online
 // so the next pass retries, instead of offline with their tasks RUNNING
 // forever. The same pass requeues RUNNING worker tasks of workers that are
-// already offline and stale (stranded before this was atomic) and clears
-// current_task on every offline stale worker, none of which has a RUNNING
-// task left. Stale (last_seen older than timeout) keeps a worker that is
+// already offline and stale (stranded before this was atomic). Service tasks
+// are never requeued: on every offline stale worker they stay RUNNING with
+// their charges and are marked lost (service_lost_at, once). current_task of
+// every offline stale worker becomes its newest remaining RUNNING task (a
+// service) or ”. Stale (last_seen older than timeout) keeps a worker that is
 // still offline but has just checked out a task (checkout bumps last_seen)
 // out of the stranded requeue. Returns the workers marked offline with their
 // requeued counts, and the number of stranded tasks requeued.
@@ -3975,13 +4130,13 @@ func (s *SQLStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) 
 	var reaped []ReapedWorker
 	for _, w := range stale {
 		if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonWorkerOffline,
-			`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`, w.ID); err != nil {
+			`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 0 AND t.external_id = ?`, w.ID); err != nil {
 			return nil, 0, fmt.Errorf("requeue tasks of %s: %w", w.ID, err)
 		}
 		res, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 			     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
-			 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, w.ID)
+			 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 0 AND external_id = ?`, w.ID)
 		if err != nil {
 			return nil, 0, fmt.Errorf("requeue tasks of %s: %w", w.ID, err)
 		}
@@ -3995,14 +4150,14 @@ func (s *SQLStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) 
 	}
 
 	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonWorkerOffline,
-		`t.state = 'RUNNING' AND t.executor_type = 'worker'
+		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 0
 		 AND t.external_id IN (SELECT ow.id FROM workers ow WHERE ow.state = 'offline' AND ow.last_seen < ?)`, cutoff); err != nil {
 		return nil, 0, fmt.Errorf("requeue stranded tasks: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
-		 WHERE state = 'RUNNING' AND executor_type = 'worker'
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 0
 		   AND external_id IN (SELECT id FROM workers WHERE state = 'offline' AND last_seen < ?)`, cutoff)
 	if err != nil {
 		return nil, 0, fmt.Errorf("requeue stranded tasks: %w", err)
@@ -4012,8 +4167,29 @@ func (s *SQLStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) 
 		return nil, 0, fmt.Errorf("requeue stranded tasks: rows affected: %w", err)
 	}
 
+	// The services of the offline stale workers (newly or already offline)
+	// stay RUNNING, keep their charges and are marked lost, once.
+	res, err = tx.ExecContext(ctx,
+		`UPDATE tasks SET service_lost_at = ?
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 1 AND service_lost_at IS NULL
+		   AND external_id IN (SELECT id FROM workers WHERE state = 'offline' AND last_seen < ?)`,
+		formatTime(time.Now().UTC()), cutoff)
+	if err != nil {
+		return nil, 0, fmt.Errorf("mark services lost: %w", err)
+	}
+	lost, err := res.RowsAffected()
+	if err != nil {
+		return nil, 0, fmt.Errorf("mark services lost: rows affected: %w", err)
+	}
+
+	// current_task is the task a worker most recently checked out that it
+	// still runs ('' = idle). After the requeues an offline stale worker runs
+	// nothing but its services: point it at the newest of them, else ''.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE workers SET current_task = ''
+		`UPDATE workers SET current_task = COALESCE(
+		    (SELECT t.id FROM tasks t
+		     WHERE t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = workers.id
+		     ORDER BY t.started_at DESC NULLS LAST LIMIT 1), '')
 		 WHERE state = 'offline' AND last_seen < ? AND current_task != ''`, cutoff); err != nil {
 		return nil, 0, fmt.Errorf("clear worker current_task: %w", err)
 	}
@@ -4021,12 +4197,18 @@ func (s *SQLStore) ReapStaleWorkers(ctx context.Context, timeout time.Duration) 
 	if err := tx.Commit(); err != nil {
 		return nil, 0, fmt.Errorf("commit: %w", err)
 	}
+	if lost > 0 {
+		s.logger.Warn("services of offline workers marked lost; they stay RUNNING and keep their charges",
+			"count", lost)
+	}
 	return reaped, int(stranded), nil
 }
 
 // RequeueWorkerTasks resets RUNNING tasks assigned to the given worker back to
 // QUEUED so they can be picked up by another worker, and clears the worker's
-// current_task, in one transaction. Returns the count of requeued tasks.
+// current_task, in one transaction. Service tasks are never requeued: they
+// stay RUNNING, and current_task becomes the newest of them. Returns the
+// count of requeued tasks.
 func (s *SQLStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int, error) {
 	s.logger.Debug("sql", "op", "requeue_worker_tasks", "worker_id", workerID)
 
@@ -4037,14 +4219,14 @@ func (s *SQLStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int
 	defer tx.Rollback()
 
 	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonRequeued,
-		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`, workerID); err != nil {
+		`t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 0 AND t.external_id = ?`, workerID); err != nil {
 		return 0, fmt.Errorf("requeue tasks: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
-		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
+		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND is_service = 0 AND external_id = ?`, workerID)
 	if err != nil {
 		return 0, fmt.Errorf("requeue tasks: %w", err)
 	}
@@ -4054,9 +4236,14 @@ func (s *SQLStore) RequeueWorkerTasks(ctx context.Context, workerID string) (int
 		return 0, fmt.Errorf("requeue tasks: rows affected: %w", err)
 	}
 
-	// Clear the worker's current_task: it has no RUNNING task left.
+	// The worker's current_task: its newest remaining RUNNING task (a
+	// service), else ''.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE workers SET current_task = '' WHERE id = ?`, workerID); err != nil {
+		`UPDATE workers SET current_task = COALESCE(
+		    (SELECT id FROM tasks
+		     WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?
+		     ORDER BY started_at DESC NULLS LAST LIMIT 1), '')
+		 WHERE id = ?`, workerID, workerID); err != nil {
 		return 0, fmt.Errorf("clear worker current_task: %w", err)
 	}
 
@@ -4100,36 +4287,55 @@ func (s *SQLStore) ReleaseWorkerTask(ctx context.Context, workerID, taskID strin
 // reported via heartbeat. Tasks whose started_at is younger than minAge are left
 // alone to avoid racing the checkout→first-heartbeat window (a freshly checked-out
 // task the worker has not yet had a chance to report). Returns the IDs requeued.
+// A service task is never requeued; it follows a two-strike rule instead,
+// and only when the heartbeat carried running_tasks (running != nil; nil
+// means the field was absent, e.g. an older worker or an empty body, and the
+// services are then left untouched): a heartbeat that lists it clears
+// service_missing_at; one that omits it (past the grace window) sets
+// service_missing_at when NULL; one that omits it when service_missing_at is
+// older than minAge marks it FAILED (failMissingService). A service is never
+// returned.
 //
 // This complements ReapStaleWorkers (which only handles
 // dead workers): it catches the alive-but-forgetful case where a worker keeps
 // heartbeating after a server restart but has dropped its in-flight task.
 func (s *SQLStore) ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error) {
-	s.logger.Debug("sql", "op", "reconcile_worker_tasks", "worker_id", workerID, "running", len(running))
+	s.logger.Debug("sql", "op", "reconcile_worker_tasks", "worker_id", workerID, "running", len(running),
+		"running_tasks_sent", running != nil)
 
 	runningSet := make(map[string]struct{}, len(running))
 	for _, id := range running {
 		runningSet[id] = struct{}{}
 	}
+	servicesReported := running != nil
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, started_at FROM tasks
+		`SELECT id, started_at, is_service, service_missing_at FROM tasks
 		 WHERE state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`, workerID)
 	if err != nil {
 		return nil, fmt.Errorf("reconcile: query running tasks: %w", err)
 	}
 
-	cutoff := time.Now().UTC().Add(-minAge)
-	var orphans []string
+	now := time.Now().UTC()
+	cutoff := now.Add(-minAge)
+	var orphans, missingServices, markServices, foundServices []string
 	for rows.Next() {
 		var id string
-		var startedAt *string
-		if err := rows.Scan(&id, &startedAt); err != nil {
+		var startedAt, missingAt *string
+		var isService int64
+		if err := rows.Scan(&id, &startedAt, &isService, &missingAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("reconcile: scan: %w", err)
 		}
+		if isService != 0 && !servicesReported {
+			// running_tasks absent: nothing can be said about services.
+			continue
+		}
 		// Worker still claims this task — legitimately in-flight.
 		if _, ok := runningSet[id]; ok {
+			if isService != 0 && missingAt != nil {
+				foundServices = append(foundServices, id)
+			}
 			continue
 		}
 		// Within the grace window — too fresh to judge as orphaned.
@@ -4138,6 +4344,17 @@ func (s *SQLStore) ReconcileWorkerTasks(ctx context.Context, workerID string, ru
 				continue
 			}
 		}
+		if isService != 0 {
+			// First strike: mark it missing. Second strike, once the mark is
+			// older than the grace window: fail it. A mark that cannot be
+			// read counts as just set (never fails a service early).
+			if missingAt == nil {
+				markServices = append(markServices, id)
+			} else if t, terr := parseTimeOrZero(*missingAt); terr == nil && t.Before(cutoff) {
+				missingServices = append(missingServices, id)
+			}
+			continue
+		}
 		orphans = append(orphans, id)
 	}
 	rows.Close()
@@ -4145,6 +4362,8 @@ func (s *SQLStore) ReconcileWorkerTasks(ctx context.Context, workerID string, ru
 		return nil, fmt.Errorf("reconcile: rows: %w", err)
 	}
 
+	// Ordinary orphans first: an error in the service updates below must not
+	// keep them from being requeued.
 	for _, id := range orphans {
 		if err := s.requeueOrphan(ctx, workerID, id); err != nil {
 			return nil, fmt.Errorf("reconcile: requeue %s: %w", id, err)
@@ -4157,12 +4376,44 @@ func (s *SQLStore) ReconcileWorkerTasks(ctx context.Context, workerID string, ru
 		}
 	}
 
+	for _, id := range foundServices {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE tasks SET service_missing_at = NULL
+			 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND is_service = 1
+			   AND external_id = ? AND service_missing_at IS NOT NULL`, id, workerID); err != nil {
+			return nil, fmt.Errorf("reconcile: clear service_missing_at %s: %w", id, err)
+		}
+	}
+	for _, id := range markServices {
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE tasks SET service_missing_at = ?
+			 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND is_service = 1
+			   AND external_id = ? AND service_missing_at IS NULL`, formatTime(now), id, workerID)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile: set service_missing_at %s: %w", id, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			s.logger.Warn("service task not in its worker's heartbeat: marked missing (failed if the next heartbeats still omit it)",
+				"task_id", id, "worker_id", workerID)
+		}
+	}
+
+	for _, id := range missingServices {
+		if err := s.failMissingService(ctx, workerID, id); err != nil {
+			return nil, fmt.Errorf("reconcile: fail service %s: %w", id, err)
+		}
+		if _, err := s.db.ExecContext(ctx, releaseWorkerTaskSQL,
+			workerID, id, workerID, id, workerID); err != nil {
+			return nil, fmt.Errorf("reconcile: clear current_task %s: %w", id, err)
+		}
+	}
+
 	return orphans, nil
 }
 
 // requeueOrphan archives (reason requeued) and requeues task id of workerID
 // in one transaction, both only while the task is still RUNNING on that
-// worker.
+// worker and is not a service (never requeued).
 func (s *SQLStore) requeueOrphan(ctx context.Context, workerID, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -4171,14 +4422,14 @@ func (s *SQLStore) requeueOrphan(ctx context.Context, workerID, id string) error
 	defer tx.Rollback()
 
 	if _, err := s.archiveTaskAttempts(ctx, tx, model.AttemptReasonRequeued,
-		`t.id = ? AND t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.external_id = ?`,
+		`t.id = ? AND t.state = 'RUNNING' AND t.executor_type = 'worker' AND t.is_service = 0 AND t.external_id = ?`,
 		id, workerID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET state = 'QUEUED', external_id = '', started_at = NULL,
 		     charged_cores = NULL, charged_ram_mb = NULL, charged_gpus = NULL
-		 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND external_id = ?`,
+		 WHERE id = ? AND state = 'RUNNING' AND executor_type = 'worker' AND is_service = 0 AND external_id = ?`,
 		id, workerID); err != nil {
 		return err
 	}
@@ -4189,7 +4440,10 @@ func (s *SQLStore) requeueOrphan(ctx context.Context, workerID, id string) error
 // submission is CANCELLED — the tasks a worker is running that it should kill.
 // The submission state is the durable cancellation signal: the scheduler marks a
 // cancelled submission's tasks terminal (SKIPPED), but that does not stop the
-// worker's process, which is what this drives. Returns nil for an empty input.
+// worker's process, which is what this drives. A service task (is_service)
+// that is terminal in the database is returned too, whatever its submission:
+// the server has ended it (failed, or cancelled), so the worker must stop it.
+// Ordinary terminal tasks are not. Returns nil for an empty input.
 func (s *SQLStore) CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error) {
 	if len(taskIDs) == 0 {
 		return nil, nil
@@ -4201,9 +4455,10 @@ func (s *SQLStore) CancelledTasksForWorker(ctx context.Context, taskIDs []string
 		args[i] = id
 	}
 	query := `SELECT t.id FROM tasks t
-		 JOIN submissions s ON t.submission_id = s.id
+		 LEFT JOIN submissions s ON t.submission_id = s.id
 		 WHERE t.id IN (` + strings.Join(placeholders, ",") + `)
-		   AND s.state = 'CANCELLED'`
+		   AND (s.state = 'CANCELLED'
+		        OR (t.is_service = 1 AND t.state IN ('SUCCESS', 'FAILED', 'SKIPPED')))`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("cancelled tasks: query: %w", err)

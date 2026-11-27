@@ -364,3 +364,10 @@ func (c *WorkerAuthContext) CanJoinGroup(group string) bool {
 	}
 	return slices.Contains(c.Groups, group)
 }
+
+// NamesGroup reports whether the key's group list explicitly names group:
+// unlike CanJoinGroup, an empty list (any group) does not count. Required of
+// the key that registers a service-mode worker when worker auth is on.
+func (c *WorkerAuthContext) NamesGroup(group string) bool {
+	return c != nil && len(c.Groups) > 0 && slices.Contains(c.Groups, group)
+}

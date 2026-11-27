@@ -24,8 +24,9 @@ const (
 )
 
 // ServiceSpec marks a tool as a long-running service (gowe:Service hint).
-// Experimental: in this version it is parsed, validated and access-checked
-// only; a task carrying it runs like an ordinary task.
+// Experimental: a task carrying it (Task.IsService) waits for a service-mode
+// worker of its group and is never retried, requeued or re-run by the server;
+// workers do not run services yet.
 type ServiceSpec struct {
 	PortInput        string        `json:"port_input"`                 // id of the tool's int input the worker sets to the chosen port
 	Scheme           string        `json:"scheme,omitempty"`           // "http" (default) or "https"
@@ -195,7 +196,8 @@ const defaultWorkerGroupName = "default"
 // workflow that contains a service tool (a step whose hints carry Service).
 // isService is false, and nothing else is checked, for any other workflow.
 // For a service workflow it requires: exactly one step, without scatter; a
-// container image (resolved DockerImage); a worker group other than the
+// container image (resolved DockerImage); no executor hint other than worker
+// or container (a service runs only on the worker executor); a worker group other than the
 // default one; port_input naming an int input of the step's tool. group is
 // the service step's worker group, also returned (best effort) with an error
 // so a caller can still tell whose workflow it is. Whether the caller may
@@ -233,6 +235,11 @@ func ValidateServiceWorkflow(wf *Workflow) (group string, isService bool, err er
 	}
 	if st.Hints.DockerImage == "" {
 		return group, true, fmt.Errorf("the service step %q must run in a container (DockerRequirement.dockerPull or gowe:Execution.docker_image)", st.ID)
+	}
+	switch st.Hints.ExecutorType {
+	case "", ExecutorTypeWorker, ExecutorTypeContainer:
+	default:
+		return group, true, fmt.Errorf("the service step %q runs only on the worker executor: gowe:Execution.executor %q is not allowed (use worker, or leave it unset)", st.ID, st.Hints.ExecutorType)
 	}
 	if group == "" || group == defaultWorkerGroupName {
 		return group, true, fmt.Errorf("the service step %q must name a worker group other than %q (gowe:Execution.worker_group)", st.ID, defaultWorkerGroupName)

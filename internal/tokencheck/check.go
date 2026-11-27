@@ -74,9 +74,16 @@ func (f tokenFinding) detail() model.FieldError {
 // reach a nested step at dispatch. Refusing top-level cwl:requirements only
 // for top-level token steps keeps dry run and dispatch identical.
 //
+// Before any of that, a service workflow (model.ValidateServiceWorkflow)
+// whose inputs hold the key cwl:requirements at all is refused (see
+// ServiceJobRequirements).
+//
 // It returns a non-nil APIError to reject the submission, and warnings to
 // attach to the accepted response.
 func (c *Checker) Check(ctx context.Context, wf *model.Workflow, inputs map[string]any, labels map[string]string, hasUserToken bool) (*model.APIError, []model.FieldError) {
+	if apiErr := ServiceJobRequirements(wf, inputs); apiErr != nil {
+		return apiErr, nil
+	}
 	if wf == nil || wf.RawCWL == "" {
 		return nil, nil
 	}
@@ -231,6 +238,24 @@ func (c *Checker) Check(ctx context.Context, wf *model.Workflow, inputs map[stri
 		}, nil
 	}
 	return nil, warnings
+}
+
+// ServiceJobRequirementsRefused is the message of ServiceJobRequirements.
+const ServiceJobRequirementsRefused = "cwl:requirements is not accepted for a service workflow"
+
+// ServiceJobRequirements refuses (a validation error, HTTP 400) the
+// submission of a service workflow whose inputs contain the key
+// cwl:requirements, whatever its value: a service's image and environment are
+// fixed by its registration. nil for any other workflow or inputs.
+func ServiceJobRequirements(wf *model.Workflow, inputs map[string]any) *model.APIError {
+	if _, present := inputs["cwl:requirements"]; !present {
+		return nil
+	}
+	if _, isService, _ := model.ValidateServiceWorkflow(wf); !isService {
+		return nil
+	}
+	return model.NewValidationError(ServiceJobRequirementsRefused,
+		model.FieldError{Field: "inputs.cwl:requirements", Message: ServiceJobRequirementsRefused})
 }
 
 func hasCommandLineTool(graph *cwl.GraphDocument, id string) bool {

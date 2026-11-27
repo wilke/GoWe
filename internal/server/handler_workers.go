@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/pkg/model"
 )
 
@@ -56,6 +58,9 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		// Charge for a task that requests no cores / no RAM; optional.
 		DefaultTaskCores *int   `json:"default_task_cores"`
 		DefaultTaskRamMB *int64 `json:"default_task_ram_mb"`
+		// The worker runs services (gowe:Service) and takes only those;
+		// optional (the Go worker does not send it yet).
+		ServiceMode bool `json:"service_mode"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxWorkerRegisterBody)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -87,6 +92,19 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// A service-mode worker runs long-lived services with the group's GPUs:
+	// with worker authentication on, only a key whose group list explicitly
+	// names the worker's group may register one (a key with an empty group
+	// list joins any group, but may not run services). With worker auth off
+	// (the anonymous context) nothing changes.
+	if req.ServiceMode && workerAuth != nil && !workerAuth.Anonymous && !workerAuth.NamesGroup(group) {
+		respondError(w, reqID, http.StatusForbidden, &model.APIError{
+			Code: model.ErrForbidden,
+			Message: fmt.Sprintf("a service-mode worker needs a worker key whose groups explicitly name group %q; "+
+				"this key's group list is empty (any group), which does not allow service_mode", group),
+		})
+		return
+	}
 
 	runtimeStr := req.Runtime
 	if runtimeStr == "" {
@@ -100,6 +118,19 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	runtime := model.ContainerRuntime(runtimeStr)
 
+	// A service-mode worker must report a valid host id: the protection of
+	// its services' GPUs and charges across restarts is keyed by it. An
+	// absent one is stored as "" (a legacy worker, which the server groups as
+	// model.LegacyHostIDPrefix+hostname in host listings) and does not count;
+	// a sent one can never carry that prefix (ValidateHostID refuses ':').
+	if req.ServiceMode {
+		if err := model.ValidateHostID(req.HostID); err != nil {
+			respondError(w, reqID, http.StatusBadRequest,
+				model.NewValidationError(ServiceModeNeedsHostID,
+					model.FieldError{Field: "host_id", Message: err.Error()}))
+			return
+		}
+	}
 	// host_id is optional ("" = not reported) but must be well-formed if sent.
 	if req.HostID != "" {
 		if err := model.ValidateHostID(req.HostID); err != nil {
@@ -126,6 +157,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		LastSeen:     now,
 		RegisteredAt: now,
 		PeerAddr:     peerAddr(r),
+		ServiceMode:  req.ServiceMode,
 	}
 	// Self-reported capacity; non-positive or above the sane range means "not
 	// reported" (legacy), so per-host claimed sums cannot overflow.
@@ -206,7 +238,7 @@ func (s *Server) handleRegisterWorker(w http.ResponseWriter, r *http.Request) {
 		"max_cpus", capLog(worker.MaxCPUs), "max_mem_mb", capLog(worker.MaxMemMB),
 		"default_task_cores", capLog(worker.DefaultTaskCores), "default_task_ram_mb", capLog(worker.DefaultTaskRamMB),
 		"host_id", worker.HostID, "host_cpus", capLog(worker.HostCPUs), "host_mem_mb", capLog(worker.HostMemMB), "gpus", len(worker.GPUs),
-		"peer_addr", worker.PeerAddr)
+		"peer_addr", worker.PeerAddr, "service_mode", worker.ServiceMode)
 	s.warnGPUOverlap(r.Context(), worker)
 	// The caller is a worker, never a server admin or group manager: the
 	// peer address is not shown to it.
@@ -357,7 +389,8 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse the optional heartbeat body. An empty/missing body is valid and means
-	// the worker is reporting no in-flight tasks (backward compatible). An
+	// the worker is reporting no in-flight tasks (backward compatible; service
+	// tasks are then not reconciled at all, see running below). An
 	// oversized or malformed body still counts as a heartbeat (last_seen is
 	// updated, as before) and is answered with 400 after the update.
 	var req heartbeatBody
@@ -391,10 +424,22 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// running is nil when the body had no running_tasks field (an older
+	// worker, or an empty body) and a non-nil slice when it had one, empty
+	// included: the reconcile looks at service tasks only in the second case.
+	var running []string
+	if req.RunningTasks != nil {
+		running = *req.RunningTasks
+		if running == nil {
+			running = []string{}
+		}
+	}
+
 	// Reconcile orphaned tasks: any task the DB still attributes to this worker
 	// (RUNNING) that the worker no longer reports — and that is past the grace
 	// window — is requeued. This recovers tasks orphaned by a server restart.
-	if requeued, err := s.store.ReconcileWorkerTasks(r.Context(), worker.ID, req.RunningTasks, defaultWorkerTimeout); err != nil {
+	// Services follow the two-strike rule instead (see ReconcileWorkerTasks).
+	if requeued, err := s.store.ReconcileWorkerTasks(r.Context(), worker.ID, running, defaultWorkerTimeout); err != nil {
 		s.logger.Error("heartbeat: reconcile worker tasks", "worker_id", worker.ID, "error", err)
 	} else if len(requeued) > 0 {
 		s.logger.Warn("requeued orphaned tasks from heartbeat reconcile",
@@ -402,8 +447,10 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tell the worker which of its running tasks have been cancelled so it can
-	// kill the underlying process and free resources.
-	cancelTasks, err := s.store.CancelledTasksForWorker(r.Context(), req.RunningTasks)
+	// kill the underlying process and free resources; this includes every
+	// listed service task the server has already ended (terminal in the
+	// database).
+	cancelTasks, err := s.store.CancelledTasksForWorker(r.Context(), running)
 	if err != nil {
 		s.logger.Error("heartbeat: cancelled tasks lookup", "worker_id", worker.ID, "error", err)
 	}
@@ -418,9 +465,10 @@ func (s *Server) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 // heartbeatBody is the server-side decode target for model.HeartbeatRequest.
 // The usage fields stay raw so that a malformed usage value is dropped by
 // heartbeatUsage instead of failing the heartbeat (#323); running_tasks is
-// decoded strictly, as before.
+// decoded strictly, as before, into a pointer so that an absent (or null)
+// field (nil) is told apart from an empty list.
 type heartbeatBody struct {
-	RunningTasks []string        `json:"running_tasks"`
+	RunningTasks *[]string       `json:"running_tasks"`
 	Host         json.RawMessage `json:"host"`
 	GPUs         json.RawMessage `json:"gpu_usage"`
 }
@@ -701,8 +749,28 @@ func (s *Server) handleWorkerTaskStatus(w http.ResponseWriter, r *http.Request) 
 	respondOK(w, reqID, map[string]any{"task_id": task.ID, "state": newState})
 }
 
+// ServiceSuccessRefused is the 400 message of a SUCCESS report for a service
+// task (handleWorkerTaskComplete).
+const ServiceSuccessRefused = "a service does not complete; report FAILED, or SKIPPED after a cancel"
+
+// ServiceStoppedWithoutCancel is the line appended to the stderr of a
+// service task whose worker reported SKIPPED while its submission was not
+// cancelled; the report is stored as FAILED (handleWorkerTaskComplete).
+const ServiceStoppedWithoutCancel = "service stopped by its worker without a cancel"
+
+// ServiceModeNeedsHostID is the 400 message of a service-mode registration
+// without a valid host id.
+const ServiceModeNeedsHostID = "a service-mode worker must report a host id"
+
 // handleWorkerTaskComplete allows a worker to report task completion.
 // PUT /api/v1/workers/{id}/tasks/{tid}/complete
+//
+// state must be terminal (SUCCESS, FAILED, SKIPPED) or omitted (decided from
+// the exit code); anything else is 400. For a service task it must be given
+// and must not be SUCCESS (400); SKIPPED is accepted only when the task's
+// submission is CANCELLED, otherwise it is stored as FAILED (stderr gets
+// ServiceStoppedWithoutCancel), so a service submission never completes
+// through a SKIPPED step.
 func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 	workerID := chi.URLParam(r, "id")
@@ -730,6 +798,15 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 			Code:    model.ErrValidation,
 			Message: "invalid JSON body: " + err.Error(),
 		})
+		return
+	}
+	// Completion ends a task: only a terminal state (or none, decided from
+	// the exit code below) is accepted. Anything else, e.g. QUEUED, would put
+	// the task back in the queue while its worker may still run it.
+	if req.State != "" && !model.TaskState(req.State).IsTerminal() {
+		respondError(w, reqID, http.StatusBadRequest, model.NewValidationError(
+			fmt.Sprintf("state must be SUCCESS, FAILED or SKIPPED (or omitted), got %q", req.State),
+			model.FieldError{Field: "state", Message: "not a terminal task state"}))
 		return
 	}
 
@@ -766,6 +843,37 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	}
 
 	newState := model.TaskState(req.State)
+	// A service does not complete: a model server that exits has failed. Its
+	// worker reports FAILED or SKIPPED (cancelled) explicitly, never SUCCESS,
+	// and never leaves the state to the exit code. SKIPPED stands only after
+	// a cancel of the submission; otherwise it is stored as FAILED.
+	stoppedWithoutCancel := false
+	if task.IsService {
+		if newState == "" {
+			respondError(w, reqID, http.StatusBadRequest, model.NewValidationError(
+				"a service task must report its state explicitly; report FAILED or SKIPPED",
+				model.FieldError{Field: "state", Message: "required for a service task"}))
+			return
+		}
+		if newState == model.TaskStateSuccess {
+			respondError(w, reqID, http.StatusBadRequest, model.NewValidationError(
+				ServiceSuccessRefused,
+				model.FieldError{Field: "state", Message: "SUCCESS is not accepted for a service task"}))
+			return
+		}
+		if newState == model.TaskStateSkipped {
+			sub, err := s.store.GetSubmission(r.Context(), task.SubmissionID)
+			if err != nil {
+				respondError(w, reqID, http.StatusInternalServerError,
+					model.NewInternalError(err.Error()))
+				return
+			}
+			if sub == nil || sub.State != model.SubmissionStateCancelled {
+				newState = model.TaskStateFailed
+				stoppedWithoutCancel = true
+			}
+		}
+	}
 	if newState == "" {
 		// Default to SUCCESS if exit code is 0, FAILED otherwise.
 		if req.ExitCode != nil && *req.ExitCode == 0 {
@@ -780,6 +888,12 @@ func (s *Server) handleWorkerTaskComplete(w http.ResponseWriter, r *http.Request
 	task.ExitCode = req.ExitCode
 	task.Stdout = req.Stdout
 	task.Stderr = req.Stderr
+	if stoppedWithoutCancel {
+		if task.Stderr != "" && !strings.HasSuffix(task.Stderr, "\n") {
+			task.Stderr += "\n"
+		}
+		task.Stderr += ServiceStoppedWithoutCancel
+	}
 	task.CompletedAt = &now
 	// #273: the worker identified this failure as non-retryable (a bad
 	// input value fails identically on every retry) — apply the same
@@ -871,6 +985,14 @@ func (s *Server) handleDeregisterWorker(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.store.DeleteWorker(r.Context(), id); err != nil {
+		var svcErr *store.WorkerServicesError
+		if errors.As(err, &svcErr) {
+			respondError(w, reqID, http.StatusConflict, &model.APIError{
+				Code:    model.ErrConflict,
+				Message: svcErr.Error(),
+			})
+			return
+		}
 		respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("worker", id))
 		return
 	}

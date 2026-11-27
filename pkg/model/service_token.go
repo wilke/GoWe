@@ -39,6 +39,11 @@ type ServiceToken struct {
 // and the server's own BV-BRC account is never used for it.
 const ServiceBVBRCDenied = "service identities cannot use the BV-BRC executor"
 
+// ServiceNotRerun is the reason a service task (gowe:Service) or a service
+// workflow's submission is refused a re-run: submission retry (409), UI
+// resume/recompute, and the scheduler's retry.
+const ServiceNotRerun = "a service task is not re-run; submit the service again"
+
 // BVBRCTokenRequired is the reason a submission without the submitter's
 // provider token (anonymous, or a service identity) is refused the BV-BRC
 // executor: at submission and retry (403) and, permanently, at dispatch.

@@ -79,6 +79,22 @@ type Task struct {
 	// not count GPUs: a worker then cannot rely on the server to keep its
 	// concurrent tasks within its GPUs.
 	ChargedGPUs *int `json:"charged_gpus,omitempty"`
+
+	// IsService is tasks.is_service, set by the store on read: the task was
+	// created with RuntimeHints.Service (the store derives it at insert,
+	// never changed afterwards). The server never requeues, retries or
+	// re-runs such a task, and only a service-mode worker checks it out.
+	IsService bool `json:"is_service,omitempty"`
+	// ServiceLostAt is when the reaper found the worker of this RUNNING
+	// service task silent (nil while the worker is seen); cleared when the
+	// worker heartbeats again. A lost service stays RUNNING and keeps its
+	// charges.
+	ServiceLostAt *time.Time `json:"service_lost_at,omitempty"`
+	// ServiceMissingAt is when a heartbeat of the live worker of this RUNNING
+	// service task (one that carried running_tasks) first omitted it, past
+	// the grace window; cleared when a heartbeat lists it again. A second
+	// omission once it is older than the grace window marks the task FAILED.
+	ServiceMissingAt *time.Time `json:"service_missing_at,omitempty"`
 }
 
 // DatasetRequirement describes a reference dataset needed by a CWL tool.

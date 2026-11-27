@@ -184,6 +184,8 @@ func TestServiceWorkflow_RegisterInvalid(t *testing.T) {
 		{"no DockerRequirement", svcWorkflowDoc(svcHints("g", false), "", ""), "must run in a container"},
 		{"default group", svcWorkflowDoc(svcHints("default", true), "", ""), "worker group other than"},
 		{"no group", svcWorkflowDoc(svcHints("", true), "", ""), "worker group other than"},
+		{"executor local", strings.Replace(svcDoc(), "worker_group: g", "worker_group: g\n        executor: local", 1),
+			`gowe:Execution.executor "local" is not allowed`},
 		{"port input not an input", strings.Replace(svcDoc(), "port_input: port", "port_input: nope", 1), `port_input "nope" is not an input`},
 		{"port input not int", strings.Replace(withToolInput(svcDoc(), "name", "string"), "port_input: port", "port_input: name", 1),
 			`port_input "name" must name an input of type int, it is "string"`},

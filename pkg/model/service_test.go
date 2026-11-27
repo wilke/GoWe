@@ -223,6 +223,26 @@ func TestValidateServiceWorkflow(t *testing.T) {
 			wf.Steps[0].Hints.DockerImage = ""
 			return wf
 		}, true, "gpu", "must run in a container"},
+		{"executor worker", func() *Workflow {
+			wf := serviceWorkflow()
+			wf.Steps[0].Hints.ExecutorType = ExecutorTypeWorker
+			return wf
+		}, true, "gpu", ""},
+		{"executor container", func() *Workflow {
+			wf := serviceWorkflow()
+			wf.Steps[0].Hints.ExecutorType = ExecutorTypeContainer
+			return wf
+		}, true, "gpu", ""},
+		{"executor local", func() *Workflow {
+			wf := serviceWorkflow()
+			wf.Steps[0].Hints.ExecutorType = ExecutorTypeLocal
+			return wf
+		}, true, "gpu", `gowe:Execution.executor "local" is not allowed`},
+		{"executor bvbrc", func() *Workflow {
+			wf := serviceWorkflow()
+			wf.Steps[0].Hints.ExecutorType = ExecutorTypeBVBRC
+			return wf
+		}, true, "gpu", `gowe:Execution.executor "bvbrc" is not allowed`},
 		{"no group", func() *Workflow {
 			wf := serviceWorkflow()
 			wf.Steps[0].Hints.WorkerGroup = ""

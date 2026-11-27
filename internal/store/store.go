@@ -147,7 +147,7 @@ type Store interface {
 	// reconciliation so the cancel cascade reaches their child submissions.
 	CancelNonTerminalTasks(ctx context.Context, submissionID string, completedAt time.Time) (int, error)
 	// ResetFailedTasks archives (reason reset) and resets the submission's
-	// FAILED tasks to PENDING in one transaction.
+	// FAILED tasks to PENDING in one transaction. Service tasks are left alone.
 	ResetFailedTasks(ctx context.Context, submissionID string) (int, error)
 	ResetFailedSteps(ctx context.Context, submissionID string) (int, error)
 	// ArchiveAndResetTask keeps the task's current record as an attempt
@@ -155,6 +155,7 @@ type Store interface {
 	// copy) in one transaction, both only if the row is still in state from.
 	// applied=false (nothing archived, nothing written) when it is not. A row
 	// that never started and holds no output is written without an attempt.
+	// A service task is refused with ErrServiceNotReset.
 	ArchiveAndResetTask(ctx context.Context, task *model.Task, from model.TaskState, reason string) (applied bool, err error)
 	// ListTaskAttempts returns the task's archived attempts by attempt
 	// ascending (empty when none).
@@ -192,14 +193,18 @@ type Store interface {
 	// peer_addr (only when peerAddr is not empty: "" keeps the stored value),
 	// plus host_usage/host_usage_at (= lastSeen) only when usage is non-nil.
 	// It never writes current_task, so it cannot clobber a concurrent
-	// CheckoutTask the way a full-row UpdateWorker can.
+	// CheckoutTask the way a full-row UpdateWorker can. It also clears
+	// service_lost_at of the worker's RUNNING service tasks.
 	TouchWorker(ctx context.Context, id string, state model.WorkerState, lastSeen time.Time, peerAddr string, usage *model.WorkerUsage) error
 	// DeleteWorker removes the worker and requeues its RUNNING worker-executor tasks atomically.
+	// A worker that still holds RUNNING service tasks is not removed: the
+	// error is a *WorkerServicesError (errors.Is ErrWorkerHasServices).
 	DeleteWorker(ctx context.Context, id string) error
 	// DeleteOfflineWorker is DeleteWorker restricted, inside its transaction,
 	// to a worker that is offline, whose last_seen is older than now -
 	// silentFor and, when group != "", whose group is group ("" and
-	// "default" fold together). It reports whether the worker was deleted.
+	// "default" fold together). It reports whether the worker was deleted;
+	// a worker holding RUNNING services is refused as by DeleteWorker.
 	DeleteOfflineWorker(ctx context.Context, id, group string, silentFor time.Duration) (bool, error)
 	ListWorkers(ctx context.Context) ([]*model.Worker, error)
 	ListWorkerGroups(ctx context.Context) ([]string, error)
@@ -215,9 +220,18 @@ type Store interface {
 	// transaction. It also requeues RUNNING worker tasks still attributed to
 	// workers that are offline and stale (stranded by an earlier failure).
 	// Returns the workers it marked offline, each with its requeued count,
-	// and the number of stranded tasks requeued.
+	// and the number of stranded tasks requeued. Service tasks are never
+	// requeued: those of offline stale workers stay RUNNING with their
+	// charges and get service_lost_at.
 	ReapStaleWorkers(ctx context.Context, timeout time.Duration) ([]ReapedWorker, int, error)
 	RequeueWorkerTasks(ctx context.Context, workerID string) (int, error)
+	// ReconcileWorkerTasks requeues the worker's RUNNING tasks its heartbeat
+	// no longer lists (older than minAge) and returns their ids. Service
+	// tasks are never requeued nor returned, and are looked at only when
+	// running is non-nil (nil = the heartbeat had no running_tasks field; an
+	// empty non-nil slice = it reported none): a listed one has
+	// service_missing_at cleared, a first omission sets it, an omission once
+	// it is older than minAge marks the task FAILED.
 	ReconcileWorkerTasks(ctx context.Context, workerID string, running []string, minAge time.Duration) ([]string, error)
 	// ReleaseWorkerTask moves the worker's current_task off taskID in one
 	// UPDATE: if current_task is taskID it becomes the worker's most recently
@@ -225,6 +239,9 @@ type Store interface {
 	// current_task, and every other column, is left unchanged. An unknown
 	// worker is not an error.
 	ReleaseWorkerTask(ctx context.Context, workerID, taskID string) error
+	// CancelledTasksForWorker returns the subset of taskIDs the worker should
+	// stop: tasks whose submission is CANCELLED, and service tasks that are
+	// terminal in the database.
 	CancelledTasksForWorker(ctx context.Context, taskIDs []string) ([]string, error)
 
 	// Worker key operations (per-worker authentication, hashed at rest)

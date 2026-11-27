@@ -68,6 +68,10 @@ type Worker struct {
 	// proxy's address). Shown only to server admins and to managers of the
 	// worker's group; every other answer blanks it.
 	PeerAddr string `json:"peer_addr,omitempty"`
+	// ServiceMode is declared at registration: the worker runs services
+	// (gowe:Service). CheckoutTask offers it service tasks only, and service
+	// tasks only to such workers.
+	ServiceMode bool `json:"service_mode,omitempty"`
 }
 
 // WorkerRemovalSilence is how long a worker must have sent no heartbeat
@@ -190,7 +194,10 @@ func ValidateHostID(id string) error {
 // HeartbeatRequest is the body a worker sends on each heartbeat. RunningTasks is
 // the set of task IDs the worker is currently executing; the server uses it to
 // reconcile orphaned tasks and to decide which tasks to cancel. An empty body
-// (no running tasks) is valid and backward-compatible.
+// (no running tasks) is valid and backward-compatible. The server reconciles
+// service tasks only when the body carries the running_tasks field (an empty
+// list included): a worker that runs services must send it even when it runs
+// nothing (this struct omits an empty list).
 type HeartbeatRequest struct {
 	RunningTasks []string `json:"running_tasks,omitempty"`
 	// Host and GPUs carry the worker's latest usage sample (#323). Both are
