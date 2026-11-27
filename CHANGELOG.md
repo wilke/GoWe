@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.34.0](https://github.com/wilke/GoWe/compare/v0.33.0...v0.34.0) (2026-11-27)
+
+
+### Features
+
+* **server:** a service task is never started a second time ([#396](https://github.com/wilke/GoWe/issues/396)) ([4d6acda](https://github.com/wilke/GoWe/commit/4d6acdada3be04451226c06b9d9f78c35a6c675a))
+* **server:** gowe:Service hint and registration rule for service workflows ([#393](https://github.com/wilke/GoWe/issues/393)) ([ab20903](https://github.com/wilke/GoWe/commit/ab209033b516d66df09dff9cd2c69462697236ca))
+* **server:** stopping a service keeps its GPUs until the worker confirms ([#397](https://github.com/wilke/GoWe/issues/397)) ([08b7b0e](https://github.com/wilke/GoWe/commit/08b7b0ebea2e3f3c24d4f85124ae591418a3ae41))
+* **server:** workers report a status for each running service ([#398](https://github.com/wilke/GoWe/issues/398)) ([dfd7a7e](https://github.com/wilke/GoWe/commit/dfd7a7e3f78b2db85043a443eb725d535129d2d9))
+* **worker:** --service-mode runs long-lived model servers ([#399](https://github.com/wilke/GoWe/issues/399)) ([fd0c2c0](https://github.com/wilke/GoWe/commit/fd0c2c069e4c630c80d2d9f7a0ec5536a6841539))
+
+
+### Bug Fixes
+
+* **ui:** only the owner or an admin deletes a workflow in the web UI ([#395](https://github.com/wilke/GoWe/issues/395)) ([658baee](https://github.com/wilke/GoWe/commit/658baee6dac54a76514c4395ec89af8016c8e750))
+
 ## [0.33.0](https://github.com/wilke/GoWe/compare/v0.32.0...v0.33.0) (2026-11-26)
 
 
