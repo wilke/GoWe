@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // schema contains the DDL for all GoWe tables.
 // Each statement uses IF NOT EXISTS for idempotency.
@@ -596,6 +599,35 @@ var alterStatements = []struct {
 		column:   "peer_addr",
 		alterSQL: "ALTER TABLE workers ADD COLUMN peer_addr TEXT NOT NULL DEFAULT ''",
 	},
+	// Services (gowe:Service). is_service = 1 for a task created with
+	// RuntimeHints.Service (written once by insertTask); service_lost_at is
+	// set by the reaper when the worker of a RUNNING service went silent and
+	// cleared when it is seen again (NULL = not lost). service_mode = 1 for a
+	// worker that declared at registration that it runs services.
+	{
+		table:    "tasks",
+		column:   "is_service",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN is_service INTEGER NOT NULL DEFAULT 0",
+	},
+	{
+		table:    "tasks",
+		column:   "service_lost_at",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN service_lost_at TEXT",
+	},
+	// service_missing_at: set by ReconcileWorkerTasks when a live worker's
+	// heartbeat (with running_tasks) first omits its RUNNING service, cleared
+	// when a heartbeat lists it again; the second omission after the grace
+	// window fails the service (NULL = not missing).
+	{
+		table:    "tasks",
+		column:   "service_missing_at",
+		alterSQL: "ALTER TABLE tasks ADD COLUMN service_missing_at TEXT",
+	},
+	{
+		table:    "workers",
+		column:   "service_mode",
+		alterSQL: "ALTER TABLE workers ADD COLUMN service_mode INTEGER NOT NULL DEFAULT 0",
+	},
 }
 
 // migrate executes all schema DDL statements, alter migrations, and post-migration indexes.
@@ -628,6 +660,18 @@ func migrate(ctx context.Context, db *sqlDB) error {
 				return err
 			}
 		}
+	}
+
+	// Backfill tasks.is_service for worker tasks whose hints carry a
+	// non-null service member but whose row says otherwise (stored before
+	// insertTask derived the column). Idempotent: it runs at every start-up
+	// and only ever sets 0 -> 1. jsonText is NULL for an absent member and
+	// for JSON null; the jsonValid guard keeps empty or malformed hints out.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE tasks SET is_service = 1
+		 WHERE is_service = 0 AND executor_type = 'worker'
+		   AND (CASE WHEN `+d.jsonValid("runtime_hints")+` THEN `+d.jsonText("runtime_hints", "service")+` END) IS NOT NULL`); err != nil {
+		return fmt.Errorf("backfill tasks.is_service: %w", err)
 	}
 
 	// Label vocabulary table.

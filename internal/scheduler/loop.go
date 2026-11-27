@@ -114,6 +114,10 @@ type WorkerCapabilities struct {
 	MaxCoresByGroup map[string]int
 	MaxMemMBByGroup map[string]int64
 	UncappedByGroup map[string]int // group → online workers with any unreported capacity
+
+	// Online service-mode workers are counted in none of the fields above:
+	// they take service tasks only (CheckoutTask), and these fields describe
+	// capacity for ordinary tasks.
 }
 
 // Loop implements the Scheduler interface with a polling-based scheduling loop.
@@ -825,6 +829,17 @@ func (l *Loop) dispatchReady(ctx context.Context, affected map[string]bool) erro
 // It resolves inputs, evaluates conditions, creates Tasks, and submits to executors.
 // After completion, the StepInstance is either DISPATCHED (async), COMPLETED, FAILED, or SKIPPED.
 func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *model.Workflow, sub *model.Submission) error {
+	// A service step is started at most once: CreateTask, the submit and the
+	// step update are separate writes, so a READY service step may already
+	// own a task (the step update failed, or the server stopped in between).
+	// Adopt that task instead of creating a second one; checked first, so
+	// nothing below can fail the step under a task that is still live.
+	if svcStep := findStep(wf, si.StepID); svcStep != nil && svcStep.Hints != nil && svcStep.Hints.Service != nil {
+		if adopted, err := l.adoptServiceTask(ctx, si); adopted || err != nil {
+			return err
+		}
+	}
+
 	// Check token expiry.
 	if !sub.TokenExpiry.IsZero() && time.Now().After(sub.TokenExpiry) {
 		now := time.Now().UTC()
@@ -913,6 +928,20 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	// Determine executor type.
 	execType := l.determineExecutorType(step, sub)
 
+	// A service step (gowe:Service) runs only on the worker executor: never
+	// inside the scheduler tick on the server host (local), nor anywhere
+	// else. A server that forces another executor, or an executor hint other
+	// than worker / container, fails the step permanently before any task
+	// exists; otherwise the executor IS worker, whatever the default
+	// executor or the online workers. The worker-group check below then runs
+	// for it like for any worker task.
+	if step.Hints != nil && step.Hints.Service != nil {
+		if reason := serviceExecutorRefusal(l.config.ForceExecutor, step.Hints.ExecutorType); reason != "" {
+			return l.failStepServiceExecutor(ctx, si, sub, reason)
+		}
+		execType = model.ExecutorTypeWorker
+	}
+
 	// A service identity has no BV-BRC token and may never use the BV-BRC
 	// executor (never the server's own account). Authoritative, before any
 	// task row exists: the step fails like a worker-group denial, so no task
@@ -938,7 +967,11 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	}
 
 	// Pre-flight check: if executor is "worker", verify a capable worker exists.
-	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 {
+	// Not for a service step: its task waits in the queue until a
+	// service-mode worker of its group takes it, which the preflight's
+	// capacity (ordinary workers only) cannot tell.
+	if execType == model.ExecutorTypeWorker && l.config.PreflightDeferralTicks > 0 &&
+		(step.Hints == nil || step.Hints.Service == nil) {
 		caps := l.workerCapabilities()
 		var req cwltool.ResourceRequest
 		if len(step.Scatter) == 0 && tmpTask.RuntimeHints != nil {
@@ -1026,6 +1059,11 @@ func (l *Loop) dispatchStep(ctx context.Context, si *model.StepInstance, wf *mod
 	}
 
 	if err := l.store.CreateTask(ctx, task); err != nil {
+		// A service task the store refuses for its executor is refused on
+		// every tick: fail the step permanently instead of retrying forever.
+		if errors.Is(err, store.ErrServiceNotWorker) {
+			return l.failStepServiceExecutor(ctx, si, sub, err.Error())
+		}
 		return fmt.Errorf("create task: %w", err)
 	}
 
@@ -1127,6 +1165,92 @@ func (l *Loop) failStepServiceBVBRC(ctx context.Context, si *model.StepInstance,
 	l.logger.Warn("step failed: service identities cannot use the BV-BRC executor",
 		"submission_id", sub.ID, "si_id", si.ID, "step_id", si.StepID, "user", sub.SubmittedBy)
 	return l.updateStepInstance(ctx, si)
+}
+
+// serviceExecutorRefusal returns why a service step may not run with the
+// server's forced executor force or the step's executor hint hint, or ""
+// when it runs on the worker executor: force unset or worker, and hint
+// unset, worker or container (container describes how a tool runs, not
+// where).
+func serviceExecutorRefusal(force string, hint model.ExecutorType) string {
+	if force != "" && model.ExecutorType(force) != model.ExecutorTypeWorker {
+		return fmt.Sprintf("a service step runs only on the worker executor; the server forces executor %q (--force-executor)", force)
+	}
+	switch hint {
+	case "", model.ExecutorTypeWorker, model.ExecutorTypeContainer:
+		return ""
+	}
+	return fmt.Sprintf("a service step runs only on the worker executor; its gowe:Execution.executor is %q", hint)
+}
+
+// failStepServiceExecutor fails si because it is a service step that would
+// not run on the worker executor (serviceExecutorRefusal gives reason). Same
+// mechanism as failStepGroupDenied: FAILED with the reason, no task created;
+// finalize then FAILs the submission with the step's reason.
+func (l *Loop) failStepServiceExecutor(ctx context.Context, si *model.StepInstance, sub *model.Submission, reason string) error {
+	delete(l.deferredSteps, si.ID)
+	now := time.Now().UTC()
+	si.State = model.StepStateFailed
+	si.Error = reason
+	si.CompletedAt = &now
+	l.logger.Warn("step failed: a service step runs only on the worker executor",
+		"submission_id", sub.ID, "si_id", si.ID, "step_id", si.StepID, "reason", reason)
+	return l.updateStepInstance(ctx, si)
+}
+
+// adoptServiceTask looks for a non-terminal task of the service step si
+// (a task created by an earlier dispatch whose step update did not land:
+// a failed write, or a server stop between CreateTask and the step update).
+// When there is one, no second task is created: the step is set DISPATCHED
+// (RUNNING when the task already runs), as the normal dispatch path and
+// advanceSteps would have left it, and adopted is true. When the step has
+// tasks and all are terminal, no task is created either (a service is never
+// started again): the step is set FAILED with the reason (SKIPPED when every
+// task is SKIPPED), as the step-failing helpers above do, and adopted is
+// true. A listing error leaves the step READY for the next tick (no task is
+// created either).
+func (l *Loop) adoptServiceTask(ctx context.Context, si *model.StepInstance) (adopted bool, err error) {
+	tasks, err := l.store.ListTasksByStepInstance(ctx, si.ID)
+	if err != nil {
+		return false, fmt.Errorf("list tasks of service step %s: %w", si.ID, err)
+	}
+	for _, t := range tasks {
+		if t.State.IsTerminal() {
+			continue
+		}
+		si.State = model.StepStateDispatched
+		if t.State == model.TaskStateRunning {
+			si.State = model.StepStateRunning
+		}
+		l.logger.Warn("service step already has a task: adopting it instead of creating another",
+			"submission_id", si.SubmissionID, "si_id", si.ID, "step_id", si.StepID,
+			"task_id", t.ID, "task_state", t.State)
+		return true, l.updateStepInstance(ctx, si)
+	}
+	if len(tasks) == 0 {
+		return false, nil
+	}
+
+	// Every task of the step has ended: the service is not started again.
+	allSkipped := true
+	for _, t := range tasks {
+		if t.State != model.TaskStateSkipped {
+			allSkipped = false
+		}
+	}
+	last := tasks[len(tasks)-1]
+	delete(l.deferredSteps, si.ID)
+	now := time.Now().UTC()
+	si.State = model.StepStateFailed
+	if allSkipped {
+		si.State = model.StepStateSkipped
+	}
+	si.Error = fmt.Sprintf("service task %s already ended (%s); %s", last.ID, last.State, model.ServiceNotRerun)
+	si.CompletedAt = &now
+	l.logger.Warn("service step's task already ended: not starting the service again",
+		"submission_id", si.SubmissionID, "si_id", si.ID, "step_id", si.StepID,
+		"task_id", last.ID, "task_state", last.State, "step_state", si.State)
+	return true, l.updateStepInstance(ctx, si)
 }
 
 // deferOrFailPreflight records one more preflight deferral for si. Below
@@ -1911,9 +2035,10 @@ func (l *Loop) determineExecutorType(step *model.Step, sub *model.Submission) mo
 		return step.Hints.ExecutorType
 	}
 	// Auto-promote container tasks to worker when workers are available.
+	// (A service step does not depend on this: dispatchStep makes its
+	// executor worker.)
 	if step.Hints != nil && step.Hints.DockerImage != "" {
-		caps := l.workerCapabilities()
-		if caps.OnlineCount > 0 {
+		if l.workerCapabilities().OnlineCount > 0 {
 			return model.ExecutorTypeWorker
 		}
 	}
@@ -1944,6 +2069,11 @@ func (l *Loop) workerCapabilities() *WorkerCapabilities {
 	}
 	for _, w := range workers {
 		if w.State != model.WorkerStateOnline {
+			continue
+		}
+		// A service-mode worker takes service tasks only (CheckoutTask): it
+		// is no capacity for ordinary tasks, which every field describes.
+		if w.ServiceMode {
 			continue
 		}
 		caps.OnlineCount++
@@ -2149,7 +2279,13 @@ func scrubTaskToken(task *model.Task) {
 // The final persist is a guarded write: a concurrent HTTP cancel may have
 // already terminalized (SKIPPED) the task, and the submit outcome must not
 // resurrect it under a cancelled submission.
+//
+// task.State on entry must be the state the row was last written in by the
+// caller (QUEUED at dispatch, written by CreateTask; SCHEDULED at retry,
+// written by ArchiveAndResetTask): persistSubmitOutcome compare-and-sets a
+// worker task's non-terminal outcome from it.
 func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
+	rowState := task.State
 	exec, err := l.registry.Get(task.ExecutorType)
 	if err != nil {
 		// No executor lookup succeeded, so the task was never actually
@@ -2166,7 +2302,7 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		// submitAndUpdateTask) doesn't keep them at rest just because its
 		// executor type failed to resolve.
 		scrubTaskToken(task)
-		l.persistSubmitOutcome(ctx, task)
+		l.persistSubmitOutcome(ctx, task, rowState)
 		return
 	}
 
@@ -2243,7 +2379,7 @@ func (l *Loop) submitAndUpdateTask(ctx context.Context, task *model.Task) {
 		}
 	}
 
-	l.persistSubmitOutcome(ctx, task)
+	l.persistSubmitOutcome(ctx, task, rowState)
 }
 
 // isSyncExecutor reports whether task submission and execution start happen
@@ -2260,9 +2396,34 @@ func isSyncExecutor(t model.ExecutorType) bool {
 }
 
 // persistSubmitOutcome writes a submit result without overwriting a state a
-// concurrent cancel already made terminal (TerminalizeTask's guard fits both
-// the QUEUED and FAILED outcomes: write only while the row is non-terminal).
-func (l *Loop) persistSubmitOutcome(ctx context.Context, task *model.Task) {
+// concurrent cancel already made terminal (TerminalizeTask's guard: write
+// only while the row is non-terminal). from is the state this code path last
+// wrote the row in (QUEUED at dispatch: CreateTask; SCHEDULED at retry:
+// ArchiveAndResetTask).
+//
+// A non-terminal outcome of a worker task is written with an exact-state
+// compare-and-set from `from` instead (TerminalizeTaskFrom), the same fix as
+// pollInFlight's for the F-J zombie: the row is visible to CheckoutTask from
+// the moment it is QUEUED, and a worker that checked it out in between
+// (RUNNING, external_id = the worker) must not be put back to QUEUED by this
+// stale snapshot (the worker would keep running it and the next checkout
+// would start a second copy). When the CAS loses, the winning write stands:
+// the row is left alone (DEBUG), which is not an error.
+func (l *Loop) persistSubmitOutcome(ctx context.Context, task *model.Task, from model.TaskState) {
+	if task.ExecutorType == model.ExecutorTypeWorker && !task.State.IsTerminal() {
+		applied, err := l.store.TerminalizeTaskFrom(ctx, task, from)
+		if err != nil {
+			l.logger.Error("persist submit outcome", "task_id", task.ID, "error", err)
+			return
+		}
+		if !applied {
+			l.logger.Debug("task left its dispatch state concurrently (checkout, cancel), submit outcome discarded",
+				"task_id", task.ID, "from", from, "outcome_state", task.State)
+			return
+		}
+		l.metrics.ObserveTaskTerminal(task, l.workflowNameForTask(ctx, task), "submit")
+		return
+	}
 	applied, err := l.store.TerminalizeTask(ctx, task)
 	if err != nil {
 		l.logger.Error("persist submit outcome", "task_id", task.ID, "error", err)
@@ -2440,8 +2601,24 @@ func (l *Loop) resubmitRetrying(ctx context.Context, affected map[string]bool) e
 			l.logger.Info("retry resubmit skipped: task no longer RETRYING", "task_id", task.ID)
 			continue
 		}
-
 		task.State = model.TaskStateScheduled
+
+		// A service task is never re-run (it is created with MaxRetries 0,
+		// and markRetries skips it; this covers a task that reached RETRYING
+		// or a stranded SCHEDULED claim anyway). Permanent, like the group
+		// denial below, and decided BEFORE the failed attempt is archived or
+		// the row blanked: the row keeps its stdout and stderr (the reason is
+		// appended to stderr on a new line, see failRetryingTaskNow), nothing
+		// is archived (ArchiveAndResetTask refuses a service anyway) and no
+		// retry is counted.
+		if isServiceTask(task) {
+			l.logger.Warn("retry refused: a service task is not re-run",
+				"task_id", task.ID, "submission_id", task.SubmissionID)
+			l.failRetryingTaskNow(ctx, task, model.ServiceNotRerun)
+			affected[task.SubmissionID] = true
+			continue
+		}
+
 		task.ExitCode = nil
 		task.Stdout = ""
 		task.Stderr = ""
@@ -2560,6 +2737,12 @@ func (l *Loop) reattachCredentialsForRetry(ctx context.Context, task *model.Task
 	return false
 }
 
+// isServiceTask reports whether task is a service (gowe:Service): stored as
+// one (is_service) or carrying the spec in its hints.
+func isServiceTask(task *model.Task) bool {
+	return task.IsService || (task.RuntimeHints != nil && task.RuntimeHints.Service != nil)
+}
+
 // retryGroupDenied reports whether the worker-group policy (#261) refuses
 // re-queueing task, with the reason. Only worker tasks are checked; the group
 // is the one stored on the task (nil hints or "" = the default group) and the
@@ -2604,15 +2787,26 @@ func (l *Loop) retryServiceBVBRCDenied(ctx context.Context, task *model.Task) bo
 // cannot proceed or the worker-group policy denies the retry (#261). Mirrors failTaskPreDispatch's task-side effects; unlike
 // that helper it has no step instance in hand, so it persists through
 // persistSubmitOutcome (TerminalizeTask), same as submitAndUpdateTask's own
-// no-executor-found branch.
+// no-executor-found branch. A service task keeps the stdout and stderr of
+// its run (never blanked before this call): the reason is appended to
+// stderr on a new line. Any other task's stderr is set to the reason.
 func (l *Loop) failRetryingTaskNow(ctx context.Context, task *model.Task, reason string) bool {
 	now := time.Now().UTC()
 	task.State = model.TaskStateFailed
-	task.Stderr = reason
+	if isServiceTask(task) {
+		if task.Stderr != "" && !strings.HasSuffix(task.Stderr, "\n") {
+			task.Stderr += "\n"
+		}
+		task.Stderr += reason
+	} else {
+		task.Stderr = reason
+	}
 	task.CompletedAt = &now
 	task.MaxRetries = task.RetryCount
 	task.RuntimeHints.ScrubSecrets() // never persist a half-attached credential
-	l.persistSubmitOutcome(ctx, task)
+	// A terminal outcome: persisted through TerminalizeTask (the row was
+	// claimed SCHEDULED).
+	l.persistSubmitOutcome(ctx, task, model.TaskStateScheduled)
 	return true
 }
 
@@ -2914,11 +3108,14 @@ func (l *Loop) detectStuckTasks(ctx context.Context, affected map[string]bool) e
 		return err
 	}
 
-	// Group QUEUED worker tasks by requirement key.
+	// Group QUEUED worker tasks by requirement key. A service task is left
+	// out: it waits in the queue until a service-mode worker of its group
+	// takes it and is never failed as stuck (the capacity checked here is
+	// that of ordinary workers).
 	currentCounts := make(map[taskRequirementKey]int)
 	tasksByKey := make(map[taskRequirementKey][]*model.Task)
 	for _, task := range queuedTasks {
-		if task.ExecutorType != model.ExecutorTypeWorker {
+		if task.ExecutorType != model.ExecutorTypeWorker || isServiceTask(task) {
 			continue
 		}
 		key := requirementKeyForTask(task)
@@ -3200,8 +3397,9 @@ func (l *Loop) advanceSteps(ctx context.Context, affected map[string]bool) error
 			anyRunning := false
 			anySkipped := false
 			for _, t := range tasks {
-				if t.State == model.TaskStateFailed && t.RetryCount < t.MaxRetries {
-					// Task will be retried — treat as non-terminal.
+				if t.State == model.TaskStateFailed && t.RetryCount < t.MaxRetries && !isServiceTask(t) {
+					// Task will be retried — treat as non-terminal. (Never a
+					// service: markRetries skips it, so it stays FAILED.)
 					allTerminal = false
 					continue
 				}
@@ -3515,6 +3713,11 @@ func (l *Loop) markRetries(ctx context.Context, affected map[string]bool) error 
 		if task.RetryCount >= task.MaxRetries {
 			continue
 		}
+		// A service task is never retried, whatever its MaxRetries (a row
+		// from an older server, or edited by hand).
+		if isServiceTask(task) {
+			continue
+		}
 		// CAS write: only flip FAILED→RETRYING while the task is still FAILED
 		// — a concurrent cancel may have SKIPPED it since the list above was
 		// taken, and a retry must not resurrect a terminal task.
@@ -3668,8 +3871,9 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 	// CWL spec priority: job requirements > tool requirements > step requirements > workflow requirements.
 	toolmerge.MergeRequirementsIntoTool(tool, graphDoc.Workflow, step.ID)
 
-	// Merge cwl:requirements from the job input document (highest priority).
-	if jobReqs, ok := submissionInputs["cwl:requirements"].([]any); ok {
+	// Merge cwl:requirements from the job input document (highest priority),
+	// never into a service's tool (see jobRequirements).
+	if jobReqs := jobRequirements(step, submissionInputs); len(jobReqs) > 0 {
 		toolmerge.MergeJobRequirementsIntoTool(tool, jobReqs)
 	}
 
@@ -3721,6 +3925,21 @@ func (l *Loop) populateToolAndJob(task *model.Task, step *model.Step, wf *model.
 	}
 
 	return nil
+}
+
+// jobRequirements returns the job's cwl:requirements (from inputs) that are
+// merged into the tool step runs: none for a service step (gowe:Service in
+// the step's hints), whose image and environment are fixed by its
+// registration (the submission handlers refuse cwl:requirements for a
+// service workflow; this is defence in depth). populateToolAndJob and
+// inheritedHint both use it, so the tool that runs and the digest explained
+// for an unblessed request are the same.
+func jobRequirements(step *model.Step, inputs map[string]any) []any {
+	if step != nil && step.Hints != nil && step.Hints.Service != nil {
+		return nil
+	}
+	reqs, _ := inputs["cwl:requirements"].([]any)
+	return reqs
 }
 
 // extractRuntimeHints extracts expression library and other hints from a tool (map form).

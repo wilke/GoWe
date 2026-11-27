@@ -1270,8 +1270,12 @@ func (ui *UI) resetFailedTaskForQueue(ctx context.Context, task model.Task) (boo
 // rule as the scheduler's retry check: only worker tasks are checked, with
 // the group stored on the task (nil hints or "" = the default group) and the
 // submission's submitter. A BV-BRC task of a service identity is refused
-// too, as the scheduler's retry refuses it.
+// too, as the scheduler's retry refuses it, and so is a service task
+// (gowe:Service), which is never re-run.
 func (ui *UI) requeueGroupDenied(sub *model.Submission, task *model.Task) string {
+	if task.IsService || (task.RuntimeHints != nil && task.RuntimeHints.Service != nil) {
+		return model.ServiceNotRerun
+	}
 	if task.ExecutorType == model.ExecutorTypeBVBRC && model.IsServiceUsername(sub.SubmittedBy) {
 		return model.ServiceBVBRCDenied
 	}
@@ -1690,6 +1694,12 @@ func (ui *UI) HandleWorkerDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deleted, err := ui.store.DeleteOfflineWorker(r.Context(), id, "", ui.removalSilence())
+	var svcErr *store.WorkerServicesError
+	if errors.As(err, &svcErr) {
+		w.Header().Set("HX-Reswap", "none")
+		http.Error(w, svcErr.Error(), http.StatusConflict)
+		return
+	}
 	if err != nil {
 		w.Header().Set("HX-Reswap", "none")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1727,9 +1737,9 @@ func (ui *UI) HandleWorkerDelete(w http.ResponseWriter, r *http.Request) {
 
 // HandleWorkerPurgeOffline deletes all offline workers that have sent no
 // heartbeat for removalSilence (HTMX), each with the same in-store check as
-// HandleWorkerDelete. It logs at INFO how many were removed and how many
-// offline workers were skipped (not removable yet), and at WARN each store
-// error.
+// HandleWorkerDelete. It logs at INFO how many were removed, how many
+// offline workers were skipped (not removable yet) and how many were kept
+// because they still hold running services, and at WARN each store error.
 func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 	workers, err := ui.store.ListWorkers(r.Context())
 	if err != nil {
@@ -1737,7 +1747,7 @@ func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	removed, skipped, failed := 0, 0, 0
+	removed, skipped, services, failed := 0, 0, 0, 0
 	silence := ui.removalSilence()
 	for _, wk := range workers {
 		if wk.State != model.WorkerStateOffline {
@@ -1745,6 +1755,9 @@ func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 		}
 		deleted, err := ui.store.DeleteOfflineWorker(r.Context(), wk.ID, "", silence)
 		switch {
+		case errors.Is(err, store.ErrWorkerHasServices):
+			services++
+			ui.logger.Info("purge offline workers via UI: worker kept", "worker_id", wk.ID, "reason", err.Error())
 		case err != nil:
 			failed++
 			ui.logger.Warn("purge offline workers via UI: delete failed", "worker_id", wk.ID, "error", err)
@@ -1756,7 +1769,7 @@ func (ui *UI) HandleWorkerPurgeOffline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.logger.Info("purged offline workers via UI", "removed", removed,
-		"skipped_not_removable", skipped, "failed", failed, "removal_silence", silence)
+		"skipped_not_removable", skipped, "skipped_running_services", services, "failed", failed, "removal_silence", silence)
 	w.Header().Set("HX-Redirect", ui.href("/workers"))
 	w.WriteHeader(http.StatusOK)
 }

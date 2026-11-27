@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/me/gowe/internal/groupacl"
+	"github.com/me/gowe/internal/store"
 	"github.com/me/gowe/internal/ui"
 	"github.com/me/gowe/pkg/model"
 )
@@ -106,7 +108,8 @@ func respondWorkerRemoved(w http.ResponseWriter, reqID, id string) {
 // removeWorker deletes worker id with DeleteOfflineWorker (silent for
 // workerRemovalSilence; in group unless group is ""). It returns not found
 // when there is no such worker (in group), or a conflict when the worker
-// exists but is not removable (yet).
+// exists but is not removable (yet), including when it still holds RUNNING
+// service tasks.
 func (s *Server) removeWorker(ctx context.Context, actor ui.GroupActor, id, group string) *ui.GroupError {
 	notFound := func() *ui.GroupError {
 		kind := "worker"
@@ -127,6 +130,10 @@ func (s *Server) removeWorker(ctx context.Context, actor ui.GroupActor, id, grou
 		return notFound()
 	}
 	deleted, err := s.store.DeleteOfflineWorker(ctx, id, group, workerRemovalSilence)
+	var svcErr *store.WorkerServicesError
+	if errors.As(err, &svcErr) {
+		return groupErr(ui.GroupErrConflict, svcErr.Error())
+	}
 	if err != nil {
 		return s.internalErrFor(actor, group, err)
 	}

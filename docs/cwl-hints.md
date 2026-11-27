@@ -333,9 +333,10 @@ This tool:
 
 ## `gowe:Service` — Long-running Service (Experimental)
 
-**Experimental. In this version the hint is parsed, validated and access-checked only; a service workflow that is
-submitted runs like an ordinary task.** Later versions will run the tool as a long-lived server (for example a model
-server on a GPU worker) and check its health.
+**Experimental. In this version the server side only: a submitted service workflow's task waits in the queue until a
+service-mode worker of its group takes it, and no worker runs services yet** (a worker declares service mode at
+registration; the `gowe-worker` of this version does not). Later versions will run the tool as a long-lived server
+(for example a model server on a GPU worker) and check its health. See [Server behaviour](#server-behaviour) below.
 
 Marks a `CommandLineTool` as a service: the worker chooses a port, passes it in the tool's `port_input` input and
 checks the service's health over HTTP.
@@ -406,11 +407,13 @@ A workflow that contains a service tool may be registered (`POST /api/v1/workflo
 
 1. the workflow has exactly one step, and that step does not scatter;
 2. the step runs in a container (`DockerRequirement.dockerPull` or `gowe:Execution.docker_image`);
-3. the step names a worker group other than `default` (`gowe:Execution.worker_group`);
-4. `port_input` names an `int` input of the tool;
-5. the caller is a server admin or a manager of that worker group.
+3. the step's `gowe:Execution.executor`, if set, is `worker` or `container` (a service always runs on the worker
+   executor; `local`, `bvbrc` or any other value is refused);
+4. the step names a worker group other than `default` (`gowe:Execution.worker_group`);
+5. `port_input` names an `int` input of the tool;
+6. the caller is a server admin or a manager of that worker group.
 
-1-4 are refused with 400, 5 with 403; an anonymous caller and a service identity (service token) are always refused.
+1-5 are refused with 400, 6 with 403; an anonymous caller and a service identity (service token) are always refused.
 The worker group must also be a valid group name (letters, digits, `.`, `_`, `-`, starting with a letter or digit;
 else 400); names are case-sensitive, so `Default` is a group of its own, not `default`.
 
@@ -422,10 +425,68 @@ Registering content that is already stored returns the existing row (`deduplicat
 itself a valid service workflow; a row with the same text parsed without the service (by an older server) is not
 reused, and a new row is stored.
 
-A task created from a service step is not retried by the scheduler (`max_retries` 0).
+### Server behaviour
 
-**Known gap (closed in a later version):** the container rule holds at registration only. A submission can still
-change the image the step runs through `cwl:requirements` in its inputs (job-level `DockerRequirement`).
+A task created from a service step is a service task (`is_service`). The server never starts it a second time:
+
+- **Always the worker executor.** A service step runs only on the worker executor, whatever the server's
+  `--default-executor` and whether any worker is online. A server started with `--force-executor` other than `worker`,
+  or a stored workflow whose step has an executor hint other than `worker` / `container`, fails the step at dispatch
+  (no task is created); the store refuses a service task with any other executor. The worker-group access check
+  applies as for every worker task.
+- **One task per step.** If a service step is found READY while it already owns a task that is not finished (the step
+  update after the task was created did not land), the scheduler adopts that task instead of creating a second one.
+  The dispatch's own write of the submit outcome never puts a task a worker has already checked out back in the queue
+  (compare-and-set on the state it wrote; this holds for every worker task).
+- **Queue and checkout.** It is offered only to a service-mode worker of its group, and a service-mode worker is offered
+  only service tasks. It waits in the queue until such a worker takes it; it is never failed for lack of a capable
+  worker (dispatch preflight, stuck-task detection), and a service-mode worker never counts as capacity for ordinary
+  tasks. The checkout hold rule (`--checkout-hold-after`) is never applied to a service-mode worker: its running
+  services do not finish, so a held service would wait forever.
+- **Service-mode workers.** With worker authentication on, a worker registers with `service_mode: true` only with a
+  worker key whose group list explicitly names the worker's group; a key with an empty group list (any group) is
+  refused with 403. With worker authentication off this key rule is not checked. In every case `service_mode: true`
+  needs a valid `host_id` (an absent one, which the server groups by hostname, does not count): else 400 (`a
+  service-mode worker must report a host id`).
+- **GPUs.** A service-mode worker without a GPU inventory (GPU capacity unknown) is offered no task that needs a GPU.
+  GPU charges follow the worker row: besides its own RUNNING tasks, a worker with an inventory and a host id has
+  subtracted the GPUs charged to RUNNING services of other worker rows (online or offline) of the same `host_id` whose
+  inventory shares at least one GPU UUID with its own; workers of the same host with disjoint inventories do not affect
+  each other. Limit: a restarted worker registers under a new id, so its lost services stay charged to the old row
+  (and are protected through this overlap rule) until their submissions are cancelled; the protection is by
+  inventory, not by the devices a service was actually given.
+- **Never retried, requeued or re-run.** `max_retries` is 0, the scheduler never marks a FAILED service for retry
+  (whatever its `max_retries`) and its retry phase refuses one before archiving or clearing anything. No requeue path
+  (worker removal, reaper, worker heartbeat reconcile, submission retry reset) puts a service back in the queue. A
+  submission retry (`PUT /api/v1/submissions/{id}/retry`) of a submission that has a service task, or of a service
+  workflow, is refused with 409, and the web UI's resume and recompute skip a service task, both with
+  `a service task is not re-run; submit the service again`.
+- **Completion.** A worker reports a service's end with an explicit state, `FAILED` or `SKIPPED`: a model server
+  that exits has failed, so `SUCCESS` (and an omitted state) is refused with 400 (`a service does not complete; report
+  FAILED, or SKIPPED after a cancel`). `SKIPPED` stands only when the submission is cancelled; otherwise it is stored as
+  `FAILED` (stderr gets `service stopped by its worker without a cancel`), so the submission fails. For every worker task, `/complete` accepts only `SUCCESS`, `FAILED`, `SKIPPED` or no state (decided
+  from the exit code); any other state is 400.
+- **No image change at submission.** A submission of a service workflow whose inputs contain the key
+  `cwl:requirements` is refused with 400 (`cwl:requirements is not accepted for a service workflow`); the scheduler
+  never merges job requirements into a service's tool either.
+- **Worker removal.** A worker that still holds a RUNNING service task cannot be removed (worker deregistration, admin,
+  group-manager and web UI removal: 409 `worker still holds N running service(s); cancel their submissions first`;
+  the UI's purge of offline workers skips it).
+- **Silent worker.** When the worker of a RUNNING service goes silent, the reaper marks the worker offline as usual but
+  the service stays RUNNING, keeps its charged cores, memory and GPUs, and is marked lost (`service_lost_at`); the mark
+  is cleared when the worker heartbeats again.
+- **Missing from the heartbeat (two strikes).** Only a heartbeat that carries `running_tasks` (an empty list included)
+  is looked at for services; a heartbeat without the field (an older worker, an empty body) leaves them alone. A
+  RUNNING service older than the grace period that such a heartbeat omits is marked missing (`service_missing_at`); a
+  heartbeat that lists it again clears the mark; one that omits it once the mark is older than the grace period marks
+  it FAILED (`service is no longer running on its worker (not in the worker's heartbeat)`), which fails its step and
+  submission. A worker must therefore send `running_tasks: []` when it runs nothing.
+- **Stopping an ended service.** The heartbeat answer's `cancel_tasks` lists every task the worker reported running
+  whose submission is cancelled and, for services, every one that is already finished in the database, so the worker
+  stops a service the server has ended.
+- **Known limit: cancel.** Cancelling the submission of a running service marks the service task SKIPPED at once and
+  frees its GPUs in the server's accounting before the worker has stopped the process (the worker learns it from
+  `cancel_tasks` at its next heartbeat). Waiting for the process to be gone is left to the next change.
 
 ---
 

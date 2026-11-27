@@ -844,6 +844,41 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A service (gowe:Service) is never re-run: its submission is submitted
+	// again instead. Decided first from the submission's own tasks (any task
+	// stored as a service), whatever the workflow holds now (it may have been
+	// replaced or deleted since); then from the workflow, for a submission
+	// whose service task was never created.
+	tasks, err := s.store.ListTasksBySubmission(r.Context(), sub.ID)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	for _, t := range tasks {
+		if t.IsService {
+			respondError(w, reqID, http.StatusConflict, &model.APIError{
+				Code:    model.ErrConflict,
+				Message: model.ServiceNotRerun,
+			})
+			return
+		}
+	}
+
+	wf, err := s.store.GetWorkflow(r.Context(), sub.WorkflowID)
+	if err != nil {
+		respondError(w, reqID, http.StatusInternalServerError,
+			&model.APIError{Code: model.ErrInternal, Message: err.Error()})
+		return
+	}
+	if _, isService, _ := model.ValidateServiceWorkflow(wf); isService {
+		respondError(w, reqID, http.StatusConflict, &model.APIError{
+			Code:    model.ErrConflict,
+			Message: model.ServiceNotRerun,
+		})
+		return
+	}
+
 	// A retry re-runs the submission for its submitter: a service identity
 	// (the caller or the submitter) may not use the BV-BRC executor, and
 	// neither may a retry by a caller without a provider token or of a
@@ -852,12 +887,6 @@ func (s *Server) handleRetrySubmission(w http.ResponseWriter, r *http.Request) {
 	serviceRetry := isServiceCaller(userCtx) || model.IsServiceUsername(sub.SubmittedBy)
 	tokenlessRetry := userCtx == nil || userCtx.Token == "" || sub.UserToken == ""
 	if serviceRetry || tokenlessRetry {
-		wf, err := s.store.GetWorkflow(r.Context(), sub.WorkflowID)
-		if err != nil {
-			respondError(w, reqID, http.StatusInternalServerError,
-				&model.APIError{Code: model.ErrInternal, Message: err.Error()})
-			return
-		}
 		if wf == nil {
 			respondError(w, reqID, http.StatusNotFound, model.NewNotFoundError("workflow", sub.WorkflowID))
 			return

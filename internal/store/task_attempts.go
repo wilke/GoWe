@@ -67,8 +67,17 @@ func (s *SQLStore) archiveTaskAttempts(ctx context.Context, ex execer, reason, c
 // written, no error) when the row is no longer in from. A row that holds
 // nothing worth keeping (never started, no output, no exit code) is written
 // without an attempt.
+//
+// A service task is never reset for another attempt: a task with IsService
+// (or RuntimeHints.Service) is refused with ErrServiceNotReset, nothing
+// archived or written, and a row stored as a service (is_service = 1) never
+// matches the archive or the write (applied=false).
 func (s *SQLStore) ArchiveAndResetTask(ctx context.Context, task *model.Task, from model.TaskState, reason string) (bool, error) {
 	s.logger.Debug("sql", "op", "archive_and_reset", "table", "tasks", "id", task.ID, "from", from, "reason", reason)
+
+	if task.IsService || (task.RuntimeHints != nil && task.RuntimeHints.Service != nil) {
+		return false, fmt.Errorf("archive and reset task %s: %w", task.ID, ErrServiceNotReset)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -76,10 +85,10 @@ func (s *SQLStore) ArchiveAndResetTask(ctx context.Context, task *model.Task, fr
 	}
 	defer tx.Rollback()
 
-	if _, err := s.archiveTaskAttempts(ctx, tx, reason, `t.id = ? AND t.state = ?`, task.ID, string(from)); err != nil {
+	if _, err := s.archiveTaskAttempts(ctx, tx, reason, `t.id = ? AND t.state = ? AND t.is_service = 0`, task.ID, string(from)); err != nil {
 		return false, fmt.Errorf("archive and reset task %s: %w", task.ID, err)
 	}
-	n, err := s.execTaskUpdate(ctx, tx, task, ` WHERE id=? AND state=?`, task.ID, string(from))
+	n, err := s.execTaskUpdate(ctx, tx, task, ` WHERE id=? AND state=? AND is_service = 0`, task.ID, string(from))
 	if err != nil {
 		return false, fmt.Errorf("archive and reset task %s from %s: %w", task.ID, from, err)
 	}

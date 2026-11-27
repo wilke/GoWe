@@ -327,7 +327,7 @@ func (l *Loop) inheritedHint(wf *model.Workflow, task *model.Task, sub *model.Su
 	}
 	var jobReqs []any
 	if sub != nil {
-		jobReqs, _ = sub.Inputs["cwl:requirements"].([]any)
+		jobReqs = jobRequirements(step, sub.Inputs)
 	}
 	stepID := task.StepID
 	res, err := toolhash.DigestForStep(wf.RawCWL, stepID, jobReqs)
