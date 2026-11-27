@@ -12,8 +12,8 @@ import (
 	"github.com/me/gowe/pkg/model"
 )
 
-// The Go worker does not run services: its heartbeat body never carries a
-// services key, whatever it reports.
+// A batch-mode worker's heartbeat (Client.Heartbeat) never carries a
+// services key, whatever it reports; only ServiceHeartbeat sends one.
 func TestClientHeartbeat_NoServicesKey(t *testing.T) {
 	host := &model.HostUsage{Load1: 1, MemTotalMB: 4096, SampledAt: time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)}
 	tests := []struct {

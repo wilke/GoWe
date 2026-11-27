@@ -4,6 +4,7 @@ package toolexec
 
 import (
 	"context"
+	"fmt"
 	"github.com/me/gowe/internal/cwlexpr"
 	"log/slog"
 	"time"
@@ -35,6 +36,10 @@ type Result struct {
 	PeakMemoryKB int64
 	StartTime    time.Time
 	Duration     time.Duration
+
+	// Service is the handle of a service started with Options.Service (nil
+	// otherwise); Outputs, ExitCode, Stdout and Stderr are then unset.
+	Service ServiceHandle
 }
 
 // maxLogCapture is the maximum number of bytes captured for stdout/stderr
@@ -172,6 +177,11 @@ type Options struct {
 	// the apptainer command line, for hosts without PID/mount namespace
 	// support. Degraded mode (worker --apptainer-no-containall).
 	ApptainerNoContainall bool
+
+	// Service, when set, starts the tool as a long-running service instead
+	// of running it to completion (worker --service-mode; see ServiceLaunch).
+	// ModeApptainer only. Nil runs the tool exactly as without it.
+	Service *ServiceLaunch
 }
 
 // Executor executes CWL CommandLineTools.
@@ -204,6 +214,9 @@ func (e *Executor) Execute(ctx context.Context, opts *Options) (*Result, error) 
 	// engine-staged symlinks (IWDR) from tool-created ones.
 	if e.preExistingSymlinks == nil {
 		e.SnapshotSymlinks(opts.WorkDir)
+	}
+	if opts.Service != nil && opts.Mode != ModeApptainer {
+		return nil, fmt.Errorf("a service runs only in an Apptainer container")
 	}
 	switch opts.Mode {
 	case ModeDocker:

@@ -32,7 +32,14 @@ import (
 // process that left the group (setsid) and holds those pipes, and a group
 // member that holds them after the direct child has already exited (os/exec
 // stops watching the context once the child is reaped, so Cancel never runs).
-func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()) {
+//
+// onKill (optional; the batch call sites pass none) is called right before a
+// kill signal is sent by the escalation: the SIGKILL to the group after grace,
+// or the fallback kill of the direct child when the group could not be
+// signalled. The SIGKILL release sends to what is left of a group after the
+// command has finished does not call it. Service handles use it to report
+// whether SIGKILL was needed.
+func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration, onKill ...func()) (release func()) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -53,6 +60,14 @@ func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()
 		})
 	}
 
+	killing := func() {
+		for _, f := range onKill {
+			if f != nil {
+				f()
+			}
+		}
+	}
+
 	cmd.Cancel = func() error {
 		pid := cmd.Process.Pid
 		cancelled.Store(true)
@@ -62,6 +77,7 @@ func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()
 			}
 			// The group could not be signalled (e.g. EPERM): fall back to
 			// killing the direct child so Wait cannot block on it.
+			killing()
 			return cmd.Process.Kill()
 		}
 		go func() {
@@ -70,6 +86,7 @@ func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()
 			select {
 			case <-done:
 			case <-timer.C:
+				killing()
 				_ = signalProcessGroup(pid, syscall.SIGKILL)
 			}
 		}()
@@ -77,6 +94,14 @@ func setupProcessGroupCancel(cmd *exec.Cmd, grace time.Duration) (release func()
 	}
 
 	return release
+}
+
+// killServiceProcessGroup sends SIGKILL to the process group led by pid,
+// ignoring errors (a group that no longer exists included). Service path
+// only: called once a service's leader has exited and been reaped, so
+// helpers it left in its group cannot keep the port or GPU memory.
+func killServiceProcessGroup(pid int) {
+	_ = signalProcessGroup(pid, syscall.SIGKILL)
 }
 
 // signalProcessGroup sends sig to every process in the group led by pid.

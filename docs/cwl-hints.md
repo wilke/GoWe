@@ -333,13 +333,43 @@ This tool:
 
 ## `gowe:Service` — Long-running Service (Experimental)
 
-**Experimental. In this version the server side only: a submitted service workflow's task waits in the queue until a
-service-mode worker of its group takes it, and no worker runs services yet** (a worker declares service mode at
-registration; the `gowe-worker` of this version does not). Later versions will run the tool as a long-lived server
-(for example a model server on a GPU worker) and check its health. See [Server behaviour](#server-behaviour) below.
+**Experimental.** A submitted service workflow's task waits in the queue until a service-mode worker of its group
+(`gowe-worker --service-mode`, see [Service Mode](tools/worker.md#service-mode-1)) takes it; that worker runs the
+tool as a long-lived server (for example a model server on a GPU worker), checks its health and reports its status
+until it is stopped. Services are not kept across a worker restart in this version: a worker shutdown stops them
+(those still running when the 630 s shutdown wait expires are SIGKILLed before the worker deregisters), and after a
+worker crash the next start of a service-mode worker on the same work directory stops what a dead worker left running,
+from the state files in `<workdir>/.gowe-services` (never those of another host, another boot or a worker process
+that still runs; the tasks stay RUNNING on the server until force-released). See [Server behaviour](#server-behaviour)
+below.
 
 Marks a `CommandLineTool` as a service: the worker chooses a port, passes it in the tool's `port_input` input and
-checks the service's health over HTTP.
+checks the service's health over HTTP, on `127.0.0.1` (the service must listen on **all interfaces**, `0.0.0.0`, so
+clients reach it on the advertised host; for `https` the certificate is not verified, as the check only talks to the
+loopback address). A check counts only when every socket listening on that port, on any address, belongs to the
+service's own processes (the launched process or a descendant). A second listener on the port by anyone makes the
+service not ready (or unhealthy once ready): a visible local denial of service rather than a silent hijack. A service
+with such a listener is never reported ready, and ends FAILED (`another process holds port <n>`) when that is seen in
+3 consecutive checks before it was ever ready. When the worker cannot read the process information it needs (`/proc`)
+the check fails (`cannot verify the listener of port <n>: ...`) without counting towards those 3; confirm on each host
+that a first service becomes ready under its Apptainer set-up.
+
+On the worker, a service differs from an ordinary tool run:
+
+- it always uses the host network, whatever `NetworkAccess` says (the container is never started with
+  `--net --network none`): it can reach services on the host's loopback interface and the network;
+- there is no time limit: `ToolTimeLimit` is ignored, and a service runs until it is stopped, fails its health start
+  timeout or exits;
+- a task with secret inputs (`cwltool:Secrets`) is refused (FAILED before anything runs): their values can reach the
+  command line. Pass secrets through `gowe:Execution.secret_env`, which sets environment variables only;
+- it must run in a container (`DockerRequirement`) under Apptainer; outputs are not collected, and the process's
+  stdout and stderr go to the files `gowe-service.stdout.log` / `gowe-service.stderr.log` (mode 0600) in its task
+  directory (mode 0700, as are its `_tmp`, `_staging` and `_output` siblings), which the worker always keeps; the
+  stderr tail reported when it ends is read from the file the worker created, whatever the service does to the name;
+- the task's staging credentials (the submitter's token, its secrets) are dropped by the worker once the inputs are
+  staged, not kept for the service's life;
+- with a GPU worker it gets exactly the GPUs the server charged for it, also on a worker with `--concurrency 1`; a
+  service that asks for none gets no GPU access.
 
 ```yaml
 $namespaces:

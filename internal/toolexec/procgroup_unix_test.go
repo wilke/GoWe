@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -136,6 +137,47 @@ func TestSetupProcessGroupCancel(t *testing.T) {
 		release()
 		release()
 	})
+}
+
+// onKill is called exactly when the escalation sends SIGKILL.
+func TestSetupProcessGroupCancel_OnKill(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+		grace  time.Duration
+		want   bool
+	}{
+		{"exits on SIGTERM", `echo ready; exec sleep 300`, 5 * time.Second, false},
+		{"ignores SIGTERM", `trap "" TERM; echo ready; while :; do sleep 1; done`, 200 * time.Millisecond, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "/bin/sh", "-c", tt.script)
+			var called atomic.Bool
+			release := setupProcessGroupCancel(cmd, tt.grace, func() { called.Store(true) })
+			defer release()
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				_ = cmd.Wait()
+				t.Fatalf("read: %v", err)
+			}
+			cancel()
+			_ = cmd.Wait()
+			release()
+			if got := called.Load(); got != tt.want {
+				t.Errorf("onKill called = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 // waitProcessGone polls until pid no longer exists (kill(pid, 0) == ESRCH)

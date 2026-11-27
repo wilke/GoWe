@@ -71,6 +71,9 @@ type RegisterOptions struct {
 	// 0 = not sent.
 	DefaultTaskCores int
 	DefaultTaskRamMB int64
+	// ServiceMode declares a worker that runs services only
+	// (--service-mode); false is not sent.
+	ServiceMode bool
 }
 
 // Register registers the worker with the server and stores the worker ID.
@@ -128,6 +131,9 @@ func (c *Client) Register(ctx context.Context, name, hostname, group, runtime st
 		if opts[0].DefaultTaskRamMB > 0 {
 			reg["default_task_ram_mb"] = opts[0].DefaultTaskRamMB
 		}
+		if opts[0].ServiceMode {
+			reg["service_mode"] = true
+		}
 	}
 	body, err := json.Marshal(reg)
 	if err != nil {
@@ -158,6 +164,40 @@ func (c *Client) Heartbeat(ctx context.Context, running []string, usage *model.W
 		req.Host = usage.Host
 		req.GPUs = usage.GPUs
 	}
+	return c.sendHeartbeat(ctx, req)
+}
+
+// serviceHeartbeatRequest is a service-mode worker's heartbeat body: the
+// fields of model.HeartbeatRequest, but running_tasks and services are always
+// sent as lists (the server reconciles services only when running_tasks is
+// present, an empty list included).
+type serviceHeartbeatRequest struct {
+	RunningTasks []string              `json:"running_tasks"`
+	Host         *model.HostUsage      `json:"host,omitempty"`
+	GPUs         []model.GPUUsage      `json:"gpu_usage,omitempty"`
+	Services     []model.ServiceReport `json:"services"`
+}
+
+// ServiceHeartbeat is Heartbeat for a service-mode worker: running and
+// services are always sent as lists ([] when empty), with services carrying
+// the status of each service the worker runs.
+func (c *Client) ServiceHeartbeat(ctx context.Context, running []string, services []model.ServiceReport, usage *model.WorkerUsage) (*model.HeartbeatResponse, error) {
+	req := serviceHeartbeatRequest{RunningTasks: running, Services: services}
+	if req.RunningTasks == nil {
+		req.RunningTasks = []string{}
+	}
+	if req.Services == nil {
+		req.Services = []model.ServiceReport{}
+	}
+	if usage != nil {
+		req.Host = usage.Host
+		req.GPUs = usage.GPUs
+	}
+	return c.sendHeartbeat(ctx, req)
+}
+
+// sendHeartbeat sends req as the heartbeat body and decodes the answer.
+func (c *Client) sendHeartbeat(ctx context.Context, req any) (*model.HeartbeatResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: marshal: %w", err)

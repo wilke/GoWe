@@ -814,7 +814,9 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	// CWL spec: NetworkAccess defaults to false (no network access).
 	// Apptainer --net requires unprivileged user namespace support (allow net users/groups
 	// in apptainer.conf). On systems without it, the flag is silently ignored.
-	if !hasNetworkAccess(tool) {
+	// A service (opts.Service) always uses the host network: clients and the
+	// worker's health check reach it on its port.
+	if opts.Service == nil && !hasNetworkAccess(tool) {
 		apptainerArgs = append(apptainerArgs, "--net", "--network", "none")
 	}
 
@@ -838,6 +840,13 @@ func (e *Executor) executeInApptainer(ctx context.Context, opts *Options) (*Resu
 	}
 
 	e.logger.Debug("apptainer command", "args", MaskSecretValues(apptainerArgs, combinedMaskSecrets(opts)))
+
+	// A service starts with this same argv and returns at once with a handle
+	// (service.go): files for stdout/stderr, Start instead of Run, its own
+	// process context; no output collection.
+	if opts.Service != nil {
+		return e.startApptainerService(opts, apptainerArgs, startTime)
+	}
 
 	cmd := exec.CommandContext(ctx, "apptainer", apptainerArgs...)
 	// On cancel, signal the whole apptainer runtime tree, not just the client.

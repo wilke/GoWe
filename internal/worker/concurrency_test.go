@@ -55,6 +55,14 @@ type fakeServer struct {
 	events       []string // "checkout:<id>", "checkout:none", "complete:<id>:<state>", "deregister"
 	results      map[string]TaskResult
 	onDeregister func()
+	lastHB       []byte   // body of the last heartbeat
+	cancelTasks  []string // returned as cancel_tasks in every heartbeat answer
+
+	// onHeartbeat, when set, sees every heartbeat body; beforeComplete, when
+	// set, runs before a completion is recorded and answered (it may block).
+	// Set them before the worker starts.
+	onHeartbeat    func(body []byte)
+	beforeComplete func(taskID string)
 }
 
 func newFakeServer(t *testing.T, regResp string, tasks ...*model.Task) *fakeServer {
@@ -78,6 +86,19 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprintf(w, `{"status":"ok","data":%s}`, resp)
 	case r.Method == http.MethodPut && strings.HasSuffix(path, "/heartbeat"):
+		fs.mu.Lock()
+		fs.lastHB = body
+		cancel := append([]string(nil), fs.cancelTasks...)
+		hook := fs.onHeartbeat
+		fs.mu.Unlock()
+		if hook != nil {
+			hook(body)
+		}
+		if len(cancel) > 0 {
+			data, _ := json.Marshal(model.HeartbeatResponse{CancelTasks: cancel})
+			fmt.Fprintf(w, `{"status":"ok","data":%s}`, data)
+			return
+		}
 		fmt.Fprint(w, `{"status":"ok","data":{}}`)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/work"):
 		fs.mu.Lock()
@@ -98,6 +119,12 @@ func (fs *fakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(body, &res)
 		parts := strings.Split(path, "/") // /api/v1/workers/{w}/tasks/{t}/complete
 		id := parts[len(parts)-2]
+		fs.mu.Lock()
+		gate := fs.beforeComplete
+		fs.mu.Unlock()
+		if gate != nil {
+			gate(id)
+		}
 		fs.mu.Lock()
 		fs.results[id] = res
 		fs.events = append(fs.events, "complete:"+id+":"+string(res.State))

@@ -30,7 +30,7 @@ const (
 // ServiceSpec marks a tool as a long-running service (gowe:Service hint).
 // Experimental: a task carrying it (Task.IsService) waits for a service-mode
 // worker of its group and is never retried, requeued or re-run by the server;
-// workers do not run services yet.
+// gowe-worker --service-mode runs it (internal/worker/service.go).
 type ServiceSpec struct {
 	PortInput        string        `json:"port_input"`                 // id of the tool's int input the worker sets to the chosen port
 	Scheme           string        `json:"scheme,omitempty"`           // "http" (default) or "https"
@@ -362,6 +362,13 @@ func isLowerHex(v string, n int) bool {
 		}
 	}
 	return true
+}
+
+// ValidateServiceHost checks a host name or address with the rule the server
+// applies to ServiceStatus.Host (checkServiceHost); "" is accepted. The
+// worker checks its --advertise-host with it at start-up.
+func ValidateServiceHost(h string) error {
+	return checkServiceHost(h)
 }
 
 // checkServiceHost accepts "" or, in at most maxServiceHostLen bytes of
